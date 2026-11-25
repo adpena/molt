@@ -766,6 +766,12 @@ def test_proven_class_call_enters_init_directly_and_guards_later_stores(
         assert "SETATTR" in kinds and "GUARDED_SETATTR" not in kinds
     else:
         assert "GUARDED_SETATTR" in kinds and "SETATTR" not in kinds
+    build = next(
+        fn for fn in generator.to_json()["functions"] if fn["name"] == "py.mod.build"
+    )
+    [allocated] = [op for op in build["ops"] if op["kind"] == "object_new_bound"]
+    assert allocated["class_definition"] == "class:mod:Node"
+    assert allocated.get("stable_instance_class", False) is (writer is None)
     assert kinds.count("OBJECT_NEW_BOUND") == 1
     assert kinds.count("CALL_BIND") == 1
     assert kinds.count("CALL_FUNC") == 2

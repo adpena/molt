@@ -64,7 +64,7 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
         kind_consumed_operand_table, opcode_effects_table,
     };
     use crate::tir::passes::value_identity::{
-        ScalarFacts, copy_value_source, no_heap_alias_source, scalar_value_source,
+        ScalarFacts, copy_value_source, forwarded_python_value_source, no_heap_alias_source,
     };
 
     for publication in [
@@ -88,10 +88,10 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
             ),
         ] {
             let store = publish(vec![ValueId(0)], vec![ValueId(1)]);
-            assert_eq!(scalar_value_source(&store), Some(ValueId(0)));
+            assert_eq!(forwarded_python_value_source(&store), Some(ValueId(0)));
             for (operands, results) in [(0, 1), (2, 1), (1, 0), (1, 2)] {
                 let malformed = publish(vec![ValueId(0); operands], vec![ValueId(1); results]);
-                assert_eq!(scalar_value_source(&malformed), None);
+                assert_eq!(forwarded_python_value_source(&malformed), None);
             }
             assert_eq!(copy_value_source(&store), None);
             assert_eq!(no_heap_alias_source(&store), None);
@@ -151,12 +151,12 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
 
 #[test]
 fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
-    use crate::tir::passes::value_identity::{ScalarFacts, scalar_value_source};
+    use crate::tir::passes::value_identity::{ScalarFacts, forwarded_python_value_source};
     let load_attrs = int_attr(0);
 
     let load = make_op(OpCode::Copy, vec![], vec![ValueId(4)], load_attrs)
         .with_origin(molt_ir::OpKind::FrameHomeLoad);
-    assert_eq!(scalar_value_source(&load), None);
+    assert_eq!(forwarded_python_value_source(&load), None);
     let mut func = single_block_func(
         vec![
             scalar_home_store(vec![ValueId(0)], vec![ValueId(1)]),
@@ -197,11 +197,11 @@ fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
 
 #[test]
 fn home_scalar_forwarding_rejects_malformed_cardinality() {
-    use crate::tir::passes::value_identity::scalar_value_source;
+    use crate::tir::passes::value_identity::forwarded_python_value_source;
     for (operands, results) in [(0, 1), (2, 1), (1, 0), (1, 2)] {
         let result_ids: Vec<_> = (1..=results).map(ValueId).collect();
         let store = scalar_home_store(vec![ValueId(0); operands], result_ids.clone());
-        assert_eq!(scalar_value_source(&store), None);
+        assert_eq!(forwarded_python_value_source(&store), None);
         let func = single_block_func(
             vec![
                 make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(7)),

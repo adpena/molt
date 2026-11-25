@@ -238,6 +238,10 @@ fn factory_result_specializes_a_field_only_clone() {
     let mut new = field_op(OpKind::ObjectNewBound, vec![class_object], vec![allocated]);
     new.attrs
         .insert("class_definition".into(), AttrValue::Str(symbol.into()));
+    new.attrs.insert(
+        molt_ir::class_identity::STABLE_INSTANCE_CLASS_ATTR.into(),
+        AttrValue::Bool(true),
+    );
     push(&mut factory, entry, new);
     observe(&mut factory, entry);
     factory.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
@@ -530,12 +534,12 @@ fn proven_closure_specializes_user_arguments_and_keeps_the_captured_callable() {
     };
     let mut module = TirModule::with_own_table("m", vec![closure, caller, forward]);
     let body_index = module.body_index();
-    let sites: Vec<_> = module
+    let mut sites: Vec<_> = module
         .functions
         .iter()
         .map(|func| sites::sites_of(func, &body_index, &module))
         .collect();
-    let relevant = relevance::solve(&module, &sites, &body_index, &[true; 3]);
+    let relevant = relevance::solve(&module, &mut sites, &body_index, &[true; 3]);
     assert_eq!(relevant[2], [true]);
 
     let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
@@ -600,6 +604,138 @@ fn a_target_that_checks_guarded_code_gets_typed_results_but_no_clone() {
     let call = calls(body(&module, "main"))[0];
     assert_eq!(call.callee, Some(FunctionId(0)));
     assert_eq!(call.exact_result_proof(), Some(TirType::I64));
+}
+
+#[test]
+fn shared_return_preserves_the_supplied_argument_type_without_a_clone() {
+    use crate::tir::lower_from_simple::lower_to_tir;
+    use molt_ir::OpKind;
+    // Hidden closure, ignored class argument, then the object to validate.
+    // A shared validator's success path returns the saved user argument.
+    let validator: molt_ir::FunctionIR = serde_json::from_value(serde_json::json!({
+        "name": "validate", "params": [crate::MOLT_CLOSURE_PARAM_NAME, "cls", "x"], "return_abi":"value",
+        "ops":[
+            {"kind":"frame_home_store","args":["x"],"value":0,"out":"saved"},
+            {"kind":"isinstance","args":["saved","cls"],"out":"ok"},
+            {"kind":"if","args":["ok"]},
+            {"kind":"binding_alias","args":["saved"],"out":"returned"},
+            {"kind":"ret","args":["returned"]},
+            {"kind":"end_if"},
+            {"kind":"raise","args":["cls"]},
+            {"kind":"ret_void"}
+        ]
+    })).unwrap();
+    let validator = lower_to_tir(&validator);
+    let mut driver = function("driver", 2);
+    let entry = driver.entry_block;
+    let cls = driver.blocks[&entry].args[0].id;
+    let unknown = driver.blocks[&entry].args[1].id;
+    let child = driver.fresh_value();
+    let mut alloc = TirOp::new(OpCode::ObjectNewBound, vec![cls], vec![child]);
+    alloc.origin = Some(OpKind::ObjectNewBound);
+    let symbol = "class:m:Child";
+    alloc
+        .attrs
+        .insert("class_definition".into(), AttrValue::Str(symbol.into()));
+    alloc.attrs.insert(
+        molt_ir::class_identity::STABLE_INSTANCE_CLASS_ATTR.into(),
+        AttrValue::Bool(true),
+    );
+    push(&mut driver, entry, alloc);
+    let accepted = proven_call(&mut driver, entry, FunctionId(0), &[cls, child]);
+    let opaque = proven_call(&mut driver, entry, FunctionId(0), &[cls, unknown]);
+    let discarded = proven_call(&mut driver, entry, FunctionId(0), &[cls, child]);
+    push(
+        &mut driver,
+        entry,
+        TirOp::new(OpCode::DecRef, vec![discarded], vec![]),
+    );
+    let dynamic = proven_call(&mut driver, entry, FunctionId(0), &[cls, child]);
+    driver
+        .blocks
+        .get_mut(&entry)
+        .unwrap()
+        .ops
+        .iter_mut()
+        .find(|op| op.results == [dynamic])
+        .unwrap()
+        .set_proven_target(false);
+    let result = driver.fresh_value();
+    let mut tuple = TirOp::new(
+        OpCode::BuildTuple,
+        vec![accepted, opaque, dynamic],
+        vec![result],
+    );
+    tuple.origin = Some(OpKind::TupleNew);
+    push(&mut driver, entry, tuple);
+    driver.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+    // Turning refusal into an ordinary empty return or a return of a
+    // different parameter defeats the projection in both cases.
+    for keep_operand in [false, true] {
+        let mut changed = validator.clone();
+        for block in changed.blocks.values_mut() {
+            if let Some(raise) = block.ops.pop_if(|op| op.opcode == OpCode::Raise) {
+                block.terminator = Terminator::Return {
+                    values: if keep_operand {
+                        raise.operands
+                    } else {
+                        Vec::new()
+                    },
+                };
+            }
+        }
+        assert_eq!(
+            crate::tir::type_refine::ExactScalarPlan::new(&changed).forwarded_return_parameter(),
+            None
+        );
+    }
+    for target in [llvm(), cranelift()] {
+        let mut module = TirModule::with_own_table("m", vec![validator.clone(), driver.clone()]);
+        let outcome = run(
+            &mut module,
+            &target,
+            &HashSet::from_iter(["validate".into()]),
+            false,
+        );
+        assert_eq!(outcome.contexts, 2);
+        assert!(outcome.clones.is_empty());
+        let calls = calls(body(&module, "driver"));
+        assert_eq!(calls.len(), 4);
+        assert_eq!(
+            calls[0].exact_result_proof(),
+            Some(TirType::Class(molt_ir::ClassId::of_definition(symbol)))
+        );
+        for op in &calls[1..] {
+            assert_eq!(op.exact_result_proof(), None);
+        }
+    }
+}
+
+#[test]
+fn an_unobserved_raise_can_be_cleared_before_an_empty_return() {
+    use crate::tir::lower_from_simple::lower_to_tir;
+    let ir: molt_ir::FunctionIR = serde_json::from_value(serde_json::json!({
+        "name":"recover", "params":["x","test"], "return_abi":"value",
+        "ops":[
+            {"kind":"if","args":["test"]},
+            {"kind":"ret","args":["x"]},
+            {"kind":"end_if"},
+            {"kind":"raise","args":["x"]},
+            {"kind":"check_exception"},
+            {"kind":"jump","value":7},
+            {"kind":"label","value":7},
+            {"kind":"exception_clear"},
+            {"kind":"ret_void"}
+        ]
+    }))
+    .unwrap();
+    let body = lower_to_tir(&ir);
+    assert_eq!(
+        crate::tir::type_refine::ExactScalarPlan::new(&body).forwarded_return_parameter(),
+        None
+    );
 }
 
 #[test]
@@ -782,12 +918,12 @@ fn relevance_propagates_through_forwarded_values_and_reversed_call_order() {
     }
     let module = TirModule::with_own_table("m", functions);
     let body_index = module.body_index();
-    let sites: Vec<_> = module
+    let mut sites: Vec<_> = module
         .functions
         .iter()
         .map(|func| sites::sites_of(func, &body_index, &module))
         .collect();
-    let relevant = relevance::solve(&module, &sites, &body_index, &vec![true; chain + 2]);
+    let relevant = relevance::solve(&module, &mut sites, &body_index, &vec![true; chain + 2]);
 
     for (row, actual) in relevant[..chain].iter().enumerate() {
         let x = (chain - 1 - row) % 2 != 0;
@@ -815,7 +951,7 @@ fn relevance_depends_on_uses_past_the_sixty_fourth_parameter() {
     };
     let module = TirModule::with_own_table("m", vec![caller, leaf]);
     let body_index = module.body_index();
-    let sites: Vec<_> = module
+    let mut sites: Vec<_> = module
         .functions
         .iter()
         .map(|func| sites::sites_of(func, &body_index, &module))
@@ -823,7 +959,7 @@ fn relevance_depends_on_uses_past_the_sixty_fourth_parameter() {
     let mut expected = vec![false; 66];
     expected[64] = true;
     assert_eq!(
-        relevance::solve(&module, &sites, &body_index, &[true, true]),
+        relevance::solve(&module, &mut sites, &body_index, &[true, true]),
         vec![expected.clone(), expected]
     );
 }

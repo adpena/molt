@@ -2660,6 +2660,10 @@ fn all_values_typed_dynbox() {
 fn allocation_class_definition_types_result_exactly() {
     let mut alloc_op = op_args_out(crate::OpKind::ObjectNewBound, &["cls"], "p");
     alloc_op.class_definition = Some("class:m:Point".to_string());
+    alloc_op.stable_instance_class = true;
+    let mut unstable = alloc_op.clone();
+    unstable.stable_instance_class = false;
+    unstable.out = Some("mutable".into());
     // Carry the size attr so the op is well-formed for the
     // Phase 5 step 3 lowering (24 bytes = 2 ints + __dict__
     // slot).  Not strictly required for the type-refine test
@@ -2668,10 +2672,19 @@ fn allocation_class_definition_types_result_exactly() {
     let ops = vec![
         op_val_out(crate::OpKind::Const, 0, "cls"),
         alloc_op,
+        unstable,
         op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
+    let mutable_result = output.blocks[0]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::ObjectNewBound)
+        .nth(1)
+        .unwrap()
+        .results[0];
+    assert_eq!(output.types[&mutable_result], TirType::DynBox);
 
     // Find the ObjectNewBound op's result and verify its type.
     let entry = &output.blocks[0];

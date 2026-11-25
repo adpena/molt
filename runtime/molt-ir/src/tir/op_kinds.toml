@@ -1981,11 +1981,12 @@ classifier_binding_view = [
     "frame_home_private_cell",
     "frame_home_store",
 ]
-# A successful unary binding publication or owned alias returns operand 0's
-# mathematical scalar value. This transfers only already-proven scalar facts, not heap
-# identity, ownership, purity or the current contents of a reentrantly written
-# home. In particular, frame_home_load has no such operand/value relationship.
-classifier_scalar_value_forward = ["frame_home_store", "binding_alias"]
+# Each successful result represents the input Python value with its exact type.
+# An int may change carrier. An instance retains its object. This declares
+# neither ownership nor purity: publishing can release a previous owner, and
+# a later home read can observe a different value. An operation that only
+# preserves a numeric value (e.g. int(True)) does not satisfy this contract.
+classifier_python_value_forward = ["frame_home_store", "binding_alias"]
 # copy_kind_is_explicit_no_heap_move: provable no-incref pure move of operand 0
 # (bare copy, the named SSA/var moves, the validate-and-pass-through guards).
 classifier_no_heap_move = [

@@ -131,7 +131,11 @@ fn parse_return_type_str_uses_centralized_helper() {
 fn object_new_bound_class_statement_is_its_exact_result_type() {
     let result = ValueId(0);
     let mut attrs = AttrDict::default();
-    // A spelled hint is inert; the class statement types the result (D6).
+    attrs.insert(
+        molt_ir::class_identity::STABLE_INSTANCE_CLASS_ATTR.into(),
+        AttrValue::Bool(true),
+    );
+    // A spelled hint is inert; the stable class statement types the result.
     attrs.insert("_type_hint".into(), AttrValue::Str("Other".into()));
     attrs.insert(
         "class_definition".into(),
@@ -145,8 +149,22 @@ fn object_new_bound_class_statement_is_its_exact_result_type() {
         values: vec![result],
     };
 
+    let mut mutable = func.clone();
+    mutable.blocks.get_mut(&BlockId(0)).unwrap().ops[0]
+        .attrs
+        .remove(molt_ir::class_identity::STABLE_INSTANCE_CLASS_ATTR);
+    refine_types(&mut mutable);
+    assert!(!matches!(
+        extract_type_map(&mutable).get(&result),
+        Some(TirType::Class(_))
+    ));
     refine_types(&mut func);
     let type_map = extract_type_map(&func);
+    assert!(
+        crate::tir::lower_to_simple::lower_to_simple_ir(&func)
+            .iter()
+            .any(|op| op.stable_instance_class)
+    );
 
     assert_eq!(
         type_map.get(&result),

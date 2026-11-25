@@ -297,7 +297,7 @@ fn constrain_boxed_binding_observations(
 ) {
     use crate::tir::passes::alias_analysis::build_alias_union_find;
     use crate::tir::passes::ownership_lattice_min::binding_view_roots;
-    use crate::tir::passes::value_identity::scalar_value_source;
+    use crate::tir::passes::value_identity::forwarded_python_value_source;
 
     // Most functions have no full-width binding publication. They need no
     // alias/CFG allocation or additional closure.
@@ -418,7 +418,7 @@ fn constrain_boxed_binding_observations(
                 // One scalar-forwarding operand, or all numeric operands,
                 // determine the emitted result carrier. Other producers keep
                 // their independent representation proof.
-                let source = scalar_value_source(op);
+                let source = forwarded_python_value_source(op);
                 let inputs = if let Some(source) = source.as_ref() {
                     std::slice::from_ref(source)
                 } else if use_plan.raw_result_depends_on_operands {
@@ -1268,7 +1268,8 @@ fn propagate_raw_i64_identity_values_with_phi_support(
             // it never changes ownership, erases effects or refines from a tag.
             // Opaque Copy operators (arithmetic, conversions, constructors)
             // fail closed rather than borrowing their operand's representation.
-            if let Some(source) = crate::tir::passes::value_identity::scalar_value_source(op)
+            if let Some(source) =
+                crate::tir::passes::value_identity::forwarded_python_value_source(op)
                 && let Some(&result) = op.results.first()
             {
                 copy_source.insert(result, source);

@@ -708,6 +708,10 @@ pub struct OpIR {
     /// trusts the statement's field offsets. The program's code-slot bindings
     /// resolve it to the slot whose identity the class carries.
     pub class_definition: Option<String>,
+    /// The closed program has no writer of an instance's `__class__`. Only
+    /// such an allocation can supply a class type valid throughout SSA life.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub stable_instance_class: bool,
     /// On a `class_set_definition`: the attributes an instance of exactly
     /// this class reads and writes at fixed field offsets, as `(name,
     /// offset)` pairs, when no code can change the class's layout (the
@@ -885,6 +889,7 @@ impl OpIR {
             builtin_name: Default::default(),
             runtime_symbol: Default::default(),
             class_definition: Default::default(),
+            stable_instance_class: false,
             exact_field_slots: Default::default(),
             runtime_requirement_bits: Default::default(),
             passes_execution_context: Default::default(),
@@ -2403,6 +2408,7 @@ mod json_parse_tests {
             runtime_symbol: Some("molt_len".to_string()),
             class_definition: Some("class:module:Owner".to_string()),
             exact_field_slots: None,
+            stable_instance_class: false,
             runtime_requirement_bits: 3,
             passes_execution_context: true,
             proven_target: true,

@@ -49,6 +49,7 @@ pub enum OpShapeViolation {
     ClassDefinitionSymbol,
     ForbiddenClassDefinition,
     ForbiddenExactFieldSlots,
+    ForbiddenStableInstanceClass,
     UnboundClassDefinition,
     MissingResult,
     ForbiddenResult(String),
@@ -117,6 +118,9 @@ impl std::fmt::Display for OpShapeDiagnostic {
                     f,
                     "forbids `class_definition`; this operation names no class statement"
                 )
+            }
+            OpShapeViolation::ForbiddenStableInstanceClass => {
+                write!(f, "only object_new_bound carries a stable instance class")
             }
             OpShapeViolation::ForbiddenExactFieldSlots => {
                 write!(
@@ -316,6 +320,13 @@ fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     validate_program_slot_symbol(op.kind, op.s_value.as_deref())?;
     validate_class_definition_symbol(op.kind, op.class_definition.as_deref())?;
     validate_exact_field_slots(op.kind, op.exact_field_slots.as_deref())?;
+    if op.stable_instance_class && op.kind != crate::OpKind::ObjectNewBound {
+        return Err(OpShapeDiagnostic {
+            family: "class_layout",
+            kind: op.kind.to_string(),
+            violation: OpShapeViolation::ForbiddenStableInstanceClass,
+        });
+    }
     if op.kind == crate::OpKind::ModuleSlot
         && op
             .out

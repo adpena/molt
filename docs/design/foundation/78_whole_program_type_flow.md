@@ -768,13 +768,24 @@ of `heap_canonical_cache` and 28% of `weakref_native`. Object lifecycle (referen
 instance allocation, allocator page work) takes 50% of `struct` and up to 79% of
 `builtin_locals_slice`; by-name attribute access 15% of `heap_canonical_cache`.
 
-**Exact classes in TIR.** The exact solver now carries `Class(id)` from allocations, and the
+**Exact classes in TIR.** An allocation's `class_definition` identifies its class statement.
+`stable_instance_class` records that the closed program has no `__class__` writer. SSA lift
+and the exact solver require both facts to type the allocation for its full lifetime. A wire
+record without the stability proof keeps the class identity for allocation and layout guards.
+The exact solver carries `Class(id)` from stable allocations, and the
 type flow clones a function for an exact-class parameter (`ArgKind::Class`). A probe whose
 `driver` calls `norm2(Point(i, i + 1))` gets the clone `norm2__tf_c…`, but the clone compiles
 to the same 1,119 instructions: the frontend lowered `point.x` on an unannotated parameter as
 a by-name read (`get_attr_generic_obj`), because class layouts (field name to offset) exist only
 in the frontend (call_anatomy 4.10, `FieldSlot(ClassId, j)` missing at compile time). A fact
 proven in TIR cannot reach an attribute access the frontend has already lowered by name.
+
+For a resolved call to a body shared by all argument types, a demanded result can still
+inherit a supplied argument's exact type. The body must be available in this document,
+and every successful return must forward the same parameter. The existing call-site
+binding maps that parameter to its argument, including the hidden closure offset. The
+caller keeps the original call and exception path. This projection creates no context
+or code clone, and a runtime type check alone supplies no exact class.
 
 **Order.** Facts first: class layouts as a typed TIR table (one authority, from the frontend's
 class model), so any attribute access on a receiver TIR proves exact becomes a field load or

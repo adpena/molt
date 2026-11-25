@@ -133,16 +133,13 @@ pub(crate) fn fold_forwarded_identity(func: &mut TirFunction) -> bool {
     changed
 }
 
-/// The operand supplying a result's mathematical scalar value, provided that
-/// operand already has a scalar proof. An owned alias retains its independent
-/// ownership root. A home publication returns its saved
-/// operand view even if releasing the displaced owner reentrantly writes the
-/// home. It does not prove the home's later contents or a subsequent load.
-///
-/// This is NOT heap identity, ownership, purity, callback freedom or permission
-/// to erase/move the operation. In particular a home store still consumes its
-/// operand, publishes the binding and releases its displaced owner.
-pub fn scalar_value_source(op: &TirOp) -> Option<ValueId> {
+/// The operand whose Python value and exact type a result preserves. A
+/// Python integer can change machine representation. An instance is the
+/// supplied object; its lifetime-stable class proof crosses the forwarding.
+/// An owned alias has independent custody. A home store can release a
+/// displaced owner and run callbacks: the result represents the supplied
+/// value even when a later home read observes a reentrant write.
+pub fn forwarded_python_value_source(op: &TirOp) -> Option<ValueId> {
     if let Some(source) = no_heap_alias_source(op) {
         return Some(source);
     }
@@ -150,7 +147,7 @@ pub fn scalar_value_source(op: &TirOp) -> Option<ValueId> {
         return None;
     }
     let kind = op.origin?;
-    crate::tir::op_kinds_generated::copy_kind_forwards_scalar_value_table(kind)
+    crate::tir::op_kinds_generated::copy_kind_forwards_python_value_table(kind)
         .then_some(op.operands[0])
 }
 
@@ -216,12 +213,13 @@ fn build_scalar_value_map(
     // Range clients also track mutable container lengths. Only a proven
     // immutable scalar may cross an effectful publication: its displaced
     // owner's finalizer could mutate a forwarded container. The exact solver
-    // calls scalar_value_source, not this map, so this query is non-recursive.
+    // calls forwarded_python_value_source, not this map, so this query is non-recursive.
     let mut scalar_of = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
-            let source = copy_value_source(op)
-                .or_else(|| scalar_value_source(op).filter(|source| exact.contains_key(source)));
+            let source = copy_value_source(op).or_else(|| {
+                forwarded_python_value_source(op).filter(|source| exact.contains_key(source))
+            });
             if let Some(source) = source {
                 scalar_of.insert(op.results[0], source);
             }

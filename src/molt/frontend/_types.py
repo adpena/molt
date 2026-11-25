@@ -77,6 +77,7 @@ class SimpleIROp(TypedDict):
     builtin_name: NotRequired[Any]
     bytes: NotRequired[Any]
     class_definition: NotRequired[Any]
+    stable_instance_class: NotRequired[bool]
     exact_field_slots: NotRequired[list[list[object]]]
     col_offset: NotRequired[Any]
     container_type: NotRequired[Any]

@@ -95,7 +95,7 @@ pub fn run(
     let mut outcome = TypeFlowOutcome::default();
     let base_rows = module.table.len();
     let body_index = module.body_index();
-    let sites: Vec<Vec<Site>> = module
+    let mut sites: Vec<Vec<Site>> = module
         .functions
         .iter()
         .map(|func| sites::sites_of(func, &body_index, module))
@@ -120,7 +120,7 @@ pub fn run(
             participates[callee] = true;
         }
     }
-    let relevant = relevance::solve(module, &sites, &body_index, &participates);
+    let relevant = relevance::solve(module, &mut sites, &body_index, &participates);
     let inputs = Inputs {
         module,
         body_index: &body_index,
@@ -260,9 +260,16 @@ fn decide(
         .map(|(position, site)| {
             let target = caller.targets[position];
             let retarget = target.and_then(|target| clone_of_context[target.0]);
-            // The site enters exactly its target: that context's return
-            // type is its result's.
-            let result = target.map(|target| analysis.context(target).ret.clone());
+            // A non-clonable body can forward its actual argument even when
+            // the generic context cannot type its own formal parameter.
+            let result = target.map(|target| {
+                let callee = analysis.context(target);
+                if inputs.specializable[callee.body] {
+                    callee.ret.clone()
+                } else {
+                    caller.results[position].clone()
+                }
+            });
             SiteDecision {
                 position: site.position(),
                 retarget,
