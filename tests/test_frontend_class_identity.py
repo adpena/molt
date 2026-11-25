@@ -217,7 +217,8 @@ def test_exposure_keeps_guarded_layout_and_declines_each_unguarded_fact(
     construct = _function_kinds(generator, "py.mod.construct")
     assert ("OBJECT_NEW_BOUND" in construct) is not exposed
     assert ("SETATTR" in construct) is not exposed
-    assert ("CALL_BIND" in construct) is exposed
+    assert ("CALL_FUNC" in construct) is exposed
+    assert "CALL_BIND" not in construct
     read = _function_kinds(generator, "py.mod.read_exact")
     assert ("GETATTR" in read) is not exposed
     assert ("GETATTR_GENERIC_OBJ" in read) is exposed
@@ -766,7 +767,8 @@ def test_proven_class_call_enters_init_directly_and_guards_later_stores(
     else:
         assert "GUARDED_SETATTR" in kinds and "SETATTR" not in kinds
     assert kinds.count("OBJECT_NEW_BOUND") == 1
-    assert kinds.count("CALL_BIND") == 3
+    assert kinds.count("CALL_BIND") == 1
+    assert kinds.count("CALL_FUNC") == 2
     declared = (
         []
         if writer is None

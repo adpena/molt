@@ -619,6 +619,8 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             if custody is not None:
                 entry["argument_custody"] = custody
             if op.metadata is not None:
+                if op.metadata.get("defines_del") is True:
+                    entry["defines_del"] = True
                 candidate = op.metadata.get("initializer_candidate")
                 if isinstance(candidate, GuardedInitializerCandidate):
                     # Operand zero stays the captured class. The function table

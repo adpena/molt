@@ -875,43 +875,34 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         return constructed
                     refusal = constructed
                 self._record_constructor_fallback(node, class_id, refusal)
-                if class_info.dataclass is not None:
-                    # Allocation and the generated method use the ordinary class
-                    # protocol. A positional call passes its operands directly,
-                    # as the unresolved-callee path does: binding an argument
-                    # builder cost one allocation and a bind-cache miss per call.
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    if not node.keywords and not any(
-                        isinstance(argument, ast.Starred) for argument in node.args
-                    ):
-                        args = self._emit_call_args(node.args)
-                        self._emit_positional_call(node, class_ref, args, res)
-                        return res
-                    callargs = self._emit_call_args_builder(node)
-                    self.emit(
-                        MoltOp(kind="CALL_BIND", args=[class_ref, callargs], result=res)
-                    )
-                    return res
-                _, new_returns_any = self._class_new_policy(class_id, class_info)
-                callargs = self._emit_call_args_builder(node)
+                # Positional construction uses the ordinary CALL custody.
+                # The captured callable and its live initializer still go
+                # through the runtime class protocol.
+                new_returns_any = class_info.dataclass is not None
+                if not new_returns_any:
+                    _, new_returns_any = self._class_new_policy(class_id, class_info)
                 res_hint: TypeHint = (
                     "Any" if new_returns_any else DeclaredClass(class_id)
                 )
                 res = MoltValue(self.next_var(), type_hint=res_hint)
-                metadata = (
-                    {"defines_del": True}
-                    if not new_returns_any and self._class_defines_finalizer(class_id)
-                    else None
+                defines_del = not new_returns_any and self._class_defines_finalizer(
+                    class_id
                 )
-                # Route user class construction through the class object so __new__,
-                # metaclass __call__, and runtime constructor policy stay coherent.
-                #
+                if not node.keywords and not any(
+                    isinstance(argument, ast.Starred) for argument in node.args
+                ):
+                    args = self._emit_call_args(node.args)
+                    self._emit_positional_call(
+                        node, class_ref, args, res, defines_del=defines_del
+                    )
+                    return res
+                callargs = self._emit_call_args_builder(node)
                 self.emit(
                     MoltOp(
                         kind="CALL_BIND",
                         args=[class_ref, callargs],
                         result=res,
-                        metadata=metadata,
+                        metadata={"defines_del": True} if defines_del else None,
                     )
                 )
                 return res

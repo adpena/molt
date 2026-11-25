@@ -1063,7 +1063,8 @@ def _positional_call(
     (call,) = (
         op
         for op in ops
-        if op.get("kind") in {"call_func", "call_guarded"} and op["args"][0] in targets
+        if op.get("kind") in {"call_func", "call_guarded", "call_class_candidate"}
+        and op["args"][0] in targets
     )
     assert len(call["args"]) == arity + 1
     if call["args"][0] in parameters:

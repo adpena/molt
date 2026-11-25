@@ -598,6 +598,10 @@ def guarded_initializer_candidate(
     view: ClassView,
 ) -> GuardedInitializerCandidate | None:
     code = view.initializer_code_candidate
+    if code is None:
+        member = view.member("__init__")
+        if member is not None and member.kind is MemberKind.FUNCTION:
+            code = member.symbol
     definition = layout_definition_symbol(view.class_id, view)
     if code is None or definition is None:
         return None

@@ -9,6 +9,7 @@ import pytest
 
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend.class_model import GuardedInitializerCandidate
 
 
 # The module is the whole closed program, so no code holds a PEP 667
@@ -59,6 +60,28 @@ def test_call_bind_lowers_finalizer_fact() -> None:
         "out": "out",
         "type_hint": "FinalizerClass",
         "defines_del": True,
+    }
+
+
+def test_guarded_class_call_lowers_finalizer_fact() -> None:
+    op = MoltOp(
+        kind="CALL_FUNC",
+        args=[MoltValue("callee"), MoltValue("arg")],
+        result=MoltValue("out"),
+        metadata={
+            "argument_custody": ["transferred", "transferred"],
+            "defines_del": True,
+            "initializer_candidate": GuardedInitializerCandidate("class_def", "init"),
+        },
+    )
+    assert _map_single(op) == {
+        "kind": "call_class_candidate",
+        "args": ["callee", "arg"],
+        "out": "out",
+        "argument_custody": ["transferred", "transferred"],
+        "defines_del": True,
+        "s_value": "init",
+        "class_definition": "class_def",
     }
 
 

@@ -1604,6 +1604,13 @@ may assign `__class__`: field stores on it take the guarded form. Every class ca
 runtime protocol records the failed fact in the build diagnostics, beside the closed-world binding
 fallbacks (`closed_world_binding_fallbacks`; lines `module:line C(): runtime class call: reason`).
 
+A class call with only positional arguments passes its operands directly even when it needs
+the runtime class protocol. A statically identified class definition can nominate its ordinary
+or generated initializer's code in `call_class_candidate`. The runtime checks the captured
+class, runs `__new__`, then selects the initializer from the actual result type. It can use the
+compiled entry if it matches that live callable. This edge carries the source call's argument
+custody and the result's finalizer fact. Keyword and unpacked calls retain the argument builder.
+
 The proof had not fired in real builds. The HF-226 source-demand analysis turned a store or load on
 an instance (`p.x = i` in `main`) into a `protocol` demand on the constructor's result, which
 escaped the class namespace and marked the class statement opaque, so `bench_struct`'s `Point`

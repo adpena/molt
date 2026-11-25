@@ -1502,9 +1502,10 @@ def make():
     assert not any(op.get("kind") == "object_new_bound" for op in ops)
     (callee,) = _module_global_reads_named(ops, "Point")
     assert any(
-        op["kind"] == "call_func"
+        op["kind"] == "call_class_candidate"
         and op.get("args")
         and op["args"][0] == callee["out"]
+        and op["s_value"] == "py.__main__.Point___init__"
         and op.get("type_hint") != "Point"
         for op in ops
     )
@@ -2073,7 +2074,10 @@ def main():
         elif op in callees:
             assert loop_exits and loop_exits[-1]
             checked_callees.add(op["out"])
-        elif kind == "call_func" and op.get("args", [None])[0] in checked_callees:
+        elif (
+            kind == "call_class_candidate"
+            and op.get("args", [None])[0] in checked_callees
+        ):
             assert loop_exits and loop_exits[-1]
             called_callees.add(op["args"][0])
     assert called_callees == {op["out"] for op in callees}

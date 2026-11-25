@@ -353,6 +353,8 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         callee: MoltValue,
         args: list[MoltValue],
         result: MoltValue,
+        *,
+        defines_del: bool = False,
     ) -> None:
         candidate = None
         if (
@@ -370,14 +372,19 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
             owner = self._class_index.definitions.get(origin)
             if owner is not None and (view := self.classes.get(owner)) is not None:
                 candidate = guarded_initializer_candidate(view)
+        metadata: dict[str, object] | None = (
+            {"initializer_candidate": candidate} if candidate is not None else None
+        )
+        if defines_del:
+            if metadata is None:
+                metadata = {}
+            metadata["defines_del"] = True
         self.emit(
             MoltOp(
                 kind="CALL_FUNC",
                 args=[callee, *args],
                 result=result,
-                metadata={"initializer_candidate": candidate}
-                if candidate is not None
-                else None,
+                metadata=metadata,
             )
         )
 
