@@ -346,7 +346,7 @@ def test_fragmented_index_skips_proven_absences_and_seeks_prefix_collisions(
     calls = 0
     seek = records._seek_index
 
-    def counted(path: Path, prefix: bytes):
+    def counted(path: Path, prefix: bytes) -> records._RecordLocation | None:
         nonlocal calls
         calls += 1
         return seek(path, prefix)
