@@ -1601,10 +1601,18 @@ def _after_landing(
     Publish terminal success only after the managed lane retirement finishes.
     """
     drv = _driver()
+    try:
+        launch_directory = Path.cwd()
+    except FileNotFoundError:
+        # Retention can remove an earlier batch's launch checkout while this
+        # runner is publishing. The verified sandbox is still owned by the
+        # queue and can carry terminal bookkeeping and the controller repin.
+        os.chdir(sandbox)
+        launch_directory = sandbox
     # A candidate facade from an older launcher may still execute in a lane
     # this batch just published. Leave the exact enrolled requests pending;
     # published main can finish retirement after the runner lock is released.
-    source_paths = [_COMMANDS.repo_root.resolve(), Path.cwd().resolve()]
+    source_paths = [_COMMANDS.repo_root.resolve(), launch_directory.resolve()]
     if drv.__file__ is not None:
         source_paths.append(Path(drv.__file__).resolve())
     if any(
