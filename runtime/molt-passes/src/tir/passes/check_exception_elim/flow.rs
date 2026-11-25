@@ -3,34 +3,28 @@ use molt_ir::deterministic_hash::{HashMap, HashSet};
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::AttrValue;
 
-use super::classify::{RaiseFacts, op_clears_pending_exception, pending_after_check};
+use super::classify::{
+    RaiseFacts, check_has_exception_edge, op_clears_pending_exception, pending_after_check,
+};
 
-fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
-    let label_to_block: HashMap<i64, BlockId> = func
-        .label_id_map
-        .iter()
-        .map(|(&bid, &label)| (label, BlockId(bid)))
-        .collect();
-    let mut targets = HashSet::default();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if dominators::is_exception_transfer_edge(op.opcode)
-                && let Some(AttrValue::Int(label)) = op.attrs.get("value")
-                && let Some(&target) = label_to_block.get(label)
-            {
-                targets.insert(target);
-            }
-        }
-    }
-    targets
+fn exception_target_blocks(func: &TirFunction, labels: &HashMap<i64, BlockId>) -> HashSet<BlockId> {
+    func.blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter_map(|op| dominators::exception_transfer_target(op, labels))
+        .collect()
 }
 
-fn transfer_block_pending(raise: &RaiseFacts, block: &TirBlock, mut pending: bool) -> bool {
+fn transfer_block_pending(
+    raise: &RaiseFacts,
+    block: &TirBlock,
+    labels: &HashMap<i64, BlockId>,
+    mut pending: bool,
+) -> bool {
     for op in &block.ops {
         if op.opcode == crate::tir::ops::OpCode::CheckException {
-            pending = pending_after_check(op, pending);
+            pending = pending_after_check(check_has_exception_edge(op, labels), op, pending);
             continue;
         }
         if op_clears_pending_exception(op) {
@@ -45,8 +39,9 @@ fn transfer_block_pending(raise: &RaiseFacts, block: &TirBlock, mut pending: boo
 pub(super) fn compute_block_entry_pending(
     func: &TirFunction,
     raise: &RaiseFacts,
+    labels: &HashMap<i64, BlockId>,
 ) -> HashMap<BlockId, bool> {
-    let exception_targets = exception_target_blocks(func);
+    let exception_targets = exception_target_blocks(func, labels);
     let mut entry_pending: HashMap<BlockId, bool> = func
         .blocks
         .keys()
@@ -72,7 +67,7 @@ pub(super) fn compute_block_entry_pending(
 
         for (bid, block) in &func.blocks {
             let starts_pending = entry_pending.get(bid).copied().unwrap_or(false);
-            let exits_pending = transfer_block_pending(raise, block, starts_pending);
+            let exits_pending = transfer_block_pending(raise, block, labels, starts_pending);
             if !exits_pending {
                 continue;
             }

@@ -100,6 +100,23 @@ fn make_original_kind(kind: molt_ir::OpKind) -> TirOp {
     }
 }
 
+fn with_check_handler(mut function: TirFunction) -> TirFunction {
+    let id = BlockId(function.next_block);
+    function.next_block += 1;
+    function.has_exception_handling = true;
+    function.label_id_map.insert(id.0, 100);
+    function.blocks.insert(
+        id,
+        TirBlock {
+            id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    function
+}
+
 fn make_func_with_block(ops: Vec<TirOp>) -> TirFunction {
     let entry_id = BlockId(0);
     let block = TirBlock {
@@ -110,7 +127,7 @@ fn make_func_with_block(ops: Vec<TirOp>) -> TirFunction {
     };
     let mut blocks = HashMap::default();
     blocks.insert(entry_id, block);
-    TirFunction {
+    with_check_handler(TirFunction {
         name: "test".into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -126,7 +143,7 @@ fn make_func_with_block(ops: Vec<TirOp>) -> TirFunction {
             TirType::None,
             molt_ir::FunctionReturnAbi::Void,
         )
-    }
+    })
 }
 
 #[test]
@@ -185,7 +202,7 @@ fn make_two_block_func(entry_ops: Vec<TirOp>, successor_ops: Vec<TirOp>) -> TirF
     let mut blocks = HashMap::default();
     blocks.insert(entry_id, entry);
     blocks.insert(successor_id, successor);
-    TirFunction {
+    with_check_handler(TirFunction {
         name: "two_block_test".into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -201,7 +218,7 @@ fn make_two_block_func(entry_ops: Vec<TirOp>, successor_ops: Vec<TirOp>) -> TirF
             TirType::None,
             molt_ir::FunctionReturnAbi::Void,
         )
-    }
+    })
 }
 
 #[test]
@@ -500,6 +517,7 @@ fn exception_target_entry_remains_conservative() {
         vec![make_check_exception()],
         vec![make_const_int(2, ValueId(1)), make_check_exception()],
     );
+    func.label_id_map.clear();
     func.label_id_map.insert(1, 100);
     let stats = run(&mut func);
     assert_eq!(stats.ops_removed, 0);
@@ -756,5 +774,114 @@ fn class_allocation_preserves_pending_exception_checks_across_blocks() {
         );
         assert_eq!(run(&mut across_blocks).ops_removed, 0);
         assert_eq!(across_blocks.blocks[&BlockId(1)].ops.len(), 1);
+    }
+}
+
+fn operator_index() -> TirOp {
+    let mut op = make_call("molt_operator_index", ValueId(1));
+    op.runtime = Some(molt_ir::runtime_fn_generated::RuntimeFn::OperatorIndex);
+    op.origin = Some(molt_ir::OpKind::Call);
+    op.operands = vec![ValueId(0)];
+    op.source_span = Some((3, 19));
+    op
+}
+
+#[test]
+fn operator_index_captures_an_exact_int_as_an_owned_alias_only_on_clean_entry() {
+    use molt_ir::OpKind;
+    for opcode in [OpCode::ConstInt, OpCode::ConstBigInt] {
+        let mut integer = make_const_int(7, ValueId(0));
+        integer.opcode = opcode;
+        if opcode == OpCode::ConstBigInt {
+            integer.attrs = AttrDict::from_iter([(
+                "s_value".into(),
+                AttrValue::Str("18446744073709551617".into()),
+            )]);
+        }
+        let mut func = make_two_block_func(
+            vec![integer, make_check_exception()],
+            vec![operator_index(), make_check_exception()],
+        );
+        let stats = run(&mut func);
+        assert_eq!(stats.values_changed, 1);
+        let ops = &func.blocks[&BlockId(1)].ops;
+        assert_eq!(ops.len(), 1);
+        let alias = &ops[0];
+        assert_eq!(
+            (alias.opcode, alias.origin),
+            (OpCode::Copy, Some(OpKind::BindingAlias))
+        );
+        assert!(alias.runtime.is_none() && alias.callee.is_none());
+        assert_eq!(alias.operands, [ValueId(0)]);
+        assert_eq!(alias.results, [ValueId(1)]);
+        assert_eq!(alias.source_span, Some((3, 19)));
+    }
+}
+
+#[test]
+fn operator_index_preserves_pending_errors_dynamic_dispatch_and_terminal_ownership() {
+    use molt_ir::OpKind;
+    for refusal in [
+        "entry",
+        "raising op",
+        "unresolved check",
+        "handler",
+        "bool",
+        "annotation",
+        "transferred argument",
+        "compiled callee",
+        "callable object",
+        "terminal",
+    ] {
+        let mut first = make_const_int(1, ValueId(0));
+        if refusal == "bool" {
+            first.opcode = OpCode::ConstBool;
+            first.attrs = AttrDict::from_iter([("value".into(), AttrValue::Bool(true))]);
+        }
+        let mut prefix = vec![first];
+        if refusal != "entry" {
+            prefix.push(make_check_exception());
+        }
+        if refusal == "raising op" {
+            prefix.push(make_call("unknown", ValueId(3)));
+        }
+        let mut call = operator_index();
+        match refusal {
+            "transferred argument" => {
+                call.set_argument_custody(&[molt_ir::ir::ParameterCustody::Transferred])
+            }
+            "compiled callee" => call.callee = Some(molt_ir::FunctionId(0)),
+            "callable object" => call.origin = Some(OpKind::BuiltinFunc),
+            _ => {}
+        }
+        let mut func = make_two_block_func(prefix, vec![call, make_check_exception()]);
+        match refusal {
+            "unresolved check" => func.label_id_map.clear(),
+            "handler" => {
+                func.label_id_map.clear();
+                func.label_id_map.insert(1, 100);
+            }
+            "annotation" => {
+                let entry = func.blocks.get_mut(&BlockId(0)).unwrap();
+                entry.ops.remove(0);
+                entry.args.push(crate::tir::values::TirValue {
+                    id: ValueId(0),
+                    ty: TirType::I64,
+                });
+                func.param_names.push("n".into());
+                func.param_types.push(TirType::I64);
+            }
+            _ => {}
+        }
+        if refusal == "terminal" {
+            super::run_post_drop(&mut func);
+        } else {
+            run(&mut func);
+        }
+        assert_eq!(
+            func.blocks[&BlockId(1)].ops[0].opcode,
+            OpCode::Call,
+            "{refusal}"
+        );
     }
 }
