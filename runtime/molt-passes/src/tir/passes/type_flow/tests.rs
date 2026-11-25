@@ -1234,3 +1234,187 @@ fn late_exact_method_reads_its_published_object_before_arguments() {
         }
     }
 }
+
+#[test]
+fn late_method_cell_is_allocated_only_by_the_matching_storage_owner_and_use() {
+    use molt_ir::ir::{ModuleRegistryIR, ModuleRegistryRowIR};
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    use molt_ir::{OpKind, ParameterCustody};
+    use serde_json::json;
+
+    #[derive(Debug, PartialEq)]
+    enum Case {
+        Demanded,
+        Generic,
+        SplitMaker,
+        SplitBind,
+        SplitCaller,
+        FrozenStorage,
+        WrongBase,
+        SharedPair,
+        RepeatedBind,
+        MissingCheck,
+        InterveningCall,
+        HandlerStamp,
+    }
+    use Case::*;
+    let class = "class:m:C";
+    for case in [
+        Demanded,
+        Generic,
+        SplitMaker,
+        SplitBind,
+        SplitCaller,
+        FrozenStorage,
+        WrongBase,
+        SharedPair,
+        RepeatedBind,
+        MissingCheck,
+        InterveningCall,
+        HandlerStamp,
+    ] {
+        let mut create =
+            vec![json!({"kind":"func_new","out":"fn","value":1,"exact_method":[class,"read","m"]})];
+        if case == InterveningCall {
+            create.push(json!({"kind":"call_indirect","args":["cls"],"out":"side"}));
+        }
+        if case != MissingCheck {
+            create.push(json!({"kind":"check_exception","value":9,"exception_edge":"origin"}));
+        }
+        let stamp = json!({"kind":"class_set_definition","args":["cls"],"class_definition":class});
+        if case != HandlerStamp {
+            create.push(stamp.clone());
+        }
+        create.extend([
+            json!({"kind":"ret","args":["fn"]}),
+            json!({"kind":"label","value":9}),
+        ]);
+        if case == HandlerStamp {
+            create.push(stamp);
+        }
+        create.push(json!({"kind":"ret","args":["cls"]}));
+        let mut factory = method_fixture_function("make", &["cls"], json!(create));
+        factory
+            .blocks
+            .values_mut()
+            .flat_map(|b| &mut b.ops)
+            .find(|op| op.origin == Some(OpKind::FuncNew))
+            .unwrap()
+            .callee = Some(FunctionId(1));
+        let mut target =
+            method_fixture_function("target", &["self"], json!([{"kind":"ret","args":["self"]}]));
+        target.set_parameter_custody(&[ParameterCustody::Transferred]);
+        let owner = if case == WrongBase { "other" } else { "m" };
+        let bind = json!({"kind":"call","s_value":"molt_static_cells_bind","args":["mod","base","length","length"],"out":"bound"});
+        let mut ops = vec![
+            json!({"kind":"static_cell_base","s_value":owner,"out":"base"}),
+            json!({"kind":"const","value":1,"out":"length"}),
+            bind.clone(),
+        ];
+        if case == RepeatedBind {
+            ops.push(bind);
+        }
+        ops.push(json!({"kind":"ret","args":["length"]}));
+        let initializer = method_fixture_function("init", &["mod"], json!(ops));
+        let mut operations = vec![
+            json!({"kind":"load_method","args":["obj"],"s_value":"read","var":"fn","out":"receiver"}),
+        ];
+        if case == SharedPair {
+            operations.push(json!({"kind":"call_indirect","args":["callback","fn"],"out":"extra"}));
+        }
+        operations.extend([json!({"kind":"call_loaded_method","args":["fn","receiver"],"out":"answer","argument_custody":["transferred","transferred"]}), json!({"kind":"ret","args":["answer"]})]);
+        let mut caller = method_fixture_function("caller", &["obj", "callback"], json!(operations));
+        if case != Generic {
+            caller.exact_param_types = vec![
+                TirType::Class(molt_ir::ClassId::of_definition(class)),
+                TirType::DynBox,
+            ];
+        }
+        let mut module = TirModule::with_own_table("m", vec![factory, target, initializer, caller]);
+        let mut registry = ModuleRegistryIR {
+            rows: vec![ModuleRegistryRowIR {
+                name: "m".into(),
+                init_symbol: Some("init".into()),
+                static_cells: Some(9),
+            }],
+            ..Default::default()
+        };
+        let external = match case {
+            SplitMaker => ["make"].as_slice(),
+            SplitBind => &["init"],
+            SplitCaller => &["caller"],
+            _ => &[],
+        };
+        let external = external.iter().map(|s| (*s).to_string()).collect();
+        let admitted = (case != FrozenStorage).then_some(&mut registry);
+        run_with_registry(&mut module, &llvm(), &external, false, admitted);
+        let demanded = case == Demanded;
+        assert_eq!(
+            registry.static_cells("m"),
+            Some(9 + u32::from(demanded)),
+            "{case:?}"
+        );
+        let cell_ops: Vec<_> = module
+            .functions
+            .iter()
+            .flat_map(|f| f.blocks.values())
+            .flat_map(|b| &b.ops)
+            .filter(|op| {
+                op.global_slot()
+                    .is_some_and(|s| s.index == 9 && s.cell && s.init_once)
+            })
+            .collect();
+        assert_eq!(
+            cell_ops
+                .iter()
+                .filter(|op| op.opcode == OpCode::StaticCellSet)
+                .count(),
+            usize::from(demanded),
+            "{case:?}"
+        );
+        assert_eq!(
+            cell_ops
+                .iter()
+                .filter(|op| op.opcode == OpCode::StaticCellLoad)
+                .count(),
+            usize::from(demanded),
+            "{case:?}"
+        );
+        if demanded {
+            let make = &module.functions[0];
+            let store_block = make
+                .blocks
+                .values()
+                .find(|b| b.ops.iter().any(|op| op.opcode == OpCode::StaticCellSet))
+                .unwrap();
+            let at = store_block
+                .ops
+                .iter()
+                .position(|op| op.opcode == OpCode::StaticCellSet)
+                .unwrap();
+            assert!(
+                store_block.ops[..at]
+                    .iter()
+                    .any(|op| op.opcode == OpCode::CheckException)
+            );
+            let ops: Vec<_> = module.functions[2]
+                .blocks
+                .values()
+                .flat_map(|b| &b.ops)
+                .collect();
+            let bind = ops
+                .iter()
+                .find(|op| op.runtime == Some(RuntimeFn::StaticCellsBind))
+                .unwrap();
+            let definition = |v: ValueId| {
+                ops.iter()
+                    .find(|op| op.results == [v])
+                    .unwrap()
+                    .attrs
+                    .get("value")
+            };
+            assert_eq!(definition(bind.operands[2]), Some(&AttrValue::Int(1)));
+            assert_eq!(definition(bind.operands[3]), Some(&AttrValue::Int(2)));
+        }
+    }
+}

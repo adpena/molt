@@ -1525,3 +1525,28 @@ def test_a_load_whose_callee_object_is_not_proven_keeps_load_method(
     assert reason in diagnostic
     apply_function_cells(funcs, cells)
     assert "load_method" in [op["kind"] for op in funcs[1]["ops"]]
+
+
+@pytest.mark.parametrize(
+    "makers,loop,eligible", [(1, False, True), (2, False, False), (1, True, False)]
+)
+def test_late_method_eligibility_annotates_only_the_one_run_once_maker(
+    makers: int, loop: bool, eligible: bool
+) -> None:
+    funcs = _method_program(makers=makers, maker_in_loop=loop)
+    for op in funcs[0]["ops"]:
+        if op.get("s_value") == "mod__C_m":
+            op["exact_method"] = ["class:mod:C", "m"]
+    for op in funcs[1]["ops"]:
+        op.pop("proven_target", None)
+    cells, _ = _function_cells(funcs)
+    assert not cells.counts()
+    apply_function_cells(funcs, cells)
+    for op in funcs[0]["ops"]:
+        if op.get("s_value") == "mod__C_m":
+            assert op["exact_method"] == [
+                "class:mod:C",
+                "m",
+                *(["mod"] if eligible else []),
+            ]
+    assert not any(op["kind"] == "static_cell_set" for f in funcs for op in f["ops"])

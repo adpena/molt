@@ -311,6 +311,7 @@ def plan_module_cells(
     cell_indices: dict[str, dict[str, int]] = {}
     cell_stores: dict[str, dict[str, tuple[str, str]]] = {}
     cell_reads: dict[str, dict[str, tuple[str, str]]] = {}
+    late_makers: dict[str, dict[str, str]] = {}
     method_diagnostics: list[str] = []
 
     @typed_cache(maxsize=None)
@@ -381,6 +382,15 @@ def plan_module_cells(
                     symbol,
                 )
             cell_reads.setdefault(name, {})[callable_var] = (module, symbol)
+        initializer = initializers[module]
+        for symbol, makers in initializer.callable_publications.items():
+            if len(makers) != 1 or symbol in cell_indices.get(module, {}):
+                continue
+            (maker,) = makers
+            owner = maker.point[0]
+            op = initializer.producers[(owner, maker.value)]
+            if maker.runs_once and op.get("exact_method"):
+                late_makers.setdefault(owner, {})[maker.value] = module
     return StaticCellPlan(
         frozenset(eligible),
         init_once,
@@ -389,7 +399,9 @@ def plan_module_cells(
         init_dominated,
         tuple(checked),
         tuple(escape_written),
-    ), FunctionCells(cell_indices, cell_stores, cell_reads, tuple(method_diagnostics))
+    ), FunctionCells(
+        cell_indices, cell_stores, cell_reads, tuple(method_diagnostics), late_makers
+    )
 
 
 def _written_guard_mask(
@@ -1172,6 +1184,9 @@ class FunctionCells:
     # Why each other proven method load keeps `load_method`.
     diagnostics: tuple[str, ...] = ()
 
+    # Eligible run-once makers. Only an actual exact TIR use requests storage.
+    late_makers: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+
     def counts(self) -> dict[str, int]:
         return {module: len(rows) for module, rows in self.cells.items()}
 
@@ -1255,13 +1270,14 @@ def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -
     """Store each planned callee's object into its cell after its
     ``func_new``, and read it at each planned site in place of its method
     load. A rewritten function is a copy-on-write replacement."""
-    if not plan.cells:
+    if not plan.cells and not plan.late_makers:
         return
     for position, func in enumerate(functions):
         name = func.get("name", "")
         stores = plan.stores.get(name, {})
         reads = plan.reads.get(name, {})
-        if not stores and not reads:
+        late_makers = plan.late_makers.get(name, {})
+        if not stores and not reads and not late_makers:
             continue
         ops: list[dict[str, Any]] = []
         for op in func.get("ops", ()):
@@ -1286,8 +1302,10 @@ def apply_function_cells(functions: list[dict[str, Any]], plan: FunctionCells) -
                     }
                 )
                 continue
-            ops.append(op)
             made = op.get("out")
+            if made in late_makers and op.get("kind") in FUNCTION_MAKERS:
+                op = {**op, "exact_method": [*op["exact_method"], late_makers[made]]}
+            ops.append(op)
             if op.get("kind") in FUNCTION_MAKERS and made in stores:
                 module, symbol = stores[made]
                 base = f"function_cells_base_{made}"

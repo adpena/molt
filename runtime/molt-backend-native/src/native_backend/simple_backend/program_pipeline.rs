@@ -24,11 +24,24 @@ impl SimpleBackend {
         }
     }
 
+    /// Only the compilation that emits the application's cell storage may grow it.
+    pub(super) fn mutable_cell_layout(
+        &mut self,
+        owns_cell_layout: bool,
+    ) -> Option<&mut ModuleRegistryIR> {
+        if owns_cell_layout && self.emit_app_callable_resolver && !self.external_program_storage {
+            self.module_registry.as_mut()
+        } else {
+            None
+        }
+    }
+
     /// Consume transported operations into the terminal TIR used by every code owner.
     pub(super) fn prepare_final_tir(
         &mut self,
         ir: &mut SimpleIR,
         backend: NativeCodegenBackend,
+        owns_cell_layout: bool,
         mark: &mut impl FnMut(&str, usize),
     ) -> (
         crate::tir::pipeline_cache::TirOwnedModule,
@@ -115,6 +128,7 @@ impl SimpleBackend {
                     TirOwnedModulePipelineMode::ModulePhase
                 },
                 linkage: Some(&signatures),
+                cell_registry: self.mutable_cell_layout(owns_cell_layout),
             },
         );
         mark("module pipeline", ir.functions.len());
@@ -125,6 +139,7 @@ impl SimpleBackend {
         &mut self,
         ir: &mut SimpleIR,
         use_llvm: bool,
+        owns_cell_layout: bool,
         timing: bool,
         compile_start: &std::time::Instant,
     ) -> NativeProgramPipeline {
@@ -190,7 +205,12 @@ impl SimpleBackend {
         let mut final_functions = if use_llvm {
             None
         } else {
-            let (typed, _) = self.prepare_final_tir(ir, NativeCodegenBackend::Cranelift, &mut mark);
+            let (typed, _) = self.prepare_final_tir(
+                ir,
+                NativeCodegenBackend::Cranelift,
+                owns_cell_layout,
+                &mut mark,
+            );
             // A specialized clone is another entry of its origin's row.
             typed.append_clone_rows(&mut ir.functions);
             let mut final_functions = NativeFinalFunctions::from_final_tir(

@@ -111,6 +111,7 @@ pub fn run_module_pipeline(
     tti: &TargetInfo,
     non_inlinable: &molt_ir::deterministic_hash::HashSet<String>,
     linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+    cell_registry: Option<&mut molt_ir::ModuleRegistryIR>,
     finalization_cache: Option<&mut super::drop_phase::FinalizationCache<'_>>,
 ) -> ModulePhaseOutcome {
     let audit_start = Instant::now();
@@ -120,7 +121,13 @@ pub fn run_module_pipeline(
     // call's callee per exact argument context before the call graph, so the
     // inliner and every later analysis see the clones as ordinary rows.
     let report_type_flow = backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1");
-    let flow = super::passes::type_flow::run(module, tti, non_inlinable, report_type_flow);
+    let flow = super::passes::type_flow::run_with_registry(
+        module,
+        tti,
+        non_inlinable,
+        report_type_flow,
+        cell_registry,
+    );
     emit_module_stage_audit(
         "after-type-flow",
         module,
@@ -574,6 +581,7 @@ mod tests {
             &molt_ir::deterministic_hash::HashSet::default(),
             None,
             None,
+            None,
         )
         .changed;
         // Inlining changes a; terminal ownership markers change both a and b.
@@ -672,7 +680,8 @@ mod tests {
     fn a_proven_call_inlines_its_frameless_clone() {
         let mut module = proven_add_module();
         let llvm = TargetInfo::from_llvm_feature_string("");
-        let outcome = run_module_pipeline(&mut module, &llvm, &Default::default(), None, None);
+        let outcome =
+            run_module_pipeline(&mut module, &llvm, &Default::default(), None, None, None);
         assert_eq!(outcome.clones.len(), 1, "add(int, int) gets one clone");
         let clone = &module.functions[outcome.clones[0].id.index()];
         assert_eq!(
@@ -714,7 +723,7 @@ mod tests {
         ] {
             let leaf = crate::tir::passes::frame_elision::tests::framed_add("leaf", true);
             let mut module = TirModule::with_own_table("m", vec![leaf]);
-            let _ = run_module_pipeline(&mut module, &tti, &Default::default(), None, None);
+            let _ = run_module_pipeline(&mut module, &tti, &Default::default(), None, None, None);
             assert_eq!(module.functions[0].execution_context, policy);
         }
     }

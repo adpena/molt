@@ -487,6 +487,20 @@ fn native_final_custody_requires_every_local_and_rejects_wrong_identity() {
 }
 
 #[test]
+fn native_preparation_only_resizes_its_own_cell_storage() {
+    let mut backend = SimpleBackend::new();
+    backend.module_registry = Some(Default::default());
+    backend.emit_app_callable_resolver = true;
+    assert!(backend.mutable_cell_layout(true).is_some());
+    backend.external_program_storage = true;
+    assert!(backend.mutable_cell_layout(true).is_none());
+    backend.external_program_storage = false;
+    assert!(backend.mutable_cell_layout(false).is_none());
+    backend.emit_app_callable_resolver = false;
+    assert!(backend.mutable_cell_layout(true).is_none());
+}
+
+#[test]
 fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
     let _guard = backend_env_lock()
         .lock()
@@ -511,6 +525,7 @@ fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
             backend.emit_app_callable_resolver = false;
             let prepared = backend.prepare_program_for_codegen(
                 &mut ir,
+                false,
                 false,
                 false,
                 &std::time::Instant::now(),
@@ -808,6 +823,7 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
                 &functions,
                 &mut run.cached_tir,
                 TirOwnedModulePipelineOptions {
+                    cell_registry: None,
                     target_info: &target,
                     module_name: "cached_final",
                     non_inlinable: &non_inlinable,

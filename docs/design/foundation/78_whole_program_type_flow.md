@@ -835,8 +835,16 @@ value is the exact method maker, the cell has a single store, and that store dom
 the class stamp, including exceptional paths. The receiver's exact class then witnesses
 that this generation's function has been published. For a complete positional call that
 alone consumes the pair, the original lookup becomes a cell read and owned aliases of
-the callable and receiver, captured before argument evaluation. Methods without a
-previously allocated function cell keep their lookup.
+the callable and receiver, captured before argument evaluation.
+
+For a method without a cell, the source planner can identify a single run-once maker
+in a cell-eligible module. This optional third member of `exact_method` names that module.
+Only a complete, single-use, late exact call requests storage. If the optimizing
+document owns the maker, initializer and emitted cell block, it appends one word per
+demanded maker, publishes on the successful continuation of the maker's exception
+check, and increments the initializer's function-cell count. Cranelift and LLVM (including Wasm) emit that
+finalized registry. Frozen layouts, separately linked owners and cloned initialization
+paths keep the existing lookup.
 
 **Measured** (2026-11-21, release, macOS arm64; instructions retired, slope of 1M and 2M
 iterations, best of 3; main fdfb075361 against the slice). A `method_call`-shaped probe (an exact

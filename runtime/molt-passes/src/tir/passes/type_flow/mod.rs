@@ -93,6 +93,16 @@ pub fn run(
     non_inlinable: &HashSet<String>,
     report_sites: bool,
 ) -> TypeFlowOutcome {
+    run_with_registry(module, tti, non_inlinable, report_sites, None)
+}
+
+pub(in crate::tir) fn run_with_registry(
+    module: &mut TirModule,
+    tti: &TargetInfo,
+    non_inlinable: &HashSet<String>,
+    report_sites: bool,
+    registry: Option<&mut molt_ir::ModuleRegistryIR>,
+) -> TypeFlowOutcome {
     let mut outcome = TypeFlowOutcome::default();
     let base_rows = module.table.len();
     let body_index = module.body_index();
@@ -102,8 +112,10 @@ pub fn run(
         .map(|func| sites::sites_of(func, &body_index, module))
         .collect();
     let members = exact_receiver_fields::exact_members(module, &body_index);
+    let mut cells =
+        exact_receiver_fields::CellRequests::new(module, registry, non_inlinable, &members);
     if sites.iter().all(Vec::is_empty) {
-        optimize_bodies(module, tti, &members, &mut outcome);
+        optimize_bodies(module, tti, &members, cells, non_inlinable, &mut outcome);
         return outcome;
     }
     let final_tir = tti.lowering.final_lowering == FinalLowering::FinalTir;
@@ -208,7 +220,8 @@ pub fn run(
         outcome.changed.insert(id);
     }
 
-    optimize_bodies(module, tti, &members, &mut outcome);
+    cells.exclude_cloned_owners(&clone_origin);
+    optimize_bodies(module, tti, &members, cells, non_inlinable, &mut outcome);
 
     merge_identical(
         module,
@@ -228,14 +241,23 @@ fn optimize_bodies(
     module: &mut TirModule,
     tti: &TargetInfo,
     members: &ExactMembers,
+    mut cells: exact_receiver_fields::CellRequests,
+    external: &HashSet<String>,
     outcome: &mut TypeFlowOutcome,
 ) {
     for (func, &id) in module.functions.iter_mut().zip(&module.ids) {
-        let members_changed = exact_receiver_fields::run(func, members);
+        let members_changed = if external.contains(&func.name) {
+            exact_receiver_fields::run(func, members)
+        } else {
+            exact_receiver_fields::run_with_cells(func, members, &mut cells)
+        };
         if class_tests::fold_exact_isinstance(func) || members_changed > 0 {
             outcome.changed.insert(id);
         }
-        if outcome.changed.contains(&id) {
+    }
+    cells.publish(module, &mut outcome.changed);
+    for (func, id) in module.functions.iter_mut().zip(&module.ids) {
+        if outcome.changed.contains(id) {
             let _ = super::reoptimize(func, tti);
         }
     }

@@ -15,7 +15,10 @@
 //! carries the typed callee. A matching method load/call pair keeps its two
 //! owned results and enters that callee directly.
 
+mod late_cells;
+use crate::tir::blocks::BlockId;
 use crate::tir::values::ValueId;
+pub(super) use late_cells::CellRequests;
 use molt_ir::class_identity::{EXACT_FIELD_SLOTS_ATTR, ExactMethod, decode_field_slots};
 use molt_ir::deterministic_hash::HashMap;
 use molt_ir::ir::GlobalSlotRef;
@@ -33,10 +36,28 @@ pub struct ExactMembers {
     methods: HashMap<ClassId, HashMap<String, Option<MethodEntry>>>,
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Maker {
+    module: String,
+    body: usize,
+    block: BlockId,
+    value: ValueId,
+}
+
+impl ExactMembers {
+    pub(super) fn late_modules(&self) -> impl Iterator<Item = &str> {
+        self.methods
+            .values()
+            .flat_map(|methods| methods.values().flatten())
+            .filter_map(|entry| entry.maker.as_ref().map(|maker| maker.module.as_str()))
+    }
+}
+
 struct MethodEntry {
     callee: FunctionId,
     arity: usize,
     cell: Option<GlobalSlotRef>,
+    maker: Option<Maker>,
 }
 
 fn declared_entry(op: &TirOp, module: &TirModule, bodies: &[Option<usize>]) -> Option<MethodEntry> {
@@ -61,6 +82,7 @@ fn declared_entry(op: &TirOp, module: &TirModule, bodies: &[Option<usize>]) -> O
         callee,
         arity,
         cell: None,
+        maker: None,
     })
 }
 
@@ -68,7 +90,7 @@ pub fn exact_members(module: &TirModule, bodies: &[Option<usize>]) -> ExactMembe
     let mut table = ExactMembers::default();
     let mut stamps = HashMap::default();
     let mut cell_stores = HashMap::default();
-    for function in &module.functions {
+    for (body_index, function) in module.functions.iter().enumerate() {
         let mut publications = HashMap::default();
         let mut class_points = HashMap::default();
         let mut methods = Vec::new();
@@ -102,13 +124,22 @@ pub fn exact_members(module: &TirModule, bodies: &[Option<usize>]) -> ExactMembe
                     {
                         publications.insert(value, (block, index, slot));
                     }
-                } else if let Ok(Some(ExactMethod(definition, name))) = ExactMethod::from_tir(op) {
-                    methods.push((op, ClassId::of_definition(&definition), name));
+                } else if let Ok(Some(ExactMethod(definition, name, owner))) =
+                    ExactMethod::from_tir(op)
+                {
+                    methods.push((
+                        op,
+                        ClassId::of_definition(&definition),
+                        name,
+                        owner,
+                        block,
+                        index,
+                    ));
                 }
             }
         }
         let mut dominance = None;
-        for (op, class, name) in methods {
+        for (op, class, name, owner, block, index) in methods {
             // The existing function cell holds this very creation's object.
             // Its publication must precede the class stamp on every path: a
             // receiver bearing that class then witnesses an initialized cell.
@@ -121,6 +152,26 @@ pub fn exact_members(module: &TirModule, bodies: &[Option<usize>]) -> ExactMembe
                     .definition_available(*store_block, Some(*store), stamp_block, stamp)
             {
                 entry.cell = Some(slot.clone());
+            }
+            if let Some(entry) = entry.as_mut()
+                && entry.cell.is_none()
+                && let Some(module) = owner
+                // The maker can fail. Only the continuation of its own
+                // exception check has an object to publish.
+                && let Some(check) = function.blocks[&block].ops.get(index + 1)
+                && super::exception_observation::check_label(check).is_some()
+                && !check.is_async_work_poll()
+                && let Some(&(stamp_block, stamp)) = class_points.get(&class)
+                && dominance
+                    .get_or_insert_with(|| ProgramPointDominance::compute(function))
+                    .definition_available(block, Some(index + 1), stamp_block, stamp)
+            {
+                entry.maker = Some(Maker {
+                    module,
+                    body: body_index,
+                    block,
+                    value: op.results[0],
+                });
             }
             table
                 .methods
@@ -159,6 +210,14 @@ fn field_rewrite(op: &TirOp) -> Option<(OpKind, bool)> {
 
 /// Rewrite field accesses and complete method load/call pairs on exact receivers.
 pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
+    run_with_cells(func, table, &mut CellRequests::default())
+}
+
+pub(super) fn run_with_cells(
+    func: &mut TirFunction,
+    table: &ExactMembers,
+    cells: &mut CellRequests,
+) -> usize {
     if !func.blocks.values().flat_map(|b| &b.ops).any(|op| {
         (!table.fields.is_empty() && field_rewrite(op).is_some())
             || (!table.methods.is_empty() && op.opcode == OpCode::LoadMethod)
@@ -201,8 +260,8 @@ pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
             {
                 // Keep the captured operands. The direct entry uses the live
                 // function object's globals and closure.
-                if let Some(slot) = &entry.cell {
-                    cell_reads.insert((*callable, *bound_self), slot);
+                if entry.cell.is_some() || entry.maker.is_some() {
+                    cell_reads.insert((*callable, *bound_self), *entry);
                 }
                 op.opcode = OpCode::Call;
                 op.origin = Some(OpKind::CallGuarded);
@@ -233,12 +292,13 @@ pub fn run(func: &mut TirFunction, table: &ExactMembers) -> usize {
             rewritten += 1;
         }
     }
-    rewritten + replace_cell_loads(func, &cell_reads)
+    rewritten + replace_cell_loads(func, &cell_reads, cells)
 }
 
 fn replace_cell_loads(
     func: &mut TirFunction,
-    reads: &HashMap<(ValueId, ValueId), &GlobalSlotRef>,
+    reads: &HashMap<(ValueId, ValueId), &MethodEntry>,
+    cells: &mut CellRequests,
 ) -> usize {
     if reads.is_empty() {
         return 0;
@@ -253,11 +313,12 @@ fn replace_cell_loads(
         for op in ops {
             if op.opcode == OpCode::LoadMethod
                 && let [callable, bound_self] = op.results[..]
-                && let Some(slot) = reads.get(&(callable, bound_self))
+                && let Some(entry) = reads.get(&(callable, bound_self))
                 // Retain the pair protocol for builders, phi edges, and
                 // any additional consumer which still needs the loaded pair.
                 && uses.get(&callable) == Some(&1)
                 && uses.get(&bound_self) == Some(&1)
+                && let Some(slot) = entry.cell.as_ref().or_else(|| cells.request(entry.maker.as_ref()?))
             {
                 let view = func.fresh_value();
                 func.value_types.insert(view, TirType::DynBox);

@@ -86,7 +86,14 @@ pub fn stable_allocation_class(attrs: &crate::tir::ops::AttrDict) -> Option<Clas
 /// function object. The operation's relocated callee and positional arity
 /// identify the entry; the class statement and attribute name identify lookup.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ExactMethod(pub String, pub String);
+pub struct ExactMethod(
+    pub String,
+    pub String,
+    /// The sole run-once maker in a cell-eligible module. A later proven
+    /// call can request a cell for this object from the owning document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub Option<String>,
+);
 
 impl ExactMethod {
     pub const ATTR: &'static str = "exact_method";
@@ -97,6 +104,7 @@ impl ExactMethod {
             Some(crate::OpKind::FuncNew | crate::OpKind::FuncNewClosure)
         ) || self.0.is_empty()
             || self.1.is_empty()
+            || self.2.as_deref().is_some_and(str::is_empty)
             || arity.is_none_or(|n| n < 1)
         {
             return Err("exact_method requires a class statement, member name and a function creation with positive positional arity".into());

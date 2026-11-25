@@ -228,7 +228,7 @@ impl SimpleBackend {
             .map_err(JitCompileError::Admission)?;
         let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
-        let program = self.prepare_native_codegen(&mut ir, false, timing, &compile_start);
+        let program = self.prepare_native_codegen(&mut ir, false, true, timing, &compile_start);
         self.stage_jit_program(program, timing, compile_start)
     }
 

@@ -138,6 +138,8 @@ pub enum TirOwnedModulePipelineMode {
 }
 
 pub struct TirOwnedModulePipelineOptions<'a> {
+    /// Present only when this job owns and can resize the emitted program storage.
+    pub cell_registry: Option<&'a mut molt_ir::ModuleRegistryIR>,
     pub target_info: &'a TargetInfo,
     pub module_name: &'a str,
     pub non_inlinable: &'a HashSet<String>,
@@ -902,6 +904,7 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
                 options.target_info,
                 options.non_inlinable,
                 options.linkage,
+                options.cell_registry,
                 finalization_cache.as_mut(),
             );
             // Specialized clones are rows after the source rows.
@@ -1127,6 +1130,7 @@ mod tests {
                     &source,
                     &mut run.cached_tir,
                     TirOwnedModulePipelineOptions {
+                        cell_registry: None,
                         target_info: &target,
                         module_name: "projection_fixture",
                         non_inlinable: &non_inlinable,
@@ -1285,6 +1289,7 @@ mod tests {
             TirOwnedModulePipelineMode::ModulePhase,
         ] {
             let options = || TirOwnedModulePipelineOptions {
+                cell_registry: None,
                 target_info: &target_info,
                 module_name: "owned_source",
                 non_inlinable: &non_inlinable,
@@ -1433,6 +1438,7 @@ mod tests {
                 ir.functions,
                 &mut cache,
                 TirOwnedModulePipelineOptions {
+                    cell_registry: None,
                     target_info: &target,
                     module_name: "split_test",
                     non_inlinable: &HashSet::default(),
@@ -2059,6 +2065,7 @@ mod tests {
             &functions,
             &mut run.cached_tir,
             TirOwnedModulePipelineOptions {
+                cell_registry: None,
                 target_info: &target_info,
                 module_name: "fact_graph_module",
                 non_inlinable: &non_inlinable,

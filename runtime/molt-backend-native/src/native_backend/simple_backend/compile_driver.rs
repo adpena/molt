@@ -264,7 +264,7 @@ impl SimpleBackend {
         let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
-        let program = self.prepare_native_codegen(&mut ir, use_llvm, timing, &compile_start);
+        let program = self.prepare_native_codegen(&mut ir, use_llvm, true, timing, &compile_start);
         //  LLVM backend dispatch
         // When MOLT_BACKEND=llvm and the llvm feature is compiled in, route
         // through the LLVM backend instead of Cranelift.  Each function is
@@ -302,7 +302,7 @@ impl SimpleBackend {
                 .map(|function| function.parameter_custody.clone())
                 .collect();
             let (owned, mut program_signatures) =
-                self.prepare_final_tir(&mut ir, backend, &mut |_, _| {});
+                self.prepare_final_tir(&mut ir, backend, true, &mut |_, _| {});
             // A specialized clone is another entry of its origin (design 78,
             // slice 3): the origin's signature and entry custody.
             for clone in &owned.clones {
@@ -514,7 +514,8 @@ impl SimpleBackend {
         self.skip_shared_stdlib_partition = true;
         self.admit_program(&ir).map_err(|error| error.to_string())?;
         let start = std::time::Instant::now();
-        let program = self.prepare_native_codegen(&mut ir, false, backend_timing_enabled(), &start);
+        let program =
+            self.prepare_native_codegen(&mut ir, false, false, backend_timing_enabled(), &start);
         let mut final_functions = program.final_functions.expect("prepared native bodies");
         final_functions.bind_shared_bodies(shared_stdlib);
         let registry = self
@@ -538,6 +539,7 @@ impl SimpleBackend {
         &mut self,
         ir: &mut SimpleIR,
         use_llvm: bool,
+        owns_cell_layout: bool,
         timing: bool,
         compile_start: &std::time::Instant,
     ) -> NativeCodegenProgram {
@@ -545,7 +547,8 @@ impl SimpleBackend {
         // rewrite their callers. The post-preparation validation below also
         // covers declarations created by shared-stdlib externalization.
         crate::ir::validate_extern_call_abis(ir).unwrap_or_else(|error| panic!("native {error}"));
-        let prepared = self.prepare_program_for_codegen(ir, use_llvm, timing, compile_start);
+        let prepared =
+            self.prepare_program_for_codegen(ir, use_llvm, owns_cell_layout, timing, compile_start);
         let emit_resolver_here = prepared.emit_resolver_here;
         assert!(
             (self.code_slots.is_none() && self.module_registry.is_none()) || emit_resolver_here,
