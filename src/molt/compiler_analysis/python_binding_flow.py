@@ -1258,7 +1258,6 @@ class _StatePool:
         def merge_chunks(
             chunks: tuple[_BindingChunk, ...],
             chunk_epochs: tuple[int, ...],
-            chunk_index: int,
         ) -> _BindingChunk:
             self.join_chunk_merges += 1
             first = chunks[0]
@@ -1270,8 +1269,10 @@ class _StatePool:
             if len(chunks) == 1 and chunk_epochs[0] == taint_epoch:
                 return chunks[0]
             candidate_mask = 0
+            dirty_mask = 0
             for chunk in chunks:
                 candidate_mask |= chunk.active_mask | chunk.clean_mask
+                dirty_mask |= chunk.active_mask & ~chunk.clean_mask
             if not candidate_mask:
                 return _EMPTY_BINDING_CHUNK
             # Copy a field only when its joined value differs from the first
@@ -1283,7 +1284,9 @@ class _StatePool:
             owner_tokens: list[int] | None = None
             clean_epochs: list[int] | None = None
             active_mask = 0
-            clean_mask = 0
+            # Outside the taint domain, absent slots are clean. A stored
+            # dirty binding in any predecessor is the only way to lose it.
+            clean_mask = candidate_mask & ~dirty_mask
             if len(chunks) == 2:
                 left, right = chunks
                 left_epoch, right_epoch = chunk_epochs
@@ -1316,7 +1319,6 @@ class _StatePool:
                         # is still interned: equal storage never erases path writes.
                         self.join_custody_identity_skips += 1
                         active_mask |= left.active_mask & slot_bit
-                        clean_mask |= left.clean_mask & slot_bit
                         continue
                     left_identity = (
                         left.identities[chunk_offset]
@@ -1356,21 +1358,7 @@ class _StatePool:
                         ),
                         telemetry=self,
                     )
-                    left_clean = self._slot_is_clean(
-                        present=bool(left_present & slot_bit),
-                        stored_clean=bool(left.clean_mask & slot_bit),
-                        in_taint_domain=False,
-                        state_epoch=left_epoch,
-                        clean_epoch=left.clean_epochs[chunk_offset],
-                    )
-                    right_clean = self._slot_is_clean(
-                        present=bool(right_present & slot_bit),
-                        stored_clean=bool(right.clean_mask & slot_bit),
-                        in_taint_domain=False,
-                        state_epoch=right_epoch,
-                        clean_epoch=right.clean_epochs[chunk_offset],
-                    )
-                    clean = left_clean and right_clean
+                    clean = bool(clean_mask & slot_bit)
                     inside_clean = (
                         clean
                         and self._slot_is_clean(
@@ -1423,8 +1411,6 @@ class _StatePool:
                         or not clean
                     ):
                         active_mask |= slot_bit
-                    if clean:
-                        clean_mask |= slot_bit
                 if not (active_mask or clean_mask):
                     return _EMPTY_BINDING_CHUNK
                 return self._make_chunk(
@@ -1450,8 +1436,8 @@ class _StatePool:
                 alternatives: list[
                     tuple[IdentityMask, PythonStaticValue, StaticExpressionResult]
                 ] = []
-                clean = True
-                inside_clean = True
+                clean = bool(clean_mask & slot_bit)
+                inside_clean = clean
                 owner_token: int | None = None
                 for chunk, parent_epoch in zip(chunks, chunk_epochs, strict=True):
                     present = bool((chunk.active_mask | chunk.clean_mask) & slot_bit)
@@ -1470,14 +1456,6 @@ class _StatePool:
                     alternatives.append(
                         (candidate_identity, candidate_static, candidate_result)
                     )
-                    parent_clean = self._slot_is_clean(
-                        present=present,
-                        stored_clean=bool(chunk.clean_mask & slot_bit),
-                        in_taint_domain=False,
-                        state_epoch=parent_epoch,
-                        clean_epoch=chunk.clean_epochs[chunk_offset],
-                    )
-                    clean = clean and parent_clean
                     inside_clean = inside_clean and self._slot_is_clean(
                         present=present,
                         stored_clean=bool(chunk.clean_mask & slot_bit),
@@ -1525,8 +1503,6 @@ class _StatePool:
                     or not clean
                 ):
                     active_mask |= slot_bit
-                if clean:
-                    clean_mask |= slot_bit
             if not (active_mask or clean_mask):
                 return _EMPTY_BINDING_CHUNK
             return self._make_chunk(
@@ -1544,7 +1520,6 @@ class _StatePool:
             nodes: tuple[_BindingBranch, ...],
             epochs: tuple[int, ...],
             level: int,
-            chunk_prefix: int,
         ) -> _BindingBranch:
             self.join_node_visits += 1
             submitted = len(nodes)
@@ -1568,22 +1543,20 @@ class _StatePool:
                     node.children[offset] if offset < len(node.children) else filler
                     for node in nodes
                 )
-                child_prefix = chunk_prefix | (offset << (level * _BINDING_TREE_SHIFT))
                 if level == 0:
                     child = merge_chunks(
-                        cast(tuple[_BindingChunk, ...], branch), epochs, child_prefix
+                        cast(tuple[_BindingChunk, ...], branch), epochs
                     )
                 else:
                     child = merge_nodes(
                         cast(tuple[_BindingBranch, ...], branch),
                         epochs,
                         level - 1,
-                        child_prefix,
                     )
                 children.append(child)
             return _binding_branch(tuple(children), level, first)
 
-        root = merge_nodes(tuple(roots), parent_epochs, depth - 1, 0)
+        root = merge_nodes(tuple(roots), parent_epochs, depth - 1)
         return _BindingEnvironment(root, depth)
 
     def intern(self, state: _BindingState) -> int:
