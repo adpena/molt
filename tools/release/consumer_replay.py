@@ -1843,7 +1843,7 @@ def validate_installed_compilation(
             or installed.launcher != candidate["launcher"]
             or installed.wasm_facts != candidate["wasm_facts"]
             or installed.runtime != candidate["runtime"]
-            or canonical_json_sha256(list(installed.files))
+            or installed.source_inventory_sha256()
             != candidate["native_build"]["source"]["files_sha256"]
         ):
             raise ValueError(

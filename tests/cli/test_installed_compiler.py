@@ -1553,20 +1553,28 @@ def test_installed_manifest_projection_never_shares_mutable_results(
     installation: Path,
 ) -> None:
     from molt.cli import cache_fingerprints
+    from molt.exact_json import canonical_json_sha256
 
     payload = json.loads((installation / distribution.MANIFEST_NAME).read_bytes())
     with cache_fingerprints._source_tree_fingerprint_transaction():
+        first = distribution.installed_compiler(installation)
+        assert first is not None
         for _ in range(3):
             compiler = distribution.installed_compiler(installation)
             assert compiler is not None
             assert compiler.record == payload["compiler"]
+            assert compiler.files is first.files
+            assert compiler.source_inventory_sha256() == canonical_json_sha256(
+                payload["files"]
+            )
             assert compiler.files[0] == payload["files"][0]
             assert compiler.runtime == payload["runtime"]
             assert (
                 compiler.stdlib_source_summaries == payload["stdlib_source_summaries"]
             )
             compiler.record["features"].append("caller-mutation")
-            compiler.files[0]["sha256"] = "0" * 64
+            with pytest.raises(TypeError):
+                compiler.files[0]["sha256"] = "0" * 64
             compiler.runtime["source"]["commit"] = "0" * 40
             compiler.stdlib_source_summaries["sha256"] = "0" * 64
 
@@ -1597,6 +1605,7 @@ def test_installed_manifest_projection_revalidates_changed_bytes(
         assert current is not None
         assert initial.source_sha == "a" * 40
         assert current.source_sha == "d" * 40
+        assert current.release_fingerprint() != initial.release_fingerprint()
         # A valid earlier projection cannot hide subsequent schema damage.
         damaged = changed.replace(
             distribution.MANIFEST_SCHEMA.encode(),

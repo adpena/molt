@@ -1194,7 +1194,7 @@ def verify(
         if compiler is None or compiler.source_sha != candidate["source_sha"]:
             raise ValueError("Bundle compiler source differs from candidate")
         if (
-            canonical_json_sha256(list(compiler.files))
+            compiler.source_inventory_sha256()
             != candidate["native_build"]["source"]["files_sha256"]
         ):
             raise ValueError(

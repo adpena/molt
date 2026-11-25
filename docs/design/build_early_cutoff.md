@@ -418,6 +418,14 @@ are products, but an explicitly consumed source inside their namespace still
 invalidates the build. `dx.backend_ir_lease_dir` is the single namespace used by
 the producer and projection; transport, scratch selection and cleanup are unchanged.
 
+The installed manifest operation shares source inventory rows containing only
+validated scalar data. The admitted raw manifest generation owns one canonical
+release fingerprint, with the existing JSON encoding at the identity boundary.
+Executable and runtime observations still validate live bytes or generation
+fences. Source-tree enumeration derives portable child names from the admitted
+directory prefix and compares closing directory generations. The lifetime is
+the compiler operation, as with [rustc's shared compilation data](https://rustc-dev-guide.rust-lang.org/memory.html).
+
 Installed stdlib summary admission binds the release manifest digest to one
 stable read. A compiler operation retains that same immutable archive for
 frontend consumers and refuses a different live file generation during the

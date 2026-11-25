@@ -139,18 +139,7 @@ def installed_compiler_admission(
         )
         if compiler is None:
             return None
-        release = canonical_json_sha256(
-            {
-                "schema": "molt.installed-compiler-identity.v1",
-                "source": compiler.source_sha,
-                "files": compiler.files,
-                "compiler": compiler.record,
-                "launcher": compiler.launcher,
-                "runtime": compiler.runtime,
-                "wasm_facts": compiler.wasm_facts,
-                "stdlib_source_summaries": compiler.stdlib_source_summaries,
-            }
-        )
+        release = compiler.release_fingerprint()
         # Source admission is reusable within the immutable operation. Executable
         # selection and bytes remain live, including an alias replaced mid-build.
         observed = _installed_executable_observation(
