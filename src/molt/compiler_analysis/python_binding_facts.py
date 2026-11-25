@@ -91,11 +91,13 @@ class PythonFunctionResult(NamedTuple):
     """Call completion and yielded values have distinct protocol consumers."""
 
     owner: PythonSourceKey
-    kind: FunctionKind
     returned: frozenset[PythonSourceKey]
     returned_exposed: frozenset[PythonSourceKey]
     yielded: frozenset[PythonSourceKey]
     yielded_exposed: frozenset[PythonSourceKey]
+    # Aligned with the declaration's positional arguments. A parameter whose
+    # value may be observed beyond its literal classes has a None entry.
+    literal_classes: tuple[frozenset[str] | None, ...] | None = None
 
 
 class PythonSourceCall(NamedTuple):
@@ -135,16 +137,15 @@ class PythonSourceClass(NamedTuple):
     plain_attributes: tuple[str, ...]
 
 
-class PythonSourceParameters(NamedTuple):
+class PythonSourceCallableDeclaration(NamedTuple):
+    """Callable shape available when its definition executes."""
+
     owner: PythonSourceKey
-    positional: tuple[PythonSourceKey, ...]
-    vararg: PythonSourceKey | None
-    keywords: tuple[tuple[str, PythonSourceKey], ...]
-    kwarg: PythonSourceKey | None
-    # Per positional parameter: the string literals that partition its
-    # activation arguments, or None when the body may observe more of the
-    # value (``python_parameter_classes``). Aligned with ``positional``.
-    literal_classes: tuple[frozenset[str] | None, ...]
+    kind: FunctionKind
+    positional: tuple[PythonSourceKey, ...] = ()
+    vararg: PythonSourceKey | None = None
+    keywords: tuple[tuple[str, PythonSourceKey], ...] = ()
+    kwarg: PythonSourceKey | None = None
 
 
 class PythonClassPreparation(StrEnum):
@@ -946,7 +947,7 @@ class PythonBindingFacts:
     source_native_initializers: tuple[PythonNativeInitializerSource, ...]
     source_classes: tuple[PythonSourceClass, ...]
     source_completions: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...]
-    source_parameters: tuple[PythonSourceParameters, ...]
+    source_callable_declarations: tuple[PythonSourceCallableDeclaration, ...]
     source_callables: tuple[tuple[PythonSourceKey, IdentityMask], ...]
     source_function_results: tuple[PythonFunctionResult, ...]
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
@@ -995,7 +996,7 @@ class PythonBindingFacts:
         source_completions: tuple[
             tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
         ] = (),
-        source_parameters: tuple[PythonSourceParameters, ...] = (),
+        source_callable_declarations: tuple[PythonSourceCallableDeclaration, ...] = (),
         source_function_results: tuple[PythonFunctionResult, ...] = (),
     ) -> PythonBindingFacts:
         return cls(
@@ -1025,7 +1026,7 @@ class PythonBindingFacts:
             source_classes=source_classes,
             source_callables=source_callables,
             source_completions=source_completions,
-            source_parameters=source_parameters,
+            source_callable_declarations=source_callable_declarations,
             source_function_results=source_function_results,
             _expression_lookup=MappingProxyType(
                 {fact.node: fact for fact in expressions}

@@ -630,10 +630,10 @@ def test_malformed_source_fact_containers_force_cold_regeneration(
         row[index] = invalid
     else:
         index = {
-            "function_returned": 2,
-            "function_returned_exposed": 3,
-            "function_yielded": 4,
-            "function_yielded_exposed": 5,
+            "function_returned": 1,
+            "function_returned_exposed": 2,
+            "function_yielded": 3,
+            "function_yielded_exposed": 4,
         }[container]
         row = next(row for row in values["functions"] if row[index])
         row[index] = invalid
@@ -810,7 +810,74 @@ def test_unchanged_body_receipts_do_not_revisit_existing_values(
     assert len(visits) == values
 
 
+def test_worklist_waits_for_factory_declaration_before_demanding_its_body() -> None:
+    from molt.compiler_analysis.python_binding_flow import (
+        PythonBindingPolicy,
+        analyze_python_source_bindings,
+    )
+    from molt.compiler_analysis.python_imports import (
+        _ImportScanRequests,
+        _SourceValueSummary,
+    )
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+    )
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = "def generator(): yield 1\nvalue = generator()\n"
+    definition, call_statement = ast.parse(source).body
+    owner = python_node_source_key(definition)
+    call = python_node_source_key(call_statement.value)
+    value = ("entry", call)
+    initial = _ImportScanRequests(
+        (),
+        (),
+        source_values=_SourceValueSummary(
+            calls=(PythonSourceCall(call, frozenset({owner}), 0, ()),)
+        ),
+    )
+    queued = []
+    engine = PythonSourceDemands(
+        require_runtime_import_protocol=lambda _: None,
+        admit_imports=lambda *_: None,
+        queue_body=lambda *job: queued.append(job),
+    )
+    engine.accept("entry", initial)
+    engine.demand(value, "read")
+    engine.drain()
+    assert not engine.value_candidates[value]
+    assert not queued
+
+    headers = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(analyze_deferred_bodies=False)
+    )
+    assert not headers.source_function_results
+    engine.accept(
+        "entry",
+        _ImportScanRequests(
+            (),
+            (),
+            source_values=_SourceValueSummary(
+                declarations=headers.source_callable_declarations
+            ),
+        ),
+    )
+    engine.drain()
+    assert engine.value_candidates[value] == {
+        SourceCandidate("entry", owner, "resumable")
+    }
+    assert not queued
+
+    engine.demand(value, "next")
+    engine.drain()
+    assert queued == [("entry", owner, ())]
+
+
 def test_changed_source_facts_wake_only_actual_dependencies():
+    from molt.compiler_analysis.python_binding_facts import (
+        PythonSourceCallableDeclaration,
+    )
     from molt.compiler_analysis.python_function_kind import FunctionKind
     from molt.compiler_analysis.python_binding_facts import PythonFunctionResult
     from molt.compiler_analysis.python_imports import (
@@ -863,10 +930,13 @@ def test_changed_source_facts_wake_only_actual_dependencies():
                 ),
             ),
             calls=(PythonSourceCall(call, frozenset({first}), 0, ()),),
+            declarations=(
+                PythonSourceCallableDeclaration(first, FunctionKind.SYNC),
+                PythonSourceCallableDeclaration(second, FunctionKind.SYNC),
+            ),
             functions=(
                 PythonFunctionResult(
                     first,
-                    FunctionKind.SYNC,
                     frozenset({second}),
                     frozenset(),
                     frozenset(),
@@ -900,10 +970,10 @@ def test_changed_source_facts_wake_only_actual_dependencies():
                     frozenset(),
                 ),
             ),
+            declarations=(PythonSourceCallableDeclaration(third, FunctionKind.SYNC),),
             functions=(
                 PythonFunctionResult(
                     first,
-                    FunctionKind.SYNC,
                     frozenset({third}),
                     frozenset(),
                     frozenset(),
@@ -3473,7 +3543,7 @@ def test_argument_class_representative_scans_like_every_member(
         item
         for item in load(
             source, import_scan_mode="module_init", namespace_premise=WHOLE_PROGRAM
-        ).scan.source_values.parameters
+        ).scan.source_values.functions
         if item.owner == hook
     ]
     assert parameters.literal_classes == (literal_class,)
@@ -3560,7 +3630,7 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
         ast_digest_admission=_PythonAstDigestAdmission.for_tree(tree),
     )
     scan = _ImportScanRequests((), ())._replace(**projection._asdict())
-    (parameters,) = scan.source_values.parameters
+    (parameters,) = scan.source_values.functions
     assert parameters.literal_classes == (frozenset({"a"}),)
     bodies = []
     engine = PythonSourceDemands(
@@ -3578,7 +3648,7 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
     ]
     shrunk = scan._replace(
         source_values=scan.source_values._replace(
-            parameters=(parameters._replace(literal_classes=(None,)),)
+            functions=(parameters._replace(literal_classes=(None,)),)
         )
     )
     engine.accept("hooked", shrunk)
@@ -3595,7 +3665,7 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
 def test_persisted_literal_classes_round_trip_or_regenerate(tmp_path, corruption):
     source = write(tmp_path / "hooked.py", _CLASSED_HOOK)
     cold = load(source)
-    classes = [item.literal_classes for item in cold.scan.source_values.parameters]
+    classes = [item.literal_classes for item in cold.scan.source_values.functions]
     assert (frozenset({"tasks", "futures", "events"}),) in classes
     if corruption is not None:
         key = records._import_scan_cache_key(
@@ -3603,7 +3673,9 @@ def test_persisted_literal_classes_round_trip_or_regenerate(tmp_path, corruption
         )
         payload = source_records("import-scan")[key]
         row = next(
-            row for row in payload["source_values"]["parameters"] if row[5] != [None]
+            row
+            for row in payload["source_values"]["functions"]
+            if row[5] not in (None, [None])
         )
         row[5] = {
             "length": row[5] + [None],

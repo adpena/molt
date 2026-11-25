@@ -5063,16 +5063,66 @@ def test_call_result_source_is_distinct_from_callee_and_tracks_real_returns():
         python_node_source_key(make)
     }
     returns = {
-        result.owner: (result.kind, result.returned)
-        for result in index.source_function_results
+        result.owner: result.returned for result in index.source_function_results
     }
     from molt.compiler_analysis.python_function_kind import FunctionKind
 
-    assert returns[python_node_source_key(make)] == (
-        FunctionKind.SYNC,
-        {python_node_source_key(target)},
-    )
+    kinds = {item.owner: item.kind for item in index.source_callable_declarations}
+    assert kinds[python_node_source_key(make)] is FunctionKind.SYNC
+    assert returns[python_node_source_key(make)] == {python_node_source_key(target)}
     assert index.expression_result(invocation.value.func).source_origins == {call_key}
+
+
+def test_callable_declarations_precede_deferred_body_results() -> None:
+    import inspect
+    from types import CodeType
+    from molt.compiler_analysis.python_function_kind import FunctionKind
+
+    source = (
+        "def ordinary(item, /, *more, label, **extras): return item\n"
+        "def generator(): yield 1\n"
+        "async def coroutine(): return 2\n"
+        "async def async_generator(): yield 3\n"
+    )
+    expected_kinds = {
+        0: FunctionKind.SYNC,
+        inspect.CO_GENERATOR: FunctionKind.GENERATOR,
+        inspect.CO_COROUTINE: FunctionKind.ASYNC,
+        inspect.CO_ASYNC_GENERATOR: FunctionKind.ASYNC_GENERATOR,
+    }
+    mask = inspect.CO_GENERATOR | inspect.CO_COROUTINE | inspect.CO_ASYNC_GENERATOR
+    module = compile(source, "<callable-declaration-oracle>", "exec", dont_inherit=True)
+    expected = tuple(
+        expected_kinds[c.co_flags & mask]
+        for c in module.co_consts
+        if isinstance(c, CodeType)
+    )
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(analyze_deferred_bodies=False)
+    )
+    assert tuple(row.kind for row in index.source_callable_declarations) == expected
+    assert index.source_function_results == ()
+    ordinary = index.source_callable_declarations[0]
+    assert len(ordinary.positional) == 1
+    assert ordinary.vararg is not None
+    assert [name for name, _ in ordinary.keywords] == ["label"]
+    assert ordinary.kwarg is not None
+
+
+def test_annotation_evaluator_does_not_publish_the_source_lambda_signature() -> None:
+    source = "def f(x: (lambda item: item())): pass\n"
+    definition = ast.parse(source).body[0]
+    annotation = definition.args.args[0].annotation
+    owner = python_node_source_key(annotation)
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=(3, 14))
+    )
+    (declaration,) = [
+        item for item in index.source_callable_declarations if item.owner == owner
+    ]
+    (result,) = [item for item in index.source_function_results if item.owner == owner]
+    assert declaration.positional == (python_node_source_key(annotation.args.args[0]),)
+    assert result.literal_classes == (None,)
 
 
 def test_generator_call_result_retains_suspension_not_a_returned_callable():
@@ -5091,16 +5141,12 @@ def test_generator_call_result_retains_suspension_not_a_returned_callable():
     index = analyze_python_source_bindings(source)
     from molt.compiler_analysis.python_function_kind import FunctionKind
 
-    assert index.source_function_results == (
-        (
-            python_node_source_key(tree.body[0]),
-            FunctionKind.GENERATOR,
-            frozenset(),
-            frozenset(),
-            frozenset(),
-            frozenset(),
-        ),
-    )
+    (declaration,) = index.source_callable_declarations
+    assert declaration.owner == python_node_source_key(tree.body[0])
+    assert declaration.kind is FunctionKind.GENERATOR
+    (result,) = index.source_function_results
+    assert result.owner == declaration.owner
+    assert not (result.returned or result.yielded)
 
 
 def test_source_demand_activation_joins_each_new_incidence_once(tmp_path, monkeypatch):
@@ -5179,7 +5225,7 @@ def test_generator_source_kind_matches_cpython_code_scope(expression):
     )
     assert generator_code.co_flags & (inspect.CO_GENERATOR | inspect.CO_ASYNC_GENERATOR)
     facts = analyze_python_source_bindings(source)
-    kinds = {result.owner: result.kind for result in facts.source_function_results}
+    kinds = {item.owner: item.kind for item in facts.source_callable_declarations}
     assert kinds[python_node_source_key(generator)] == expected
 
 
@@ -6880,7 +6926,9 @@ def test_parameter_literal_classes_admit_only_literal_observation(body, expected
     source = "def hook(name):\n" + body
     index = analyze_python_source_bindings(source)
     hook = python_node_source_key(ast.parse(source).body[0])
-    (parameters,) = [item for item in index.source_parameters if item.owner == hook]
+    (parameters,) = [
+        item for item in index.source_function_results if item.owner == hook
+    ]
     assert parameters.literal_classes == (expected,)
 
 
@@ -6897,7 +6945,7 @@ def test_parameter_literal_classes_message_needs_typed_callee_without_source_rea
         tree = ast.parse(source)
         hook = python_node_source_key(tree.body[-1])
         index = analyze_python_source_bindings(source)
-        (parameters,) = [p for p in index.source_parameters if p.owner == hook]
+        (parameters,) = [p for p in index.source_function_results if p.owner == hook]
         assert parameters.literal_classes == (expected,)
 
 
@@ -6908,8 +6956,10 @@ def test_parameter_literal_classes_align_with_positional_parameters():
         "    raise ValueError(f'bad {kind}')\n"
     )
     index = analyze_python_source_bindings(source)
-    (parameters,) = index.source_parameters
-    assert len(parameters.literal_classes) == len(parameters.positional) == 2
+    (parameters,) = index.source_function_results
+    (declaration,) = index.source_callable_declarations
+    assert declaration.owner == parameters.owner
+    assert len(declaration.positional) == 2
     assert parameters.literal_classes == (frozenset({"a", "b"}), None)
 
 

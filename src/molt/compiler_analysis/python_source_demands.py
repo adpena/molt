@@ -7,7 +7,7 @@ from molt.compiler_analysis.python_function_kind import (
 from molt.compiler_analysis.python_binding_facts import (
     PythonFunctionResult,
     PythonSourceCall,
-    PythonSourceParameters,
+    PythonSourceCallableDeclaration,
     PythonSourceElement,
     PythonElementProtocol,
     PythonNativeInitializerSource,
@@ -214,7 +214,7 @@ class PythonSourceDemands:
         self.call_imports: dict[SourceValue, frozenset[SourceImportCall]] = {}
         self.admitted_call_imports: set[tuple[SourceValue, PythonIdentity, str]] = set()
         self.completions: dict[SourceValue, frozenset[PythonSourceKey]] = {}
-        self.parameters: dict[SourceValue, PythonSourceParameters] = {}
+        self.declarations: dict[SourceValue, PythonSourceCallableDeclaration] = {}
         self.arguments: dict[SourceValue, set[SourceCandidate]] = {}
         self.functions: dict[SourceValue, PythonFunctionResult] = {}
         self.native_initializers: dict[SourceValue, PythonNativeInitializerSource] = {}
@@ -470,13 +470,10 @@ class PythonSourceDemands:
                 value,
                 self.completions.get(value, frozenset()) | origins,
             )
-        for parameters in scan.source_values.parameters:
-            value = (module_name, parameters.owner)
-            if self._publish(self.parameters, value, parameters):
-                # A premise change can shrink a literal class (a raised
-                # builtin loses its proof); re-map every activation of it.
-                for arguments in self.body_activations.get(value, ()):
-                    self._schedule_body(value, arguments)
+        for declaration in scan.source_values.declarations:
+            self._publish(
+                self.declarations, (module_name, declaration.owner), declaration
+            )
         for result in scan.source_values.functions:
             value = (module_name, result.owner)
             previous = self.functions.get(value)
@@ -489,6 +486,12 @@ class PythonSourceDemands:
                     yielded_exposed=previous.yielded_exposed | result.yielded_exposed,
                 )
             if self._publish(self.functions, value, result):
+                if (
+                    previous is None
+                    or result.literal_classes != previous.literal_classes
+                ):
+                    for arguments in self.body_activations.get(value, ()):
+                        self._schedule_body(value, arguments)
                 old = (
                     frozenset()
                     if previous is None
@@ -592,7 +595,7 @@ class PythonSourceDemands:
         """The existing call/formal transfer entered exactly the witnessed definition."""
         target = (provider, definition)
         call = self.calls.get((module, site))
-        formals = self.parameters.get(target)
+        formals = self.declarations.get(target)
         if (
             call is None
             or formals is None
@@ -898,7 +901,7 @@ class PythonSourceDemands:
                 and self._source_class_candidate(receiver)
                 else None
             )
-        parameters = self.parameters.get(callee.value)
+        parameters = self.declarations.get(callee.value)
         positional = parameters.positional if parameters is not None else ()
         vararg = parameters.vararg if parameters is not None else None
         parameter = positional[0] if positional else vararg
@@ -1557,9 +1560,9 @@ class PythonSourceDemands:
     def _schedule_body(self, value: SourceValue, arguments: tuple[str, ...]) -> None:
         """Scan a body once per argument class (``python_parameter_classes``)."""
         module_name, owner = value
-        parameters = self.parameters.get(value)
-        if parameters is not None:
-            arguments = representative_arguments(arguments, parameters.literal_classes)
+        result = self.functions.get(value)
+        if result is not None and result.literal_classes is not None:
+            arguments = representative_arguments(arguments, result.literal_classes)
         body_arguments = self.body_jobs.setdefault(value, set())
         if arguments in body_arguments:
             return
@@ -1664,17 +1667,20 @@ class PythonSourceDemands:
             "FunctionDef",
             "AsyncFunctionDef",
             "Lambda",
-            "ClassDef",
-            "TypeAlias",
             "GeneratorExp",
         }:
-            candidates.add(
-                SourceCandidate(
-                    module_name,
-                    source,
-                    "resumable" if source[-1] == "GeneratorExp" else "value",
+            # A forward value demand can precede its producer's scan. Publish
+            # the candidate only when its calling protocol is known.
+            if value in self.declarations:
+                candidates.add(
+                    SourceCandidate(
+                        module_name,
+                        source,
+                        "resumable" if source[-1] == "GeneratorExp" else "value",
+                    )
                 )
-            )
+        elif source[-1] in {"ClassDef", "TypeAlias"}:
+            candidates.add(SourceCandidate(module_name, source))
         elif value in self.elements:
             element = self.elements[value]
             for owner in element.origins:
@@ -1919,7 +1925,7 @@ class PythonSourceDemands:
     ) -> None:
         """Transport argument origins through the existing formal-value worklist."""
         self.watch(callee.value, user)
-        parameters = self.parameters.get(callee.value)
+        parameters = self.declarations.get(callee.value)
         if parameters is None:
             return
         keywords = dict(parameters.keywords)
@@ -2130,7 +2136,7 @@ class PythonSourceDemands:
                     self.activate(value, "escape")
             for method in self.select_member(receiver, "__post_init__", origin.value):
                 self._bind_receiver(method, receiver._replace(kind="instance"))
-                parameters = self.parameters.get(method.value)
+                parameters = self.declarations.get(method.value)
                 post_rows = plan.post_inputs
                 inputs = (
                     [
@@ -2178,8 +2184,8 @@ class PythonSourceDemands:
                 self.activate(method, "call")
 
     def _function_kind(self, callee: SourceCandidate) -> FunctionKind:
-        result = self.functions.get(callee.value)
-        return FunctionKind.SYNC if result is None else result.kind
+        declaration = self.declarations.get(callee.value)
+        return FunctionKind.SYNC if declaration is None else declaration.kind
 
     def _returned_values(
         self, callee: SourceCandidate, user: SourceValue
