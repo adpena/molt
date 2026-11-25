@@ -4104,6 +4104,16 @@ def test_python_probe_ignores_ambient_ownership_and_uses_admitted_pep610_root(
         row for row in identity["distributions"] if row["name"] == "custody-ambiguous"
     )
     roots = {row["id"]: row["path"] for row in identity["external_roots"]}
+    assert {
+        "record_sha256",
+        "file_manifest_sha256",
+        "direct_url_sha256",
+        "name",
+        "version",
+    } <= distribution.keys()
+    assert identity["distribution_inventory_sha256"] == canonical_json_sha256(
+        identity["distributions"]
+    )
     reference = distribution["external_source"]
     assert roots[reference["root"]] == str(project.resolve())
     assert reference["path"] == "."
@@ -4114,6 +4124,22 @@ def test_python_probe_ignores_ambient_ownership_and_uses_admitted_pep610_root(
         (reference["root"], "src")
     ]
     assert reference["import_roles"] == [row["role"] for row in active_imports]
+
+    source_snapshot = {
+        "root": str(project.resolve()),
+        "available": True,
+        "clean": True,
+    }
+    assert (
+        execution_environment._python_editable_ineligible_reasons(
+            {"environment": identity}, source_snapshot=source_snapshot
+        )
+        == []
+    )
+    assert execution_environment._python_editable_ineligible_reasons(
+        {"environment": identity},
+        source_snapshot={**source_snapshot, "root": str(environment_root.resolve())},
+    ) == ["python-editable-source-outside:custody-ambiguous"]
 
 
 @pytest.mark.slow
@@ -5106,11 +5132,9 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     context = record["receipt_context"]
     assert context["source_commit"] == commit
     assert context["source_tree"]
-    assert context["source_custody"]["evidence_eligible"] is False
-    assert any(
-        reason.startswith("python-editable-source-outside:")
-        for reason in context["source_custody"]["ineligible_reasons"]
-    )
+    source_custody = context["source_custody"]
+    assert source_custody["prelaunch"]["root"] == str(repo.resolve())
+    assert source_custody["identical"] is True
     executable = context["command_executable"]
     assert executable["identical"] is True
     assert executable["prelaunch"]["path"] == custody_spelling(Path(sys.executable))
@@ -5121,15 +5145,11 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     assert len(executable["prelaunch"]["sha256"]) == 64
     python_identity = context["toolchains"]["python"]
     environment_identity = python_identity["environment"]
+    captured_environment = guarded_execution_authorities.python_identity["environment"]
+    assert environment_identity["distribution_count"] == len(
+        captured_environment["distributions"]
+    )
     assert len(environment_identity["distribution_inventory_sha256"]) == 64
-    assert environment_identity["distributions"]
-    assert {
-        "record_sha256",
-        "file_manifest_sha256",
-        "direct_url_sha256",
-        "name",
-        "version",
-    } <= environment_identity["distributions"][0].keys()
 
 
 @pytest.mark.slow
