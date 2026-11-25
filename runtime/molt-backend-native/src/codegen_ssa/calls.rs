@@ -706,6 +706,25 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             b.set_name(value, "direct_call");
         }
         release_call_inputs(b, None, &extracted);
+        if abi.checked_raw_return() {
+            let [result] = op.results.as_slice() else {
+                self.fatal(format!(
+                    "checked return from `{target}` has no result binding"
+                ));
+                return;
+            };
+            let Some(value) = returned else {
+                self.fatal(format!(
+                    "checked return from `{target}` has no machine result"
+                ));
+                return;
+            };
+            let value = view.finish_value(b, custody, value, "direct_call_result", |b| {
+                super::returns::absent_return(b, abi).expect("a checked slot has a carrier")
+            });
+            self.bind(*result, value, HeldCarrier::of(&return_type));
+            return;
+        }
         let none = b.constant(NONE_WORD);
         if let Some(&result) = op.results.first() {
             // Keep the linkage carrier when the caller's producer plan agrees.
@@ -1563,6 +1582,7 @@ mod tests {
             parameter_custody: Vec::new(),
             param_types: params,
             return_type: result,
+            return_availability: Default::default(),
         };
         BTreeMap::from([(symbol.to_owned(), abi)])
     }

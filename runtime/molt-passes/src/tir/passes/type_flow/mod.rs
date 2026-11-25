@@ -112,6 +112,17 @@ pub(in crate::tir) fn run_with_registry(
         .iter()
         .map(|func| sites::sites_of(func, &body_index, module, &members))
         .collect();
+    for (body, calls) in sites.iter_mut().enumerate() {
+        if !calls.is_empty()
+            && crate::tir::type_refine::project_checked_call_results(
+                &mut module.functions[body],
+                |_| true,
+            )
+        {
+            outcome.changed.insert(module.ids[body]);
+            *calls = sites::sites_of(&module.functions[body], &body_index, module, &members);
+        }
+    }
     let mut cells =
         exact_receiver_fields::CellRequests::new(module, registry, non_inlinable, &members);
     if sites.iter().all(Vec::is_empty) {

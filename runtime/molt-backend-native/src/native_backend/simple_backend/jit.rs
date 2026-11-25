@@ -257,6 +257,9 @@ impl SimpleBackend {
         final_functions
             .validate_extern_calls()
             .map_err(JitCompileError::Finalize)?;
+        final_functions
+            .validate_checked_returns(&linkage)
+            .map_err(JitCompileError::Finalize)?;
         self.external_program_storage = true;
         self.module_registry = Some(registry);
         self.set_module_context(linkage);

@@ -195,6 +195,16 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     let exact = raise.exact_types();
     record_inline_int_proofs(func, &repr, &vr, exact);
     pending.sort_unstable_by_key(|(block, _, _)| std::cmp::Reverse(*block));
+    let implicit_handler_words = if pending.iter().any(|(block, _, _)| {
+        func.blocks[block]
+            .ops
+            .iter()
+            .any(|op| guarded_dispatch(op).is_some())
+    }) {
+        crate::tir::type_refine::implicit_handler_call_results(func)
+    } else {
+        HashSet::default()
+    };
     let exception_labels = std::cell::OnceCell::new();
     while let Some((block, _, optional)) = pending.pop() {
         let Some((index, expansion)) = func.blocks[&block]
@@ -232,12 +242,22 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
             }
             Expansion::FloatSqrt { operand } => expand_float_sqrt(func, block, split, operand),
             Expansion::Truthiness => expand_truthiness(func, block, split),
-            Expansion::GuardedCall => {
-                expand_guarded_call(func, block, split, None, &exception_labels)
-            }
-            Expansion::ProvenCall { closure } => {
-                expand_guarded_call(func, block, split, Some(closure), &exception_labels)
-            }
+            Expansion::GuardedCall => expand_guarded_call(
+                func,
+                block,
+                split,
+                None,
+                &exception_labels,
+                &implicit_handler_words,
+            ),
+            Expansion::ProvenCall { closure } => expand_guarded_call(
+                func,
+                block,
+                split,
+                Some(closure),
+                &exception_labels,
+                &implicit_handler_words,
+            ),
         };
         stats.ops_added += 6;
         stats.values_changed += 1;
@@ -1257,9 +1277,12 @@ pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::Func
             })
         })
         .collect();
+    if sites.is_empty() {
+        return false;
+    }
+    let implicit_handler_words = crate::tir::type_refine::implicit_handler_call_results(func);
     // Split later sites first so indices in the original block stay valid.
     sites.sort_unstable_by(|a, b| b.cmp(a));
-    let changed = !sites.is_empty();
     for (block, index) in sites {
         let Split {
             op,
@@ -1282,13 +1305,36 @@ pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::Func
             cond_branch(admitted, enter, refuse),
         );
 
+        let common_word = op
+            .results
+            .first()
+            .copied()
+            .filter(|word| implicit_handler_words.contains(word));
         let check = rest
             .first()
-            .filter(|check| check.opcode == OpCode::CheckException);
-        let failure = recursion_refusal(func, &op, check, refuse);
-        func.blocks.insert(refuse, failure);
+            .filter(|check| check.opcode == OpCode::CheckException && common_word.is_none());
+        let mut failure = recursion_refusal(func, &op, check, refuse);
         let mut entered = Vec::with_capacity(rest.len() + 3);
         entered.push(new_op(OpCode::RecursionCount, vec![], vec![], span));
+        let mut op = op;
+        if let Some(word) = common_word {
+            let direct_word = fresh_typed(func, TirType::DynBox);
+            op.results[0] = direct_word;
+            entered.push(op);
+            entered.push(new_op(OpCode::RecursionRelease, vec![], vec![], span));
+            let join = func.fresh_block();
+            func.blocks
+                .insert(enter, new_block(enter, entered, branch(join, direct_word)));
+            let sentinel = fresh_typed(func, TirType::None);
+            failure
+                .ops
+                .push(new_op(OpCode::ConstNone, vec![], vec![sentinel], span));
+            failure.terminator = branch(join, sentinel);
+            func.blocks.insert(refuse, failure);
+            finish(func, block, join, word, rest, terminator);
+            continue;
+        }
+        func.blocks.insert(refuse, failure);
         entered.push(op);
         entered.push(new_op(OpCode::RecursionRelease, vec![], vec![], span));
         entered.extend(rest);
@@ -1296,7 +1342,7 @@ pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::Func
             .insert(enter, new_block(enter, entered, terminator));
         func.move_loop_terminator(block, enter);
     }
-    changed
+    true
 }
 
 /// Every op an expansion creates states its own raise contract, from the one
@@ -1761,6 +1807,7 @@ fn expand_guarded_call(
     split: Split,
     proven: Option<bool>,
     exception_labels: &std::cell::OnceCell<HashMap<i64, BlockId>>,
+    implicit_handler_words: &HashSet<ValueId>,
 ) -> BlockId {
     use molt_ir::runtime_fn_generated::RuntimeFn;
     let Split {
@@ -1840,13 +1887,9 @@ fn expand_guarded_call(
     );
 
     let observer = rest.first().filter(|check| {
-        crate::tir::dominators::checked_exception_observer(check, |label| {
-            exception_labels
-                .get_or_init(|| crate::tir::dominators::exception_label_to_block(func))
-                .get(&label)
-                .copied()
-        })
-        .is_some()
+        !implicit_handler_words.contains(&result)
+            && crate::tir::type_refine::checked_result_observer(func, exception_labels, check)
+                .is_some()
     });
     let direct_continuation = observer.is_some() && proven.is_some();
     let direct_result = if direct_continuation {
@@ -1892,7 +1935,9 @@ fn expand_guarded_call(
             return direct;
         }
     } else {
-        // An unobserved wire call still exposes its ABI sentinel.
+        // A handler that reads the word directly needs the same dominating
+        // physical definition on both paths. Join before executing its check.
+        // An unobserved wire call also exposes the ABI sentinel.
         let mut failure = recursion_refusal(func, &op, None, refuse);
         let none = fresh_typed(func, TirType::None);
         failure

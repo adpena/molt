@@ -514,6 +514,7 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
                 parameter_custody: declaration.parameter_custody.clone(),
                 param_types: vec![word.clone(); arity],
                 return_type: Some(word),
+                return_availability: Default::default(),
             },
         );
         functions.push(declaration);

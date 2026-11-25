@@ -174,6 +174,7 @@ fn test_native_linkage_abi(
         parameter_custody: Vec::new(),
         param_types,
         return_type,
+        return_availability: Default::default(),
     }
 }
 

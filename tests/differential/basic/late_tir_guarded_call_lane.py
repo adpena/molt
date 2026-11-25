@@ -76,6 +76,7 @@ def guarded(x):
 
 print(guarded(7))
 
+
 # Rebinding the global, then replacing the function's code: the guard refuses
 # and the call takes what the name holds now.
 saved = add

@@ -355,22 +355,47 @@ impl<B: CodegenBuilder> Operands<'_, B> {
         result_name: &str,
         on_abort: impl FnOnce(&mut B),
     ) -> B::Word {
+        let committed = b.word_value(committed);
+        let result = self.finish_value(b, custody, committed, result_name, |b| {
+            on_abort(b);
+            let none = b.constant(NONE_WORD);
+            b.word_value(none)
+        });
+        b.expect_word(result)
+    }
+
+    /// Complete custody without changing the consumer's result carrier.
+    /// `on_abort` runs only on the failure path and produces its absent
+    /// result in the same machine kind as `committed`. A raw absent result
+    /// is valid only when the consumer's checked ABI makes it unavailable
+    /// until the pending exception has been checked.
+    pub(crate) fn finish_value(
+        &self,
+        b: &mut B,
+        custody: Custody<B>,
+        committed: B::Value,
+        result_name: &str,
+        on_abort: impl FnOnce(&mut B) -> B::Value,
+    ) -> B::Value {
         let result = match custody.abort {
             None => committed,
             Some(abort) => {
+                let kind = b.kind(committed);
                 let merge = b.create_block(&format!("{}_merge", custody.label));
-                let result = b.append_block_param(merge, MachineKind::Word);
+                let result = b.append_block_param(merge, kind);
                 b.set_name(result, result_name);
-                let committed = b.word_value(committed);
                 b.jump(merge, &[committed]);
                 b.switch_to_block(abort);
-                on_abort(b);
+                let absent = on_abort(b);
+                assert_eq!(
+                    b.kind(absent),
+                    kind,
+                    "custody abort changed the result carrier"
+                );
                 release_call_inputs(b, custody.adopted_callable, &custody.adopted_objects);
-                let none = b.constant(NONE_WORD);
-                let none = b.word_value(none);
-                b.jump(merge, &[none]);
+                b.jump(merge, &[absent]);
                 b.switch_to_block(merge);
-                b.expect_word(result)
+                result
             }
         };
         release_owners(b, &custody);
@@ -824,6 +849,72 @@ mod tests {
         assert_eq!(run.runtime_calls, [RuntimeFn::IntFromI64]);
         assert!(run.released.is_empty());
         assert_eq!(run.refcounts, [(RefcountOperation::Release, HEAP_INT)]);
+    }
+
+    #[test]
+    fn a_checked_raw_result_keeps_its_carrier_across_argument_boxing_abort() {
+        use super::super::returns::absent_return;
+        use molt_ir::linkage_abi::{NativeFunctionLinkageAbi, ReturnAvailability};
+        use molt_ir::tir::types::TirType;
+
+        for (ty, committed, absent) in [
+            (TirType::I64, Value::Word(1 << 60), Value::Word(0)),
+            (TirType::Bool, Value::Bit(true), Value::Bit(false)),
+            (TirType::F64, Value::Float(-3.25), Value::Float(0.0)),
+        ] {
+            let abi = NativeFunctionLinkageAbi {
+                source_signature: crate::ir::ExternFunctionSignature {
+                    arity: 0,
+                    has_closure: false,
+                    returns_value: true,
+                    execution_context: crate::ir::ExecutionContextPolicy::Local,
+                },
+                parameter_custody: Vec::new(),
+                param_types: Vec::new(),
+                return_type: Some(ty),
+                return_availability: ReturnAvailability::SuccessOnly,
+            };
+            let checked = kernel!(
+                plan: ProducerCarrierPlan = Fixture::new().plan,
+                abi: NativeFunctionLinkageAbi = abi;
+                |b, inputs| -> () {
+                    let values = table(inputs);
+                    let diagnostics = RefCell::new(Vec::new());
+                    let view = Operands::<B> {
+                        function: "f",
+                        values: &values,
+                        plan,
+                        diagnostics: &diagnostics,
+                    };
+                    let mut custody = view.begin_call(
+                        b, &[ValueId(2)], &[ValueId(0)], None, "checked",
+                    );
+                    view.operand(b, &mut custody, ValueId(2));
+                    let result = view.finish_value(b, custody, inputs[3], "raw", |b| {
+                        absent_return(b, abi).expect("value-returning checked ABI")
+                    });
+                    assert!(diagnostics.borrow().is_empty());
+                    ((), vec![result])
+                }
+            );
+            let mut args = inputs(FULL_RANGE).to_vec();
+            args.push(committed);
+
+            let run = machine(&checked, &args, false);
+            assert_eq!(run.results, [committed]);
+            assert_eq!(run.runtime_calls, [RuntimeFn::IntFromI64]);
+            assert_eq!(run.refcounts, [(RefcountOperation::Release, HEAP_INT)]);
+            assert!(run.released.is_empty());
+
+            let run = machine(&checked, &args, true);
+            assert_eq!(run.results, [absent]);
+            assert_eq!(
+                run.runtime_calls,
+                [RuntimeFn::IntFromI64, RuntimeFn::CallInputsRelease]
+            );
+            assert_eq!(run.released, [vec![OBJECT]]);
+            assert!(run.refcounts.is_empty());
+        }
     }
 
     #[test]

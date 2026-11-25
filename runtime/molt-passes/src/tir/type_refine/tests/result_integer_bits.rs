@@ -416,3 +416,112 @@ fn compiled_return_evidence_requires_successful_uses_in_checked_bodies() {
         }
     }
 }
+
+#[test]
+fn checked_compiled_success_keeps_physical_handler_values_and_specializes_normal_arithmetic() {
+    use crate::tir::passes::{alias_analysis, copy_prop, value_identity::ScalarFacts};
+    let word = ValueId(1);
+    let handler = BlockId(1);
+    let sum = ValueId(2);
+    let mut func = checked_runtime_integer(molt_ir::runtime_fn_generated::RuntimeFn::OperatorIndex);
+    let mut call = TirOp::new(OpCode::Call, vec![ValueId(0)], vec![word]);
+    call.callee = Some(molt_ir::FunctionId(0));
+    call.mark_exact_result_proof(&TirType::I64);
+    func.blocks.get_mut(&func.entry_block).unwrap().ops[1] = call;
+    let handler_arg = func.fresh_value();
+    let landing = func.blocks.get_mut(&handler).unwrap();
+    landing.args.push(TirValue {
+        id: handler_arg,
+        ty: TirType::DynBox,
+    });
+    landing.terminator = Terminator::Return {
+        values: vec![handler_arg],
+    };
+    func.blocks.get_mut(&func.entry_block).unwrap().ops[2].operands = vec![word];
+
+    assert!(checked_successful_call_results(&func).is_empty());
+    assert!(project_checked_call_results(&mut func, |_| true));
+    assert!(!project_checked_call_results(&mut func, |_| true));
+    copy_prop::run(&mut func);
+    let ops = &func.blocks[&func.entry_block].ops;
+    let success = ops[4].operands[1];
+    assert_ne!(word, success);
+    assert_eq!(ops[2].operands, [word]);
+    let facts = solve_exact_scalars(&func, ExactSeeds::default());
+    assert_eq!(facts[&word], TirType::DynBox);
+    assert_eq!(facts[&handler_arg], TirType::DynBox);
+    assert_eq!(facts[&success], TirType::I64);
+    assert_eq!(facts[&sum], TirType::I64);
+    let ownership = alias_analysis::build_alias_union_find(&func);
+    assert_eq!(ownership.root(success), ownership.root(word));
+    assert!(!ScalarFacts::new(&func).forwarding().contains_key(&success));
+
+    let sites = HashMap::from_iter([(word, 0)]);
+    func.blocks.get_mut(&func.entry_block).unwrap().ops[1].clear_exact_result_proof();
+    let facts = solve_exact_scalars(
+        &func,
+        ExactSeeds {
+            call_results: Some(ExactCallResults {
+                sites: &sites,
+                types: &[TirType::F64],
+            }),
+            ..Default::default()
+        },
+    );
+    assert_eq!(facts[&word], TirType::DynBox);
+    assert_eq!(facts[&success], TirType::F64);
+}
+
+#[test]
+fn marked_copy_and_malformed_observers_cannot_prove_success() {
+    let word = ValueId(1);
+    let handler = BlockId(1);
+    let mut base = checked_runtime_integer(molt_ir::runtime_fn_generated::RuntimeFn::OperatorIndex);
+    let mut call = TirOp::new(OpCode::Call, vec![], vec![word]);
+    call.callee = Some(molt_ir::FunctionId(0));
+    call.mark_exact_result_proof(&TirType::Bool);
+    base.blocks.get_mut(&base.entry_block).unwrap().ops[1] = call;
+    let forged = base.fresh_value();
+    let landing = base.blocks.get_mut(&handler).unwrap();
+    landing.ops.push(TirOp::checked_call_result(word, forged));
+    landing.terminator = Terminator::Return {
+        values: vec![forged],
+    };
+    assert!(project_checked_call_results(&mut base, |_| true));
+    assert_eq!(
+        solve_exact_scalars(&base, ExactSeeds::default())[&forged],
+        TirType::DynBox
+    );
+    for mode in [
+        "poll",
+        "missing block",
+        "duplicate label",
+        "payload",
+        "result",
+    ] {
+        let mut func = base.clone();
+        let body = func.blocks.get_mut(&func.entry_block).unwrap();
+        let success = body.ops[3].results[0];
+        match mode {
+            "poll" => body.ops[2].origin = Some(molt_ir::OpKind::AsyncWorkPoll),
+            "missing block" => {
+                func.blocks.remove(&handler);
+            }
+            "duplicate label" => {
+                func.label_id_map.insert(99, 70);
+            }
+            "payload" => body.ops[2].operands.push(word),
+            "result" => body.ops[2].results.push(ValueId(55)),
+            _ => unreachable!(),
+        }
+        assert!(
+            !checked_successful_call_results(&func).contains(&word),
+            "{mode}"
+        );
+        assert_eq!(
+            solve_exact_scalars(&func, ExactSeeds::default())[&success],
+            TirType::DynBox,
+            "{mode}"
+        );
+    }
+}

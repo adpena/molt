@@ -220,6 +220,7 @@ impl SimpleBackend {
                 },
                 typed.functions,
             );
+            final_functions.admit_checked_clone_returns(&typed.clones);
             if !self.skip_ir_passes {
                 final_functions.retain_reachable(&module_registry_roots);
             }
