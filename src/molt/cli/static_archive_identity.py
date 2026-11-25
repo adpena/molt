@@ -416,25 +416,48 @@ def artifact_bytes_identity(identity: StableRegularFileIdentity) -> dict[str, ob
 
 
 def capture_archive_artifact_identity(
-    opened: StableRegularFileHandle,
+    opened: StableRegularFileHandle, *, stage: BinaryIO | None = None
 ) -> tuple[StableRegularFileIdentity, dict[str, object]]:
-    """Derive the raw and canonical member digests in one payload pass."""
+    """Derive both identities and optionally stream the bytes into a private stage.
+
+    The caller owns the stage, its completion and its independent admission.
+    Nothing is published by this function.
+    """
     stream = opened.stream
     stream.seek(0)
     prefix = stream.read(len(_ARCHIVE_MAGIC))
-    if opened.path.suffix.lower() not in {".a", ".lib"} or prefix not in {
+    is_archive = opened.path.suffix.lower() in {".a", ".lib"} and prefix in {
         _ARCHIVE_MAGIC,
         _THIN_ARCHIVE_MAGIC,
-    }:
+    }
+    if not is_archive and stage is None:
         identity = stable_regular_file_handle_identity(opened, label="runtime artifact")
         return identity, artifact_bytes_identity(identity)
-    stream.seek(0)
+
     whole = hashlib.sha256()
-    content = _static_archive_stream_identity(
-        stream, archive_size=opened.stat.st_size, whole_update=whole.update
+
+    def stage_chunk(block: bytes) -> None:
+        assert stage is not None
+        if stage.write(block) != len(block):
+            raise OSError(
+                f"short write while staging native runtime archive: {opened.path}"
+            )
+        whole.update(block)
+
+    consume = whole.update if stage is None else stage_chunk
+    stream.seek(0)
+    if is_archive:
+        content = _static_archive_stream_identity(
+            stream, archive_size=opened.stat.st_size, whole_update=consume
+        )
+    else:
+        for block in _exact_chunks(stream, opened.stat.st_size):
+            consume(block)
+        content = None
+    identity = opened.consumed_identity(whole.hexdigest(), label="runtime artifact")
+    return identity, content if content is not None else artifact_bytes_identity(
+        identity
     )
-    identity = opened.consumed_identity(whole.hexdigest(), label="static archive")
-    return identity, content
 
 
 def artifact_content_identity(
