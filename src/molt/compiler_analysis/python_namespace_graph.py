@@ -38,7 +38,11 @@ from molt.compiler_analysis.python_import_redirects import (
     import_redirects,
 )
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
-from molt.compiler_analysis.python_source_keys import PythonSourceKey
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    python_node_source_key,
+)
+from molt.compiler_analysis.python_lexical_scope import python_scope_declarations
 from molt.compiler_analysis.python_value_identity import (
     canonical_import_binding_write_mask,
 )
@@ -213,6 +217,113 @@ def _module_scope_names(table: symtable.SymbolTable) -> set[str]:
         )
         pending.extend(child.get_children())
     return names
+
+
+def python_namespace_stability_reason(
+    own_names: frozenset[str] | None, premise: PythonNamespacePremise | None, name: str
+) -> str | None:
+    """Why code may rebind ``name`` after initialization, or None."""
+    if own_names is None:
+        return "its module reflects its own namespace dynamically"
+    if name in own_names:
+        return "deferred code in its module writes it (global declaration)"
+    if premise is None or premise.foreign_writes is None:
+        return (
+            "the program writes some module namespace by a computed name "
+            "or mapping, so no module's foreign writers are known"
+        )
+    writer = premise.escape_writer(name)
+    if writer is not None:
+        return f"written at {writer} through an escaped module value"
+    if name in premise.foreign_writes:
+        return "another module writes it by name"
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class PythonModulePublications:
+    leading_imports: Mapping[str, str]
+    functions: Mapping[str, PythonSourceKey]
+    qualified_calls: Mapping[PythonSourceKey, tuple[str, str]]
+    module_getattr: bool
+
+
+def python_module_publications(tree: ast.Module) -> PythonModulePublications:
+    """Ordinary source publications whose successful acquisition has one producer.
+
+    An import preceding every executable declaration also precedes any call
+    through code the module publishes, even when initialization is reentered.
+    Count all module-scope binders (including deletes, branches and walruses)
+    before admitting a name. A star import can replace every binding.
+    """
+    imports: dict[str, str] = {}
+    functions: dict[str, PythonSourceKey] = {}
+    calls = {}
+    bound: set[str] = set()
+    duplicate: set[str] = set()
+    leading = True
+    star = False
+    for statement in tree.body:
+        declarations = python_scope_declarations((statement,), eager_annotations=True)
+        duplicate.update(bound & declarations.bound)
+        bound.update(declarations.bound)
+        if isinstance(statement, ast.Import) and leading:
+            for alias in statement.names:
+                name = alias.asname or alias.name
+                if name in imports:
+                    duplicate.add(name)
+                if "." not in alias.name:
+                    imports[name] = alias.name
+                else:
+                    duplicate.add(alias.asname or alias.name.partition(".")[0])
+        elif isinstance(statement, ast.Expr) and isinstance(
+            statement.value, ast.Constant
+        ):
+            pass
+        elif isinstance(statement, ast.ImportFrom) and statement.module == "__future__":
+            pass
+        else:
+            leading = False
+        if (
+            isinstance(statement, ast.FunctionDef)
+            and not statement.decorator_list
+            and not statement.type_params
+        ):
+            functions[statement.name] = python_node_source_key(statement)
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Global):
+                duplicate.update(node.names)
+            if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+                # The target may become visible during a function's defaults
+                # or an eager annotation, before its following STORE_NAME.
+                duplicate.add(node.target.id)
+            if isinstance(node, ast.ImportFrom) and any(
+                a.name == "*" for a in node.names
+            ):
+                star = True
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+            ):
+                calls[python_node_source_key(node)] = (
+                    node.func.value.id,
+                    node.func.attr,
+                )
+    return PythonModulePublications(
+        {
+            name: module
+            for name, module in imports.items()
+            if not star and name not in duplicate
+        },
+        {
+            name: key
+            for name, key in functions.items()
+            if not star and name not in duplicate
+        },
+        calls,
+        star or "__getattr__" in bound or "__getattr__" in duplicate,
+    )
 
 
 @dataclass(frozen=True, slots=True)

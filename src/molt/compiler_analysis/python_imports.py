@@ -2538,6 +2538,7 @@ class _SourceValueDemand(NamedTuple):
     phase: SourceDemandPhase
     argument_count: int | None
     owner: PythonSourceKey | None
+    argument_call: PythonSourceKey | None = None
 
 
 class _SourceImportBinding(NamedTuple):

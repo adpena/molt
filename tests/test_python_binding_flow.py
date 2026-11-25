@@ -13,6 +13,7 @@ from types import ModuleType
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 from dataclasses import fields, replace
+from pathlib import Path
 from threading import Event
 
 import pytest
@@ -6453,6 +6454,77 @@ def test_opaque_activation_delta_follows_actual_source_value_consumption(
         frozenset({"entry"}) if escapes else frozenset()
     )
     assert not engine.drain_opaque_activation_changes()
+
+
+@pytest.mark.parametrize(
+    "classinfo", ["plain", "proxy", "metaclass", "decorated", "tuple"]
+)
+def test_isinstance_on_a_plain_class_does_not_publish_it(
+    tmp_path: Path, classinfo: str
+) -> None:
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_source_demands import PythonSourceDemands
+    from molt.stdlib_intrinsic_policy import stdlib_module_intrinsic_facts
+    from molt.target_python import TargetPythonVersion
+
+    source = ""
+    if classinfo in {"metaclass", "decorated"}:
+        source += (
+            "class Meta(type):\n"
+            "    def __instancecheck__(self, subject):\n"
+            "        return True\n"
+        )
+    if classinfo == "metaclass":
+        source += "class Target(metaclass=Meta):\n    pass\n"
+    else:
+        if classinfo == "decorated":
+            source += "def replace_class(cls): return Meta('Replacement', (), {})\n"
+            source += "@replace_class\n"
+        source += "class Target:\n    pass\n"
+    if classinfo == "proxy":
+        source += (
+            "class Proxy:\n"
+            "    @property\n"
+            "    def __class__(self):\n"
+            "        seen.append(1)\n"
+            "        return Target\n"
+            "subject = Proxy()\n"
+        )
+    else:
+        source += "subject = object()\n"
+    argument = "(Target,)" if classinfo == "tuple" else "Target"
+    source += f"seen = []\nmatched = isinstance(subject, {argument})\n"
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<isinstance-classinfo-oracle>", "exec"), namespace)
+    assert namespace["matched"] is (classinfo in {"proxy", "metaclass", "decorated"})
+    assert namespace["seen"] == ([1] if classinfo == "proxy" else [])
+
+    scan = stdlib_module_intrinsic_facts(
+        "entry",
+        tmp_path / "entry.py",
+        source=source,
+        target_python=TargetPythonVersion(3, 12, 0),
+        namespace_premise=PythonNamespacePremise((), 0, 0, ()),
+    ).import_evidence.source_scan
+    engine = PythonSourceDemands(
+        require_runtime_import_protocol=lambda module: None,
+        admit_imports=lambda *args: None,
+        queue_body=lambda *args: None,
+    )
+    engine.accept("entry", scan)
+    engine.drain()
+    classes = {
+        item.name: item
+        for item in ast.parse(source).body
+        if isinstance(item, ast.ClassDef)
+    }
+    target = classes["Target"]
+    assert (
+        python_node_source_key(target) in engine.opaque_activation_sources("entry")
+    ) is (classinfo in {"metaclass", "decorated", "tuple"})
+    if classinfo == "proxy":
+        getter = classes["Proxy"].body[0]
+        assert ("entry", python_node_source_key(getter)) in engine.body_activations
 
 
 def test_closed_activation_does_not_bypass_custom_class_mapping():

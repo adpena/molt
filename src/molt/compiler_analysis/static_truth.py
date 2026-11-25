@@ -219,6 +219,9 @@ IMPLICIT_INSTANCE_SPECIAL_METHODS: frozenset[str] = frozenset(
 class DeferredExecution:
     source: PythonSourceKey
     phase: SourceDemandPhase
+    # The generic argument exposure belongs to this invocation. Other local
+    # effects still follow the operand even when the graph can bind its formal.
+    argument_call: PythonSourceKey | None = None
 
 
 ScalarValue: TypeAlias = None | bool | int | float | complex | str | bytes
