@@ -84,6 +84,10 @@ from molt.cli.browser_target_features import (
     TARGET_FEATURE_MANIFEST_ASSET_NAME,
     browser_target_feature_metadata,
 )
+from molt.cli.backend_artifact_contract import (
+    BackendArtifactKind,
+    BackendArtifactValidation,
+)
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.external_native import (
     _external_native_link_requirements,
@@ -781,6 +785,7 @@ def _prepare_non_native_build_result(
     require_linked: bool,
     capture_link_inputs: bool = False,
     emission_origin: BackendEmissionOrigin | None = None,
+    output_validation: BackendArtifactValidation | None = None,
     compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
@@ -816,6 +821,7 @@ def _prepare_non_native_build_result(
             require_linked=require_linked,
             capture_link_inputs=capture_link_inputs,
             emission_origin=emission_origin,
+            output_validation=output_validation,
             compiler_cache_path=compiler_cache_path,
             linked_output_path=linked_output_path,
             output_artifact=output_artifact,
@@ -851,6 +857,7 @@ def _prepare_non_native_build_result_in_generation(
     require_linked: bool,
     capture_link_inputs: bool = False,
     emission_origin: BackendEmissionOrigin | None = None,
+    output_validation: BackendArtifactValidation | None = None,
     compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
@@ -1036,20 +1043,36 @@ def _prepare_non_native_build_result_in_generation(
                         artifacts[f"external_native_artifact_{index}_manifest"] = str(
                             artifact.staged_manifest_path
                         )
-            required_runtime_exports = _collect_wasm_module_import_names(
-                output_wasm, "molt_runtime"
-            )
+            try:
+                application_observation = StableRegularFileObservation.capture(
+                    output_wasm, label="WASM application link input"
+                )
+                if output_validation is None:
+                    # Standalone callers have no backend publication proof.
+                    structural_error = _validate_wasm_structural(output_wasm)
+                    if structural_error is not None:
+                        raise ValueError(structural_error)
+                    application_observation.verify(label="validated WASM application")
+                elif (
+                    output_validation.contract.kind
+                    is not BackendArtifactKind.WASM_OBJECT
+                    or not output_validation.admits(application_observation.identity)
+                ):
+                    raise ValueError(
+                        "application bytes differ from validated backend output"
+                    )
+                required_runtime_exports = _collect_wasm_module_import_names(
+                    application_observation.identity.path, "molt_runtime"
+                )
+            except (OSError, ValueError) as exc:
+                return None, _fail(
+                    f"Generated wasm module failed structural validation before linking: {exc}",
+                    json_output,
+                    command="build",
+                )
             if native_artifact_plan is not None:
                 required_runtime_exports.update(
                     native_artifact_plan.runtime_export_symbols()
-                )
-            structural_error = _validate_wasm_structural(output_wasm)
-            if structural_error is not None:
-                return None, _fail(
-                    "Generated wasm module failed structural validation before linking: "
-                    + structural_error,
-                    json_output,
-                    command="build",
                 )
             # Re-admit the selected runtime against the emitted import obligations.
             if ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(
@@ -1155,7 +1178,7 @@ def _prepare_non_native_build_result_in_generation(
                 "--runtime",
                 str(runtime_reloc_wasm),
                 "--input",
-                str(output_wasm),
+                str(application_observation.identity.path),
                 "--wasm-facts-scanner",
                 str(wasm_facts_scanner),
             ]
@@ -1197,25 +1220,33 @@ def _prepare_non_native_build_result_in_generation(
                 # producer-bound input it keys the final link and the build
                 # record, and the tool verifies its bytes before linking.
                 link_allowlist = tool.with_name("wasm_allowed_imports.txt")
-                link_observations = tuple(
-                    StableRegularFileObservation(identity, side_sdk_capture_ns)
-                    for identity in side_sdk_archives
-                ) + tuple(
-                    StableRegularFileObservation.capture(
-                        path.resolve(), label="WASM link input"
+                link_observations = (
+                    tuple(
+                        StableRegularFileObservation(identity, side_sdk_capture_ns)
+                        for identity in side_sdk_archives
                     )
-                    for path in dict.fromkeys(
-                        (
-                            output_wasm,
-                            *((stdlib_archive,) if stdlib_archive is not None else ()),
-                            app_export_contract_path,
-                            wasm_facts_scanner,
-                            linker_identity.path,
-                            link_allowlist,
-                            *external_native_fingerprint_inputs,
+                    + (application_observation,)
+                    + tuple(
+                        StableRegularFileObservation.capture(
+                            path.resolve(), label="WASM link input"
                         )
+                        for path in dict.fromkeys(
+                            (
+                                *(
+                                    (stdlib_archive,)
+                                    if stdlib_archive is not None
+                                    else ()
+                                ),
+                                app_export_contract_path,
+                                wasm_facts_scanner,
+                                linker_identity.path,
+                                link_allowlist,
+                                *external_native_fingerprint_inputs,
+                            )
+                        )
+                        if path.resolve()
+                        not in (*side_sdk_paths, application_observation.identity.path)
                     )
-                    if path.resolve() not in side_sdk_paths
                 )
                 admitted_link_inputs = tuple(
                     item.identity for item in link_observations
@@ -1329,7 +1360,7 @@ def _prepare_non_native_build_result_in_generation(
                     # Warm final-link reuse can skip the reads these authorities
                     # performed on a miss. The build record still owns them.
                     internal_inputs = {
-                        output_wasm.resolve(),
+                        application_observation.identity.path,
                         app_export_contract_path.resolve(),
                     }
                     # The backend's stdlib archive is derived from the same
@@ -1428,7 +1459,7 @@ def _prepare_non_native_build_result_in_generation(
                 output_wasm, link_fingerprint_path
             )
             if input_report.active():
-                raw = observed_link_inputs[str(output_wasm.resolve())].identity
+                raw = application_observation.identity
                 product_paths = tuple(
                     path for path in published_products.values() if path != output_wasm
                 )

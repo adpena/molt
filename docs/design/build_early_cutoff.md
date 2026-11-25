@@ -365,7 +365,12 @@ JSON WASM requests and precompiled images still run the pipeline. Deployment sou
 are reported on final-link reuse as well as fresh links. The compiler's
 stdlib archive is a derived link product, like the application object. Its
 content keys and fences the final link, while the build record binds the inputs
-that produce it. Compiler processes and the link tool read existing Python
+that produce it. Fresh backend output, a restored cache artifact and a
+synchronized output all carry structural validation to the link boundary.
+The linker admits the direct application file with its current SHA and size.
+Equal bytes reuse the backend's structural proof and the same observation
+keys the link. A changed or indirect output refuses publication.
+Compiler processes and the link tool read existing Python
 bytecode without writing new cache entries during the build. The WASM path also
 reports three other inputs:
 wasm-opt's PATH search goes through `toolchain_identity.executable_candidates`;

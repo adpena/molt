@@ -29,9 +29,10 @@ from molt.cli.backend_artifact_contract import (
     resolve_backend_artifact_contract,
 )
 from molt.cli.backend_ir_transport import BackendIrLease, BackendIrProgram
+from molt.cli.backend_artifact_contract import BackendArtifactValidation
 from molt.cli.backend_cache import (
     _artifact_sync_state_path,
-    _backend_daemon_skip_output_sync_flags,
+    _backend_daemon_output_sync,
     _read_artifact_sync_state,
     _stage_backend_output_and_caches,
     _temporary_backend_output_path,
@@ -105,7 +106,10 @@ from molt.cli.runtime_wasm_validation import _require_runtime_wasm_validator
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.artifact_publication import discard_staged_output
 from molt.file_publication import staged_file_path
-from molt.toolchain_identity import capture_stable_regular_file
+from molt.toolchain_identity import (
+    capture_stable_regular_file,
+    verify_stable_regular_file_identity,
+)
 from molt.exact_json import loads_exact
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 from molt.file_locks import _shared_cache_lock
@@ -132,6 +136,7 @@ class _BackendExecutionResult:
     backend_daemon_cache_tier: str | None
     backend_daemon_health: dict[str, Any] | None
     backend_emission_origin: BackendEmissionOrigin | None = None
+    output_validation: BackendArtifactValidation | None = None
 
 
 _MEMORY_AVAILABILITY_KEYS = (
@@ -804,6 +809,7 @@ def _execute_backend_compile(
     native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
 ) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
     backend_emission_origin: BackendEmissionOrigin | None = None
+    output_validation: BackendArtifactValidation | None = None
     target_triple = cache_setup.artifact_contract.target_triple
     # Both daemon and one-shot dispatch consume the same effective operation.
     backend_env = _backend_request_environment(
@@ -868,6 +874,7 @@ def _execute_backend_compile(
         output_artifact_stat: os.stat_result | None = None
         skip_module_output_if_synced = False
         skip_function_output_if_synced = False
+        synced_output = None
         if daemon_ready and daemon_socket is not None:
             output_sync_state_path = _artifact_sync_state_path(
                 project_root, output_artifact
@@ -877,10 +884,7 @@ def _execute_backend_compile(
                 output_artifact_stat = output_artifact.stat()
             except OSError:
                 output_artifact_stat = None
-            (
-                skip_module_output_if_synced,
-                skip_function_output_if_synced,
-            ) = _backend_daemon_skip_output_sync_flags(
+            synced_output = _backend_daemon_output_sync(
                 project_root,
                 output_artifact,
                 artifact_contract=cache_setup.artifact_contract,
@@ -898,6 +902,10 @@ def _execute_backend_compile(
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
             )
+            if synced_output is not None:
+                skip_module_output_if_synced = synced_output.tier == "module"
+                skip_function_output_if_synced = synced_output.tier == "function"
+
             if diagnostics_enabled and "backend_daemon_compile" not in phase_starts:
                 phase_starts["backend_daemon_compile"] = time.perf_counter()
             # Keep probe/full request selection centralized in
@@ -1038,16 +1046,21 @@ def _execute_backend_compile(
                     command="build",
                 )
         if not backend_output_written:
-            if not (skip_module_output_if_synced or skip_function_output_if_synced):
+            if synced_output is None:
                 return None, _fail(
                     "Backend daemon skipped output write without a synced-artifact contract",
                     json_output,
                     command="build",
                 )
-            if not output_artifact.exists():
-                return None, _fail(
-                    "Backend output missing", json_output, command="build"
+            try:
+                verify_stable_regular_file_identity(
+                    synced_output.identity, label="synchronized backend output"
                 )
+            except (OSError, ValueError) as exc:
+                return None, _fail(str(exc), json_output, command="build")
+            output_validation = BackendArtifactValidation(
+                cache_setup.artifact_contract, synced_output.identity
+            )
         if not backend_compiled:
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
@@ -1224,8 +1237,10 @@ def _execute_backend_compile(
             if staged.error is not None:
                 return None, _fail(staged.error, json_output, command="build")
             backend_emission_origin = staged.emission_origin
+            output_validation = staged.validation
     return _BackendExecutionResult(
         backend_emission_origin=backend_emission_origin,
+        output_validation=output_validation,
         backend_daemon_cached=backend_daemon_cached,
         backend_daemon_cache_tier=backend_daemon_cache_tier,
         backend_daemon_health=backend_daemon_health,
@@ -1274,6 +1289,7 @@ def _prepare_backend_compile(
     backend_compiler_fingerprint: str | None = None,
 ) -> tuple[_PreparedBackendCompile | None, _CliFailure | None]:
     backend_emission_origin = cache_setup.backend_emission_origin
+    output_validation = cache_setup.output_validation
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
@@ -1334,6 +1350,10 @@ def _prepare_backend_compile(
             backend_emission_origin = (
                 cached_output.emission_origin if cached_output is not None else None
             )
+            if cached_output is not None:
+                output_validation = BackendArtifactValidation(
+                    cache_setup.artifact_contract, cached_output.identity
+                )
         if capture_origin and cache_hit and backend_emission_origin is None:
             return None, _fail(
                 "Cached output has no original emission origin; rebuild it with capture before admission",
@@ -1418,6 +1438,7 @@ def _prepare_backend_compile(
                 return None, backend_execution_error
             assert backend_execution_result is not None
             backend_emission_origin = backend_execution_result.backend_emission_origin
+            output_validation = backend_execution_result.output_validation
             backend_daemon_cached = backend_execution_result.backend_daemon_cached
             backend_daemon_cache_tier = (
                 backend_execution_result.backend_daemon_cache_tier
@@ -1428,6 +1449,7 @@ def _prepare_backend_compile(
             )
 
     return _PreparedBackendCompile(
+        output_validation=output_validation,
         backend_emission_origin=backend_emission_origin,
         cache_enabled=cache_enabled,
         cache_hit=cache_hit,

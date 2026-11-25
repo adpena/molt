@@ -20,6 +20,7 @@ from molt.cli import backend_cache as cache
 from molt.cli import runtime_wasm_validation
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
+    BackendArtifactValidation,
     BackendArtifactKind,
     BackendArtifactValidationError,
 )
@@ -338,7 +339,7 @@ def test_structural_projection_rejects_a_different_contract(
     identity = cache._validate_backend_cache_artifact(
         source, artifact_contract=contract
     )
-    proof = cache._ValidatedBackendArtifact(contract, identity)
+    proof = BackendArtifactValidation(contract, identity)
     with pytest.raises(
         BackendArtifactValidationError, match="another artifact contract"
     ):
@@ -421,16 +422,19 @@ def test_all_backend_sync_consumers_reject_replacement_and_materialize_requested
         )
         is None
     )
-    assert cache._backend_daemon_skip_output_sync_flags(
-        tmp_path,
-        output,
-        cache_key="key",
-        function_cache_key="functions",
-        artifact_contract=contract,
-        state_path=state_path,
-        state=state,
-        output_stat=output.stat(),
-    ) == (False, False)
+    assert (
+        cache._backend_daemon_output_sync(
+            tmp_path,
+            output,
+            cache_key="key",
+            function_cache_key="functions",
+            artifact_contract=contract,
+            state_path=state_path,
+            state=state,
+            output_stat=output.stat(),
+        )
+        is None
+    )
     candidate = tmp_path / ("candidate" + contract.suffix)
     candidate.write_bytes(original)
     warnings = []
@@ -556,15 +560,18 @@ def test_daemon_sync_reuses_validation_identity_for_module_chunk_closure(
     monkeypatch.setattr(
         cache, "_native_object_has_unresolved_module_chunks", check_chunks
     )
-    assert cache._backend_daemon_skip_output_sync_flags(
-        tmp_path,
-        artifact,
-        cache_key="key",
-        function_cache_key="functions",
-        artifact_contract=contract,
-        state_path=receipt,
-        state=state,
-    ) == (True, False)
+    assert (
+        cache._backend_daemon_output_sync(
+            tmp_path,
+            artifact,
+            cache_key="key",
+            function_cache_key="functions",
+            artifact_contract=contract,
+            state_path=receipt,
+            state=state,
+        ).tier
+        == "module"
+    )
     assert len(validated) == 1
     assert closure_identities == validated
     assert closure_identities[0] is validated[0]
@@ -585,15 +592,18 @@ def test_disabled_cache_never_admits_empty_key_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cache, "_validate_backend_cache_artifact", unexpected_validation
     )
-    assert cache._backend_daemon_skip_output_sync_flags(
-        tmp_path,
-        artifact,
-        cache_key=None,
-        function_cache_key=None,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
-        state_path=receipt,
-        state=state,
-    ) == (False, False)
+    assert (
+        cache._backend_daemon_output_sync(
+            tmp_path,
+            artifact,
+            cache_key=None,
+            function_cache_key=None,
+            artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
+            state_path=receipt,
+            state=state,
+        )
+        is None
+    )
 
 
 def test_sync_matching_preserves_native_inspection_failure(tmp_path, monkeypatch):
@@ -614,7 +624,7 @@ def test_sync_matching_preserves_native_inspection_failure(tmp_path, monkeypatch
     with pytest.raises(
         native_symbol_inspection.NativeSymbolInspectionError, match="reader unavailable"
     ):
-        cache._backend_daemon_skip_output_sync_flags(
+        cache._backend_daemon_output_sync(
             tmp_path,
             artifact,
             cache_key="key",
@@ -699,13 +709,16 @@ def test_warm_output_and_daemon_share_native_chunk_closure(tmp_path, monkeypatch
             frozenset({"molt_main"}),
         ),
     )
-    assert cache._backend_daemon_skip_output_sync_flags(
-        tmp_path,
-        output,
-        cache_key="key",
-        function_cache_key="key",
-        artifact_contract=contract,
-    ) == (False, False)
+    assert (
+        cache._backend_daemon_output_sync(
+            tmp_path,
+            output,
+            cache_key="key",
+            function_cache_key="key",
+            artifact_contract=contract,
+        )
+        is None
+    )
     assert (
         cache._try_cached_backend_candidates(
             project_root=tmp_path,
