@@ -13,10 +13,6 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 import ast
-from molt.compiler_analysis.python_syntax import (
-    PYTHON_SYNTAX_NODE_TYPES,
-    require_python_syntax_target,
-)
 from molt.python_canonical_ast import canonical_python_module
 from molt.python_private_names import python_import_binding
 from bisect import bisect_left
@@ -196,8 +192,8 @@ from molt.compiler_analysis.python_imports import (
 )
 from molt.compiler_analysis.python_lexical_scope import (
     PythonDependencyAuthority,
+    PythonModuleLexicalPlan,
     PythonScopeDeclarations,
-    python_scope_declarations,
     function_annotation_expressions,
     function_parameter_names,
     function_parameter_nodes,
@@ -3588,10 +3584,7 @@ class _Analyzer:
         if self._module_read_slots_prepared:
             return
         assert self._dependency_authority is not None
-        reads = self._dependency_authority.project(
-            self._module_tree.body, variable_annotations=not self._future_annotations
-        )
-        for name in sorted(reads.lexical | reads.globals):
+        for name in self._dependency_authority.module_read_names(self._module_tree):
             self._ensure_module_slot(name)
         self._module_read_slots_prepared = True
 
@@ -9776,36 +9769,22 @@ class _Analyzer:
         *,
         ast_digest_admission: _PythonAstDigestAdmission | None,
     ) -> None:
-        self._future_annotations = any(
-            isinstance(statement, ast.ImportFrom)
-            and statement.module == "__future__"
-            and any(alias.name == "annotations" for alias in statement.names)
-            for statement in tree.body
+        lexical = (
+            PythonModuleLexicalPlan.build(tree, target_python=self.policy.target_python)
+            if ast_digest_admission is None
+            else ast_digest_admission.lexical_plan(
+                tree, target_python=self.policy.target_python
+            )
         )
-        self._dependency_authority = PythonDependencyAuthority(
-            eager_annotations=self._eager_annotations,
-            future_annotations=self._future_annotations,
-        )
-        star_import_origins = set()
-        for statement in ast.walk(tree):
-            if isinstance(statement, PYTHON_SYNTAX_NODE_TYPES):
-                require_python_syntax_target(statement, self.policy.target_python)
-            if isinstance(statement, ast.ImportFrom):
-                star_import_origins.update(
-                    python_node_source_key(alias)
-                    for alias in statement.names
-                    if alias.name == "*"
-                )
-        self._star_import_origins = frozenset(star_import_origins)
-        declarations = python_scope_declarations(
-            tree.body, eager_annotations=self._eager_annotations
-        )
+        self._future_annotations = lexical.authority.future_annotations
+        self._dependency_authority = lexical.authority
+        self._star_import_origins = lexical.star_import_origins
         module = self._new_scope(
             parent=None,
             source_node=tree,
             kind="module",
             name="<module>",
-            declarations=declarations,
+            declarations=lexical.module_declarations,
         )
         self.module_scope = module
         self._module_source = python_node_source_key(tree)
@@ -10167,13 +10146,9 @@ class _Analyzer:
         result._active_lexical_history = None
         result._initializer_premise_reads = None
         result._capture_initializer = None
-        # Stored binding states, trie nodes, syntax and projected facts are
-        # immutable. The pool's indexes and the dependency caches are private
-        # to each fork so the suffix cannot add records to the sealed prefix.
+        # Flow indexes are private. Lexical queries depend only on the admitted
+        # syntax and target, so every suffix uses the same source authority.
         result.states = _copy_analysis_containers(self.states)
-        result._dependency_authority = _copy_analysis_containers(
-            self._dependency_authority
-        )
         if empty_transfer:
             result.transfer = _BindingTransferFacts()
         else:

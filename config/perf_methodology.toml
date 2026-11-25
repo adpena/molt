@@ -76,8 +76,8 @@ schema = "molt-perf-methodology-v1"
 # Build and execution observations identify the physical backend and runtime.
 # A proven linked-runtime probe and completed call facts can prune source
 # branches directly, changing admitted dependencies and emitted instructions.
-version = 81
-content_sha256 = "93f4c3fab12cb93f41b56042cdfe7d1ec6116a54226e990b130419c083749d15"
+version = 83
+content_sha256 = "0d151b8a60b1ca2f1db7ec4c4353f216a318f6b86b250a3dc93a08715778104a"
 
 [[methodology]]
 path = "tools/safe_run.py"

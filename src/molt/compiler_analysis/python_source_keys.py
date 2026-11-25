@@ -9,11 +9,13 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
+from threading import Lock
 from typing import TYPE_CHECKING, TypeAlias, cast
 from types import MappingProxyType
 from collections.abc import Mapping
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_lexical_scope import PythonModuleLexicalPlan
     from molt.compiler_analysis.python_imports import SourceAllExports
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.compiler_analysis.python_namespace_writes import PythonNamespaceSummary
@@ -24,16 +26,27 @@ PythonSourceKey: TypeAlias = tuple[int, int, int, int, str]
 
 
 def decode_python_source_key(value: object) -> PythonSourceKey:
+    if not isinstance(value, (list, tuple)) or len(value) != 5:
+        raise ValueError("invalid source-owner identity")
+    line, column, end_line, end_column, kind = value
     if (
-        not isinstance(value, (list, tuple))
-        or len(value) != 5
-        or not all(type(part) is int for part in value[:4])
-        or not isinstance(value[4], str)
+        type(line) is not int
+        or type(column) is not int
+        or type(end_line) is not int
+        or type(end_column) is not int
+        or not isinstance(kind, str)
     ):
         raise ValueError("invalid source-owner identity")
-    if min(value[:4]) < 0 or tuple(value[:2]) > tuple(value[2:4]) or not value[4]:
+    if (
+        line < 0
+        or column < 0
+        or end_line < line
+        or end_column < 0
+        or (end_line == line and end_column < column)
+        or not kind
+    ):
         raise ValueError("invalid source-owner span")
-    return tuple(value)
+    return (line, column, end_line, end_column, kind)
 
 
 class PythonSourceProjection(StrEnum):
@@ -276,7 +289,26 @@ class _PythonAstDigestAdmission:
         tuple[tuple[int, int], str | None], PythonNamespaceSummary
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
+    _lexical_plans: dict[tuple[int, int], PythonModuleLexicalPlan] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _lexical_plan_lock: Lock = field(
+        default_factory=Lock, init=False, repr=False, compare=False
+    )
     _canonical: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def lexical_plan(
+        self, tree: ast.Module, *, target_python: tuple[int, int]
+    ) -> PythonModuleLexicalPlan:
+        from molt.compiler_analysis.python_lexical_scope import PythonModuleLexicalPlan
+
+        self.canonical_tree(tree)
+        with self._lexical_plan_lock:
+            plan = self._lexical_plans.get(target_python)
+            if plan is None:
+                plan = PythonModuleLexicalPlan.build(tree, target_python=target_python)
+                self._lexical_plans[target_python] = plan
+            return plan
 
     def canonical_tree(self, tree: ast.Module) -> ast.Module:
         if self.tree is not tree:
