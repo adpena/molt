@@ -1482,20 +1482,6 @@ class FunctionCells:
         return {module: len(rows) for module, rows in self.cells.items()}
 
 
-def _consuming_proven_call(
-    ops: Sequence[Mapping[str, Any]], start: int, callable_var: str
-) -> Mapping[str, Any] | None:
-    """The proven ``call_guarded`` whose callable is ``callable_var``."""
-    for op in ops[start + 1 :]:
-        if (
-            op.get("kind") == "call_guarded"
-            and op.get("proven_target")
-            and (op.get("args") or (None,))[0] == callable_var
-        ):
-            return op
-    return None
-
-
 def _proven_method_loads(
     execution: _ModuleExecution,
     initializer: ModuleInitializerFacts,
@@ -1507,20 +1493,43 @@ def _proven_method_loads(
     for func in execution.functions:
         name = func.get("name", "")
         ops = func.get("ops", ())
-        for index, op in enumerate(ops):
-            if op.get("kind") not in _METHOD_LOADS or not op.get("proven_target"):
-                continue
+        loads = [
+            (index, op)
+            for index, op in enumerate(ops)
+            if op.get("kind") in _METHOD_LOADS and op.get("proven_target")
+        ]
+        if not loads:
+            continue
+        # Each load selects the first strictly following proven call. Resolve
+        # those uses and bound-pair escapes once, rather than scanning the
+        # function again for every method load.
+        used_values: set[str] = set()
+        following_calls: dict[str, int] = {}
+        consuming_calls: dict[int, int] = {}
+        for index in range(len(ops) - 1, -1, -1):
+            op = ops[index]
+            args = op.get("args") or ()
+            used_values.update(arg for arg in args if isinstance(arg, str))
+            if (
+                op.get("kind") == "call_guarded"
+                and op.get("proven_target")
+                and args
+                and isinstance(args[0], str)
+            ):
+                following_calls[args[0]] = index
+            elif op.get("kind") in _METHOD_LOADS and op.get("proven_target"):
+                callable_var = op.get("var")
+                if isinstance(callable_var, str) and callable_var in following_calls:
+                    consuming_calls[index] = following_calls[callable_var]
+        for index, op in loads:
             callable_var = op.get("var")
-            call = (
-                _consuming_proven_call(ops, index, callable_var)
-                if isinstance(callable_var, str)
-                else None
-            )
+            call_index = consuming_calls.get(index)
+            call = ops[call_index] if call_index is not None else None
             symbol = call.get("s_value") if call is not None else None
             if not isinstance(callable_var, str) or not isinstance(symbol, str):
                 continue
             pair = op.get("out")
-            if any(pair in (other.get("args") or ()) for other in ops):
+            if pair in used_values:
                 diagnostics.append(
                     f"{module}:{op.get('source_line')} {symbol}: method load kept: "
                     "its bound pair is read"

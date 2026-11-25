@@ -628,6 +628,15 @@ pub fn run_late_lowering(
     target_info: &TargetInfo,
     linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
 ) -> bool {
+    let targets = passes::fast_path_expansion::guarded_targets(func, linkage, &Default::default());
+    run_late_lowering_with_targets(func, target_info, &targets)
+}
+
+pub(crate) fn run_late_lowering_with_targets(
+    func: &mut TirFunction,
+    target_info: &TargetInfo,
+    targets: &passes::fast_path_expansion::GuardedTargets,
+) -> bool {
     use Mutates::*;
     // The stage reads the linkage rows of this function's guarded targets, so
     // it runs directly: a registered pass is a plain function pointer.
@@ -635,8 +644,7 @@ pub fn run_late_lowering(
     // block and needs no cleanup of its own.
     let native = passes::native_call_expansion::run(func).total_changes();
     let identity = passes::value_identity::fold_forwarded_identity(func);
-    let targets = passes::fast_path_expansion::guarded_targets(func, linkage);
-    let expanded = passes::fast_path_expansion::run(func, &targets).total_changes();
+    let expanded = passes::fast_path_expansion::run(func, targets).total_changes();
     if expanded == 0 && !molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths() {
         return native != 0 || identity;
     }

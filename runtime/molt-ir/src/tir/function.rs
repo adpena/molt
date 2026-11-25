@@ -240,6 +240,31 @@ impl TirFunction {
                 *boundary = to;
             }
         }
+        self.move_loop_end(from, to);
+    }
+
+    /// Move terminators from original blocks to distinct fresh continuations
+    /// after a batch of splits. The map contains only the final destination
+    /// for each original block, so loop metadata needs one traversal.
+    pub fn remap_loop_terminators(&mut self, moved: &HashMap<BlockId, BlockId>) {
+        if moved.is_empty() {
+            return;
+        }
+        for boundary in self
+            .loop_cond_blocks
+            .values_mut()
+            .chain(self.loop_pairs.values_mut())
+        {
+            if let Some(&target) = moved.get(boundary) {
+                *boundary = target;
+            }
+        }
+        for (&from, &to) in moved {
+            self.move_loop_end(from, to);
+        }
+    }
+
+    fn move_loop_end(&mut self, from: BlockId, to: BlockId) {
         if self.loop_roles.get(&from) == Some(&LoopRole::LoopEnd) {
             self.loop_roles.remove(&from);
             self.loop_roles.insert(to, LoopRole::LoopEnd);

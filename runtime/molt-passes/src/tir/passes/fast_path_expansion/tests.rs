@@ -749,7 +749,11 @@ fn guarded_call(adopts: bool) -> (TirFunction, ValueId) {
 fn targets(arity: usize, has_closure: bool) -> GuardedTargets {
     GuardedTargets::from([(
         molt_ir::FunctionId(0),
-        super::CalleeFacts { arity, has_closure },
+        super::CalleeFacts {
+            arity,
+            has_closure,
+            callback_free: false,
+        },
     )])
 }
 
@@ -855,7 +859,7 @@ fn a_closure_target_or_an_arity_mismatch_keeps_the_runtime_lane() {
 fn a_guarded_target_without_a_signature_is_a_compiler_error() {
     let (func, _) = guarded_call(true);
     let table = molt_ir::linkage_abi::FunctionSignatures::new();
-    super::guarded_targets(&func, Some(&table));
+    super::guarded_targets(&func, Some(&table), &Default::default());
 }
 
 /// `i = 0; while i < 100: total = total + i; i = i + 1; return total`, with
