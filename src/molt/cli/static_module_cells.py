@@ -63,6 +63,14 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, Literal
 
+from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
+from molt._public_objects_generated import (
+    PUBLIC_DIRECT_CALL_BINDINGS,
+    PUBLIC_OBJECTS,
+    PublicObjectKind,
+)
+from molt._wasm_abi_generated import wasm_runtime_callable_arity
+from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.typed_cache import typed_cache
 from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_BITS,
@@ -88,6 +96,8 @@ _VALUE_KINDS: Mapping[str, InitOnceKind] = {
     "builtin_func": "intrinsic",
 }
 
+_DIRECT_PUBLIC_INTRINSICS = frozenset(PUBLIC_DIRECT_CALL_BINDINGS.values())
+
 
 @dataclass(frozen=True)
 class InitOnce:
@@ -106,6 +116,9 @@ class InitOnce:
     value: str | None = None
     producer: Mapping[str, Any] | None = field(default=None, compare=False, repr=False)
     class_definition: str | None = None
+    # Exact positional ABI or the reason that invoking the captured object
+    # still needs Python's call binder.
+    intrinsic_abi: tuple[str, int] | str | None = None
 
 
 @dataclass(frozen=True)
@@ -261,6 +274,11 @@ def _init_once_facts(
             value_kind: InitOnceKind = "module"
         else:
             value_kind = _VALUE_KINDS.get(str(kind), "other")
+        intrinsic_abi = (
+            _captured_intrinsic_abi(producer, initializer, store.function)
+            if kind == "builtin_func" and producer is not None
+            else None
+        )
         found[name] = InitOnce(
             value_kind,
             store.function,
@@ -269,6 +287,7 @@ def _init_once_facts(
             store.value,
             producer,
             store.class_definition if value_kind == "class" else None,
+            intrinsic_abi,
         )
     return found
 
@@ -874,24 +893,52 @@ def _task_constructor(
     return [*packing, task]
 
 
-def _intrinsic_call(
-    call: Mapping[str, Any], producer: Mapping[str, Any] | None
-) -> dict[str, Any] | str:
-    """The direct intrinsic call that a generic call of an
-    ``InitOnce(intrinsic)`` cell is, or why it stays generic.
-
-    The cell's one store binds a ``builtin_func`` of the canonical intrinsic
-    ``S`` with ABI arity ``n``; no code in the program writes the cell
-    afterward. A positional call with exactly ``n`` arguments therefore calls
-    ``S``: the same ``call`` the frontend emits for ``require_intrinsic("S")(...)``
-    (``_emit_intrinsic_call``). A runtime intrinsic is no function of the
-    program, so its direct entry borrows its arguments, as there."""
-    if producer is None or producer.get("kind") != "builtin_func":
-        return "the cell's store is not a builtin_func"
+def _captured_intrinsic_abi(
+    producer: Mapping[str, Any], initializer: ModuleInitializerFacts, function: str
+) -> tuple[str, int] | str:
+    """Resolve the executable declaration and its Python positional ABI."""
     symbol = producer.get("s_value")
     arity = producer.get("value")
-    if not isinstance(symbol, str) or not isinstance(arity, int):
+    if not isinstance(symbol, str) or type(arity) is not int:
         return "the cell's builtin_func has no symbol and arity"
+    if wasm_runtime_callable_arity(symbol) != arity:
+        return "the cell's builtin_func does not match a runtime callable ABI"
+    names = producer.get("args") or ()
+    if len(names) != 1 or not isinstance(names[0], str):
+        return "the cell's builtin_func has no proven intrinsic name operand"
+    operand = initializer.producers.get((function, names[0]))
+    if (
+        operand is None
+        or operand.get("kind") != "const_str"
+        or not isinstance(declaration := operand.get("s_value"), str)
+    ):
+        return "the cell's builtin_func name operand is not a literal"
+    # The runtime can acquire a replacement from the current builtins
+    # namespace for these spellings. The builtin_name metadata is not read
+    # by the constructor.
+    if declaration in BUILTIN_FUNC_SPECS:
+        return f"the name operand {declaration!r} reads the active builtins namespace"
+    if declaration.startswith("_molt_") and declaration not in INTRINSIC_SIGNATURES:
+        declaration = declaration[1:]
+    if INTRINSIC_SIGNATURES.get(declaration) != (symbol, arity):
+        return "the name operand does not select the declared intrinsic and arity"
+    public = PUBLIC_OBJECTS.get(declaration)
+    if (
+        public is not None
+        and public.kind is PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD
+        and declaration not in _DIRECT_PUBLIC_INTRINSICS
+    ):
+        return "the intrinsic's Python binder does not admit a direct full-arity call"
+    return symbol, arity
+
+
+def _intrinsic_call(
+    call: Mapping[str, Any], abi: tuple[str, int] | str
+) -> dict[str, Any] | str:
+    """Call an InitOnce intrinsic's proven ABI with its full positional arity."""
+    if isinstance(abi, str):
+        return abi
+    symbol, arity = abi
     args = list(call.get("args") or ())
     supplied = len(args) - 1
     if supplied != arity:
@@ -961,18 +1008,18 @@ def prove_init_once_calls(
     (copy-on-write, as the global slot stamps are). A generic ``call_func``
     whose callee is such a read of a generator function becomes the frame's
     ``alloc_task`` (``_task_constructor``), and one whose callee is a read of
-    an ``InitOnce(intrinsic)`` cell becomes the direct intrinsic call
-    (``_intrinsic_call``). Return a diagnostic for each such call that keeps
+    an ``InitOnce(intrinsic)`` cell with a proven call ABI becomes a direct
+    intrinsic call. Return a diagnostic for each such call that keeps
     its guards or stays generic."""
     position, views = _init_once_views(functions, module_functions)
     from molt.cli.frontend_integration import on_demand_initialized_modules
 
-    imported: dict[tuple[str, str], Mapping[str, Any] | None] = {}
+    imported: dict[tuple[str, str], tuple[str, int] | str | None] = {}
     on_demand = (
         on_demand_initialized_modules(dependencies) if dependencies else frozenset()
     )
 
-    def intrinsic_origin(key: tuple[str, str]) -> Mapping[str, Any] | None:
+    def intrinsic_origin(key: tuple[str, str]) -> tuple[str, int] | str | None:
         # Resolve only cells actually called, memoizing shared reexport tails.
         path: set[tuple[str, str]] = set()
         result = None
@@ -986,7 +1033,7 @@ def prove_init_once_calls(
             if row is None:
                 break
             if row.value_kind == "intrinsic":
-                result = row.producer
+                result = row.intrinsic_abi
                 break
             if initializers is None or namespaces is None or dependencies is None:
                 break
@@ -1037,9 +1084,9 @@ def prove_init_once_calls(
                 if (
                     fact is not None
                     and kind == "call_func"
-                    and (producer := intrinsic_origin(read)) is not None
+                    and (abi := intrinsic_origin(read)) is not None
                 ):
-                    direct = _intrinsic_call(op, producer)
+                    direct = _intrinsic_call(op, abi)
                     if isinstance(direct, str):
                         diagnostics.append(
                             f"{module}:{op.get('source_line')} {global_name}(): "

@@ -1205,19 +1205,27 @@ def test_a_dominated_read_carries_the_class_object_published_by_the_initializer(
     assert "class_definition" not in _scale_read(functions)
 
 
-def _intrinsic_call_program(supplied: int) -> list[dict[str, Any]]:
+def _intrinsic_call_program(
+    supplied: int,
+    *,
+    symbol: str = "molt_sys_intern",
+    declaration: str = "molt_sys_intern",
+    builtin_name: str | None = None,
+    arity: int = 1,
+) -> list[dict[str, Any]]:
     """``mod`` binds ``_INTERN = require_intrinsic("molt_sys_intern")`` (a
     ``builtin_func`` of arity 1) once, and ``caller`` calls it generically."""
     init = _function(
         "pyinit.mod",
         _const("nm", "mod"),
         {"kind": "module_new", "args": ["nm"], "out": "m"},
-        _const("bn", "molt_sys_intern"),
+        _const("bn", declaration),
         {
             "kind": "builtin_func",
-            "s_value": "molt_sys_intern",
-            "value": 1,
+            "s_value": symbol,
+            "value": arity,
             "args": ["bn"],
+            "builtin_name": declaration if builtin_name is None else builtin_name,
             "out": "f_intern",
             "source_line": 3,
         },
@@ -1241,11 +1249,14 @@ def _intrinsic_call_program(supplied: int) -> list[dict[str, Any]]:
     return [init, caller]
 
 
-def test_a_call_of_an_init_once_intrinsic_cell_is_the_direct_intrinsic_call() -> None:
+@pytest.mark.parametrize("declaration", ["molt_sys_intern", "_molt_sys_intern"])
+def test_a_call_of_an_init_once_intrinsic_cell_is_the_direct_intrinsic_call(
+    declaration: str,
+) -> None:
     """The cell holds one builtin_func for the whole program (closed world), so
     an exact positional call is the frontend's direct intrinsic call: no
     callable to find, bind or admit at run time."""
-    functions, diagnostics = _prove(_intrinsic_call_program(1))
+    functions, diagnostics = _prove(_intrinsic_call_program(1, declaration=declaration))
     assert diagnostics == []
     (call,) = [op for f in functions for op in f["ops"] if op.get("out") == "r"]
     assert call == {
@@ -1269,6 +1280,27 @@ def test_an_intrinsic_cell_call_with_another_arity_stays_generic() -> None:
 
 
 @pytest.mark.parametrize(
+    ("symbol", "declaration", "arity"),
+    [
+        ("molt_len", "len", 1),
+        ("molt_sys_intern", "molt_operator_index", 1),
+        ("molt_math_prod", "molt_math_prod", 2),
+        ("molt_math_isclose", "molt_math_isclose", 4),
+    ],
+)
+def test_cell_capture_requires_the_executed_intrinsic_declaration(
+    symbol: str, declaration: str, arity: int
+) -> None:
+    source = _intrinsic_call_program(
+        arity, symbol=symbol, declaration=declaration, builtin_name=symbol, arity=arity
+    )
+    expected = next(op for op in source[1]["ops"] if op.get("out") == "r")
+    functions, _ = _prove(source)
+    (call,) = [op for f in functions for op in f["ops"] if op.get("out") == "r"]
+    assert call == expected
+
+
+@pytest.mark.parametrize(
     "refusal",
     [None, "provider write", "custom module class", "cycle", "on demand", "arity"],
 )
@@ -1287,6 +1319,7 @@ def test_reexported_intrinsic_calls_follow_the_actual_initialized_cells(
             "s_value": "molt_operator_index",
             "value": 1,
             "args": ["sym"],
+            "builtin_name": "molt_operator_index",
             "out": "fn",
         },
         *_store("published", "fn", 3),

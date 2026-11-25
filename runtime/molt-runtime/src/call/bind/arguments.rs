@@ -111,11 +111,12 @@ pub(super) enum Admission {
     Copy,
 }
 
-/// Public C-API spans are borrowed only through synchronous dispatch. Source
-/// instructions own their vectors; receiver insertion explicitly promotes just
-/// the positional span before it can mutate or acquire argument ownership.
+/// Positional word storage and custody are independent. A synchronous source
+/// call may own the references in its caller's stable entry span. C-API
+/// spans own no references, and receiver insertion materializes either span.
 enum PositionalArguments<'a> {
     Owned(Vec<u64>),
+    Adopted(&'a [u64]),
     Borrowed(&'a [u64]),
 }
 impl Default for PositionalArguments<'_> {
@@ -128,7 +129,7 @@ impl std::ops::Deref for PositionalArguments<'_> {
     fn deref(&self) -> &[u64] {
         match self {
             Self::Owned(values) => values,
-            Self::Borrowed(values) => values,
+            Self::Adopted(values) | Self::Borrowed(values) => values,
         }
     }
 }
@@ -136,14 +137,20 @@ impl PositionalArguments<'_> {
     fn owned_mut(&mut self) -> &mut Vec<u64> {
         match self {
             Self::Owned(values) => values,
-            Self::Borrowed(_) => unreachable!("borrowed C-API operands require explicit promotion"),
+            Self::Adopted(_) | Self::Borrowed(_) => {
+                unreachable!("shared positional storage requires explicit promotion")
+            }
         }
     }
     fn capacity(&self) -> usize {
         match self {
             Self::Owned(values) => values.capacity(),
-            Self::Borrowed(_) => 0,
+            Self::Adopted(_) | Self::Borrowed(_) => 0,
         }
+    }
+
+    fn owns_references(&self) -> bool {
+        !matches!(self, Self::Borrowed(_))
     }
 }
 
@@ -567,24 +574,25 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         }
     }
 
-    /// A call instruction's adopted positional operands, `receiver` first when
-    /// the instruction adopted one. The instruction's references move here
-    /// without reference traffic; if the vector cannot be allocated they end
-    /// as the instruction's inputs (`release_stack_arguments`).
+    /// Adopt the references in the call entry's stable positional span. When
+    /// the instruction also owns a receiver, materialize their combined order.
     pub(super) fn moved(
         py: &'a PyToken<'py>,
         receiver: Option<u64>,
-        positional: &[u64],
+        positional: &'a [u64],
     ) -> Result<Self, u64> {
         let mut arguments = Self::empty(py, CallForm::Stack);
-        let receivers = usize::from(receiver.is_some());
+        let Some(receiver) = receiver else {
+            arguments.positional = PositionalArguments::Adopted(positional);
+            return Ok(arguments);
+        };
         if arguments
             .positional
             .owned_mut()
-            .try_reserve_exact(receivers + positional.len())
+            .try_reserve_exact(1 + positional.len())
             .is_err()
         {
-            release_stack_arguments(py, receiver, positional);
+            release_stack_arguments(py, Some(receiver), positional);
             return Err(raise_exception::<_>(
                 py,
                 BuiltinExc::MemoryError,
@@ -595,7 +603,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             (arguments.positional.capacity() * std::mem::size_of::<u64>()) as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-        arguments.positional.owned_mut().extend(receiver);
+        arguments.positional.owned_mut().push(receiver);
         arguments
             .positional
             .owned_mut()
@@ -647,7 +655,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
     /// parameters; this call releases none of them afterwards.
     pub(super) fn surrender_positional(&mut self) -> &[u64] {
         debug_assert!(
-            matches!(self.positional, PositionalArguments::Owned(_)),
+            self.positional.owns_references(),
             "C-API borrowed arguments cannot move into a frame"
         );
         let start = std::mem::replace(&mut self.positional_start, self.positional.len());
@@ -665,7 +673,9 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             self.positional_start, 0,
             "receivers bind before any transfer"
         );
-        if let PositionalArguments::Borrowed(values) = &self.positional {
+        if let PositionalArguments::Borrowed(values) | PositionalArguments::Adopted(values) =
+            &self.positional
+        {
             let mut owned = Vec::new();
             let Some(count) = values.len().checked_add(1) else {
                 return Err(raise_exception::<_>(
@@ -683,10 +693,12 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             }
             inc_ref_bits(self.py, bits);
             owned.push(bits);
-            for &value in *values {
-                inc_ref_bits(self.py, value);
-                owned.push(value);
+            if !self.positional.owns_references() {
+                for &value in *values {
+                    inc_ref_bits(self.py, value);
+                }
             }
+            owned.extend_from_slice(values);
             ALLOC_BYTES_CALLARGS.fetch_add(
                 (owned.capacity() * std::mem::size_of::<u64>()) as u64,
                 std::sync::atomic::Ordering::Relaxed,
@@ -853,7 +865,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
     /// frame slot.
     pub(super) fn take_positional(&mut self) -> u64 {
         debug_assert!(
-            matches!(self.positional, PositionalArguments::Owned(_)),
+            self.positional.owns_references(),
             "C-API borrowed arguments cannot move into a frame"
         );
         let bits = self.positional[self.positional_start];
@@ -865,7 +877,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
     /// frame's `*args` tuple. Ownership transfers only when the tuple exists.
     pub(super) fn take_positional_tuple(&mut self) -> Option<u64> {
         debug_assert!(
-            matches!(self.positional, PositionalArguments::Owned(_)),
+            self.positional.owns_references(),
             "C-API borrowed arguments cannot move into a frame"
         );
         let tuple = crate::object::builders::alloc_tuple_owned(self.py, self.positional());
@@ -952,9 +964,10 @@ impl Drop for CallArguments<'_, '_> {
     fn drop(&mut self) {
         let py = self.py;
         let positional = std::mem::take(&mut self.positional);
-        let positional = match &positional {
-            PositionalArguments::Owned(values) => &values[self.positional_start..],
-            PositionalArguments::Borrowed(_) => &[],
+        let positional = if positional.owns_references() {
+            &positional[self.positional_start..]
+        } else {
+            &[]
         };
         let keywords = std::mem::replace(
             &mut self.keywords,
