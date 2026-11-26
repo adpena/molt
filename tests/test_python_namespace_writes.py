@@ -1688,7 +1688,10 @@ def test_own_namespace_literal_delete_spelling(source: str, name: str | None) ->
     [
         # A module value handed on escapes; an attribute access keeps it here.
         ("import m\npatch(m)\n", {("m", None, "module_escape")}),
-        ("import m\nm.f()\nprint(m.x)\nif m: pass\n", set()),
+        (
+            "import m\nm.f()\nprint(m.x)\nif m: pass\n",
+            {("m.x", None, "module_escape")},
+        ),
         ("import os\nos.path.join('a')\n", set()),
         (
             "import os\nholder.p = os.path\n",
@@ -1727,11 +1730,11 @@ def test_own_namespace_literal_delete_spelling(source: str, name: str | None) ->
                 (None, None, "own_module_escape"),
             },
         ),
-        # A function-local alias that is only read keeps its module here.
+        # The raw summary leaves the call's borrow to the typed transfer.
         (
             "import sys\ndef f(name):\n    m = sys.modules[name]\n"
             "    return getattr(m, 'x')\n",
-            set(),
+            {(None, None, "module_escape")},
         ),
         # A store through an alias writes the module: the value escapes.
         (
