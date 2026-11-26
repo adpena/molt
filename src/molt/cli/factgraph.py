@@ -8,16 +8,15 @@ from molt.compilation_target import Target, TargetKind, target_name
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-import subprocess
 import sys
-from typing import Any, get_args
-from molt import file_publication
-from molt.artifact_publication import discard_staged_output
-from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
-from molt.cli.build_request import BuildRequest, FactGraphRequest
+from typing import TYPE_CHECKING, Any, get_args
 from molt.type_facts import TypeHintPolicy
-from molt.cli.config_resolution import _select_codegen_backend
 from molt.native_target import NativeArtifactKind
+
+if TYPE_CHECKING:
+    import subprocess
+
+    from molt.cli.build_request import BuildRequest, FactGraphRequest
 
 
 def add_factgraph_parser(
@@ -131,6 +130,12 @@ def execute_backend_fact_graph(
     entry_override_env: str,
     finalize_inputs: Callable[[], None] | None = None,
 ) -> int | None:
+    import subprocess
+
+    from molt import file_publication
+    from molt.artifact_publication import discard_staged_output
+    from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
+
     try:
         destination = file_publication.canonical_file_leaf(
             request.output_path, create_parent=True, role="TIR fact graph output"
@@ -229,13 +234,11 @@ def execute_backend_fact_graph(
 def resolve_request_output_path(
     request: FactGraphRequest, project_root: Path
 ) -> FactGraphRequest:
+    from dataclasses import replace
+
     if request.output_path.is_absolute():
         return request
-    return FactGraphRequest(
-        output_path=project_root / request.output_path,
-        function_name=request.function_name,
-        requested_target=request.requested_target,
-    )
+    return replace(request, output_path=project_root / request.output_path)
 
 
 def emit_pipeline_fact_graph(
@@ -372,6 +375,9 @@ def run_factgraph_command(
             args.json,
             command="factgraph",
         )
+    from molt.cli.build_request import BuildRequest, FactGraphRequest
+    from molt.cli.config_resolution import _select_codegen_backend
+
     target = args.target
     backend_choice = args.backend or "auto"
     target, codegen_backend, backend_error = _select_codegen_backend(
