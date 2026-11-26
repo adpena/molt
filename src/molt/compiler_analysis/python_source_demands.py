@@ -492,24 +492,7 @@ class PythonSourceDemands:
             value = (module_name, call.owner)
             previous = self.calls.get(value)
             if previous is not None:
-                call = call._replace(
-                    callees=call.callees | previous.callees,
-                    intrinsic_result=call.intrinsic_result | previous.intrinsic_result,
-                    arguments=tuple(
-                        (name, origins | prior[1], exposed | prior[2])
-                        for (name, origins, exposed), prior in zip(
-                            call.arguments, previous.arguments, strict=True
-                        )
-                    ),
-                    argument_strings=tuple(
-                        name if name == prior else None
-                        for name, prior in zip(
-                            call.argument_strings,
-                            previous.argument_strings,
-                            strict=True,
-                        )
-                    ),
-                )
+                call = call.join(previous)
             if self._publish(self.calls, value, call) and (
                 previous is None
                 or call.callees != previous.callees
@@ -962,6 +945,8 @@ class PythonSourceDemands:
                     unbound.add(member)
                     binding_changed = True
             selected.update(members)
+            if method and candidate.kind == "namespace" and not members:
+                self.activate(candidate, "escape")
             if source_class and (
                 # The instance mapping is a writer no member store names.
                 (candidate.kind == "instance" and name == "__dict__")
@@ -1359,9 +1344,9 @@ class PythonSourceDemands:
     ) -> None:
         module_name, owner = origin.value
         if phase == "method":
-            # A source class or instance receiver is bound where its attribute
-            # is selected (`_select_attribute`); any other receiver escapes.
-            if not self._source_class_candidate(origin):
+            # Class and namespace receivers are bound by attribute selection,
+            # which knows the member and can distinguish a borrow from escape.
+            if origin.kind != "namespace" and not self._source_class_candidate(origin):
                 self.activate(origin, "escape", arguments)
             return
         if origin.kind.startswith("namespace"):

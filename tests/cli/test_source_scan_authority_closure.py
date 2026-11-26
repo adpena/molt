@@ -2635,6 +2635,34 @@ def test_synthetic_intrinsic_from_has_no_foreign_source_body_or_import_request()
     assert "pkg._intrinsics" in ordinary
 
 
+@pytest.mark.parametrize("definition", ["class subject: pass", "def subject(): pass"])
+@pytest.mark.parametrize(
+    ("decorators", "use", "expected"),
+    [
+        ("@replace_subject", "", False),
+        ("@replace_subject", "subject()", True),
+        ("@run_result\n@replace_subject", "", True),
+    ],
+)
+def test_decorator_replacement_retains_its_actual_execution_demand(
+    tmp_path: Path, definition: str, decorators: str, use: str, expected: bool
+) -> None:
+    entry = _source(
+        tmp_path / "probe.py",
+        "def replace_subject(original):\n"
+        "    def replacement():\n"
+        "        import replacement_leaf\n"
+        "    return replacement\n"
+        "def run_result(callback):\n"
+        "    callback()\n"
+        "    return callback\n"
+        f"{decorators}\n{definition}\n{use}\n",
+    )
+    _source(tmp_path / "replacement_leaf.py", "pass\n")
+    graph = _discover(entry, tmp_path, full=True, project=tmp_path).graph
+    assert ("replacement_leaf" in graph) is expected
+
+
 def test_ordinary_class_decorator_consumes_class_namespace_methods(tmp_path):
     source = "def decorate(cls):\n    cls.enter()\n    return cls\n@decorate\nclass Box:\n    @staticmethod\n    def enter():\n        import decorator_leaf\n"
     entry = _source(tmp_path / "entry.py", source)
