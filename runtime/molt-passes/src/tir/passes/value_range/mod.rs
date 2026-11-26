@@ -43,11 +43,11 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 
-use crate::tir::analysis::{Analysis, AnalysisId, LoopForest, LoopForestResult};
+use crate::tir::analysis::{Analysis, AnalysisId, AnalysisManager, LoopForest, LoopForestResult};
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::{IntRange, ScevExpr};
 
-use super::scev::{ScevResult, compute_scev_with_loop_forest};
+use super::scev::{ScalarEvolution, ScevResult, compute_scev_with_loop_forest};
 use super::value_identity::ScalarFacts;
 
 pub use crate::tir::value_range::ValueRangeResult;
@@ -72,7 +72,31 @@ impl Analysis for ValueRange {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = true;
     fn compute(func: &TirFunction) -> Self::Result {
-        compute_with_scalar_facts(&ScalarFacts::new(func))
+        Self::compute_in(func, &mut AnalysisManager::new())
+    }
+
+    fn compute_in(func: &TirFunction, analyses: &mut AnalysisManager) -> Self::Result {
+        let facts = ScalarFacts::new(func);
+        analyses.get::<LoopForest>(func);
+        if analyses.cached::<ScalarEvolution>().is_none() {
+            // Reuse this solve's scalar provenance while establishing the
+            // recurrence facts consumed by both analyses.
+            let forest = analyses
+                .cached::<LoopForest>()
+                .expect("prepared loop forest");
+            let scev = compute_scev_with_loop_forest(&facts, forest);
+            analyses.prepopulate::<ScalarEvolution>(scev);
+        }
+        compute_seeded(
+            &facts,
+            analyses
+                .cached::<ScalarEvolution>()
+                .expect("prepared scalar evolution"),
+            analyses
+                .cached::<LoopForest>()
+                .expect("prepared loop forest"),
+            None,
+        )
     }
 }
 

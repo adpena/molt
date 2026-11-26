@@ -163,10 +163,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, split_polls: bool) 
     if placed || !eligible(func) {
         return stats;
     }
+    if am.get::<LoopForest>(func).headers.is_empty() {
+        return stats;
+    }
+    am.get::<ImmediateDoms>(func);
     let repr = representation(func);
-    let forest = am.get::<LoopForest>(func).clone();
-    let doms = am.get::<ImmediateDoms>(func).clone();
-    let Some(plan) = Planner::new(func, &forest, &doms, &repr, split_polls).plan() else {
+    let forest = am.cached::<LoopForest>().expect("prepared loop forest");
+    let doms = am
+        .cached::<ImmediateDoms>()
+        .expect("prepared dominator tree");
+    let Some(plan) = Planner::new(func, forest, doms, &repr, split_polls).plan() else {
         return stats;
     };
     let snapshot = func.clone();

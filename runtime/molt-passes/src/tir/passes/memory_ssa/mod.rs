@@ -93,7 +93,7 @@ pub use access::{LIVE_ON_ENTRY, MemAccess, MemVersion, MemorySsaResult};
 pub use builder::compute_standalone;
 pub use classify::typed_slot_store_value;
 
-use crate::tir::analysis::{Analysis, AnalysisId};
+use crate::tir::analysis::{Analysis, AnalysisId, AnalysisManager};
 use crate::tir::function::TirFunction;
 
 use super::alias_analysis::AliasAnalysis;
@@ -112,11 +112,10 @@ impl Analysis for MemorySSA {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = true;
     fn compute(func: &TirFunction) -> Self::Result {
-        // Derive the alias substrate through its own `Analysis` interface —
-        // the same inline-dependency pattern `ValueRange::compute` uses for
-        // SCEV (`Analysis::compute` only receives the function, so a dependent
-        // analysis recomputes its input; the manager memoizes *this* result).
-        let alias = AliasAnalysis::compute(func);
-        compute_standalone(func, &alias)
+        Self::compute_in(func, &mut AnalysisManager::new())
+    }
+
+    fn compute_in(func: &TirFunction, analyses: &mut AnalysisManager) -> Self::Result {
+        compute_standalone(func, analyses.get::<AliasAnalysis>(func))
     }
 }

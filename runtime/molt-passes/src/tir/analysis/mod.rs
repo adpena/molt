@@ -146,6 +146,11 @@ pub trait Analysis {
 
     /// Compute the analysis from scratch.
     fn compute(func: &TirFunction) -> Self::Result;
+
+    /// Compute with the current body's cached dependencies.
+    fn compute_in(func: &TirFunction, _analyses: &mut AnalysisManager) -> Self::Result {
+        Self::compute(func)
+    }
 }
 
 /// Executable loop forest: dominator-proven backedges and the natural-loop
@@ -187,8 +192,11 @@ impl Analysis for ImmediateDoms {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = false;
     fn compute(func: &TirFunction) -> Self::Result {
-        let pred_map = dominators::build_pred_map(func);
-        dominators::compute_dominator_tree(func, &pred_map)
+        Self::compute_in(func, &mut AnalysisManager::new())
+    }
+
+    fn compute_in(func: &TirFunction, analyses: &mut AnalysisManager) -> Self::Result {
+        dominators::compute_dominator_tree(func, analyses.get::<PredMap>(func))
     }
 }
 
@@ -200,9 +208,11 @@ impl Analysis for DomChildren {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = false;
     fn compute(func: &TirFunction) -> Self::Result {
-        let pred_map = dominators::build_pred_map(func);
-        let tree = dominators::compute_dominator_tree(func, &pred_map);
-        dominators::build_dom_children(&tree)
+        Self::compute_in(func, &mut AnalysisManager::new())
+    }
+
+    fn compute_in(func: &TirFunction, analyses: &mut AnalysisManager) -> Self::Result {
+        dominators::build_dom_children(analyses.get::<ImmediateDoms>(func))
     }
 }
 
@@ -240,30 +250,35 @@ impl Analysis for LoopForest {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = false;
     fn compute(func: &TirFunction) -> Self::Result {
-        let pred_map = dominators::build_pred_map(func);
-        let tree = dominators::compute_dominator_tree(func, &pred_map);
+        Self::compute_in(func, &mut AnalysisManager::new())
+    }
+
+    fn compute_in(func: &TirFunction, analyses: &mut AnalysisManager) -> Self::Result {
+        analyses.get::<PredMap>(func);
+        analyses.get::<ImmediateDoms>(func);
+        let pred_map = analyses
+            .cached::<PredMap>()
+            .expect("prepared predecessor map");
+        let tree = analyses
+            .cached::<ImmediateDoms>()
+            .expect("prepared dominator tree");
 
         // An unconditional break may leave a retained loop_end -> header edge
         // whose source is unreachable. It preserves source structure, but
         // must not create an optimization loop (or become its preheader).
-        let mut header_set: HashSet<BlockId> = HashSet::default();
-
-        for (&candidate, preds) in &pred_map {
-            if tree.contains(candidate) && preds.iter().any(|&pred| tree.dominates(candidate, pred))
-            {
-                header_set.insert(candidate);
-            }
-        }
-
-        let mut headers: Vec<BlockId> = header_set.into_iter().collect();
+        let mut headers: Vec<_> = pred_map
+            .iter()
+            .filter_map(|(&candidate, preds)| {
+                (tree.contains(candidate)
+                    && preds.iter().any(|&pred| tree.dominates(candidate, pred)))
+                .then_some(candidate)
+            })
+            .collect();
         headers.sort_unstable_by_key(|b| b.0);
 
         let mut bodies: HashMap<BlockId, HashSet<BlockId>> = HashMap::default();
         for &h in &headers {
-            bodies.insert(
-                h,
-                dominators::collect_loop_blocks(func, &pred_map, &tree, h),
-            );
+            bodies.insert(h, dominators::collect_loop_blocks(func, pred_map, tree, h));
         }
         LoopForestResult { headers, bodies }
     }
@@ -332,10 +347,10 @@ impl AnalysisManager {
     /// must drop the analysis borrow first (the pipeline does: it reads
     /// analyses, then mutates the function).
     pub fn get<A: Analysis>(&mut self, func: &TirFunction) -> &A::Result {
-        let id = A::ID;
-        self.cache
-            .entry(id)
-            .or_insert_with(|| Box::new(A::compute(func)) as Box<dyn Any + Send + Sync>);
+        if !self.is_cached(A::ID) {
+            let result = A::compute_in(func, self);
+            self.prepopulate::<A>(result);
+        }
         self.cached::<A>()
             .expect("analysis cache type invariant violated")
     }
@@ -805,10 +820,24 @@ mod tests {
     fn invalidate_cfg_drops_cfg_sensitive() {
         let func = diamond();
         let mut am = AnalysisManager::new();
-        let _ = am.get::<PredMap>(&func);
-        let _ = am.get::<ImmediateDoms>(&func);
-        let _ = am.get::<DefMap>(&func);
-        assert!(am.is_cached(AnalysisId::PredMap));
+        use crate::tir::passes::value_range::ValueRange;
+
+        am.get::<ValueRange>(&func);
+        am.get::<DomChildren>(&func);
+        am.get::<DefMap>(&func);
+        for id in [
+            AnalysisId::PredMap,
+            AnalysisId::ImmediateDoms,
+            AnalysisId::LoopForest,
+            AnalysisId::ScalarEvolution,
+        ] {
+            assert!(am.is_cached(id), "dependent query should cache {id:?}");
+        }
+        am.invalidate_ops();
+        assert!(am.is_cached(AnalysisId::LoopForest));
+        assert!(!am.is_cached(AnalysisId::ScalarEvolution));
+        assert!(!am.is_cached(AnalysisId::ValueRange));
+        am.get::<ValueRange>(&func);
         am.invalidate_cfg();
         for id in AnalysisId::ALL {
             assert!(!am.is_cached(id), "{:?} should be dropped", id);

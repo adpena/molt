@@ -1,12 +1,13 @@
 use molt_ir::deterministic_hash::HashMap;
 
-use crate::tir::analysis::{Analysis, AnalysisId};
+use crate::tir::analysis::{Analysis, AnalysisId, AnalysisManager, LoopForest};
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::{ScevExpr, TripCount};
 use crate::tir::values::ValueId;
 
-use super::compute::compute_scev;
+use super::super::value_identity::ScalarFacts;
+use super::compute::compute_scev_with_loop_forest;
 
 /// Per-function scalar-evolution facts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -62,7 +63,11 @@ impl Analysis for ScalarEvolution {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = true;
     fn compute(func: &TirFunction) -> Self::Result {
-        compute_scev(func)
+        Self::compute_in(func, &mut AnalysisManager::new())
+    }
+
+    fn compute_in(func: &TirFunction, analyses: &mut AnalysisManager) -> Self::Result {
+        compute_scev_with_loop_forest(&ScalarFacts::new(func), analyses.get::<LoopForest>(func))
     }
 }
 
