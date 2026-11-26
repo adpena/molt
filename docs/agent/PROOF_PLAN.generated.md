@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 15 |
-| Hashed executable authority inputs | 1 | 421 |
+| Hashed executable authority inputs | 1 | 424 |
 | Local path rules | 35 | 84 |
 | Unique local commands | 73 | 82 |
 | Handwritten Python classifier rule tables | 5 | 0 |
