@@ -11,7 +11,7 @@ use crate::tir::passes::check_exception_elim::classify::RaiseFacts;
 use molt_ir::deterministic_hash::HashMap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_canonical_kind_table;
@@ -383,7 +383,7 @@ fn state_id(op: &TirOp, const_int_values: &ConstIntValues) -> Result<Option<i64>
 }
 
 fn terminator_successors_with_state(
-    term: &Terminator,
+    block: &TirBlock,
     label_to_block: &BTreeMap<i64, BlockId>,
     block_labels: &HashMap<u32, i64>,
     anonymous_destinations: &AnonymousHandlerDestinations,
@@ -399,16 +399,22 @@ fn terminator_successors_with_state(
             state,
         )
     };
-    match term {
+    match &block.terminator {
         Terminator::Branch { target, .. } => vec![(*target, successor_state(*target, state))],
         Terminator::CondBranch {
             then_block,
             else_block,
             ..
-        } => vec![
-            (*then_block, successor_state(*then_block, state)),
-            (*else_block, successor_state(*else_block, state)),
-        ],
+        } => {
+            let mut clear = state.clone();
+            if block.current_exception_branch().is_some() {
+                clear.pending_source = PendingSource::Clear;
+            }
+            vec![
+                (*then_block, successor_state(*then_block, state)),
+                (*else_block, successor_state(*else_block, &clear)),
+            ]
+        }
         Terminator::Switch { cases, default, .. } => {
             let mut successors = Vec::with_capacity(cases.len() + 1);
             successors.extend(
@@ -461,7 +467,7 @@ fn collect_state_resume_stacks_once(
         };
         if op_index >= tir_block.ops.len() {
             for (succ, succ_state) in terminator_successors_with_state(
-                &tir_block.terminator,
+                tir_block,
                 label_to_block,
                 &func.label_id_map,
                 anonymous_destinations,
@@ -584,7 +590,7 @@ pub(super) fn reachable_region_pops(
         };
         if op_index >= tir_block.ops.len() {
             for (succ, succ_state) in terminator_successors_with_state(
-                &tir_block.terminator,
+                tir_block,
                 label_to_block,
                 &func.label_id_map,
                 anonymous_destinations,
@@ -651,7 +657,7 @@ pub(super) fn path_states_before(
         };
         if op_index >= tir_block.ops.len() {
             for (succ, succ_state) in terminator_successors_with_state(
-                &tir_block.terminator,
+                tir_block,
                 label_to_block,
                 &func.label_id_map,
                 anonymous_destinations,
@@ -708,7 +714,7 @@ pub(super) fn lexical_handlers_before(
             .insert(state.lexical_handler());
         if op_index >= tir_block.ops.len() {
             for (succ, succ_state) in terminator_successors_with_state(
-                &tir_block.terminator,
+                tir_block,
                 label_to_block,
                 &func.label_id_map,
                 anonymous_destinations,
@@ -761,7 +767,7 @@ pub(super) fn event_sources_before(
             .insert(state.pending_source);
         if op_index >= tir_block.ops.len() {
             for (succ, succ_state) in terminator_successors_with_state(
-                &tir_block.terminator,
+                tir_block,
                 label_to_block,
                 &func.label_id_map,
                 anonymous_destinations,
@@ -835,7 +841,7 @@ pub fn exception_pop_owner_states(
         };
         if op_index >= tir_block.ops.len() {
             for (succ, succ_state) in terminator_successors_with_state(
-                &tir_block.terminator,
+                tir_block,
                 &label_to_block,
                 &func.label_id_map,
                 &anonymous_destinations,

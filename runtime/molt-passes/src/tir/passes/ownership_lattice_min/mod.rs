@@ -332,9 +332,54 @@ pub(super) fn conditionally_valid_regions(
         // Optimized generator splices can leave empty blocks between the
         // checked step and its completion test. Each must be uniquely entered,
         // including exceptional predecessors; none may bind an argument.
-        let continuation = || {
+        let continuation = |root| {
             let mut current = block;
             for _ in 0..func.blocks.len() {
+                if path == CompletionPath::ExclusiveEmptyBlocks
+                    && let Some((pending, clear)) = current.current_exception_branch()
+                {
+                    let cold = func.blocks.get(&pending)?;
+                    let rejoins = matches!(&cold.terminator, Terminator::Branch {target, args}
+                        if *target == clear && args.is_empty());
+                    if clear == bid
+                        || !cold.args.is_empty()
+                        || entries.get(&pending) != Some(&1)
+                        || entries.get(&clear) != Some(&(1 + usize::from(rejoins)))
+                        || !matches!(&current.terminator, Terminator::CondBranch {then_args, else_args, ..}
+                            if then_args.is_empty() && else_args.is_empty())
+                    {
+                        return None;
+                    }
+                    // A handler can rejoin the loop. No use of this particular
+                    // item may be reachable from the pending arm until the
+                    // physical producer executes again.
+                    let mut todo = vec![pending];
+                    let mut seen = HashSet::default();
+                    while let Some(next) = todo.pop() {
+                        if next == bid || next == clear || !seen.insert(next) {
+                            continue;
+                        }
+                        let body = func.blocks.get(&next)?;
+                        let mut used = false;
+                        body.terminator
+                            .for_each_value(|v| used |= aliases.root(v) == root);
+                        if used
+                            || body
+                                .ops
+                                .iter()
+                                .any(|op| aliases.operand_aliases_root(op, root))
+                        {
+                            return None;
+                        }
+                        todo.extend(body.terminator.successors());
+                        todo.extend(crate::tir::dominators::exception_successors(body, &labels));
+                    }
+                    current = func.blocks.get(&clear)?;
+                    if !current.args.is_empty() || !current.ops.is_empty() {
+                        return None;
+                    }
+                    continue;
+                }
                 match &current.terminator {
                     Terminator::CondBranch {
                         cond,
@@ -368,7 +413,7 @@ pub(super) fn conditionally_valid_regions(
                 if !opcode_result_is_conditionally_valid_only_on_edge(op.opcode, index) {
                     continue;
                 }
-                let region = continuation().and_then(|(flag, region)| {
+                let region = continuation(aliases.root(result)).and_then(|(flag, region)| {
                     op.results
                         .iter()
                         .enumerate()

@@ -219,6 +219,59 @@ fn split_completion_test_requires_exclusive_entry() {
 }
 
 #[test]
+fn pending_step_projection_refuses_a_handler_using_the_item_before_another_step() {
+    let mut f = func();
+    let iter = crate::fixture_support::append_parameter(&mut f, TirType::DynBox);
+    let item = f.fresh_value();
+    let done = f.fresh_value();
+    let pending = f.fresh_value();
+    let cold = f.fresh_block();
+    let test = f.fresh_block();
+    let exit = f.fresh_block();
+    let success = f.fresh_block();
+    for id in [cold, test, exit, success] {
+        f.blocks.insert(
+            id,
+            crate::tir::blocks::TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    let branch = |cond, then_block, else_block| Terminator::CondBranch {
+        cond,
+        then_block,
+        then_args: vec![],
+        else_block,
+        else_args: vec![],
+    };
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry
+        .ops
+        .push(op(OpCode::IterNextUnboxed, vec![iter], vec![item, done]));
+    entry
+        .ops
+        .push(op(OpCode::ExceptionPending, vec![], vec![pending]));
+    entry.terminator = branch(pending, cold, test);
+    f.blocks.get_mut(&test).unwrap().terminator = branch(done, exit, success);
+    let region = |f: &TirFunction| {
+        let aliases = build_alias_union_find(f);
+        conditionally_valid_regions(f, &aliases, CompletionPath::ExclusiveEmptyBlocks)
+            .get(&aliases.root(item))
+            .copied()
+    };
+    assert_eq!(region(&f), Some(success));
+    f.blocks.get_mut(&cold).unwrap().terminator = Terminator::Branch {
+        target: exit,
+        args: vec![],
+    };
+    f.blocks.get_mut(&exit).unwrap().terminator = Terminator::Return { values: vec![item] };
+    assert_eq!(region(&f), None);
+}
+
+#[test]
 fn exception_creation_ref_values_select_only_exception_creation_copies() {
     let mut f = func();
     let source = f.fresh_value();

@@ -1034,6 +1034,19 @@ fn a_spliced_latch_requires_a_marked_poll_without_an_intervening_guest_operation
         frame_call(RuntimeFn::SplicedFrameUnlink),
     ];
     assert!(starts_with_poll_bracket(&bracket) && ends_with_poll_bracket(&bracket));
+    let mut credited = bracket.clone();
+    credited[1].operands = vec![ValueId(1), ValueId(2), ValueId(3)];
+    credited[2].set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind);
+    let mut retain = op(OpCode::Copy, vec![ValueId(3)], vec![ValueId(4)]);
+    retain.origin = Some(molt_ir::OpKind::BindingAlias);
+    credited.insert(0, retain);
+    credited.push(op(OpCode::DelBoundary, vec![ValueId(4)], vec![]));
+    assert!(super::super::spliced_frame::poll_service(&credited).is_some());
+    let mut interrupted_credit = credited.clone();
+    interrupted_credit.insert(1, op(OpCode::Call, vec![], vec![]));
+    assert!(super::super::spliced_frame::poll_service(&interrupted_credit).is_none());
+    credited.last_mut().unwrap().operands[0] = ValueId(3);
+    assert!(super::super::spliced_frame::poll_service(&credited).is_none());
     let mut unmarked = bracket.clone();
     unmarked[2].clear_async_work_poll();
     assert!(!starts_with_poll_bracket(&unmarked) && !ends_with_poll_bracket(&unmarked));

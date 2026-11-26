@@ -365,6 +365,27 @@ fn poll_and_unlink(ops: &[TirOp]) -> bool {
 /// The complete cold service arm built by generator frame elision. Nothing
 /// else may run between the pending-work test and the delivery of that work.
 pub(super) fn poll_service(ops: &[TirOp]) -> Option<&TirOp> {
+    // A deferred slot-read credit may cover the entire publication. Retaining
+    // the already-held slot cannot call Python, and its matching retirement
+    // follows the original service and unlink.
+    let ops = match ops {
+        [retain, bracket @ .., retire]
+            if retain.opcode == OpCode::Copy
+                && retain.origin == Some(molt_ir::OpKind::BindingAlias)
+                && retain.operands.len() == 1
+                && retain.results.len() == 1
+                && retire.opcode == OpCode::DelBoundary
+                && retire.operands == retain.results
+                && retire.results.is_empty()
+                && bracket.iter().any(|op| {
+                    op.runtime == Some(RuntimeFn::SplicedFrameBind)
+                        && op.operands.get(2) == retain.operands.first()
+                }) =>
+        {
+            bracket
+        }
+        _ => ops,
+    };
     let [setup @ .., poll, _unlink] = ops else {
         return None;
     };

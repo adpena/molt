@@ -2,6 +2,8 @@
 //! semantic Iterator(int) can still run arbitrary Python; follow the objects
 //! created by the program and the successful iterator guard instead.
 
+mod credit;
+
 use molt_ir::OpKind;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
@@ -254,6 +256,7 @@ pub(super) fn callback_free_steps(
 /// independently defined scalar to a binding only where the step succeeded.
 /// The exhaustion word and every original handler argument keep their types.
 pub(super) fn project_successful_items(func: &mut TirFunction, items: &HashSet<ValueId>) {
+    credit::defer_reads(func, items);
     if items.is_empty() {
         return;
     }

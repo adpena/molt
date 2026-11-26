@@ -1,4 +1,4 @@
-use super::ops::TirOp;
+use super::ops::{OpCode, TirOp};
 use super::values::{TirValue, ValueId};
 
 /// Unique identifier for a basic block within a function.
@@ -38,6 +38,28 @@ pub struct TirBlock {
     pub ops: Vec<TirOp>,
     /// Block terminator (exactly one per block).
     pub terminator: Terminator,
+}
+
+impl TirBlock {
+    /// Ordered pending/clear successors when the branch reads this thread's
+    /// current exception as its final operation.
+    pub fn current_exception_branch(&self) -> Option<(BlockId, BlockId)> {
+        let test = self.ops.last()?;
+        let Terminator::CondBranch {
+            cond,
+            then_block,
+            else_block,
+            ..
+        } = &self.terminator
+        else {
+            return None;
+        };
+        (test.opcode == OpCode::ExceptionPending
+            && test.operands.is_empty()
+            && test.results.as_slice() == [*cond]
+            && then_block != else_block)
+            .then_some((*then_block, *else_block))
+    }
 }
 
 /// Position of a case within a `Switch` or `StateDispatch` case list.
