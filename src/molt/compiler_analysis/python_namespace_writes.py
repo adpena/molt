@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import _SourceImportCacheWrite
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 20
+SUMMARY_SCHEMA: Final = 21
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -547,8 +547,13 @@ def _is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
 
-def own_namespace_literal_delete(statement: ast.stmt) -> str | None:
-    """The global a ``globals().pop("name", <constant>)`` statement deletes.
+class LiteralNamespaceDelete(NamedTuple):
+    name: str
+    globals_read: ast.Name
+
+
+def own_namespace_literal_delete(statement: ast.stmt) -> LiteralNamespaceDelete | None:
+    """The operands of a ``globals().pop("name", <constant>)`` statement.
 
     With its value discarded, the statement equals ``del name`` that tolerates
     an unbound name (HF-844). The frontend lowers it to that module global
@@ -577,7 +582,8 @@ def own_namespace_literal_delete(statement: ast.stmt) -> str | None:
         and not receiver.keywords
     ):
         return None
-    return _literal_string(call.args[0])
+    name = _literal_string(call.args[0])
+    return None if name is None else LiteralNamespaceDelete(name, receiver.func)
 
 
 def module_binds_name(tree: ast.Module, name: str, *, eager_annotations: bool) -> bool:

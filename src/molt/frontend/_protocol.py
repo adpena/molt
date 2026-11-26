@@ -159,7 +159,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_function_symbol_targets: dict[str, tuple[str, str]]
     module_global_mutations: set[str]
     module_globals_dict_escaped: Any
-    module_globals_rebound: bool
     module_import_flow: ModuleImportFlow | None
     module_import_state: Any
     module_is_package: Any

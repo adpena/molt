@@ -1689,7 +1689,8 @@ def test_own_namespace_reach_is_any_use(source: str, line: int) -> None:
     ],
 )
 def test_own_namespace_literal_delete_spelling(source: str, name: str | None) -> None:
-    assert own_namespace_literal_delete(ast.parse(source).body[0]) == name
+    deletion = own_namespace_literal_delete(ast.parse(source).body[0])
+    assert (deletion.name if deletion is not None else None) == name
 
 
 @pytest.mark.parametrize(
