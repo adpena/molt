@@ -297,81 +297,10 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 # str.replace's explicit count-keyword path is version-owned.
                 return emit_method_call()
             if receiver.type_hint == "generator":
-                if method == "send":
-                    if len(node.args) != 1:
-                        return emit_method_call()
-                    arg = self.visit(node.args[0])
-                    pair = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="GEN_SEND", args=[receiver, arg], result=pair)
-                    )
-                    one = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                    zero = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                    value = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=value))
-                    done = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-                    self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-                    self._emit_stop_iteration_from_value(value)
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    return value
-                if method == "throw":
-                    if len(node.args) not in {1, 2, 3}:
-                        return emit_method_call()
-                    exc_type = self.visit(node.args[0])
-                    if exc_type is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "generator.throw expects exception",
-                        )
-                    if len(node.args) > 1:
-                        value = self.visit(node.args[1])
-                        if value is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "generator.throw expects exception value",
-                            )
-                        callargs = MoltValue(self.next_var(), type_hint="callargs")
-                        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-                        self.emit(
-                            MoltOp(
-                                kind="CALLARGS_PUSH_POS",
-                                args=[callargs, value],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        arg = MoltValue(self.next_var(), type_hint="exception")
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[exc_type, callargs],
-                                result=arg,
-                            )
-                        )
-                        if len(node.args) == 3:
-                            tb_val = self.visit(node.args[2])
-                            if tb_val is None:
-                                raise FrontendRejection(
-                                    Diagnostic.OPERAND_VALUE,
-                                    "generator.throw expects traceback value",
-                                )
-                            self.emit(
-                                MoltOp(
-                                    kind="SETATTR_GENERIC_OBJ",
-                                    args=[arg, "__traceback__", tb_val],
-                                    result=MoltValue("none"),
-                                )
-                            )
-                    else:
-                        arg = exc_type
-                    callee = load_attr_callee()
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(kind="CALL_METHOD", args=[callee, arg], result=res)
-                    )
-                    return res
+                if method in {"send", "throw"}:
+                    # The descriptors project a generator step to its yielded
+                    # value or exception and normalize throw arguments at CALL.
+                    return emit_method_call()
                 if method == "close":
                     if node.args:
                         return emit_method_call()
