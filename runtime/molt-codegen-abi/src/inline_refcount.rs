@@ -23,6 +23,24 @@ use crate::{
 pub enum CompiledRefcountAdmission {
     Runtime = 0,
     AttachedPlain = 1,
+    /// The runtime also certifies that eliding a debug pointer registration
+    /// for an already-published frame owner cannot suppress registry tracing.
+    AttachedFrameOwners = 3,
+}
+
+/// Both runtime grants include plain storage. All other encodings fail closed.
+pub(crate) fn plain_admitted<B: WordBuilder>(b: &mut B, admission: B::Word) -> B::Predicate {
+    let plain = b.and(
+        admission,
+        !(CompiledRefcountAdmission::AttachedFrameOwners as u64
+            ^ CompiledRefcountAdmission::AttachedPlain as u64),
+    );
+    compare_immediate(
+        b,
+        WordComparison::Equal,
+        plain,
+        CompiledRefcountAdmission::AttachedPlain as u64,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +108,19 @@ pub fn generate_refcount<B: RefcountBuilder>(
     operation: RefcountOperation,
     storage: RefcountStorage,
 ) {
+    generate_for_owner(b, bits, admission, operation, storage, None);
+}
+
+/// Only frame-record push and pop carry this provenance. A pointer tag from a
+/// frame home or an opaque machine word never satisfies this contract.
+pub fn generate_for_owner<B: RefcountBuilder>(
+    b: &mut B,
+    bits: B::Word,
+    admission: B::Word,
+    operation: RefcountOperation,
+    storage: RefcountStorage,
+    owner: Option<crate::frame_record::FrameOwner>,
+) {
     use WordComparison::*;
     let pointer_tag = generate_has_tag(b, bits, BoxTag::Ptr);
     b.if_else(
@@ -100,16 +131,24 @@ pub fn generate_refcount<B: RefcountBuilder>(
             b.if_else(
                 nonnull,
                 |b| {
-                    if storage != RefcountStorage::Plain {
-                        b.slow_call(operation, bits);
-                        return;
-                    }
-                    let admitted = compare_immediate(
-                        b,
-                        Equal,
-                        admission,
-                        CompiledRefcountAdmission::AttachedPlain as u64,
-                    );
+                    let hardened_owner = match (storage, owner) {
+                        (RefcountStorage::Plain, _) => None,
+                        (RefcountStorage::HardenedPlain, Some(owner)) => Some(owner),
+                        _ => {
+                            b.slow_call(operation, bits);
+                            return;
+                        }
+                    };
+                    let admitted = if hardened_owner.is_some() {
+                        compare_immediate(
+                            b,
+                            Equal,
+                            admission,
+                            CompiledRefcountAdmission::AttachedFrameOwners as u64,
+                        )
+                    } else {
+                        plain_admitted(b, admission)
+                    };
                     let admitted = match b.pointer_width() {
                         crate::PointerWidth::Bits32 => {
                             let fits = compare_immediate(b, UnsignedLessThan, pointer, 1_u64 << 32);
@@ -123,7 +162,18 @@ pub fn generate_refcount<B: RefcountBuilder>(
                     b.if_else(
                         admitted,
                         |b| {
-                            generate_attached_transition(b, bits, pointer, operation);
+                            if let Some(owner) = hardened_owner {
+                                let kind = b.load_header_u32(pointer, crate::HEADER_TYPE_ID_OFFSET);
+                                let valid =
+                                    compare_immediate(b, Equal, kind, u64::from(owner.type_id()));
+                                b.if_else(
+                                    valid,
+                                    |b| generate_attached_transition(b, bits, pointer, operation),
+                                    |b| b.slow_call(operation, bits),
+                                );
+                            } else {
+                                generate_attached_transition(b, bits, pointer, operation);
+                            }
                         },
                         |b| b.slow_call(operation, bits),
                     );

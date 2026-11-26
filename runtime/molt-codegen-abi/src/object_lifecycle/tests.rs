@@ -9,6 +9,7 @@
 //! rewrites the moved member's head; count 0 counts allocations minus frees).
 
 use super::*;
+use crate::inline_refcount::CompiledRefcountAdmission;
 use crate::test_machine::{Event, Machine};
 use crate::{
     HEADER_AUX_KIND_SIDECAR, HEADER_FLAG_GC_HEAD, MOLT_REFCOUNT_ATOMIC, TAG_INT, TYPE_ID_STRING,

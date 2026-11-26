@@ -8,7 +8,7 @@ use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::builder::Builder;
 use inkwell::values::IntValue;
 use molt_codegen_abi::inline_refcount::{
-    RefcountBuilder, RefcountOperation, RefcountStorage, generate_refcount,
+    RefcountBuilder, RefcountOperation, RefcountStorage, generate_for_owner,
 };
 use molt_codegen_abi::word::WordBuilder;
 
@@ -132,9 +132,28 @@ impl<'ctx> LlvmBackend<'ctx> {
         &self,
         operation: RefcountOperation,
     ) -> FunctionValue<'ctx> {
-        let name = match operation {
-            RefcountOperation::Retain => "__molt_inline_retain",
-            RefcountOperation::Release => "__molt_inline_release",
+        self.ensure_owner_refcount_helper(operation, None)
+    }
+
+    pub(super) fn ensure_owner_refcount_helper(
+        &self,
+        operation: RefcountOperation,
+        owner: Option<molt_codegen_abi::frame_record::FrameOwner>,
+    ) -> FunctionValue<'ctx> {
+        use molt_codegen_abi::frame_record::FrameOwner;
+        let storage = RefcountStorage::for_build(nanbox::MOLT_REFCOUNT_ATOMIC);
+        let owner = owner.filter(|_| storage == RefcountStorage::HardenedPlain);
+        let name = match (operation, owner) {
+            (RefcountOperation::Retain, None) => "__molt_inline_retain",
+            (RefcountOperation::Release, None) => "__molt_inline_release",
+            (RefcountOperation::Retain, Some(FrameOwner::Function)) => {
+                "__molt_frame_function_retain"
+            }
+            (RefcountOperation::Release, Some(FrameOwner::Function)) => {
+                "__molt_frame_function_release"
+            }
+            (RefcountOperation::Retain, Some(FrameOwner::Code)) => "__molt_frame_code_retain",
+            (RefcountOperation::Release, Some(FrameOwner::Code)) => "__molt_frame_code_release",
         };
         let i64_type = self.context.i64_type();
         let logical_signature = self
@@ -183,12 +202,13 @@ impl<'ctx> LlvmBackend<'ctx> {
             nanbox::PointerWidth::Bits64
         };
         emitter.pointer_width = pointer_width;
-        generate_refcount(
+        generate_for_owner(
             &mut emitter,
             function.get_nth_param(1).unwrap().into_int_value(),
             function.get_nth_param(2).unwrap().into_int_value(),
             operation,
-            RefcountStorage::for_build(nanbox::MOLT_REFCOUNT_ATOMIC),
+            storage,
+            owner,
         );
         builder.build_return(None).unwrap();
         if let Some(block) = emitter.slow_block {

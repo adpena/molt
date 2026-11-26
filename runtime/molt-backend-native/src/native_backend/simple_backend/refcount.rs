@@ -1,7 +1,5 @@
 use super::*;
-use molt_codegen_abi::inline_refcount::{
-    RefcountBuilder, RefcountOperation, RefcountStorage, generate_refcount,
-};
+use molt_codegen_abi::inline_refcount::{RefcountBuilder, RefcountOperation, RefcountStorage};
 use molt_codegen_abi::word::{BranchBuilder, WordBuilder, WordComparison};
 
 /// Function-local imports and the admission belonging to this exact body.
@@ -96,13 +94,30 @@ pub(crate) struct NativeRefcountSite {
 
 #[cfg(feature = "native-backend")]
 pub(crate) fn emit_refcount(builder: &mut FunctionBuilder, value: Value, site: NativeRefcountSite) {
+    emit_refcount_for_owner(builder, value, site, None);
+}
+
+#[cfg(feature = "native-backend")]
+pub(super) fn emit_refcount_for_owner(
+    builder: &mut FunctionBuilder,
+    value: Value,
+    site: NativeRefcountSite,
+    owner: Option<molt_codegen_abi::frame_record::FrameOwner>,
+) {
     let storage = RefcountStorage::for_build(molt_codegen_abi::MOLT_REFCOUNT_ATOMIC);
     let mut emitter = NativeRefcountBuilder {
         words: NativeWords { builder },
         site,
         slow_block: None,
     };
-    generate_refcount(&mut emitter, value, site.admission, site.operation, storage);
+    molt_codegen_abi::inline_refcount::generate_for_owner(
+        &mut emitter,
+        value,
+        site.admission,
+        site.operation,
+        storage,
+        owner,
+    );
     if let Some(slow) = emitter.slow_block {
         let continuation = emitter.words.builder.create_block();
         emitter.words.builder.ins().jump(continuation, &[]);

@@ -120,7 +120,7 @@ fn ptr_registry() -> &'static PtrRegistry {
     PTR_REGISTRY.get_or_init(PtrRegistry::new)
 }
 
-fn trace_ptr_registry() -> bool {
+pub fn trace_ptr_registry() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
     *TRACE.get_or_init(|| {
         matches!(

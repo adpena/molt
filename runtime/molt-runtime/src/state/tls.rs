@@ -217,8 +217,11 @@ impl ExecutionTls {
             || self.cext_execution_depth.get() == 0
             || (self.lease_depth.get() == 0 && self.shutdown_drain_depth.get() == 0)
             || crate::object::rc_transition_trace_enabled()
+            || (cfg!(debug_assertions) && molt_obj_model::trace_ptr_registry())
         {
             CompiledRefcountAdmission::Runtime
+        } else if cfg!(debug_assertions) {
+            CompiledRefcountAdmission::AttachedFrameOwners
         } else {
             CompiledRefcountAdmission::AttachedPlain
         };

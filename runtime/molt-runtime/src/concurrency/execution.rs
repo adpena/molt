@@ -1257,8 +1257,13 @@ mod tests {
                 !crate::object::rc_transition_trace_enabled(),
                 "this plain transition cell requires RC diagnostics disabled"
             );
-            let expected = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
+            let expected = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC
+                || crate::object::rc_transition_trace_enabled()
+                || (cfg!(debug_assertions) && molt_obj_model::trace_ptr_registry())
+            {
                 runtime
+            } else if cfg!(debug_assertions) {
+                CompiledRefcountAdmission::AttachedFrameOwners as u64
             } else {
                 CompiledRefcountAdmission::AttachedPlain as u64
             };

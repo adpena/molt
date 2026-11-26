@@ -62,7 +62,7 @@
 
 use crate::boxed_word::{BoxTag, generate_has_tag};
 use crate::frame_record::FrameBuilder;
-use crate::inline_refcount::{CompiledRefcountAdmission, RefcountStorage};
+use crate::inline_refcount::{RefcountStorage, plain_admitted};
 use crate::list_item::ListLocking;
 use crate::word::WordComparison;
 use crate::{
@@ -497,12 +497,7 @@ pub fn generate_release_terminal<B: FrameBuilder>(
     b.attempt(
         |b| {
             // Only the runtime decides a release outside plain admission.
-            let plain = compare_immediate(
-                b,
-                Equal,
-                admission,
-                CompiledRefcountAdmission::AttachedPlain as u64,
-            );
+            let plain = plain_admitted(b, admission);
             b.require(plain);
             let pointer = b.and(bits, POINTER_MASK);
             // The last reference: a count of 1 with no runtime custody bit.
