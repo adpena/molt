@@ -1793,19 +1793,28 @@ class PythonSourceDemands:
         module = value[0]
         unbound = method.kind == "namespace_write_descriptor"
         key_position = int(unbound)
-        key = (
-            call.argument_strings[key_position]
-            if scope is MappingWriteScope.KEY
+        keys: tuple[str | None, ...] = (None,)
+        if scope is MappingWriteScope.UPDATE:
+            update = call.unbound_update_keys if unbound else call.bound_update_keys
+            if update is not None:
+                keys = update
+        elif (
+            scope is MappingWriteScope.KEY
             and len(call.argument_strings) > key_position
             and call.arguments[key_position][0] == key_position
-            else None
-        )
+        ):
+            keys = (call.argument_strings[key_position],)
         if not unbound:
-            self._record_namespace_write(module, call.owner, method, key)
+            for key in keys:
+                self._record_namespace_write(module, call.owner, method, key)
             return
         for receiver in self._positional_candidates(call, value, 0):
-            if receiver.kind == "namespace":
+            if receiver.kind != "namespace":
+                continue
+            for key in keys:
                 self._record_namespace_write(module, call.owner, receiver, key)
+            if keys:
+                self.demand(receiver.value, "release_contents", consumer=module)
 
     def _positional_candidates(
         self,

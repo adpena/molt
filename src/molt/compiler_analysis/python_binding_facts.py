@@ -160,6 +160,8 @@ class PythonSourceCall(NamedTuple):
     intrinsic_result: IdentityMask
     arguments: tuple[PythonSourceArgument, ...]
     argument_strings: tuple[str | None, ...] = ()
+    bound_update_keys: tuple[str, ...] | None = None
+    unbound_update_keys: tuple[str, ...] | None = None
 
     def has_valid_source_form(self) -> bool:
         if self.owner[-1] == "Call":
@@ -171,6 +173,8 @@ class PythonSourceCall(NamedTuple):
             and len(self.arguments) == 1
             and self.arguments[0][0] == 0
             and self.argument_strings == (None,)
+            and self.bound_update_keys is None
+            and self.unbound_update_keys is None
         )
 
     def join(self, prior: PythonSourceCall) -> PythonSourceCall:
@@ -188,6 +192,16 @@ class PythonSourceCall(NamedTuple):
                 for name, earlier in zip(
                     self.argument_strings, prior.argument_strings, strict=True
                 )
+            ),
+            bound_update_keys=(
+                self.bound_update_keys
+                if self.bound_update_keys == prior.bound_update_keys
+                else None
+            ),
+            unbound_update_keys=(
+                self.unbound_update_keys
+                if self.unbound_update_keys == prior.unbound_update_keys
+                else None
             ),
         )
 

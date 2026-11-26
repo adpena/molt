@@ -312,6 +312,7 @@ def test_namespace_write_codec_rejects_a_non_string_construct() -> None:
         ("exec(code, {})\neval(text, namespace)\n", set()),
         # A function local that only reads the mapping or writes literal keys
         # bounds the reflection to those keys.
+        ("def f():\n    g = globals()\n    g.update(a=1)\n", {"a"}),
         ('def f():\n    g = globals()\n    x = g["k"]\n    y = "k" in g\n', set()),
         (
             'def f():\n    g = globals()\n    g["a"] = g["a"] + 1\n'
@@ -346,9 +347,7 @@ def test_own_mapping_writes_distinguish_initialization_from_later_callback(opera
         if deferred:
             assert namespace["flag"] == 0
             namespace["callback"]()
-            assert summary.own_names == (
-                None if "update" in operation else frozenset({"flag"})
-            )
+            assert summary.own_names == frozenset({"flag"})
         else:
             assert summary.own_names == frozenset()
         if "pop" in operation or operation.startswith("del"):
@@ -637,7 +636,7 @@ def test_lazy_own_namespace_writer_remains_a_callback_without_a_body_job(future)
         "def f():\n    g = globals()\n    return g\n",
         "def f():\n    g = globals()\n    def inner():\n        g['a'] = 1\n",
         "def f():\n    g = globals()\n    g = {}\n    g['a'] = 1\n",
-        "def f():\n    g = globals()\n    g.update(a=1)\n",
+        "def f():\n    g = globals()\n    g.update(**values)\n",
     ],
 )
 def test_dynamic_own_reflection_keeps_the_whole_namespace(source: str) -> None:

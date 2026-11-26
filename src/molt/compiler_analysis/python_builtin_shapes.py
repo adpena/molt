@@ -180,6 +180,7 @@ def builtin_method_writes_receiver(kind: Literal["list", "dict"], method: str) -
 
 class MappingWriteScope(StrEnum):
     KEY = "key"
+    UPDATE = "update"
     CONTENTS = "contents"
 
 
@@ -188,7 +189,39 @@ def builtin_mapping_write_scope(method: str) -> MappingWriteScope | None:
         return None
     if method in {"pop", "setdefault", "__setitem__", "__delitem__"}:
         return MappingWriteScope.KEY
+    if method == "update":
+        return MappingWriteScope.UPDATE
     return MappingWriteScope.CONTENTS
+
+
+def literal_mapping_update_keys(
+    call: ast.Call, *, unbound: bool = False
+) -> tuple[str, ...] | None:
+    """Keys an exact dict.update can write from literal mappings and keywords."""
+    receiver_count = int(unbound)
+    if not receiver_count <= len(call.args) <= receiver_count + 1:
+        return None
+    if unbound and isinstance(call.args[0], ast.Starred):
+        return None
+    if len(call.args) == receiver_count and not call.keywords:
+        return ()
+    mappings = list(call.args[receiver_count:])
+    if mappings and not isinstance(mappings[0], ast.Dict):
+        return None
+    names: set[str] = set()
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            mappings.append(keyword.value)
+        else:
+            names.add(keyword.arg)
+    for mapping in mappings:
+        if not isinstance(mapping, ast.Dict):
+            return None
+        for key in mapping.keys:
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                return None
+            names.add(key.value)
+    return tuple(sorted(names))
 
 
 def _normal_result(

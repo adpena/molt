@@ -139,10 +139,13 @@ from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_BITS,
 )
 from molt.compiler_analysis.python_builtin_shapes import (
+    MappingWriteScope,
     builtin_call_shape,
+    builtin_mapping_write_scope,
     builtin_method_call_shape,
     builtin_method_descriptor_known,
     builtin_method_writes_receiver,
+    literal_mapping_update_keys,
 )
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
@@ -4981,6 +4984,27 @@ class _Analyzer:
                     argument_protocol_indices=frozenset({0, 1}),
                     source_result_projected=True,
                 )
+            if (
+                receiver_result.identities == int(PythonIdentity.BUILTIN_DICT)
+                and builtin_mapping_write_scope(node.func.attr)
+                is MappingWriteScope.UPDATE
+                and node.args
+                and not isinstance(node.args[0], ast.Starred)
+            ):
+                # The immutable descriptor receives the dictionary as an
+                # explicit operand without exporting it. Source call transfer
+                # still models the actual receiver's writes and releases.
+                return _CallSemantics(
+                    OTHER_IDENTITY,
+                    UNKNOWN_EFFECTS,
+                    self._apply_effects(state_id, UNKNOWN_EFFECTS),
+                    UNKNOWN_EXPRESSION_RESULT,
+                    False,
+                    UNKNOWN_EFFECTS,
+                    argument_protocol_indices=frozenset(),
+                    argument_escape_indices=frozenset(range(1, len(argument_results))),
+                    borrowed_module_operand=0,
+                )
             receiver_boundary = (
                 WRITES_OBJECT_STATE
                 | EXECUTES_ARBITRARY_PYTHON
@@ -6181,6 +6205,10 @@ class _Analyzer:
                             if result.value_known and type(result.value) is str
                             else None
                             for result in argument_results
+                        ),
+                        bound_update_keys=literal_mapping_update_keys(node),
+                        unbound_update_keys=literal_mapping_update_keys(
+                            node, unbound=True
                         ),
                     )
                 )
