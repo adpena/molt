@@ -275,3 +275,73 @@ fn operator_length_hint_validates_default_before_fallback() {
         crate::molt_exception_clear_attached_body(_py);
     });
 }
+
+#[test]
+fn multi_itemgetter_adopts_each_result_and_unwinds_a_late_lookup_failure() {
+    use super::getter_objects::{
+        molt_operator_itemgetter_call_attached_body, molt_operator_itemgetter_new_attached_body,
+        molt_operator_itemgetter_type_attached_body,
+    };
+
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let allocate = |ptr: *mut u8| {
+            assert!(!ptr.is_null());
+            MoltObject::from_ptr(ptr).bits()
+        };
+        let value_ptr = alloc_string(py, b"owned getter value");
+        let value = allocate(value_ptr);
+        let value_refs =
+            || unsafe { (*crate::header_from_obj_ptr(value_ptr)).ref_count_snapshot() };
+        let subject = allocate(crate::alloc_tuple(py, &[value, value]));
+        let owner = molt_operator_itemgetter_type_attached_body(py);
+        let kwargs = allocate(crate::alloc_dict_with_pairs(py, &[]));
+        let initial_refs = value_refs();
+
+        let call = |second| {
+            let args = allocate(crate::alloc_tuple(
+                py,
+                &[
+                    owner,
+                    MoltObject::from_int(0).bits(),
+                    MoltObject::from_int(second).bits(),
+                ],
+            ));
+            let getter = molt_operator_itemgetter_new_attached_body(py, owner, args, kwargs);
+            dec_ref_bits(py, args);
+            assert!(!obj_from_bits(getter).is_none());
+            let result = molt_operator_itemgetter_call_attached_body(py, getter, subject);
+            dec_ref_bits(py, getter);
+            result
+        };
+
+        let result = call(1);
+        assert!(!exception_pending(py));
+        let ptr = obj_from_bits(result).as_ptr().expect("multi-item tuple");
+        unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+                assert_eq!(items, &[value, value]);
+            })
+        }
+        .expect("itemgetter result tuple");
+        assert_eq!(value_refs(), initial_refs + 2);
+        dec_ref_bits(py, result);
+        assert_eq!(value_refs(), initial_refs);
+
+        assert!(obj_from_bits(call(10)).is_none());
+        assert_eq!(value_refs(), initial_refs);
+        assert!(exception_pending(py));
+        let exc = molt_exception_last_pending_attached_body(py);
+        let kind = molt_exception_kind_attached_body(py, exc);
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(kind)).as_deref(),
+            Some("IndexError")
+        );
+        dec_ref_bits(py, kind);
+        dec_ref_bits(py, exc);
+        crate::molt_exception_clear_attached_body(py);
+        for bits in [kwargs, owner, subject, value] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
