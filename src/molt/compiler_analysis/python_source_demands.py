@@ -2328,16 +2328,18 @@ class PythonSourceDemands:
             "property_descriptor",
         }:
             return set()
-        self.watch(callee.value, user)
         if self._function_kind(callee) != FunctionKind.SYNC:
-            return {SourceCandidate(*callee.value, "resumable")}
+            value = callee.value
+            self.watch(value, user)
+            return {SourceCandidate(*value, "resumable")}
         return self._function_values(callee, user)
 
     def _function_values(
         self, callee: SourceCandidate, user: SourceValue, *, yielded: bool = False
     ) -> set[SourceCandidate]:
-        self.watch(callee.value, user)
-        function = self.functions.get(callee.value)
+        value = callee.value
+        self.watch(value, user)
+        function = self.functions.get(value)
         if function is None:
             return set()
         returned, exposed = (
