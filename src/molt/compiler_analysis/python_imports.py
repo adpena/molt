@@ -932,26 +932,54 @@ def _state_sort_key(state: ModuleImportState) -> tuple[str, ...]:
     )
 
 
-def _merge_states(
-    *groups: Iterable[ModuleImportState],
-) -> tuple[ModuleImportState, ...]:
-    states = {state for group in groups for state in group}
+type _ImportStates = frozenset[ModuleImportState]
+
+_EMPTY_IMPORT_STATES: _ImportStates = frozenset()
+
+
+def _join_import_states(*groups: Iterable[ModuleImportState]) -> _ImportStates:
+    # Preserve the common unchanged disjunction without copying its table.
+    if (
+        len(groups) == 2
+        and isinstance(left := groups[0], frozenset)
+        and isinstance(right := groups[1], frozenset)
+    ):
+        if not right or left is right:
+            states = left
+        elif not left:
+            states = right
+        else:
+            states = left | right
+    else:
+        states = _EMPTY_IMPORT_STATES.union(*groups)
     if len(states) <= _MAX_DISJUNCTIVE_IMPORT_STATES:
-        return tuple(sorted(states, key=_state_sort_key))
+        return states
 
     def join_value(attribute: str) -> StaticMetadataValue:
         values = {getattr(state, attribute) for state in states}
         return next(iter(values)) if len(values) == 1 else UNKNOWN_VALUE
 
     path_values = {state.has_path for state in states}
-    return (
-        ModuleImportState(
-            join_value("package"),
-            join_value("spec_parent"),
-            join_value("name"),
-            next(iter(path_values)) if len(path_values) == 1 else None,
-        ),
+    return frozenset(
+        {
+            ModuleImportState(
+                join_value("package"),
+                join_value("spec_parent"),
+                join_value("name"),
+                next(iter(path_values)) if len(path_values) == 1 else None,
+            ),
+        }
     )
+
+
+def _ordered_import_states(states: _ImportStates) -> tuple[ModuleImportState, ...]:
+    return tuple(sorted(states, key=_state_sort_key))
+
+
+def _merge_states(
+    *groups: Iterable[ModuleImportState],
+) -> tuple[ModuleImportState, ...]:
+    return _ordered_import_states(_join_import_states(*groups))
 
 
 def _normalized_import_context(context: ModuleImportContext) -> ModuleImportContext:
@@ -999,8 +1027,8 @@ def _analyze_module_import_flow_uncached(
         WRITES_MODULE_METADATA,
     )
 
-    initial = (context_import_state(context),)
-    by_node: dict[ImportNodeKey, tuple[ModuleImportState, ...]] = {}
+    initial = frozenset({context_import_state(context)})
+    by_node: dict[ImportNodeKey, _ImportStates] = {}
     all_states: set[ModuleImportState] = set(initial)
     deferred_bodies: dict[ImportNodeKey, Sequence[ast.stmt]] = {}
     pending_bodies: deque[ImportNodeKey] = deque()
@@ -1012,7 +1040,7 @@ def _analyze_module_import_flow_uncached(
         for statement in getattr(tree, "body", ())
     )
 
-    def record(node: ast.AST, states: tuple[ModuleImportState, ...]) -> None:
+    def record(node: ast.AST, states: _ImportStates) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             require_python_syntax_target(node, context.target_python)
         # Source operands capture metadata before later sibling argument effects.
@@ -1049,19 +1077,19 @@ def _analyze_module_import_flow_uncached(
                 if requires_proof and (
                     proof is None or not proof.admits_current_namespace
                 ):
-                    states = _merge_states(states, unknown_states(states))
+                    states = _join_import_states(states, unknown_states(states))
             key = python_node_source_key(node)
-            previous = by_node.get(key, ())
-            by_node[key] = _merge_states(previous, states)
+            previous = by_node.get(key, _EMPTY_IMPORT_STATES)
+            by_node[key] = _join_import_states(previous, states)
 
     def expression_result(node: ast.expr) -> StaticExpressionResult:
         fact = expression_facts.get(PythonNodeKey.from_node(node))
         return UNKNOWN_EXPRESSION_RESULT if fact is None else fact.result
 
     def metadata_assignment(
-        states: tuple[ModuleImportState, ...], target: ast.AST, value: ast.AST
-    ) -> tuple[ModuleImportState, ...]:
-        updated = _merge_states(
+        states: _ImportStates, target: ast.AST, value: ast.AST
+    ) -> _ImportStates:
+        updated = _join_import_states(
             update_module_import_state(
                 state,
                 target,
@@ -1075,13 +1103,13 @@ def _analyze_module_import_flow_uncached(
         return updated
 
     def assign_states(
-        states: tuple[ModuleImportState, ...],
+        states: _ImportStates,
         targets: Sequence[ast.AST],
         value: ast.AST,
         *,
         direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
-        raised_states: list[tuple[ModuleImportState, ...]] | None = None,
-    ) -> tuple[ModuleImportState, ...]:
+        raised_states: list[_ImportStates] | None = None,
+    ) -> _ImportStates:
         current = states
         for target in targets:
             if isinstance(target, (ast.Tuple, ast.List)):
@@ -1123,9 +1151,9 @@ def _analyze_module_import_flow_uncached(
 
     def target_completion_states(
         target: ast.AST,
-        states: tuple[ModuleImportState, ...],
+        states: _ImportStates,
         direct_metadata_names: Collection[str],
-    ) -> tuple[ModuleImportState, ...]:
+    ) -> _ImportStates:
         key = PythonNodeKey.from_node(target)
         effects = assignment_effects.get(key, UNKNOWN_EFFECTS)
         iteration = iteration_facts.get(key)
@@ -1142,16 +1170,21 @@ def _analyze_module_import_flow_uncached(
             return callback_states(states)
         return states
 
-    def unknown_states(
-        states: tuple[ModuleImportState, ...],
-    ) -> tuple[ModuleImportState, ...]:
-        current = _merge_states(_unknown_module_import_state(state) for state in states)
-        all_states.update(current)
+    unknown_results: dict[_ImportStates, _ImportStates] = {}
+
+    def unknown_states(states: _ImportStates) -> _ImportStates:
+        current = unknown_results.get(states)
+        if current is None:
+            current = _join_import_states(
+                _unknown_module_import_state(state) for state in states
+            )
+            unknown_results[states] = current
+            all_states.update(current)
         return current
 
     def callback_states(
-        states: tuple[ModuleImportState, ...],
-    ) -> tuple[ModuleImportState, ...]:
+        states: _ImportStates,
+    ) -> _ImportStates:
         # Completed callback/escape summaries can choose metadata absent from
         # visible source. Every such summary uses this projection: semantics
         # loses the anchor, discovery retains candidates beside uncertainty.
@@ -1159,14 +1192,14 @@ def _analyze_module_import_flow_uncached(
         if not callbacks_rewrite_metadata:
             return states
         unknown = unknown_states(states)
-        return _merge_states(states, unknown) if source_discovery else unknown
+        return _join_import_states(states, unknown) if source_discovery else unknown
 
     def bind_imported_names(
-        states: tuple[ModuleImportState, ...],
+        states: _ImportStates,
         statement: ast.Import | ast.ImportFrom,
         direct_metadata_names: Collection[str],
-        raised_states: list[tuple[ModuleImportState, ...]],
-    ) -> tuple[ModuleImportState, ...]:
+        raised_states: list[_ImportStates],
+    ) -> _ImportStates:
         # The request itself uses the incoming metadata. Binding its results
         # happens afterwards and may change the anchor of the next import.
         if isinstance(statement, ast.ImportFrom) and any(
@@ -1221,11 +1254,11 @@ def _analyze_module_import_flow_uncached(
 
     def expression_effects(
         expression: ast.AST,
-        states: tuple[ModuleImportState, ...],
+        states: _ImportStates,
         *,
         direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
-        raised_states: list[tuple[ModuleImportState, ...]] | None = None,
-    ) -> tuple[ModuleImportState, ...]:
+        raised_states: list[_ImportStates] | None = None,
+    ) -> _ImportStates:
         current = expression_metadata_transfer(
             expression,
             states,
@@ -1242,22 +1275,20 @@ def _analyze_module_import_flow_uncached(
         if raised_states is not None and (
             fact is None or (fact.effects | fact.truth_effects) & RAISES
         ):
-            raised_states.append(_merge_states(states, current))
+            raised_states.append(_join_import_states(states, current))
         return current
 
     def comprehension_metadata_transfer(
         expression: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
-        states: tuple[ModuleImportState, ...],
+        states: _ImportStates,
         *,
         direct_metadata_names: Collection[str],
-        raised_states: list[tuple[ModuleImportState, ...]] | None,
-    ) -> tuple[ModuleImportState, ...]:
+        raised_states: list[_ImportStates] | None,
+    ) -> _ImportStates:
         # The first iterable was evaluated in the enclosing activation. Every
         # nested iterable belongs inside its parent's backedge. Protocol and
         # release effects are projections of completed binding facts.
-        def evaluate(
-            node: ast.AST, incoming: tuple[ModuleImportState, ...]
-        ) -> tuple[ModuleImportState, ...]:
+        def evaluate(node: ast.AST, incoming: _ImportStates) -> _ImportStates:
             return expression_effects(
                 node,
                 incoming,
@@ -1277,15 +1308,15 @@ def _analyze_module_import_flow_uncached(
                 record_unreachable(expression.elt)
 
         def generate(
-            index: int, incoming: tuple[ModuleImportState, ...]
-        ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+            index: int, incoming: _ImportStates
+        ) -> PythonCompletionFlow[_ImportStates]:
             generator = expression.generators[index]
             entry = evaluate(generator.iter, incoming) if index else incoming
             iteration = iteration_facts.get(PythonNodeKey.from_node(generator))
 
             def filters(
-                condition_index: int, current: tuple[ModuleImportState, ...]
-            ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                condition_index: int, current: _ImportStates
+            ) -> PythonCompletionFlow[_ImportStates]:
                 if condition_index == len(generator.ifs):
                     if index + 1 < len(expression.generators):
                         return generate(index + 1, current)
@@ -1300,24 +1331,23 @@ def _analyze_module_import_flow_uncached(
                 condition = generator.ifs[condition_index]
                 current = evaluate(condition, current)
                 truth = expression_truth(condition)
-                flow: PythonCompletionFlow[tuple[ModuleImportState, ...]] = (
-                    PythonCompletionFlow(
-                        continued=current if truth is not True else None
-                    )
+                flow: PythonCompletionFlow[_ImportStates] = PythonCompletionFlow(
+                    continued=current if truth is not True else None
                 )
                 if truth is not False:
                     flow = flow.merge(
-                        filters(condition_index + 1, current), join_states=_merge_states
+                        filters(condition_index + 1, current),
+                        join_states=_join_import_states,
                     )
                 else:
                     unreachable_tail(index, condition_index + 1)
                 return flow
 
             def advance(
-                header: tuple[ModuleImportState, ...],
+                header: _ImportStates,
             ) -> tuple[
-                tuple[ModuleImportState, ...] | None,
-                PythonCompletionFlow[tuple[ModuleImportState, ...]],
+                _ImportStates | None,
+                PythonCompletionFlow[_ImportStates],
             ]:
                 current = (
                     callback_states(header)
@@ -1348,7 +1378,7 @@ def _analyze_module_import_flow_uncached(
                 entry,
                 advance,
                 lambda exhausted: PythonCompletionFlow(normal=exhausted),
-                join_states=_merge_states,
+                join_states=_join_import_states,
                 equivalent_states=lambda left, right: left == right,
                 widen_state=unknown_states,
                 finalize=(
@@ -1359,20 +1389,18 @@ def _analyze_module_import_flow_uncached(
             )
 
         flow = generate(0, states)
-        return flow.normal or ()
+        return flow.normal or _EMPTY_IMPORT_STATES
 
     def expression_metadata_transfer(
         expression: ast.AST,
-        states: tuple[ModuleImportState, ...],
+        states: _ImportStates,
         *,
         direct_metadata_names: Collection[str],
-        raised_states: list[tuple[ModuleImportState, ...]] | None,
-    ) -> tuple[ModuleImportState, ...]:
+        raised_states: list[_ImportStates] | None,
+    ) -> _ImportStates:
         current = states
 
-        def transfer(
-            child: ast.AST, incoming: tuple[ModuleImportState, ...]
-        ) -> tuple[ModuleImportState, ...]:
+        def transfer(child: ast.AST, incoming: _ImportStates) -> _ImportStates:
             return expression_effects(
                 child,
                 incoming,
@@ -1405,7 +1433,7 @@ def _analyze_module_import_flow_uncached(
         if isinstance(expression, ast.IfExp):
             current = transfer(expression.test, current)
             truth = expression_truth(expression.test)
-            outcomes: list[tuple[ModuleImportState, ...]] = []
+            outcomes: list[_ImportStates] = []
             for live, branch in (
                 (truth is not False, expression.body),
                 (truth is not True, expression.orelse),
@@ -1414,7 +1442,7 @@ def _analyze_module_import_flow_uncached(
                     outcomes.append(transfer(branch, current))
                 else:
                     record_unreachable(branch)
-            return _merge_states(*outcomes)
+            return _join_import_states(*outcomes)
         if isinstance(expression, ast.BoolOp):
             outcomes = []
             for index, value in enumerate(expression.values):
@@ -1432,7 +1460,7 @@ def _analyze_module_import_flow_uncached(
                     for skipped in expression.values[index + 1 :]:
                         record_unreachable(skipped)
                     break
-            return _merge_states(*outcomes)
+            return _join_import_states(*outcomes)
         if isinstance(expression, ast.Compare):
             current = transfer(expression.left, current)
             outcomes = []
@@ -1441,7 +1469,7 @@ def _analyze_module_import_flow_uncached(
                 # Every comparison can terminate a chain. Preserve correlation
                 # rather than forcing the last comparator's writes on all exits.
                 outcomes.append(current)
-            return _merge_states(*outcomes)
+            return _join_import_states(*outcomes)
         if isinstance(expression, ast.Call):
             current = transfer(expression.func, current)
             plan = argument_plan(expression)
@@ -1500,7 +1528,7 @@ def _analyze_module_import_flow_uncached(
             elif name in _IMPORT_METADATA_NAMES:
                 target = ast.Name(id=name)
                 if mutation == PythonIdentity.GLOBALS_DELITEM:
-                    current = _merge_states(
+                    current = _join_import_states(
                         invalidate_module_import_state(state, target, deleted=True)
                         for state in current
                     )
@@ -1529,11 +1557,11 @@ def _analyze_module_import_flow_uncached(
             if isinstance(child, (ast.Import, ast.ImportFrom)):
                 require_python_syntax_target(child, context.target_python)
             if isinstance(child, (ast.stmt, ast.Call)):
-                by_node.setdefault(python_node_source_key(child), ())
+                by_node.setdefault(python_node_source_key(child), _EMPTY_IMPORT_STATES)
 
     def unreachable_block(
         statements: Sequence[ast.stmt],
-    ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+    ) -> PythonCompletionFlow[_ImportStates]:
         for statement in statements:
             record_unreachable(statement)
         return PythonCompletionFlow()
@@ -1544,17 +1572,17 @@ def _analyze_module_import_flow_uncached(
 
     def flow_statements(
         statements: Sequence[ast.stmt],
-        states: tuple[ModuleImportState, ...],
+        states: _ImportStates,
         *,
         eager_annotations: bool = True,
         direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
-    ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
-        pending_expression_raises: list[tuple[ModuleImportState, ...]] = []
+    ) -> PythonCompletionFlow[_ImportStates]:
+        pending_expression_raises: list[_ImportStates] = []
 
         def evaluate(
             expression: ast.AST,
-            incoming: tuple[ModuleImportState, ...],
-        ) -> tuple[ModuleImportState, ...]:
+            incoming: _ImportStates,
+        ) -> _ImportStates:
             return expression_effects(
                 expression,
                 incoming,
@@ -1572,8 +1600,10 @@ def _analyze_module_import_flow_uncached(
             before = current
             # Statement identity is also an explicit reachability projection.
             key = python_node_source_key(statement)
-            by_node[key] = _merge_states(by_node.get(key, ()), current)
-            outcome: PythonCompletionFlow[tuple[ModuleImportState, ...]] | None = None
+            by_node[key] = _join_import_states(
+                by_node.get(key, _EMPTY_IMPORT_STATES), current
+            )
+            outcome: PythonCompletionFlow[_ImportStates] | None = None
             if isinstance(statement, (ast.Import, ast.ImportFrom)):
                 record(statement, current)
                 current = bind_imported_names(
@@ -1611,7 +1641,7 @@ def _analyze_module_import_flow_uncached(
                 current = evaluate(statement.target, current)
                 current = evaluate(statement.value, current)
                 if target_writes_metadata(statement.target, direct_metadata_names):
-                    current = _merge_states(
+                    current = _join_import_states(
                         invalidate_module_import_state(state, statement.target)
                         for state in current
                     )
@@ -1623,7 +1653,7 @@ def _analyze_module_import_flow_uncached(
                 for target in statement.targets:
                     current = evaluate(target, current)
                     if target_writes_metadata(target, direct_metadata_names):
-                        current = _merge_states(
+                        current = _join_import_states(
                             invalidate_module_import_state(state, target, deleted=True)
                             for state in current
                         )
@@ -1654,7 +1684,7 @@ def _analyze_module_import_flow_uncached(
                     if truth is not True
                     else unreachable_block(statement.orelse)
                 )
-                outcome = body.merge(alternate, join_states=_merge_states)
+                outcome = body.merge(alternate, join_states=_join_import_states)
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
                 if not isinstance(statement, ast.While):
                     current = evaluate(statement.iter, current)
@@ -1662,12 +1692,12 @@ def _analyze_module_import_flow_uncached(
                 iteration = None if loop_fact is None else loop_fact.iteration
 
                 def advance(
-                    header: tuple[ModuleImportState, ...],
+                    header: _ImportStates,
                 ) -> tuple[
-                    tuple[ModuleImportState, ...] | None,
-                    PythonCompletionFlow[tuple[ModuleImportState, ...]],
+                    _ImportStates | None,
+                    PythonCompletionFlow[_ImportStates],
                 ]:
-                    raised: list[tuple[ModuleImportState, ...]] = []
+                    raised: list[_ImportStates] = []
                     if isinstance(statement, ast.While):
                         tested = expression_effects(
                             statement.test,
@@ -1707,7 +1737,7 @@ def _analyze_module_import_flow_uncached(
                             PythonNodeKey.from_node(statement.target), UNKNOWN_EFFECTS
                         )
                         if target_effects & RAISES:
-                            raised.append(_merge_states(tested, body_entry))
+                            raised.append(_join_import_states(tested, body_entry))
                     body = (
                         flow_statements(
                             statement.body,
@@ -1720,8 +1750,8 @@ def _analyze_module_import_flow_uncached(
                     )
                     if raised:
                         body = body.merge(
-                            PythonCompletionFlow(raised=_merge_states(*raised)),
-                            join_states=_merge_states,
+                            PythonCompletionFlow(raised=_join_import_states(*raised)),
+                            join_states=_join_import_states,
                         )
                     return tested if truth is not True else None, body
 
@@ -1734,7 +1764,7 @@ def _analyze_module_import_flow_uncached(
                         eager_annotations=eager_annotations,
                         direct_metadata_names=direct_metadata_names,
                     ),
-                    join_states=_merge_states,
+                    join_states=_join_import_states,
                     equivalent_states=lambda left, right: left == right,
                     widen_state=unknown_states,
                     finalize=(
@@ -1819,8 +1849,8 @@ def _analyze_module_import_flow_uncached(
 
                 def enter_context(
                     index: int,
-                    incoming: tuple[ModuleImportState, ...],
-                ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                    incoming: _ImportStates,
+                ) -> PythonCompletionFlow[_ImportStates]:
                     if index == len(statement.items):
                         return flow_statements(
                             statement.body,
@@ -1829,7 +1859,7 @@ def _analyze_module_import_flow_uncached(
                             direct_metadata_names=direct_metadata_names,
                         )
                     item = statement.items[index]
-                    raised: list[tuple[ModuleImportState, ...]] = []
+                    raised: list[_ImportStates] = []
                     evaluated = expression_effects(
                         item.context_expr,
                         incoming,
@@ -1838,7 +1868,7 @@ def _analyze_module_import_flow_uncached(
                     )
                     entered = callback_states(evaluated)
                     prefix = PythonCompletionFlow(
-                        raised=_merge_states(incoming, entered, *raised),
+                        raised=_join_import_states(incoming, entered, *raised),
                     )
                     # Assignment and nested acquisition occur inside this manager;
                     # their failures may be suppressed by its exit callback.
@@ -1851,7 +1881,7 @@ def _analyze_module_import_flow_uncached(
                         assigned = PythonCompletionFlow(normal=entered, raised=entered)
                     body = assigned.sequence(
                         lambda normal: enter_context(index + 1, normal),
-                        join_states=_merge_states,
+                        join_states=_join_import_states,
                     )
                     return prefix.merge(
                         body.unwind_context(
@@ -1859,9 +1889,9 @@ def _analyze_module_import_flow_uncached(
                                 normal=callback_states(state),
                                 raised=callback_states(state),
                             ),
-                            join_states=_merge_states,
+                            join_states=_join_import_states,
                         ),
-                        join_states=_merge_states,
+                        join_states=_join_import_states,
                     )
 
                 outcome = enter_context(0, current)
@@ -1881,7 +1911,7 @@ def _analyze_module_import_flow_uncached(
                             eager_annotations=eager_annotations,
                             direct_metadata_names=direct_metadata_names,
                         ),
-                        join_states=_merge_states,
+                        join_states=_join_import_states,
                     )
                     .merge(
                         PythonCompletionFlow(
@@ -1889,7 +1919,7 @@ def _analyze_module_import_flow_uncached(
                             broken=body.broken,
                             continued=body.continued,
                         ),
-                        join_states=_merge_states,
+                        join_states=_join_import_states,
                     )
                 )
                 if body.normal is None:
@@ -1898,11 +1928,11 @@ def _analyze_module_import_flow_uncached(
 
                     def evaluate_handler_type(
                         handler: ast.ExceptHandler,
-                        incoming: tuple[ModuleImportState, ...],
-                    ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                        incoming: _ImportStates,
+                    ) -> PythonCompletionFlow[_ImportStates]:
                         if handler.type is None:
                             return PythonCompletionFlow(normal=incoming)
-                        raised: list[tuple[ModuleImportState, ...]] = []
+                        raised: list[_ImportStates] = []
                         evaluated = expression_effects(
                             handler.type,
                             incoming,
@@ -1913,13 +1943,13 @@ def _analyze_module_import_flow_uncached(
                         # exception type. Matching failure bypasses all handlers.
                         return PythonCompletionFlow(
                             normal=evaluated,
-                            raised=_merge_states(incoming, evaluated, *raised),
+                            raised=_join_import_states(incoming, evaluated, *raised),
                         )
 
                     def execute_handler(
                         handler: ast.ExceptHandler,
-                        incoming: tuple[ModuleImportState, ...],
-                    ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                        incoming: _ImportStates,
+                    ) -> PythonCompletionFlow[_ImportStates]:
                         scoped_target = handler.name in direct_metadata_names
                         entered = (
                             unknown_states(incoming) if scoped_target else incoming
@@ -1933,7 +1963,7 @@ def _analyze_module_import_flow_uncached(
                         if scoped_target and handler.name is not None:
                             target = ast.Name(id=handler.name, ctx=ast.Del())
                             branch = branch.map_states(
-                                lambda states: _merge_states(
+                                lambda states: _join_import_states(
                                     invalidate_module_import_state(
                                         state, target, deleted=True
                                     )
@@ -1945,14 +1975,14 @@ def _analyze_module_import_flow_uncached(
                     if isinstance(statement, ast.TryStar):
 
                         def group_protocol(
-                            incoming: tuple[ModuleImportState, ...],
-                        ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                            incoming: _ImportStates,
+                        ) -> PythonCompletionFlow[_ImportStates]:
                             # ExceptionGroup subclasses may implement split/derive
                             # in Python, independently of handler type expressions.
                             changed = callback_states(incoming)
                             return PythonCompletionFlow(
                                 normal=changed,
-                                raised=_merge_states(incoming, changed),
+                                raised=_join_import_states(incoming, changed),
                             )
 
                         handled = PythonCompletionFlow.exception_group_handlers(
@@ -1962,11 +1992,13 @@ def _analyze_module_import_flow_uncached(
                             execute_handler=execute_handler,
                             split_group=group_protocol,
                             merge_group=group_protocol,
-                            join_states=_merge_states,
+                            join_states=_join_import_states,
                         )
-                        outcome = outcome.merge(handled, join_states=_merge_states)
+                        outcome = outcome.merge(
+                            handled, join_states=_join_import_states
+                        )
                     else:
-                        unmatched: tuple[ModuleImportState, ...] | None = body.raised
+                        unmatched: _ImportStates | None = body.raised
                         for handler in statement.handlers:
                             if unmatched is None:
                                 record_unreachable(handler)
@@ -1974,25 +2006,25 @@ def _analyze_module_import_flow_uncached(
                             evaluated = evaluate_handler_type(handler, unmatched)
                             outcome = outcome.merge(
                                 evaluated.without_normal(),
-                                join_states=_merge_states,
+                                join_states=_join_import_states,
                             )
                             unmatched = evaluated.normal
                             if unmatched is not None:
                                 outcome = outcome.merge(
                                     execute_handler(handler, unmatched),
-                                    join_states=_merge_states,
+                                    join_states=_join_import_states,
                                 )
                             if handler.type is None:
                                 unmatched = None
                         if unmatched is not None:
                             outcome = outcome.merge(
                                 PythonCompletionFlow(raised=unmatched),
-                                join_states=_merge_states,
+                                join_states=_join_import_states,
                             )
                 elif body.raised is not None:
                     outcome = outcome.merge(
                         PythonCompletionFlow(raised=body.raised),
-                        join_states=_merge_states,
+                        join_states=_join_import_states,
                     )
                 else:
                     for handler in statement.handlers:
@@ -2007,12 +2039,12 @@ def _analyze_module_import_flow_uncached(
                             eager_annotations=eager_annotations,
                             direct_metadata_names=direct_metadata_names,
                         ),
-                        join_states=_merge_states,
+                        join_states=_join_import_states,
                     )
             elif isinstance(statement, ast.Match):
                 current = evaluate(statement.subject, current)
                 branches = PythonCompletionFlow()
-                unmatched: tuple[ModuleImportState, ...] | None = current
+                unmatched: _ImportStates | None = current
                 for case in statement.cases:
                     if unmatched is None:
                         record_unreachable(case)
@@ -2038,18 +2070,18 @@ def _analyze_module_import_flow_uncached(
                                 eager_annotations=eager_annotations,
                                 direct_metadata_names=direct_metadata_names,
                             ),
-                            join_states=_merge_states,
+                            join_states=_join_import_states,
                         )
                     else:
                         unreachable_block(case.body)
                     if irrefutable and guard_truth is True:
                         unmatched = None
                     elif guard_truth is not True:
-                        unmatched = _merge_states(unmatched, case_states)
+                        unmatched = _join_import_states(unmatched, case_states)
                 if unmatched is not None:
                     branches = branches.merge(
                         PythonCompletionFlow(normal=unmatched),
-                        join_states=_merge_states,
+                        join_states=_join_import_states,
                     )
                 outcome = branches
             else:
@@ -2075,18 +2107,18 @@ def _analyze_module_import_flow_uncached(
                         outcome = outcome.merge(
                             PythonCompletionFlow.single(
                                 kind,
-                                _merge_states(before, current)
+                                _join_import_states(before, current)
                                 if kind == PythonCompletion.RAISE
                                 else current,
                             ),
-                            join_states=_merge_states,
+                            join_states=_join_import_states,
                         )
             if pending_expression_raises:
                 outcome = outcome.merge(
                     PythonCompletionFlow(
-                        raised=_merge_states(*pending_expression_raises)
+                        raised=_join_import_states(*pending_expression_raises)
                     ),
-                    join_states=_merge_states,
+                    join_states=_join_import_states,
                 )
             if fact is not None:
                 projected = PythonCompletionFlow()
@@ -2094,11 +2126,11 @@ def _analyze_module_import_flow_uncached(
                     if mask & kind:
                         projected = projected.merge(
                             PythonCompletionFlow.single(kind, state),
-                            join_states=_merge_states,
+                            join_states=_join_import_states,
                         )
                 outcome = projected
             completion = completion.without_normal().merge(
-                outcome, join_states=_merge_states
+                outcome, join_states=_join_import_states
             )
             for _kind, state in outcome.successors():
                 all_states.update(state)
@@ -2109,8 +2141,8 @@ def _analyze_module_import_flow_uncached(
         body,
         initial,
     )
-    final_states = module_completion.normal or ()
-    deferred_states = _merge_states(all_states, final_states)
+    final_states = module_completion.normal or _EMPTY_IMPORT_STATES
+    deferred_states = _join_import_states(all_states, final_states)
     # Function imports observe globals when called. Graph consumers therefore
     # union every reachable module state; frontend lowering keeps them relative.
     while pending_bodies:
@@ -2134,8 +2166,21 @@ def _analyze_module_import_flow_uncached(
             )
         else:
             expression_effects(deferred_expression, deferred_states)
+    # State identity and union are independent of iteration order. Publish
+    # each distinct disjunction in its stable order at the projection boundary.
+    ordered: dict[_ImportStates, tuple[ModuleImportState, ...]] = {}
+
+    def project(states: _ImportStates) -> tuple[ModuleImportState, ...]:
+        result = ordered.get(states)
+        if result is None:
+            result = _ordered_import_states(states)
+            ordered[states] = result
+        return result
+
     return ModuleImportFlow(
-        by_node, final_states, _merge_states(all_states, final_states)
+        {key: project(states) for key, states in by_node.items()},
+        project(final_states),
+        project(_join_import_states(all_states, final_states)),
     )
 
 
