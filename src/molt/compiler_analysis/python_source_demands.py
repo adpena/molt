@@ -145,36 +145,45 @@ def _candidate_order(value: object) -> tuple[object, ...]:
     raise TypeError(f"unordered candidate field: {value!r}")
 
 
-class SourceMember(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class SourceMember:
     owner: SourceCandidate
     name: str
 
 
-class SourceCacheItem(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class SourceCacheItem:
     key: str | None
     # None normally means every key. A wildcard write is also a possible
     # provider for each literal-key read without mixing unrelated literal keys.
     wildcard: bool = False
 
 
-class SourceReturn(NamedTuple):
+# Each operation is a distinct graph key even when it consumes the same
+# source value. Tuple field equality would merge call, await and delegation.
+@dataclass(frozen=True, slots=True)
+class SourceReturn:
     callee: SourceValue
 
 
-class SourceCallArguments(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class SourceCallArguments:
     site: PythonSourceKey
 
 
-class SourceIteratorItems(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class SourceIteratorItems:
     site: PythonSourceKey
     producer: PythonIdentity
 
 
-class SourceAwait(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class SourceAwait:
     value: SourceValue
 
 
-class SourceGeneratorCompletion(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class SourceGeneratorCompletion:
     value: SourceValue
 
 
