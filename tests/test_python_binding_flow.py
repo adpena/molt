@@ -1634,7 +1634,7 @@ def test_binding_history_diff_visits_only_changed_trie_branches() -> None:
 def _identity_on_line(source: str, line: int, identity: PythonIdentity) -> bool:
     index = analyze_python_source_bindings(source)
     return any(
-        fact.node.lineno == line and identity_fact_is_exact(fact.identities, identity)
+        fact.node[0] == line and identity_fact_is_exact(fact.identities, identity)
         for fact in index.expressions
     )
 
@@ -1714,7 +1714,7 @@ def test_intrinsic_require_alias_has_one_exact_binding_identity() -> None:
         "from _intrinsics import require_intrinsic as require\n"
         "require('molt_demo', globals())\n"
     )
-    call = next(fact for fact in index.calls if fact.node.col_offset == 0)
+    call = next(fact for fact in index.calls if fact.node[1] == 0)
     assert call.callee_is(PythonIdentity.INTRINSICS_REQUIRE)
 
 
@@ -2952,7 +2952,7 @@ def test_default_parameter_retains_possible_dunder_import_identity() -> None:
         "load('pkg.leaf')\n"
     )
     index = analyze_python_source_bindings(source)
-    importer_call = next(fact for fact in index.calls if fact.node.lineno == 2)
+    importer_call = next(fact for fact in index.calls if fact.node[0] == 2)
 
     assert importer_call.callee_may_be(PythonIdentity.BUILTINS_IMPORT)
 
@@ -4609,9 +4609,6 @@ def test_generator_body_writes_do_not_enter_creation_state() -> None:
 
 
 def test_comprehension_clause_facts_remain_distinct_after_reparse() -> None:
-    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
-    from molt.compiler_analysis.python_source_keys import python_node_source_key
-
     source = (
         "seen = []\n"
         "first = [seen.append('dead') for a in (0,) for b in ()]\n"
@@ -4626,10 +4623,13 @@ def test_comprehension_clause_facts_remain_distinct_after_reparse() -> None:
     reparsed_clauses = [
         node for node in ast.walk(reparsed) if isinstance(node, ast.comprehension)
     ]
-    keys = [python_node_source_key(node) for node in clauses]
+    admission = _PythonAstDigestAdmission(parsed)
+    keys = [admission.source_key(node) for node in clauses]
     assert len(set(keys)) == len(clauses)
     assert keys == [python_node_source_key(node) for node in reparsed_clauses]
-    index = analyze_python_source_bindings(source)
+    index = python_binding_flow.analyze_python_bindings(
+        parsed, source_digest=admission.digest, ast_digest_admission=admission
+    )
     by_target = {
         node.target.id: index.iteration_fact(node) for node in reparsed_clauses
     }
@@ -4637,7 +4637,7 @@ def test_comprehension_clause_facts_remain_distinct_after_reparse() -> None:
     assert by_target["b"] is not None and by_target["b"].empty
     assert by_target["c"] is not None and not by_target["c"].empty
     for node in clauses:
-        assert PythonNodeKey.from_node(node) != PythonNodeKey.from_node(node.target)
+        assert python_node_source_key(node) != python_node_source_key(node.target)
 
 
 @pytest.mark.parametrize(

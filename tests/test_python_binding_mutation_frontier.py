@@ -591,7 +591,7 @@ def test_augmented_scalar_operation_does_not_become_target_callback() -> None:
     # fact must not taint storage and invent a displaced callback-capable value.
     assert not fact.effects & flow.NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
     completion = analysis.assignment_effects[
-        flow.PythonNodeKey.from_node(statement.target)
+        flow.python_node_source_key(statement.target)
     ]
     assert not completion & (
         flow.NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | flow.WRITES_MODULE_METADATA
@@ -626,7 +626,7 @@ def test_augmented_assignment_preserves_publication_effects(
     statement = tree.body[-1]
     assert isinstance(statement, ast.AugAssign)
     completion = analysis.assignment_effects[
-        flow.PythonNodeKey.from_node(statement.target)
+        flow.python_node_source_key(statement.target)
     ]
     assert completion & required_effects == required_effects
 

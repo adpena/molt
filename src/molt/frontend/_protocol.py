@@ -95,8 +95,8 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
     from molt.frontend.lowering.function_lifecycle import PythonFrameContextScope
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
-    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
     from molt.compiler_analysis.python_lexical_scope import PythonScopeCellCaptures
+    from molt.compiler_analysis.python_source_keys import PythonSourceKey
     from molt.frontend.sema import SemaResult
     from molt.frontend.lowering.serialization_context import SerializationContext
     from molt.frontend.sema.funcmeta import StatefulFunctionFramePlan
@@ -334,7 +334,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _builtin_guard_coverage(
         self, root: ast.expr
-    ) -> tuple[int, frozenset[PythonNodeKey]]: ...
+    ) -> tuple[int, frozenset[PythonSourceKey]]: ...
 
     def _builtin_guard_may_open(self, callee: ast.AST) -> bool: ...
 

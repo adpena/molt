@@ -38,7 +38,10 @@ from __future__ import annotations
 import ast
 from typing import Any, Literal
 
-from molt.compiler_analysis.python_binding_facts import PythonNodeKey
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    python_node_source_key,
+)
 from molt.compiler_analysis.python_identity_catalog_generated import (
     BUILTIN_IDENTITIES,
     BUILTIN_NAMES_BY_IDENTITY,
@@ -107,7 +110,7 @@ class MoltBuiltinGuardArmExpr(ast.expr):
     _fields = ("value",)
 
     def __init__(
-        self, value: ast.expr, kind: GuardArmKind, covered: frozenset[PythonNodeKey]
+        self, value: ast.expr, kind: GuardArmKind, covered: frozenset[PythonSourceKey]
     ) -> None:
         super().__init__()
         self.value = value
@@ -124,7 +127,7 @@ class MoltBuiltinGuardArm(ast.stmt):
         self,
         body: list[ast.stmt],
         kind: GuardArmKind,
-        covered: frozenset[PythonNodeKey],
+        covered: frozenset[PythonSourceKey],
     ) -> None:
         super().__init__()
         self.body = body
@@ -134,7 +137,7 @@ class MoltBuiltinGuardArm(ast.stmt):
 
 class BuiltinGuardMixin(GeneratorMixinBase):
     # (arm kind, reads the enclosing guard proves); None outside any arm.
-    _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonNodeKey]] | None
+    _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonSourceKey]] | None
 
     def _builtin_guard_bit(self, node: ast.AST) -> int:
         if (
@@ -169,7 +172,7 @@ class BuiltinGuardMixin(GeneratorMixinBase):
             if (
                 arm is None
                 or arm[0] != "fast"
-                or PythonNodeKey.from_node(node) not in arm[1]
+                or python_node_source_key(node) not in arm[1]
             ):
                 return None
             # The identity catalog has a row for every guard-table name
@@ -199,7 +202,7 @@ class BuiltinGuardMixin(GeneratorMixinBase):
         if (
             arm is not None
             and arm[0] == "fast"
-            and PythonNodeKey.from_node(node) in arm[1]
+            and python_node_source_key(node) in arm[1]
         ):
             return node.id
         if not self._function_needs_frame_trace():
@@ -272,7 +275,7 @@ class BuiltinGuardMixin(GeneratorMixinBase):
 
     def _builtin_guard_coverage(
         self, root: ast.expr
-    ) -> tuple[int, frozenset[PythonNodeKey]]:
+    ) -> tuple[int, frozenset[PythonSourceKey]]:
         """The guard mask and reads one guard at ``root``'s first load proves.
 
         Walk Python's evaluation order from the callee. Name loads and
@@ -281,7 +284,7 @@ class BuiltinGuardMixin(GeneratorMixinBase):
         runs no Python code, and its inner reads stay unguarded.
         """
         mask = 0
-        covered: set[PythonNodeKey] = set()
+        covered: set[PythonSourceKey] = set()
 
         def walk(node: ast.expr) -> bool:
             nonlocal mask
@@ -289,7 +292,7 @@ class BuiltinGuardMixin(GeneratorMixinBase):
                 bit = self._builtin_guard_bit(node)
                 if bit:
                     mask |= bit
-                    covered.add(PythonNodeKey.from_node(node))
+                    covered.add(python_node_source_key(node))
                 return True
             if isinstance(node, ast.Constant):
                 return True
@@ -346,7 +349,7 @@ class BuiltinGuardMixin(GeneratorMixinBase):
             receiver.func
         ) or not self._builtin_guard_region_duplicable(node):
             return CALL_NOT_HANDLED
-        covered = frozenset({PythonNodeKey.from_node(receiver.func)})
+        covered = frozenset({python_node_source_key(receiver.func)})
         conditional = ast.copy_location(
             ast.IfExp(
                 test=ast.copy_location(
