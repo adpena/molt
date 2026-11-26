@@ -1271,26 +1271,25 @@ unsafe fn pad_positional_defaults(
 pub(super) unsafe fn call_owned_function(
     py: &PyToken<'_>,
     func_bits: u64,
-    receiver: Option<u64>,
+    receiver: u64,
     args: &[u64],
 ) -> u64 {
     unsafe {
-        let supplied = usize::from(receiver.is_some()) + args.len();
+        let supplied = 1 + args.len();
         if supplied <= DIRECT_ARGV_MAX {
             let mut argv = [0u64; DIRECT_ARGV_MAX];
-            let skip = usize::from(receiver.is_some());
-            if let Some(receiver) = receiver {
-                argv[0] = receiver;
-            }
-            argv[skip..supplied].copy_from_slice(args);
+            argv[0] = receiver;
+            argv[1..supplied].copy_from_slice(args);
             if takes_positional_arguments_over(py, func_bits, supplied) {
                 return call_function_obj_moved(py, func_bits, &argv[..supplied]);
             }
             if let Some(arity) = pad_positional_defaults(py, func_bits, supplied, &mut argv) {
                 return call_function_obj_moved(py, func_bits, &argv[..arity]);
             }
+            let arguments = CallArguments::adopted(py, &argv[..supplied]);
+            return call_bind_with_arguments(py, func_bits, arguments);
         }
-        match CallArguments::moved(py, receiver, args) {
+        match CallArguments::moved_with_receiver(py, receiver, args) {
             Ok(arguments) => call_bind_with_arguments(py, func_bits, arguments),
             Err(err) => err,
         }

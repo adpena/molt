@@ -1302,7 +1302,7 @@ pub(super) unsafe fn call_loaded_method(
             dec_ref_bits(py, callable_bits);
             return MoltObject::none().bits();
         }
-        let result = call_owned_function(py, callable_bits, Some(self_bits), args);
+        let result = call_owned_function(py, callable_bits, self_bits, args);
         dec_ref_bits(py, callable_bits);
         result
     }
