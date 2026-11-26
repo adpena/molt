@@ -79,7 +79,7 @@ schema = "molt-perf-methodology-v1"
 # One synchronous source-outcome dependency observation can reduce compile time.
 # Tool source closure keys use the selected per-file content digests.
 version = 91
-content_sha256 = "fccb3728cc271af63dc296e50ab041727bcc1cd59781381ff37064fa69e6a8dc"
+content_sha256 = "f14f08fc4c11c7eed720594e91f8859788bcafb1d996f7e96cd955f1b973b231"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -88,6 +88,22 @@ role = "times each process and samples its peak RSS"
 [[methodology]]
 path = "tools/perf_scoreboard_measure.py"
 role = "runs the cold and warm samples for one cell"
+
+[[methodology]]
+path = "tools/startup_bench.py"
+role = "measures startup samples and interprets fresh Node phase diagnostics"
+
+[[methodology]]
+path = "tools/startup_node_probe.js"
+role = "observes Node and WASM startup phases in the measured guest process"
+
+[[methodology]]
+path = "tools/output_startup_size_audit.py"
+role = "selects and builds the startup workload artifacts and environment"
+
+[[mechanics]]
+path = "tools/command_execution.py"
+reason = "runs the commands under process custody; benchmark callers own the measured intervals"
 
 [[methodology]]
 path = "tools/perf_scoreboard_model.py"
@@ -235,6 +251,10 @@ reason = "resolves a pinned host; selected engine bytes are recorded separately"
 [[mechanics]]
 path = "src/molt/toolchain_identity.py"
 reason = "captures executable bytes and metadata before samples; identities are recorded, never timing corrections"
+
+[[mechanics]]
+path = "src/molt/toolchain_facts.py"
+reason = "places the shared digest store; source hashes and the selected inputs decide workload identity"
 
 [[mechanics]]
 path = "tools/sample_profile.py"
