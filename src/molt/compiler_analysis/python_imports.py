@@ -302,7 +302,7 @@ class UnresolvedStaticImportError(ValueError):
     """A dependency cannot be sealed without explicit runtime import custody."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class ModuleImportFlow:
     """Execution metadata and opt-in source candidates at import/call sites."""
 

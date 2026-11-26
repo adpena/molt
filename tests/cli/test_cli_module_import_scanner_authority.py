@@ -258,6 +258,37 @@ def test_body_reachability_rechecks_only_the_consumed_import_state() -> None:
     assert scan(rebound).imports == ("widened",)
 
 
+def test_scan_proof_checks_replacement_after_publication_is_collected() -> None:
+    from typing import cast
+    from weakref import ref
+
+    from molt.compiler_analysis.python_imports import (
+        ModuleImportFlow,
+        ModuleImportState,
+    )
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    publication = ModuleImportFlow({}, (), ())
+
+    def build(_premise: PythonNamespacePremise | None) -> ModuleImportFlow:
+        return publication
+
+    reads = _source_import_scan.ScanPremiseReads()
+    previous = ref(publication)
+    tracked = cast(ModuleImportFlow, reads.track(build, publication))
+    assert tracked.final_states == ()
+    assert reads.unchanged_under(None)
+    del tracked
+
+    publication = ModuleImportFlow({}, (), ())
+    assert previous() is None
+    assert reads.unchanged_under(None)
+
+    changed = (ModuleImportState(None, None, "pkg.changed", False),)
+    publication = ModuleImportFlow({}, changed, changed)
+    assert not reads.unchanged_under(None)
+
+
 def test_only_a_lexical_source_read_requests_the_discovery_projection() -> None:
     from unittest.mock import patch
 
