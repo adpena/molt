@@ -29,7 +29,6 @@ pub(in crate::llvm_backend) type BlockParams<'ctx> =
 pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
     /// The invocation's thread record, loaded in the true entry.
     thread_record: Cell<Option<PointerValue<'ctx>>>,
-    pub(super) frame_homes: Cell<Option<PointerValue<'ctx>>>,
     /// The refcount admission word, read once in the entry.
     refcount_admission: Cell<Option<IntValue<'ctx>>>,
     /// Refcount sites emitted in this function
@@ -50,7 +49,6 @@ impl LlvmFunctionState<'_> {
     pub(in crate::llvm_backend) fn new(inline_fast_paths: bool) -> Self {
         Self {
             thread_record: Cell::new(None),
-            frame_homes: Cell::new(None),
             refcount_admission: Cell::new(None),
             refcount_sites: Cell::new(0),
             inline_fast_paths,
@@ -1079,13 +1077,6 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .builder
             .build_switch(selector, default.0, &targets)
             .unwrap();
-    }
-
-    fn frame_homes(&self) -> Option<Self::Slot> {
-        self.state.frame_homes.get()
-    }
-    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
-        self.state.frame_homes.set(slot);
     }
 
     fn pop_frame(&mut self, base: Self::Word, kind: Option<molt_ir::frame_entry::FrameEntryKind>) {

@@ -242,8 +242,6 @@ pub(crate) mod tests {
         compiled: Vec<(String, Option<MachineKind>)>,
         /// Whether the process collects runtime profile counters.
         pub(in crate::codegen_ssa) profile_enabled: bool,
-        /// The active frame record's homes slot, when a test enters one.
-        pub(in crate::codegen_ssa) frame_homes: Option<usize>,
         /// The extension symbols declared so far, each with its machine
         /// signature.
         native: Vec<(
@@ -633,12 +631,6 @@ pub(crate) mod tests {
                 cases.to_vec(),
                 (default.0, default.1.to_vec()),
             ));
-        }
-        fn frame_homes(&self) -> Option<usize> {
-            self.frame_homes
-        }
-        fn set_frame_homes(&mut self, slot: Option<usize>) {
-            self.frame_homes = slot;
         }
 
         fn pop_frame(&mut self, base: u64, kind: Option<molt_ir::frame_entry::FrameEntryKind>) {

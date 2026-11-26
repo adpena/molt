@@ -30,6 +30,7 @@ use crate::tir::ops::{AttrValue, OpCode, TirOp};
 pub(crate) struct Position<'a, B: CodegenBuilder> {
     pub(crate) source: BlockId,
     pub(crate) op_index: usize,
+    pub(crate) frame: super::frame::ActiveFrame<B::Slot>,
     pub(crate) initial_homes: &'a super::frame::HomeInitializations,
     /// A compiled poll's raw frame address from its physical parameter.
     pub(crate) poll_frame: Option<B::Word>,
@@ -42,13 +43,7 @@ pub(crate) struct Position<'a, B: CodegenBuilder> {
 
 impl<B: RecordPlacement> FunctionCx<'_, B> {
     /// Lower one operation, or diagnose a violated terminal TIR invariant.
-    pub(crate) fn lower_op(
-        &mut self,
-        b: &mut B,
-        at: &Position<'_, B>,
-        op: &TirOp,
-        frame: Option<returns::OwnedFrame<B::Slot>>,
-    ) {
+    pub(crate) fn lower_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) {
         match op.opcode {
             OpCode::ExceptionPending => self.exception_pending_op(b, op),
             OpCode::FrameEntryAdmits => self.frame_entry_admits(b, op),
@@ -309,13 +304,13 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             OpCode::BuildSet => self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd),
             OpCode::Raise => self.raise_op(b, op),
             OpCode::FrameSetLocation => {
-                self.frame_op(b, op, frame, at.poll_frame, false);
+                self.frame_op(b, op, at.frame, at.poll_frame, false);
             }
             OpCode::Copy => {
                 let initializes_home = op.origin == Some(molt_ir::OpKind::FrameHomeStore)
                     && at.initial_homes.contains(&(at.source, at.op_index));
-                if !self.frame_op(b, op, frame, at.poll_frame, initializes_home)
-                    && !self.preserved_op(b, op)
+                if !self.frame_op(b, op, at.frame, at.poll_frame, initializes_home)
+                    && !self.preserved_op(b, op, at.frame.record())
                     && !op
                         .origin
                         .is_some_and(|kind| self.preserved_runtime_call(b, op, kind))
@@ -392,7 +387,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             return;
         };
         let pending = if op.is_async_work_poll() {
-            self.async_work_poll(b, false, op.frame_location())
+            self.async_work_poll(b, false, at.frame.record(), op.frame_location())
         } else {
             let thread = b.thread_record_word();
             pending::exception_pending_word(b, thread)
@@ -439,7 +434,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 let origin = b.create_block("check_exc_origin");
                 b.branch_if(raised, (origin, &[]), (continued, &[]));
                 b.switch_to_block(origin);
-                let homes = b.frame_homes();
+                let homes = at.frame.record();
                 // The site's own location; the normal path stores nothing.
                 if let Some(location) = op.frame_location() {
                     let homes = homes.expect("location publication requires a frame");
@@ -488,6 +483,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         &mut self,
         b: &mut B,
         payload: bool,
+        record: Option<B::Slot>,
         location: Option<i64>,
     ) -> B::Word {
         let has_work = b.async_work_pending();
@@ -499,9 +495,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         b.branch_if(has_work, (cold, &[]), (fast, &[]));
         b.switch_to_block(cold);
         if let Some(location) = location {
-            let homes = b
-                .frame_homes()
-                .expect("location publication requires a frame");
+            let homes = record.expect("location publication requires a frame");
             super::frame::store_location(b, homes, location);
         }
         let service = b.runtime_callee(if payload {
@@ -779,42 +773,24 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             values.set_repr(arg.id, held);
         }
     }
-    let frame = super::frame::initialize_owned_execution_frame(b, func.execution_context, || {
-        layout.entry.kind()
-    });
     let call_sites = Cell::new(0);
     let poll_frame = match entry {
         [value] if b.kind(*value) == MachineKind::Word => Some(b.expect_word(*value)),
         _ => None,
     };
-    let homes = match (layout.homes, layout.entry) {
-        (None, _) => None,
-        (Some(_), super::frame::FrameEntry::Absent) => {
-            let slot = b.entry_slot("borrowed_frame_homes");
-            let mut cx = FunctionCx {
-                func,
-                plan,
-                values: &mut values,
-                diagnostics: &diagnostics,
-                runtime,
-                linkage,
-                functions,
-                call_sites: &call_sites,
-            };
-            super::frame::lend_homes(b, slot, |b| {
-                returns::emit_return(
-                    &mut cx,
-                    b,
-                    own,
-                    returns::FunctionExit::EntryAbort,
-                    frame.as_ref(),
-                )
-            });
-            Some(slot)
-        }
-        (Some(_), _) => frame.as_ref().map(|owned| owned.slot),
-    };
-    b.set_frame_homes(homes);
+    let frame = layout.activate(b, func.execution_context, |b| {
+        let mut cx = FunctionCx {
+            func,
+            plan,
+            values: &mut values,
+            diagnostics: &diagnostics,
+            runtime,
+            linkage,
+            functions,
+            call_sites: &call_sites,
+        };
+        returns::emit_return(&mut cx, b, own, returns::FunctionExit::EntryAbort, None);
+    });
     let trace = trace_stride(&func.name).map(|stride| {
         use molt_ir::backend_environment::{self, BackendEnv};
         let verbose = backend_environment::var(BackendEnv::MOLT_TRACE_OP_PROGRESS_STDERR)
@@ -844,6 +820,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         let mut at = Position {
             source: id,
             op_index: 0,
+            frame,
             initial_homes: &initial_homes,
             poll_frame,
             blocks: &blocks,
@@ -886,7 +863,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             {
                 continue 'block;
             }
-            cx.lower_op(b, &at, op, frame);
+            cx.lower_op(b, &at, op);
         }
         let mut edge_diagnostics = Vec::new();
         let edges = Edges {
@@ -906,7 +883,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                     b,
                     own,
                     returns::FunctionExit::Return(returned.first().copied()),
-                    frame.as_ref(),
+                    frame.owned(),
                 );
             }
             Terminator::Unwind => {
@@ -915,7 +892,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                     b,
                     own,
                     returns::FunctionExit::Unwind,
-                    frame.as_ref(),
+                    frame.owned(),
                 );
             }
             Terminator::StateDispatch {
@@ -1577,6 +1554,46 @@ mod tests {
     }
 
     #[test]
+    fn scoped_frame_record_publishes_the_cold_poll_location_to_its_selected_record() {
+        let func = checked();
+        for (work, expected) in [(0, 57), (1, 13)] {
+            // Each base points just past the location word, as in a physical record.
+            let mut outer = [41u64, 0];
+            let mut inner = [57u64, 0];
+            let state = ThreadState {
+                work,
+                frame_top: outer[1..].as_mut_ptr() as u64,
+                ..ThreadState::default()
+            };
+            let base = inner[1..].as_mut_ptr() as u64;
+            let run = run_function_in(&[base], state, |b, params| {
+                let slot = b.entry_slot("selected_frame");
+                b.store_slot(slot, params[0]);
+                let plan = ProducerCarrierPlan::default();
+                let mut values = ValueTable::with_capacity(1);
+                let diagnostics = RefCell::new(Vec::new());
+                let runtime = crate::codegen_ssa::differential::every_runtime_entry();
+                let mut cx = FunctionCx {
+                    func: &func,
+                    plan: &plan,
+                    values: &mut values,
+                    diagnostics: &diagnostics,
+                    runtime: &runtime,
+                    linkage: &Default::default(),
+                    functions: &Default::default(),
+                    call_sites: &Cell::new(0),
+                };
+                let answer = cx.async_work_poll(b, false, Some(slot), Some(13));
+                let answer = b.word_value(answer);
+                b.return_value(Some(answer));
+            });
+            assert_eq!(run.results, [Value::Word(0)]);
+            assert_eq!(outer[0], 41);
+            assert_eq!(inner[0], expected);
+        }
+    }
+
+    #[test]
     fn a_payload_poll_answers_the_pending_exception_or_none() {
         use crate::codegen_ssa::scalar::tests::literal_word;
         use molt_ir::runtime_fn_generated::RuntimeFn;
@@ -1625,7 +1642,7 @@ mod tests {
                     functions: &Default::default(),
                     call_sites: &Cell::new(0),
                 };
-                let answer = cx.async_work_poll(b, true, None);
+                let answer = cx.async_work_poll(b, true, None, None);
                 let answer = b.word_value(answer);
                 b.return_value(Some(answer));
             });
