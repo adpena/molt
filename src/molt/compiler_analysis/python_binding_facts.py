@@ -129,6 +129,24 @@ class PythonSourceCall(NamedTuple):
     ]
     argument_strings: tuple[str | None, ...] = ()
 
+    def join(self, prior: PythonSourceCall) -> PythonSourceCall:
+        return self._replace(
+            callees=self.callees | prior.callees,
+            intrinsic_result=self.intrinsic_result | prior.intrinsic_result,
+            arguments=tuple(
+                (name, origins | earlier[1], exposed | earlier[2])
+                for (name, origins, exposed), earlier in zip(
+                    self.arguments, prior.arguments, strict=True
+                )
+            ),
+            argument_strings=tuple(
+                name if name == earlier else None
+                for name, earlier in zip(
+                    self.argument_strings, prior.argument_strings, strict=True
+                )
+            ),
+        )
+
 
 class PythonNativeInitializerSource(NamedTuple):
     """A native plan's receiver, captured values and retained function metadata."""
