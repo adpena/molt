@@ -108,11 +108,13 @@ def test_bootstrap_guards_setup_before_later_work_without_clearing() -> None:
 def test_entry_guards_include_late_insertions() -> None:
     ops = _build_entry_main_ops(
         entry_init="pyinit.main",
+        code_slot_count=5,
         version_ops=[{"kind": "const_str", "s_value": "3.12", "out": "version"}],
     )
-    ops.insert(1, {"kind": "code_slots_init", "value": 5})
-    ops.insert(-1, {"kind": "call", "s_value": "pyinit.sys", "args": [], "out": "sys"})
-    guarded = _guard_initialization_ops(ops)
+    ops.insert(2, {"kind": "call", "s_value": "pyinit.sys", "args": [], "out": "sys"})
+    guarded = _guard_initialization_ops(ops, check_at_entry=True)
+    assert guarded[0]["kind"] == "check_exception"
+    assert guarded[1] == {"kind": "code_slots_init", "value": 5}
     assert not any(op["kind"] == "exception_clear" for op in guarded)
     for index, op in enumerate(guarded):
         if op["kind"] in {"call", "code_slots_init", "const_str"}:
@@ -246,15 +248,6 @@ def test_serialized_bootstrap_matches_native_signature_fixture() -> None:
         "ops": _build_isolate_bootstrap_ops(code_slot_count=17, version_ops=[]),
     }
     assert json.loads(json.dumps(emitted)) == fixture
-    for name in ("molt_main", "molt_host_init"):
-        wrapper = _guard_initialization_ops(
-            _build_entry_main_ops(
-                entry_init=name,
-                version_ops=[],
-            )
-        )
-        assert any(op["kind"] == "ret_void" for op in wrapper)
-        assert not any(op["kind"] == "ret" for op in wrapper)
 
 
 @pytest.mark.parametrize("target", ["native", "wasm", "llvm", "mlir"])
@@ -354,6 +347,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         range(len(state.global_code_ids))
     )
     functions = {function["name"]: function for function in prepared.ir["functions"]}
+    assert {"molt_main", "molt_host_init"} <= functions.keys()
     original = {seed.function["name"]: seed for seed in state.function_digest_seeds}
     retained = {seed.function["name"]: seed for seed in prepared.function_digest_seeds}
     assert original
@@ -386,6 +380,14 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         if name not in functions:
             continue
         ops = functions[name]["ops"]
+        if name in {"molt_main", "molt_host_init"}:
+            assert ops[0]["kind"] == "check_exception"
+            assert ops[-1] == {"kind": "ret_void", "unwind": True}
+            assert not any(op["kind"] == "ret" for op in ops)
+            assert not any(
+                op["kind"] == "call" and op.get("s_value") == "molt_runtime_init"
+                for op in ops
+            )
         assert not any(op["kind"] in {"code_new", "code_slot_set"} for op in ops)
         allocations = [op for op in ops if op["kind"] == "code_slots_init"]
         assert len(allocations) == 1
