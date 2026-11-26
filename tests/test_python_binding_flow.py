@@ -2766,6 +2766,77 @@ def test_foreign_writer_to_previously_unbound_name_reopens_analysis(
     assert flow.python_binding_core_computations() == 2
 
 
+def test_foreign_growth_preserves_drained_body_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = "".join(
+        f"def body{index}(value):\n    local = value\n    return len([local])\n"
+        for index in range(10)
+    )
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"added", "another", "len"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    )
+    tree = ast.parse(source)
+    first_activations = (python_node_source_key(tree.body[6]),)
+    first = replace(
+        policy,
+        foreign_namespace_writes=("another",),
+        opaque_activation_sources=first_activations,
+    )
+    second = replace(
+        first,
+        foreign_namespace_writes=("added", "another"),
+        opaque_activation_sources=(
+            *first_activations,
+            python_node_source_key(tree.body[9]),
+        ),
+    )
+    jobs: list[PythonSourceKey] = []
+    run = flow._Analyzer._run_deferred_job
+
+    def count(
+        owner: python_binding_flow._Analyzer,
+        job: python_binding_flow._FunctionJob,
+        recorder: python_binding_flow._DeferredJobRecorder | None,
+    ) -> None:
+        jobs.append(python_node_source_key(job.node))
+        run(owner, job, recorder)
+
+    monkeypatch.setattr(flow._Analyzer, "_run_deferred_job", count)
+    with flow.python_binding_revision_scope():
+        analyze_python_source_bindings(source, policy=policy)
+        assert len(jobs) == 10
+        jobs.clear()
+        revised = analyze_python_source_bindings(source, policy=first)
+        assert jobs == [python_node_source_key(node) for node in tree.body[4:]]
+        jobs.clear()
+        twice_revised = analyze_python_source_bindings(source, policy=second)
+        assert jobs == [python_node_source_key(node) for node in tree.body[8:]]
+        jobs.clear()
+        written_builtin = replace(
+            second, foreign_namespace_writes=("added", "another", "len")
+        )
+        invalidated = analyze_python_source_bindings(source, policy=written_builtin)
+        assert jobs == [python_node_source_key(node) for node in tree.body]
+
+    for actual, requested in (
+        (revised, first),
+        (twice_revised, second),
+        (invalidated, written_builtin),
+    ):
+        monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+        fresh = analyze_python_source_bindings(source, policy=requested)
+        assert (
+            replace(actual, state_count=fresh.state_count, telemetry=fresh.telemetry)
+            == fresh
+        )
+
+
 def test_first_foreign_slot_reopens_module_wide_expiry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
