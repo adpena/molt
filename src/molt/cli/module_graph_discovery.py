@@ -1105,9 +1105,9 @@ def _discovery_pass(
                 return admitted.source_path
         return resolution_cache.resolve_module(
             candidate,
-            list(source_context.roots),
+            source_context.roots,
             source_context.stdlib_root,
-            set(source_context.stdlib_allowlist),
+            source_context.stdlib_allowlist,
         )
 
     def namespace_premise(

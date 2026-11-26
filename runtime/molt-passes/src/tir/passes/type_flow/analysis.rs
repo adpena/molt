@@ -15,10 +15,11 @@
 //! it never falls when its key widens; a context is evaluated again only
 //! when a return type it read rises.
 
-use molt_ir::deterministic_hash::HashMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 use std::cell::OnceCell;
 use std::collections::{BTreeSet, VecDeque};
 
+use crate::tir::call_targets::static_call;
 use crate::tir::function::TirModule;
 use crate::tir::type_refine::{ExactCallResults, ExactScalarPlan, ExactSeeds};
 use crate::tir::types::TirType;
@@ -63,6 +64,7 @@ pub(super) struct Inputs<'a> {
     pub(super) relevant: &'a [Vec<bool>],
     pub(super) participates: &'a [bool],
     pub(super) exact_plans: Vec<OnceCell<ExactScalarPlan<'a>>>,
+    pub(super) forwarded_parameters: Vec<OnceCell<Option<usize>>>,
     /// Whether a body may have contexts beyond its generic one.
     pub(super) specializable: &'a [bool],
 }
@@ -96,8 +98,66 @@ impl Inputs<'_> {
         if !returns_value(body) || body.is_codegen_partition() || body.param_names.len() <= first {
             return None;
         }
-        let parameter = self.exact_plan(callee).forwarded_return_parameter()?;
-        site.argument_for(parameter, first)
+        site.argument_for(self.forwarded_parameter(callee)?, first)
+    }
+
+    /// Resolve the successful-return spine only when a caller needs it. Each
+    /// suspended search resumes without restarting its CFG walk. Recursion
+    /// without an independently proven return origin stays unknown.
+    fn forwarded_parameter(&self, root: usize) -> Option<usize> {
+        if let Some(parameter) = self.forwarded_parameters[root].get() {
+            return *parameter;
+        }
+        let Some(search) = self.exact_plan(root).return_parameter_search() else {
+            let _ = self.forwarded_parameters[root].set(None);
+            return None;
+        };
+        let mut work = vec![(root, search)];
+        let mut active = HashSet::from_iter([root]);
+        while let Some((index, search)) = work.last_mut() {
+            let index = *index;
+            let answer = search.advance(self.exact_plan(index), |op| {
+                let Some(call) = static_call(op) else {
+                    return Ok(None);
+                };
+                let Some(callee) = self.body_index.get(call.callee.index()).copied().flatten()
+                else {
+                    return Ok(None);
+                };
+                let body = &self.module.functions[callee];
+                if active.contains(&callee) || !returns_value(body) || body.is_codegen_partition() {
+                    return Ok(None);
+                }
+                let Some(arguments) = call.bind(body) else {
+                    return Ok(None);
+                };
+                if arguments.positional.is_empty() {
+                    return Ok(None);
+                }
+                let Some(&parameter) = self.forwarded_parameters[callee].get() else {
+                    return Err(callee);
+                };
+                Ok(parameter
+                    .and_then(|position| position.checked_sub(arguments.first_positional()))
+                    .and_then(|position| arguments.positional.get(position).copied()))
+            });
+            match answer {
+                Ok(result) => {
+                    work.pop();
+                    active.remove(&index);
+                    let _ = self.forwarded_parameters[index].set(result);
+                }
+                Err(callee) => {
+                    if let Some(search) = self.exact_plan(callee).return_parameter_search() {
+                        active.insert(callee);
+                        work.push((callee, search));
+                    } else {
+                        let _ = self.forwarded_parameters[callee].set(None);
+                    }
+                }
+            }
+        }
+        self.forwarded_parameters[root].get().copied().flatten()
     }
 
     pub(super) fn exact_plan(&self, body: usize) -> &ExactScalarPlan<'_> {

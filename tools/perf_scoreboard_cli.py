@@ -281,6 +281,15 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         help="always exit 0 (diagnostic measurements; never release eligibility)",
     )
     parser.add_argument(
+        "--emit-wasm-phases",
+        action="store_true",
+        help=(
+            "after normal WASM samples, run separate instrumented processes and "
+            "record Node/asset/engine/guest/disposal phases; diagnostics never "
+            "affect process timings or verdicts"
+        ),
+    )
+    parser.add_argument(
         "--strict-cold",
         action="store_true",
         help="make WARN_COLD_FLOOR fail the gate too (default: cold-floor warns only)",
@@ -725,6 +734,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
                                 codon_runner=codon_runner,
                                 repeat=ns.repeat,
                                 emit_cycle_profile=ns.emit_cycle_profile,
+                                emit_wasm_phases=ns.emit_wasm_phases,
                                 execution_host=execution_host
                                 if spec.build_target == "wasm"
                                 else None,

@@ -259,6 +259,20 @@ impl CheckedResults {
             .collect()
     }
 
+    /// Call whose successful value is observed at this SSA result. Explicit
+    /// projections cover mixed uses. A physical word qualifies only when
+    /// the successful continuation dominates all its uses.
+    pub(super) fn checked_compiled_call<'f>(
+        &self,
+        func: &'f TirFunction,
+        result: ValueId,
+    ) -> Option<&'f TirOp> {
+        let projection = self.projections.get(&result);
+        let site = self.sites.get(projection.unwrap_or(&result))?;
+        (site.compiled && (projection.is_some() || !site.physical_use))
+            .then(|| &func.blocks[&site.block].ops[site.call])
+    }
+
     pub(crate) fn checked_call_values<T>(
         &self,
         func: &TirFunction,

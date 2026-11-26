@@ -583,10 +583,12 @@ impl NativeBackendModuleContext {
             function_linkage_abis,
         } = self;
         Self {
-            function_linkage_abis: function_linkage_abis
+            // Stable per-source partitions can number in the thousands.
+            // Drive the projection by each partition's dependencies instead
+            // of scanning the whole program once per object.
+            function_linkage_abis: names
                 .iter()
-                .filter(|(name, _)| names.contains(*name))
-                .map(|(name, row)| (name.clone(), row.clone()))
+                .filter_map(|name| Some((name.clone(), function_linkage_abis.get(name)?.clone())))
                 .collect(),
         }
     }

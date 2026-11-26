@@ -965,6 +965,72 @@ fn shared_call_returns_the_same_formal_through_an_ssa_join_and_backedge() {
 }
 
 #[test]
+fn successful_return_formal_composes_across_shared_calls() {
+    // The externally linked bodies cannot specialize. The two wrappers
+    // reorder or supply other arguments, so their result witnesses must
+    // be translated through actual/formal bindings at each boundary.
+    let mut leaf = function("leaf", 2);
+    let entry = leaf.entry_block;
+    let selected = leaf.blocks[&entry].args[1].id;
+    leaf.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![selected],
+    };
+
+    let mut reverse = function("reverse", 2);
+    let entry = reverse.entry_block;
+    let [x, y] = [
+        reverse.blocks[&entry].args[0].id,
+        reverse.blocks[&entry].args[1].id,
+    ];
+    let result = proven_call(&mut reverse, entry, FunctionId(0), &[y, x]);
+    reverse.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let mut wrap = function("wrap", 1);
+    let entry = wrap.entry_block;
+    let value = wrap.blocks[&entry].args[0].id;
+    let other = const_float(&mut wrap, entry, 1.5);
+    let result = proven_call(&mut wrap, entry, FunctionId(1), &[value, other]);
+    wrap.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+
+    let driver = caller("driver", FunctionId(2), &[Literal::Int(41)]);
+    let shared = HashSet::from_iter(["leaf".into(), "reverse".into(), "wrap".into()]);
+    for target in [llvm(), cranelift()] {
+        for mode in 0..3 {
+            let mut inner = reverse.clone();
+            let ops = &mut inner.blocks.get_mut(&inner.entry_block).unwrap().ops;
+            match mode {
+                1 => ops
+                    .iter_mut()
+                    .find(|op| op.opcode == OpCode::Call)
+                    .unwrap()
+                    .set_proven_target(false),
+                2 => ops.retain(|op| op.opcode != OpCode::CheckException),
+                _ => {}
+            }
+            let mut module = TirModule::with_own_table(
+                "m",
+                vec![leaf.clone(), inner, wrap.clone(), driver.clone()],
+            );
+            let outcome = run(&mut module, &target, &shared, false);
+            assert!(outcome.clones.is_empty());
+            let call = calls(body(&module, "driver"))[0];
+            assert_eq!(
+                call.exact_result_proof(),
+                (mode == 0).then_some(TirType::I64)
+            );
+            assert_eq!(
+                call.exact_result_range(),
+                (mode == 0).then_some(IntRange::point(41))
+            );
+        }
+    }
+}
+
+#[test]
 fn an_unobserved_raise_can_be_cleared_before_an_empty_return() {
     use crate::tir::lower_from_simple::lower_to_tir;
     let ir: molt_ir::FunctionIR = serde_json::from_value(serde_json::json!({

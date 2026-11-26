@@ -10,6 +10,7 @@ from pathlib import Path
 from tools import perf_causality
 from tools.bench_metadata import benchmark_reference_contract
 from tools.perf_schema import (
+    WasmPhaseDiagnostics,
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
     CLASS_INFRA,
@@ -311,6 +312,9 @@ class Cell:
     # Selected execution host observation; native has no external engine.
     execution_host: dict[str, object] | None = None
 
+    # Separate instrumented processes; never feed acceptance timing or parity.
+    wasm_phases: WasmPhaseDiagnostics | None = None
+
     # Run facts.
     run_blocked: bool = False
     run_blocked_reason: str | None = None
@@ -321,7 +325,7 @@ class Cell:
     cold_molt_s: float | None = None
     cold_cpython_s: float | None = None
 
-    # WARM: steady-state median for each runtime.
+    # WARM: repeated fresh-process median (includes Node startup on WASM).
     warm_molt_s: float | None = None
     warm_cpython_s: float | None = None
 

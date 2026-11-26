@@ -115,7 +115,7 @@ pub struct InlinerStats {
 #[derive(Clone, Copy)]
 enum InlineBudget {
     Ordinary,
-    NeedsBenefit { numeric: bool },
+    NeedsBenefit { numeric: bool, within_hot_cap: bool },
 }
 
 /// Run the inliner over `module` in **bottom-up SCC order** (callees finalized
@@ -157,8 +157,8 @@ pub fn run_inliner(
                     if is_inline_safe(id, f, call_graph) =>
                 {
                     InlineBudget::NeedsBenefit {
-                        numeric: is_numeric_raw_lane_return_type(&f.return_type)
-                            && callee_op_count(id, f, summaries) <= hot_cap,
+                        numeric: is_numeric_raw_lane_return_type(&f.return_type),
+                        within_hot_cap: callee_op_count(id, f, summaries) <= hot_cap,
                     }
                 }
                 InlineEligibility::WhyNot(_) | InlineEligibility::Unknown => return None,
@@ -173,6 +173,7 @@ pub fn run_inliner(
     // Prepared activations serve every caller: a callee is final before any
     // caller splices it.
     let mut activations = Activations::default();
+    let mut parameter_capture = super::super::escape_analysis::ParameterCapture::default();
 
     // Walk bottom-up over the SCC condensation: callees before callers.
     for scc in call_graph.bottom_up_order() {
@@ -210,10 +211,12 @@ pub fn run_inliner(
                     let op = &caller.blocks[&site.block].ops[site.op_index];
                     let admitted = match budget {
                         Some(InlineBudget::Ordinary) => true,
-                        Some(InlineBudget::NeedsBenefit { numeric }) => {
+                        Some(InlineBudget::NeedsBenefit { numeric, within_hot_cap }) => {
                             let uses = uses.get_or_insert_with(|| InlineSiteUses::of(caller));
+                            let body = |id| inlinable.get(&id).map(|&(idx, _)| &module.functions[idx]);
                             uses.receives_split_field(op)
-                                || (numeric && uses.numeric_consumer(op).is_some())
+                                || (within_hot_cap && (numeric && uses.numeric_consumer(op).is_some()
+                                    || uses.receives_noncaptured_allocation(op, caller, &mut parameter_capture, body)))
                         }
                         None => false,
                     };

@@ -5,13 +5,15 @@
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
+use crate::tir::call_targets::static_call;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_has_local_only_operands_table;
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::passes::value_identity::{copy_value_source, no_heap_alias_source};
 use crate::tir::value_edges::ValueEdges;
 use crate::tir::values::ValueId;
 
-use super::classify::{EscapeState, is_alloc_site, is_pure_move_copy};
+use super::classify::{EscapeState, is_alloc_site};
 
 /// A copy is an exact alias; a CFG argument may select among several objects.
 /// Both carry escape/finalizer obligations; exact aliases also establish
@@ -22,22 +24,15 @@ struct ValueFlow {
     exact: bool,
 }
 
-fn is_transparent_copy(op: &TirOp) -> bool {
-    op.opcode == OpCode::Copy
-        && op.operands.len() == 1
-        && op.results.len() == 1
-        && is_pure_move_copy(op.origin)
-}
-
 /// One transport projection for escape propagation, containment, and
 /// finalizer sensitivity. The terminator owns the complete CFG-edge vocabulary.
 fn value_flows(func: &TirFunction) -> ValueEdges<ValueId, ValueFlow> {
     let mut flows = ValueEdges::default();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if is_transparent_copy(op) {
+            if let Some(source) = no_heap_alias_source(op) {
                 flows.add(
-                    op.operands[0],
+                    source,
                     ValueFlow {
                         target: op.results[0],
                         exact: true,
@@ -81,20 +76,138 @@ fn extend_forward(
 /// A callback can retain its receiver or any argument; a returned iterator can
 /// retain its input without mutating it. Neither is a local-only read.
 pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
-    let mut tracked: HashSet<ValueId> = func
+    analyze_with_calls(func, |_, _| false)
+}
+
+/// Contextual escape lattice. Only a proved argument binding may discharge
+/// its call use. Any other use of the same object still dominates that proof.
+fn analyze_with_calls(
+    func: &TirFunction,
+    noncapturing_operand: impl FnMut(&TirOp, usize) -> bool,
+) -> HashMap<ValueId, EscapeState> {
+    let allocations: HashSet<ValueId> = func
         .blocks
         .values()
         .flat_map(|block| &block.ops)
         .filter(|op| is_alloc_site(op.opcode))
         .flat_map(|op| op.results.iter().copied())
         .collect();
+    analyze_roots(func, allocations.clone(), allocations, noncapturing_operand)
+}
+
+/// Capture facts for a bottom-up traversal. The resolver supplies locally
+/// owned, finalized callee bodies. Discard the cache when a summarized body
+/// changes. The intraprocedural alias/ownership pipeline stays conservative.
+#[derive(Default)]
+pub(crate) struct ParameterCapture {
+    summaries: HashMap<molt_ir::FunctionId, Vec<bool>>,
+}
+
+impl ParameterCapture {
+    pub(crate) fn analyze<'a>(
+        &mut self,
+        caller: &TirFunction,
+        body: impl Fn(molt_ir::FunctionId) -> Option<&'a TirFunction>,
+    ) -> HashMap<ValueId, EscapeState> {
+        analyze_with_calls(caller, |op, operand| {
+            self.noncapturing_operand(op, operand, &body)
+        })
+    }
+
+    /// Only checked positional bindings to a locally owned callee can carry a
+    /// body proof. The callable and transferred arguments retain their own call
+    /// admission and destruction paths.
+    fn noncapturing_operand<'a>(
+        &mut self,
+        op: &TirOp,
+        operand: usize,
+        body: impl FnOnce(molt_ir::FunctionId) -> Option<&'a TirFunction>,
+    ) -> bool {
+        let Some(call) = static_call(op) else {
+            return false;
+        };
+        let Some(callee) = body(call.callee) else {
+            return false;
+        };
+        let Some(bound) = call.bind(callee) else {
+            return false;
+        };
+        let Some(position) = operand.checked_sub(usize::from(call.callable.is_some())) else {
+            return false;
+        };
+        if op
+            .attrs
+            .contains_key(crate::tir::ops::ARGUMENT_CUSTODY_ATTR)
+        {
+            return false;
+        }
+        self.summaries
+            .entry(call.callee)
+            .or_insert_with(|| noncapturing_parameters(callee))
+            .get(bound.first_positional() + position)
+            == Some(&true)
+    }
+}
+
+/// Which physical parameters a completed callee body cannot retain. A return,
+/// heap write, opaque use or finalizer is a capture boundary, including through
+/// copies and block arguments. A frame, suspension or callback may publish an
+/// argument without naming it at the observation site. An activation owning a
+/// parameter can run a finalizer on implicit teardown.
+///
+/// The caller uses this only to price an inline site. The call and the splice
+/// independently own admission, memory effects, and reference custody.
+fn noncapturing_parameters(func: &TirFunction) -> Vec<bool> {
+    use super::super::frame_elision::{op_observer, terminator_observer};
+    use crate::tir::blocks::Terminator;
+    let entry = &func.blocks[&func.entry_block];
+    if func.execution_context != molt_ir::ExecutionContextPolicy::None
+        || func.frame_locals_exposed()
+        || func.is_codegen_partition()
+        || func.has_state_machine()
+        || func.has_exception_handlers()
+        || entry.args.len() != func.param_types.len()
+        || (0..entry.args.len())
+            .any(|i| func.parameter_custody(i) == molt_ir::ParameterCustody::Transferred)
+    {
+        return Vec::new();
+    }
+    // Empty type evidence is conservative. An annotated operand cannot rule
+    // out a callback through a protocol, a branch or a release.
+    let types = HashMap::default();
+    if func.blocks.values().any(|block| {
+        matches!(block.terminator, Terminator::Unwind)
+            || terminator_observer(&block.terminator, &types).is_some()
+            || block
+                .ops
+                .iter()
+                .any(|op| !op.has_valid_shape() || op_observer(op, &types).is_some())
+    }) {
+        return Vec::new();
+    }
+    let roots = entry.args.iter().map(|arg| arg.id).collect();
+    // Formal arguments can alias caller-owned objects. No formal is itself a
+    // fresh storage owner, so a store into another parameter captures.
+    let escapes = analyze_roots(func, roots, HashSet::default(), |_, _| false);
+    entry
+        .args
+        .iter()
+        .map(|arg| escapes.get(&arg.id) == Some(&EscapeState::NoEscape))
+        .collect()
+}
+
+fn analyze_roots(
+    func: &TirFunction,
+    mut tracked: HashSet<ValueId>,
+    mut local_owners: HashSet<ValueId>,
+    mut noncapturing_operand: impl FnMut(&TirOp, usize) -> bool,
+) -> HashMap<ValueId, EscapeState> {
     if tracked.is_empty() {
         return HashMap::default();
     }
     let flows = value_flows(func);
     // A may-alias CFG parameter can also name an external object. Only exact
     // allocation aliases can establish containment in a function-local owner.
-    let mut local_owners = tracked.clone();
     extend_forward(&mut local_owners, &flows, true);
     extend_forward(&mut tracked, &flows, false);
     let mut escapes: HashMap<ValueId, EscapeState> = tracked
@@ -115,7 +228,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
     let mut retained = ValueEdges::default();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if is_transparent_copy(op) || opcode_has_local_only_operands_table(op.opcode) {
+            if copy_value_source(op).is_some() || opcode_has_local_only_operands_table(op.opcode) {
                 continue;
             }
             if let Some((target, _offset)) = op.plain_typed_slot_store() {
@@ -131,9 +244,14 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
             }
             // Fail closed for calls, overloaded operations, iteration, generic
             // heap accesses, retaining results, and unclassified future opcodes.
-            for operand in &op.operands {
+            for (index, operand) in op.operands.iter().enumerate() {
                 if let Some(state) = escapes.get_mut(operand) {
-                    *state = EscapeState::GlobalEscape;
+                    *state =
+                        if *state != EscapeState::GlobalEscape && noncapturing_operand(op, index) {
+                            EscapeState::ArgEscape
+                        } else {
+                            EscapeState::GlobalEscape
+                        };
                 }
             }
         }
@@ -147,7 +265,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
     }
     let mut pending: Vec<_> = escapes
         .iter()
-        .filter_map(|(&value, state)| (*state == EscapeState::GlobalEscape).then_some(value))
+        .filter_map(|(&value, state)| (*state != EscapeState::NoEscape).then_some(value))
         .collect();
     if pending.is_empty() {
         return escapes;
@@ -161,11 +279,12 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
         }
     }
     while let Some(parent) = pending.pop() {
-        for &child in retained.take_from(&parent) {
+        let parent_state = escapes[&parent];
+        for &child in retained.from(&parent) {
             if let Some(state) = escapes.get_mut(&child)
-                && *state != EscapeState::GlobalEscape
+                && *state < parent_state
             {
-                *state = EscapeState::GlobalEscape;
+                *state = parent_state;
                 pending.push(child);
             }
         }

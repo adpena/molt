@@ -37,6 +37,7 @@ pub(super) fn plan_batched_stdlib_cache_archive(
 ) -> io::Result<PlannedStdlibArchive> {
     // Batches are independent. Each one closes its job and hashes it on the
     // request's pool; results keep batch order.
+    let codegen_environment = molt_ir::backend_environment::NativeCodegenEnvironment::capture()?;
     let batches = request_parallel_map(plan.batches, |batch_funcs| {
         let functions = batch_funcs.len();
         let ops = batch_funcs.iter().map(|f| f.ops.len()).sum::<usize>();
@@ -53,7 +54,7 @@ pub(super) fn plan_batched_stdlib_cache_archive(
             ir,
             code_slots: None,
             module_context: NativeBackendModuleContext::default(),
-            codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::capture()?,
+            codegen_environment: codegen_environment.clone(),
             target_triple: target_triple.map(str::to_owned),
             emit_app_callable_resolver: false,
             app_callable_manifest: None,

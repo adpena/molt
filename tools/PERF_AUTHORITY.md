@@ -200,6 +200,26 @@ require equal admitted source workloads, like every other cross-run metric.
 Fresh `bench_individual.py` and `bench/harness.py` CPython records carry this
 same source identity; their missing Molt build observations remain unbound.
 
+The canonical scoreboard accepts `--emit-wasm-phases` to attribute WASM costs
+after its ordinary cold/warm process measurements. For example, select
+`--backend wasm --profile release-output --benchmark tests/benchmarks/bench_etl_orders.py
+--emit-wasm-phases`. Each WASM cell's `wasm_phases` object records separate guarded
+fresh Node processes, checked against the accepted guest stdout and stderr, with
+the same artifact, admitted workload and selected Node host. Missing/malformed
+probe evidence, failed processes and output differences are excluded from phase
+statistics and retained as diagnostic failures. These processes never enter
+acceptance timing samples, output-parity counts, speedups or verdicts.
+
+The phase sample count follows `--samples`; it is independent of `--repeat`.
+The Node preload probe reports asset preparation, engine compilation,
+instantiation/ABI checks, host bootstrap, guest entry and host disposal. Linked
+and split deployments expose their applicable phases; split runtime compilation
+and instantiation share one interval. Guest entry includes runtime initialization
+and the Python body. These are warm-file fresh-process diagnostics, with no
+filesystem-cache eviction or persistent-instance execution implied. The normal
+WASM `warm_molt_s` remains a repeated fresh-process measurement including Node
+launch, module creation, guest execution and host cleanup; it is not guest time.
+
 Methodology v8 binds source and ancestry to original Git objects, ignoring
 replacement refs and legacy grafts. Performance freshness resolves the current
 `origin/main` rather than retaining a process-lifetime ref or ancestry verdict.
