@@ -4006,3 +4006,36 @@ def test_qualified_argument_exposure_follows_publication(
         writer = tmp_path / "writer.py"
         writer.write_text("import lib\nlib.inspect_box = print\n", encoding="utf-8")
         assert opaque(discover(writer, first.discovery))
+
+
+def test_resolved_mutators_invalidate_only_their_reached_module(
+    tmp_path: Path,
+) -> None:
+    for module in ("recipient", "unrelated"):
+        (tmp_path / f"{module}.py").write_text(
+            "def run(): return 1\n", encoding="utf-8"
+        )
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "import builtins, sys, recipient, unrelated\n"
+        "from builtins import setattr as put\n"
+        "def replace(): return 7\n"
+        "def change(owner):\n"
+        "    put(owner, sys.argv[-1], replace)\n"
+        "def remove(owner):\n"
+        "    builtins.delattr(owner, 'retired')\n"
+        "def dormant():\n"
+        "    put(sys.modules['unrelated'], sys.argv[-1], replace)\n"
+        "change(sys.modules['recipient'])\n"
+        "remove(sys.modules['recipient'])\n"
+        "print(recipient.run(), unrelated.run())\n",
+        encoding="utf-8",
+    )
+    result = module_graph_discovery._discover_module_graph(
+        entry, [tmp_path], [tmp_path], tmp_path, None, set()
+    )
+    sources = result.scan_authority.by_module
+    recipient = sources["recipient"].namespace_premise
+    unrelated = sources["unrelated"].namespace_premise
+    assert recipient is not None and recipient.foreign_writes is None
+    assert unrelated is not None and unrelated.foreign_writes == ()

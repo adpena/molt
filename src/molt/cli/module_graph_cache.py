@@ -27,6 +27,7 @@ from molt.compiler_analysis.python_imports import (
     RuntimeCatalogDeferral,
     SourceImportSite,
     SourceImportCall,
+    SourceAttributeWrite,
     SourceAllExports,
     SourceDemandPhase,
 )
@@ -936,7 +937,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 # 54: keys and source requests preserve every Python string code point.
 # 55: bounded string spellings inform import and namespace invalidation.
 # 56: generic positional argument exposure retains its qualified call site.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 59
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 60
 
 
 def _import_scan_cache_key(
@@ -1383,6 +1384,7 @@ def _decode_import_scan_payload(
                 "call_imports",
                 "cache_writes",
                 "cache_reads",
+                "attribute_writes",
                 "native_initializers",
                 "classes",
             },
@@ -1584,7 +1586,36 @@ def _decode_import_scan_payload(
                     raw_values["activation_partitions"], 2
                 )
             ),
+            attribute_writes=tuple(
+                SourceAttributeWrite(
+                    decode_python_source_key(site),
+                    None if owner is None else decode_python_source_key(owner),
+                    _source_cache_origins(receivers),
+                    None if names is None else _source_cache_sorted_strings(names),
+                )
+                for site, owner, receivers, names in _source_cache_rows(
+                    raw_values["attribute_writes"], 4
+                )
+            ),
         )
+        if any(
+            item.site[-1] not in {"Call", "Attribute"}
+            or not item.receivers
+            or item.names == ()
+            or item.owner is not None
+            and item.owner[-1]
+            not in {
+                "FunctionDef",
+                "AsyncFunctionDef",
+                "Lambda",
+                "GeneratorExp",
+                "TypeAlias",
+            }
+            or admission.source_owner is not None
+            and item.owner != admission.source_owner
+            for item in values.attribute_writes
+        ) or len(set(values.attribute_writes)) != len(values.attribute_writes):
+            return None
         if any(
             not origins
             for owner, names, _ in values.namespaces
@@ -1891,6 +1922,10 @@ def _import_scan_payload(
             "cache_reads": [
                 (source, keys, sorted(defaults), sorted(contents), contained)
                 for source, keys, defaults, contents, contained in scan.source_values.cache_reads
+            ],
+            "attribute_writes": [
+                (item.site, item.owner, sorted(item.receivers), item.names)
+                for item in scan.source_values.attribute_writes
             ],
         },
         "target_python": target_python.tag,

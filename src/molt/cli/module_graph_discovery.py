@@ -1263,6 +1263,37 @@ def _discovery_pass(
         demands.queue_body = queue_scan
         demands.require_runtime_import_protocol = require_runtime_import_protocol
 
+    def drain_source_demands() -> None:
+        demands.drain()
+        by_writer: dict[str, list[PythonNamespaceWrite]] = {}
+        for writer, receiver, effect in demands.drain_attribute_writes():
+            construct = "setattr" if effect.site[-1] == "Call" else "attribute"
+            for name in (None,) if effect.names is None else effect.names:
+                row = PythonNamespaceWrite(
+                    receiver,
+                    None if name in {"__class__", "__dict__"} else name,
+                    construct,
+                    effect.site[0],
+                    effect.owner,
+                )
+                known = state.namespace_writes.setdefault(writer, set())
+                if row not in known:
+                    known.add(row)
+                    state.writer_targets.setdefault(receiver, set()).add(row)
+                    by_writer.setdefault(writer, []).append(row)
+        for writer, rows in sorted(by_writer.items()):
+            merge_namespace_writes(
+                graph_python_namespace_writes(
+                    sorted(
+                        rows,
+                        key=lambda row: (row.line, row.module or "", row.name or ""),
+                    ),
+                    graph.get,
+                    writer=(writer, graph[writer]),
+                )
+            )
+        refresh_namespace_premises(demands.drain_opaque_activation_changes())
+
     def activate_namespace_writes(module_name, source_owner):
         state.active_owners.setdefault(module_name, set()).add(source_owner)
         by_owner = pending_namespace_writes.get(module_name, {})
@@ -1356,8 +1387,7 @@ def _discovery_pass(
             module_name,
             scan.source_requests,
         )
-        demands.drain()
-        refresh_namespace_premises(demands.drain_opaque_activation_changes())
+        drain_source_demands()
         for requested_name, execution_path in scan.source_executions:
             execution_name = requested_name or resolution_cache.module_name_from_path(
                 execution_path,
@@ -1444,8 +1474,7 @@ def _discovery_pass(
                 (module_name, SourceMember(SourceCandidate(module_name, None), name)),
                 "escape",
             )
-    demands.drain()
-    refresh_namespace_premises(demands.drain_opaque_activation_changes())
+    drain_source_demands()
 
     source_publications: dict[str, PythonModulePublications] = {}
 
@@ -1516,8 +1545,7 @@ def _discovery_pass(
         if not queue and not scan_revisions and not deferred_bodies:
             if not demands.resolve_argument_exposures(call_binds_arguments):
                 break
-            demands.drain()
-            refresh_namespace_premises(demands.drain_opaque_activation_changes())
+            drain_source_demands()
             continue
         if not queue and not scan_revisions:
             # Nothing else can settle these modules: scan each waiting body

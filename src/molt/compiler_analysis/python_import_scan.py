@@ -38,6 +38,7 @@ from molt.compiler_analysis.python_imports import (
     _SourceValueDemand,
     _SourceImportBinding,
     _SourceValueSummary,
+    SourceAttributeWrite,
     _StaticSourceExecutionRequest,
     _StaticSourcePath,
 )
@@ -968,6 +969,7 @@ def _collect_imports(
         )
 
     conditional_import_sites: list[SourceImportCall] = []
+    attribute_writes: list[SourceAttributeWrite] = []
     import_callable_groups: dict[PythonImportCallable, int] = {}
     for identity, callable in IMPORT_CALLABLES.items():
         import_callable_groups[callable] = (
@@ -2147,9 +2149,44 @@ def _collect_imports(
             )
         )
 
-    def _visit(
-        node: ast.AST,
+    def record_attribute_write(
+        node: ast.Call | ast.Attribute, owner: PythonSourceKey | None
     ) -> None:
+        if _source_values is None:
+            return
+        if isinstance(node, ast.Attribute):
+            receiver = node.value
+            names = (node.attr,)
+        else:
+            if node.keywords or len(node.args) not in (2, 3):
+                return
+            call = binding_index.call_fact(node)
+            if call is None or not call.callee_may_be(
+                PythonIdentity.BUILTIN_SETATTR
+                if len(node.args) == 3
+                else PythonIdentity.BUILTIN_DELATTR
+            ):
+                return
+            if any(isinstance(argument, ast.Starred) for argument in node.args):
+                return
+            receiver, name = node.args[:2]
+            key = binding_index.static_value(name)
+            names = (
+                (key,)
+                if isinstance(key, str)
+                else tuple(sorted(key.values))
+                if isinstance(key, PythonStringAlternatives)
+                else None
+            )
+        origins, _nested = cache_origins(receiver)
+        if origins:
+            attribute_writes.append(
+                SourceAttributeWrite(
+                    python_node_source_key(node), owner, origins, names
+                )
+            )
+
+    def _visit(node: ast.AST, owner: PythonSourceKey | None) -> None:
         nonlocal needs_string_templatelib, needs_typing, uses_runtime_import_protocol
         if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.may_execute(node):
             return
@@ -2406,6 +2443,7 @@ def _collect_imports(
                 demand_iteration(generator)
         if isinstance(node, ast.Call):
             _conditional_import_call_plans(node)
+            record_attribute_write(node, owner)
             argument_count = (
                 None
                 if any(isinstance(arg, ast.Starred) for arg in node.args)
@@ -2423,6 +2461,10 @@ def _collect_imports(
             demand(binding_index.expression_result(node), "read")
             # Binding flow owns argument protocol/escape transfers. Repeating
             # generic exposure here would discard proven callee/formal selection.
+        elif isinstance(node, ast.Attribute) and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            record_attribute_write(node, owner)
         elif isinstance(node, (ast.Attribute, ast.Name, ast.Subscript)) and isinstance(
             node.ctx, ast.Load
         ):
@@ -2564,7 +2606,7 @@ def _collect_imports(
     ):
         demand_start = len(_source_demands) if _source_demands is not None else 0
         if region.phase == "evaluate":
-            _visit(region.node)
+            _visit(region.node, region.owner)
         else:
             assert isinstance(region.node, ast.expr)
             demand(binding_index.expression_result(region.node), region.phase)
@@ -2580,6 +2622,7 @@ def _collect_imports(
             call_imports=tuple(dict.fromkeys(conditional_import_sites)),
             cache_writes=tuple(dict.fromkeys(cache_writes)),
             cache_reads=tuple(dict.fromkeys(cache_reads)),
+            attribute_writes=tuple(dict.fromkeys(attribute_writes)),
         )
     if _namespace_summary is not None:
         _namespace_summary[0] = refine_namespace_writes(

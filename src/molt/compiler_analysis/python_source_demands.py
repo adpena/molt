@@ -17,7 +17,7 @@ from molt.compiler_analysis.python_binding_facts import (
 from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Literal, NamedTuple, assert_never, cast
 
 from molt.compiler_analysis.python_imports import (
@@ -25,6 +25,7 @@ from molt.compiler_analysis.python_imports import (
     SourceDemandPhase,
     _ImportScanRequests,
     _SourceImportBinding,
+    SourceAttributeWrite,
     _SourceValueDemand,
     SourceImportCall,
     normalize_stdlib_module_name,
@@ -303,6 +304,14 @@ class PythonSourceDemands:
         self._direct_entries: set[SourceValue] = set()
         self.star_aliases: dict[str, set[PythonSourceKey]] = {}
         self.escaped_modules: dict[str, set[SourceDemand]] = {}
+        self.attribute_writes: dict[SourceValue, set[SourceAttributeWrite]] = {}
+        self.owner_attribute_writes: dict[SourceValue, set[SourceAttributeWrite]] = {}
+        self.pending_attribute_writes: set[tuple[str, str, SourceAttributeWrite]] = (
+            set()
+        )
+        self.reached_attribute_writes: set[tuple[str, str, SourceAttributeWrite]] = (
+            set()
+        )
         self.namespaces: dict[SourceValue, _SourceNamespace] = {}
         self.bases: dict[SourceValue, frozenset[PythonSourceKey]] = {}
         self.attributes: dict[SourceValue, tuple[str, frozenset[PythonSourceKey]]] = {}
@@ -647,6 +656,12 @@ class PythonSourceDemands:
                 self.cache_reads.get(value, frozenset())
                 | {(keys, defaults, default_contents, contained)},
             )
+        for write in scan.source_values.attribute_writes:
+            owner = (module_name, write.owner)
+            if write.owner is None or owner in self.body_jobs:
+                self._watch_attribute_write(module_name, write)
+            else:
+                self.owner_attribute_writes.setdefault(owner, set()).add(write)
         for request in scan.source_demands:
             if request.owner is not None:
                 self.owner_demands.setdefault((module_name, request.owner), set()).add(
@@ -657,6 +672,36 @@ class PythonSourceDemands:
             self._request(module_name, request)
         for value in self.pending_modules.pop(module_name, ()):
             self.queue_value(value)
+
+    def _watch_attribute_write(self, module: str, write: SourceAttributeWrite) -> None:
+        for receiver in write.receivers:
+            value = (module, receiver)
+            writes = self.attribute_writes.setdefault(value, set())
+            if write not in writes:
+                writes.add(write)
+                self._record_attribute_receivers(
+                    module, (write,), self._ensure_value(value)
+                )
+
+    def _record_attribute_receivers(
+        self,
+        writer: str,
+        writes: Iterable[SourceAttributeWrite],
+        receivers: Iterable[SourceCandidate],
+    ) -> None:
+        for value in receivers:
+            if value.source is not None or value.contained or value.kind != "value":
+                continue
+            for write in writes:
+                incidence = (writer, value.module, write)
+                if incidence not in self.reached_attribute_writes:
+                    self.reached_attribute_writes.add(incidence)
+                    self.pending_attribute_writes.add(incidence)
+
+    def drain_attribute_writes(self) -> set[tuple[str, str, SourceAttributeWrite]]:
+        rows = self.pending_attribute_writes
+        self.pending_attribute_writes = set()
+        return rows
 
     def _request(self, module: str, request: _SourceValueDemand) -> None:
         if request.argument_call is not None:
@@ -1663,6 +1708,8 @@ class PythonSourceDemands:
         body_arguments.add(arguments)
         for request in self.owner_demands.get((module_name, owner), ()):
             self._request(module_name, request)
+        for write in self.owner_attribute_writes.pop(value, ()):
+            self._watch_attribute_write(module_name, write)
         self.queue_body(module_name, cast(PythonSourceKey, owner), arguments)
 
     def process_value(self, value: SourceValue) -> None:
@@ -1979,6 +2026,8 @@ class PythonSourceDemands:
         added = candidates - known
         known.update(added)
         if added:
+            if writes := self.attribute_writes.get(value):
+                self._record_attribute_receivers(module_name, writes, added)
             for users in (self.value_users, self.candidate_users):
                 for user in users.get(value, ()):
                     self.queue_value(user)

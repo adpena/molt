@@ -2660,6 +2660,15 @@ type _SourceImportCacheWrite = tuple[
 ]
 
 
+class SourceAttributeWrite(NamedTuple):
+    """One executed attribute setter and the sources of its receiver."""
+
+    site: PythonSourceKey
+    owner: PythonSourceKey | None
+    receivers: frozenset[PythonSourceKey]
+    names: tuple[str, ...] | None
+
+
 class _SourceValueSummary(NamedTuple):
     """Immutable source-owned values; no AST or resolved filesystem edges."""
 
@@ -2695,6 +2704,7 @@ class _SourceValueSummary(NamedTuple):
     native_initializers: tuple[PythonNativeInitializerSource, ...] = ()
     classes: tuple[PythonSourceClass, ...] = ()
     activation_partitions: tuple[PythonActivationPartition, ...] = ()
+    attribute_writes: tuple[SourceAttributeWrite, ...] = ()
 
 
 class _ImportScanRequests(NamedTuple):
