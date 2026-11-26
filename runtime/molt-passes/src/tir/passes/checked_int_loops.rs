@@ -671,8 +671,9 @@ fn select(
     }
     let incomings = crate::representation_facts::block_arg_incomings_for(func);
 
-    // Optimistic fixpoint: assume every candidate raw-capable, then drop each
-    // one with an operand or incoming that is not.
+    // Start at the greatest fixed point and propagate each failed dependency
+    // only to the candidates that use it. A seed stays raw even when its
+    // candidate definition does not qualify for this loop rewrite.
     let mut capable: HashSet<ValueId> =
         arithmetic.iter().map(|&(_, _, result, _)| result).collect();
     capable.extend(copies.iter().map(|&(result, _)| result));
@@ -681,37 +682,42 @@ fn select(
         .iter()
         .map(|&(_, _, result, _)| result)
         .collect();
-    let raw = |value: &ValueId, capable: &HashSet<ValueId>| {
-        capable.contains(value)
-            || inline_safe.contains(value)
+    let raw_seed = |value: &ValueId| {
+        inline_safe.contains(value)
             || constants.contains(value)
             || checked_results.contains(value)
             || call_results.contains_key(value)
     };
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &(_, _, result, operands) in &arithmetic {
-            if capable.contains(&result) && !operands.iter().all(|v| raw(v, &capable)) {
-                capable.remove(&result);
-                changed = true;
+    let raw =
+        |value: &ValueId, capable: &HashSet<ValueId>| capable.contains(value) || raw_seed(value);
+    let mut dependents: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
+    let mut rejected = Vec::new();
+    let mut register = |result, inputs: &[ValueId]| {
+        if inputs.is_empty() || inputs.iter().any(|input| !raw(input, &capable)) {
+            rejected.push(result);
+        } else {
+            for &input in inputs.iter().filter(|input| !raw_seed(input)) {
+                dependents.entry(input).or_default().push(result);
             }
         }
-        for &(result, source) in &copies {
-            if capable.contains(&result) && !raw(&source, &capable) {
-                capable.remove(&result);
-                changed = true;
-            }
-        }
-        for &(block, index, phi) in &phis {
-            if capable.contains(&phi)
-                && !incomings
-                    .get(&(block, index))
-                    .is_some_and(|srcs| !srcs.is_empty() && srcs.iter().all(|v| raw(v, &capable)))
-            {
-                capable.remove(&phi);
-                changed = true;
-            }
+    };
+    for &(_, _, result, operands) in &arithmetic {
+        register(result, &operands);
+    }
+    for &(result, source) in &copies {
+        register(result, std::slice::from_ref(&source));
+    }
+    for &(block, index, phi) in &phis {
+        let inputs = incomings
+            .get(&(block, index))
+            .map_or(&[][..], Vec::as_slice);
+        register(phi, inputs);
+    }
+    while let Some(result) = rejected.pop() {
+        if capable.remove(&result)
+            && let Some(users) = dependents.remove(&result)
+        {
+            rejected.extend(users);
         }
     }
     if !header_args.iter().any(|arg| capable.contains(&arg.id)) {

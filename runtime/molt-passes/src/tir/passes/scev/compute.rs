@@ -1,6 +1,6 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
-use crate::tir::analysis::{Analysis, LoopForest, LoopForestResult};
+use crate::tir::analysis::{Analysis, LoopForestResult};
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::{ScevExpr, TripCount};
@@ -9,15 +9,14 @@ use crate::tir::values::ValueId;
 use super::super::value_identity::ScalarFacts;
 use super::builder::ScevBuilder;
 use super::index::build_def_index;
-use super::result::ScevResult;
+use super::result::{ScalarEvolution, ScevResult};
 use super::trip_count::compute_trip_count;
 
 /// Public entry: compute the scalar-evolution facts for `func`. Shared by the
 /// [`ScalarEvolution`] analysis and the value-range analysis (single source of
 /// truth — no duplicate recurrence recognizer).
 pub fn compute_scev(func: &TirFunction) -> ScevResult {
-    let loops = <LoopForest as Analysis>::compute(func);
-    compute_scev_with_loop_forest(&ScalarFacts::new(func), &loops)
+    ScalarEvolution::compute(func)
 }
 
 /// Compute scalar-evolution facts against the canonical LoopForest supplied by
