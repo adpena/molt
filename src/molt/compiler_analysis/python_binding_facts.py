@@ -813,6 +813,9 @@ class PythonCallSiteFact:
     # arguments. A binding proof selects the callee; it does not prove the
     # invocation shape (``len()`` must reach the builtin's own TypeError).
     builtin_specializations: IdentityMask = 0
+    # The positional operand whose module value this call borrows, if any.
+    # A returned value has its own provenance and lifetime.
+    borrowed_module_operand: int | None = None
 
     def callee_is(self, identity: PythonIdentity) -> bool:
         return identity_fact_is_exact(self.callee_identities, identity)
@@ -1151,7 +1154,14 @@ class PythonBindingFacts:
         return _source_publication_at(self.source_function_results, owner)
 
     def call_fact(self, node: ast.Call) -> PythonCallSiteFact | None:
-        return self._call_lookup.get(python_node_source_key(node))
+        return self.call_fact_at(python_node_source_key(node))
+
+    def call_fact_at(self, source: PythonSourceKey) -> PythonCallSiteFact | None:
+        return self._call_lookup.get(source)
+
+    def module_operand_is_borrowed(self, call: PythonSourceKey, position: int) -> bool:
+        fact = self.call_fact_at(call)
+        return fact is not None and position == fact.borrowed_module_operand
 
     def expression_result(self, node: ast.expr) -> StaticExpressionResult:
         """Unknown source-point facts never authorize spelling-based constants."""

@@ -69,6 +69,7 @@ _BINDING_POLICY_FIELDS: Final = (
     ("entry_member_writes", "entry_invalid_members"),
     ("noncanonical_imports", "noncanonical_imports"),
     ("opaque_activation_sources", "opaque_activation_sources"),
+    ("code_rebinding", "code_rebinding"),
     ("frame_locals_writer", "frame_locals_writer"),
 )
 
@@ -144,8 +145,8 @@ class PythonNamespacePremise:
         (``python_namespace_binding_policy``, not lowering) and the ``__all__``
         export check, so the view keeps the ``_BINDING_POLICY_FIELDS`` and
         every other field takes its default. Lowering-only facts
-        (``exact_receivers``, escape writer sites, namespace reflection, code
-        rebinding, the instance-class and cell writers) therefore never revise or re-key
+        (``exact_receivers``, escape writer sites, namespace reflection, the
+        instance-class and cell writers) therefore never revise or re-key
         a scan. With ``universe`` (``python_namespace_name_universe``) the
         foreign names shrink to those the source can spell: the binding
         analysis reaches any other name only through a computed key, and then
@@ -402,7 +403,7 @@ def python_namespace_name_universe(text: str | None) -> frozenset[str] | None:
 
 
 def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
-    policy: P, premise: PythonNamespacePremise | None, *, lowering: bool = False
+    policy: P, premise: PythonNamespacePremise | None
 ) -> P:
     """Apply a closed graph's initial and future uncertainty together.
 
@@ -410,14 +411,9 @@ def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
     entry mask must travel with callback writes through every graph consumer.
     Standalone callers keep their explicit policy when no graph was proved.
 
-    Exposure lets unknown code activate a definition; only a code rebinder
-    (``code_rebinding``) can make that activation read another globals
-    mapping. Lowering therefore sees the exposed set only when the graph holds
-    a rebinder, so a method's global and builtin reads keep their proofs.
-    Graph discovery keeps the exposed set: its demand worklist activates the
-    bodies a value with a known origin can reach, and a precise origin for a
-    whole module's escape would activate every function of that module (the
-    runtime closure's escape of ``types`` pulls in 17 modules).
+    Exposure lets unknown code activate a definition. A code rebinder permits
+    that activation to read another globals mapping. Discovery and lowering
+    consume these independent facts from the same graph premise.
     """
     if premise is None:
         return policy
@@ -425,13 +421,6 @@ def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
         policy_field: getattr(premise, premise_field)
         for premise_field, policy_field in _BINDING_POLICY_FIELDS
     }
-    # Only lowering reads ``code_rebinding``; a scan never lowers.
-    if (
-        lowering
-        and values["opaque_activation_sources"] is not None
-        and not premise.code_rebinding
-    ):
-        values["opaque_activation_sources"] = ()
     return replace(policy, **values)
 
 
