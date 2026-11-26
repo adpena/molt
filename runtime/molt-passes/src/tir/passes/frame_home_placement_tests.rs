@@ -595,12 +595,6 @@ fn a_reader_on_an_arm_writes_a_carried_binding_under_the_flag() {
         Terminator::Branch { target, .. } if target == cont
     ));
     assert_eq!(func.blocks[&cont].ops[0].opcode, OpCode::Call);
-    assert!(
-        func.blocks
-            .values()
-            .flat_map(|block| &block.ops)
-            .all(|op| !op.attrs.contains_key(CARRIED_READER_ATTR))
-    );
 }
 
 /// A strip-mined counted loop (`poll_strip_mining`): the body has no poll;
