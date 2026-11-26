@@ -6,7 +6,6 @@ import asyncio as _asyncio
 import concurrent
 import concurrent.futures
 import contextvars
-from dataclasses import dataclass
 import functools
 import inspect
 import itertools
@@ -20,13 +19,13 @@ import weakref
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+_EXPOSE_GRAPH = _require_intrinsic("molt_sys_version_info")()[1] >= 14
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from .futures import Future, _get_loop, _subscribe_completion, _unsubscribe_completion
 from . import constants as _constants
 from asyncio import (
     TimeoutError,
-    _EXPOSE_GRAPH,
     _VERSION_INFO,
     _asyncio_future_transfer,
     _asyncio_tasks_add_done_callback,
@@ -886,173 +885,176 @@ def all_tasks(loop: EventLoop | None = None) -> set[Task]:
         return set(task_values)
     return set()
 
-@dataclass(frozen=True, slots=True)
-class FrameCallGraphEntry:
-    frame: _types.FrameType
+if _EXPOSE_GRAPH:
+    from dataclasses import dataclass
 
-@dataclass(frozen=True, slots=True)
-class FutureCallGraph:
-    future: Future
-    call_stack: tuple[FrameCallGraphEntry, ...]
-    awaited_by: tuple["FutureCallGraph", ...]
+    @dataclass(frozen=True, slots=True)
+    class FrameCallGraphEntry:
+        frame: _types.FrameType
 
-def _build_graph_for_future(
-    future: Future,
-    *,
-    limit: int | None = None,
-) -> FutureCallGraph:
-    if not isinstance(future, Future):
-        raise TypeError(
-            f"{future!r} object does not appear to be compatible with asyncio.Future"
-        )
-    coro = None
-    get_coro = getattr(future, "get_coro", None)
-    if get_coro is not None and limit != 0:
-        coro = get_coro()
-    stack: list[FrameCallGraphEntry] = []
-    awaited_by: list[FutureCallGraph] = []
-    while coro is not None:
-        if hasattr(coro, "cr_await"):
-            stack.append(FrameCallGraphEntry(coro.cr_frame))
-            coro = coro.cr_await
-        elif hasattr(coro, "ag_await"):
-            stack.append(FrameCallGraphEntry(coro.ag_frame))
-            coro = coro.ag_await
-        else:
-            break
-    if future._asyncio_awaited_by:
-        for parent in future._asyncio_awaited_by:
-            awaited_by.append(_build_graph_for_future(parent, limit=limit))
-    if limit is not None:
-        if limit > 0:
-            stack = stack[:limit]
-        elif limit < 0:
-            stack = stack[limit:]
-    stack.reverse()
-    return FutureCallGraph(future, tuple(stack), tuple(awaited_by))
+    @dataclass(frozen=True, slots=True)
+    class FutureCallGraph:
+        future: Future
+        call_stack: tuple[FrameCallGraphEntry, ...]
+        awaited_by: tuple["FutureCallGraph", ...]
 
-def capture_call_graph(
-    future: Future | None = None,
-    /,
-    *,
-    depth: int = 1,
-    limit: int | None = None,
-) -> FutureCallGraph | None:
-    loop = _get_running_loop()
-    if future is not None:
-        if loop is None or future is not current_task(loop=loop):
-            return _build_graph_for_future(future, limit=limit)
-    else:
-        if loop is None:
-            raise RuntimeError(
-                "capture_call_graph() is called outside of a running event loop "
-                "and no *future* to introspect was provided"
+    def _build_graph_for_future(
+        future: Future,
+        *,
+        limit: int | None = None,
+    ) -> FutureCallGraph:
+        if not isinstance(future, Future):
+            raise TypeError(
+                f"{future!r} object does not appear to be compatible with asyncio.Future"
             )
-        future = current_task(loop=loop)
-    if future is None:
-        return None
-    if not isinstance(future, Future):
-        raise TypeError(
-            f"{future!r} object does not appear to be compatible with asyncio.Future"
-        )
-    call_stack: list[FrameCallGraphEntry] = []
-    if limit == 0:
-        frame = None
-    else:
-        frame = getattr(_sys, "_getframe", lambda _d: None)(depth)
-    try:
-        while frame is not None:
-            gen = getattr(frame, "f_generator", None)
-            is_async = gen is not None
-            call_stack.append(FrameCallGraphEntry(frame))
-            if is_async:
-                back = frame.f_back
-                if back is not None and getattr(back, "f_generator", None) is None:
-                    break
-            frame = frame.f_back
-    finally:
-        frame = None
-    awaited_by = []
-    if future._asyncio_awaited_by:
-        for parent in future._asyncio_awaited_by:
-            awaited_by.append(_build_graph_for_future(parent, limit=limit))
-    if limit is not None:
-        trim = limit * -1
-        if trim > 0:
-            call_stack = call_stack[:trim]
-        elif trim < 0:
-            call_stack = call_stack[trim:]
-    return FutureCallGraph(future, tuple(call_stack), tuple(awaited_by))
+        coro = None
+        get_coro = getattr(future, "get_coro", None)
+        if get_coro is not None and limit != 0:
+            coro = get_coro()
+        stack: list[FrameCallGraphEntry] = []
+        awaited_by: list[FutureCallGraph] = []
+        while coro is not None:
+            if hasattr(coro, "cr_await"):
+                stack.append(FrameCallGraphEntry(coro.cr_frame))
+                coro = coro.cr_await
+            elif hasattr(coro, "ag_await"):
+                stack.append(FrameCallGraphEntry(coro.ag_frame))
+                coro = coro.ag_await
+            else:
+                break
+        if future._asyncio_awaited_by:
+            for parent in future._asyncio_awaited_by:
+                awaited_by.append(_build_graph_for_future(parent, limit=limit))
+        if limit is not None:
+            if limit > 0:
+                stack = stack[:limit]
+            elif limit < 0:
+                stack = stack[limit:]
+        stack.reverse()
+        return FutureCallGraph(future, tuple(stack), tuple(awaited_by))
 
-def format_call_graph(
-    future: Future | None = None,
-    /,
-    *,
-    depth: int = 1,
-    limit: int | None = None,
-) -> str:
-    def render_level(st: FutureCallGraph, buf: list[str], level: int) -> None:
-        def add_line(line: str) -> None:
-            buf.append(level * "    " + line)
-
-        if isinstance(st.future, Task):
-            add_line(f"* Task(name={st.future.get_name()!r}, id={id(st.future):#x})")
+    def capture_call_graph(
+        future: Future | None = None,
+        /,
+        *,
+        depth: int = 1,
+        limit: int | None = None,
+    ) -> FutureCallGraph | None:
+        loop = _get_running_loop()
+        if future is not None:
+            if loop is None or future is not current_task(loop=loop):
+                return _build_graph_for_future(future, limit=limit)
         else:
-            add_line(f"* Future(id={id(st.future):#x})")
-        if st.call_stack:
-            add_line("  + Call stack:")
-            for ste in st.call_stack:
-                frame = ste.frame
+            if loop is None:
+                raise RuntimeError(
+                    "capture_call_graph() is called outside of a running event loop "
+                    "and no *future* to introspect was provided"
+                )
+            future = current_task(loop=loop)
+        if future is None:
+            return None
+        if not isinstance(future, Future):
+            raise TypeError(
+                f"{future!r} object does not appear to be compatible with asyncio.Future"
+            )
+        call_stack: list[FrameCallGraphEntry] = []
+        if limit == 0:
+            frame = None
+        else:
+            frame = getattr(_sys, "_getframe", lambda _d: None)(depth)
+        try:
+            while frame is not None:
                 gen = getattr(frame, "f_generator", None)
-                if gen is None:
-                    add_line(
-                        f"  |   File {frame.f_code.co_filename!r},"
-                        f" line {frame.f_lineno}, in"
-                        f" {frame.f_code.co_qualname}()"
-                    )
-                else:
-                    try:
-                        frame = gen.cr_frame
-                        code = gen.cr_code
-                        tag = "async"
-                    except AttributeError:
+                is_async = gen is not None
+                call_stack.append(FrameCallGraphEntry(frame))
+                if is_async:
+                    back = frame.f_back
+                    if back is not None and getattr(back, "f_generator", None) is None:
+                        break
+                frame = frame.f_back
+        finally:
+            frame = None
+        awaited_by = []
+        if future._asyncio_awaited_by:
+            for parent in future._asyncio_awaited_by:
+                awaited_by.append(_build_graph_for_future(parent, limit=limit))
+        if limit is not None:
+            trim = limit * -1
+            if trim > 0:
+                call_stack = call_stack[:trim]
+            elif trim < 0:
+                call_stack = call_stack[trim:]
+        return FutureCallGraph(future, tuple(call_stack), tuple(awaited_by))
+
+    def format_call_graph(
+        future: Future | None = None,
+        /,
+        *,
+        depth: int = 1,
+        limit: int | None = None,
+    ) -> str:
+        def render_level(st: FutureCallGraph, buf: list[str], level: int) -> None:
+            def add_line(line: str) -> None:
+                buf.append(level * "    " + line)
+
+            if isinstance(st.future, Task):
+                add_line(f"* Task(name={st.future.get_name()!r}, id={id(st.future):#x})")
+            else:
+                add_line(f"* Future(id={id(st.future):#x})")
+            if st.call_stack:
+                add_line("  + Call stack:")
+                for ste in st.call_stack:
+                    frame = ste.frame
+                    gen = getattr(frame, "f_generator", None)
+                    if gen is None:
+                        add_line(
+                            f"  |   File {frame.f_code.co_filename!r},"
+                            f" line {frame.f_lineno}, in"
+                            f" {frame.f_code.co_qualname}()"
+                        )
+                    else:
                         try:
-                            frame = gen.ag_frame
-                            code = gen.ag_code
-                            tag = "async generator"
+                            frame = gen.cr_frame
+                            code = gen.cr_code
+                            tag = "async"
                         except AttributeError:
-                            frame = gen.gi_frame
-                            code = gen.gi_code
-                            tag = "generator"
-                    add_line(
-                        f"  |   File {frame.f_code.co_filename!r},"
-                        f" line {frame.f_lineno}, in"
-                        f" {tag} {code.co_qualname}()"
-                    )
-        if st.awaited_by:
-            add_line("  + Awaited by:")
-            for fut in st.awaited_by:
-                render_level(fut, buf, level + 1)
+                            try:
+                                frame = gen.ag_frame
+                                code = gen.ag_code
+                                tag = "async generator"
+                            except AttributeError:
+                                frame = gen.gi_frame
+                                code = gen.gi_code
+                                tag = "generator"
+                        add_line(
+                            f"  |   File {frame.f_code.co_filename!r},"
+                            f" line {frame.f_lineno}, in"
+                            f" {tag} {code.co_qualname}()"
+                        )
+            if st.awaited_by:
+                add_line("  + Awaited by:")
+                for fut in st.awaited_by:
+                    render_level(fut, buf, level + 1)
 
-    graph = capture_call_graph(future, depth=depth + 1, limit=limit)
-    if graph is None:
-        return ""
-    buf: list[str] = []
-    try:
-        render_level(graph, buf, 0)
-    finally:
-        graph = None
-    return "\n".join(buf)
+        graph = capture_call_graph(future, depth=depth + 1, limit=limit)
+        if graph is None:
+            return ""
+        buf: list[str] = []
+        try:
+            render_level(graph, buf, 0)
+        finally:
+            graph = None
+        return "\n".join(buf)
 
-def print_call_graph(
-    future: Future | None = None,
-    /,
-    *,
-    file: Any | None = None,
-    depth: int = 1,
-    limit: int | None = None,
-) -> None:
-    print(format_call_graph(future, depth=depth, limit=limit), file=file)
+    def print_call_graph(
+        future: Future | None = None,
+        /,
+        *,
+        file: Any | None = None,
+        depth: int = 1,
+        limit: int | None = None,
+    ) -> None:
+        print(format_call_graph(future, depth=depth, limit=limit), file=file)
 
 
 def _release_waiter(waiter: Future, *args: Any) -> None:

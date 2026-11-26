@@ -1,13 +1,124 @@
 from __future__ import annotations
 
 import sys
+import ast
+import builtins
+import types
 from pathlib import Path
+
+import pytest
 
 from tests.surface_process_guard import run_surface_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
+
+
+@pytest.mark.parametrize("version", [(3, 12), (3, 13), (3, 14), (3, 15)])
+def test_call_graph_producers_and_reexports_follow_target_version(
+    monkeypatch: pytest.MonkeyPatch, version: tuple[int, int]
+) -> None:
+    import asyncio
+
+    source = ast.parse((STDLIB_ROOT / "asyncio/tasks.py").read_text(encoding="utf-8"))
+    selector = next(
+        node
+        for node in source.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_EXPOSE_GRAPH"
+            for target in node.targets
+        )
+    )
+    producer = next(
+        node
+        for node in source.body
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(child, ast.ClassDef) and child.name == "FutureCallGraph"
+            for child in node.body
+        )
+    )
+    imports: list[str] = []
+
+    def imported(name: str, *args: object, **kwargs: object) -> object:
+        imports.append(name)
+        return builtins.__import__(name, *args, **kwargs)
+
+    def require(name: str) -> object:
+        assert name == "molt_sys_version_info"
+        return lambda: (*version, 0, "final", 0)
+
+    tasks = types.ModuleType("_molt_call_graph_surface")
+    monkeypatch.setitem(sys.modules, tasks.__name__, tasks)
+    tasks.__dict__.update(
+        __builtins__=vars(builtins) | {"__import__": imported},
+        _require_intrinsic=require,
+        _types=types,
+        _sys=sys,
+        Future=asyncio.Future,
+    )
+    # Execute the actual source producer and target selector, rather than a
+    # duplicate implementation of the versioned classes or their decorators.
+    unit = ast.Module(body=[source.body[1], selector, producer], type_ignores=[])
+    exec(compile(unit, "asyncio/tasks.py", "exec"), tasks.__dict__)
+    present = version >= (3, 14)
+    assert ("dataclasses" in imports) is present
+    names = (
+        "FrameCallGraphEntry",
+        "FutureCallGraph",
+        "capture_call_graph",
+        "format_call_graph",
+        "print_call_graph",
+    )
+    assert all(hasattr(tasks, name) is present for name in names)
+    if present:
+        entry = tasks.FrameCallGraphEntry(sys._getframe())
+        graph = tasks.FutureCallGraph(None, (entry,), ())
+        assert graph.call_stack == (entry,)
+        assert graph.awaited_by == ()
+        assert not hasattr(graph, "__dict__")
+        with pytest.raises(AttributeError):
+            graph.future = object()
+        loop = asyncio.new_event_loop()
+        try:
+            future = asyncio.Future(loop=loop)
+            future._asyncio_awaited_by = ()
+            captured = tasks._build_graph_for_future(future)
+            assert captured.future is future
+            assert captured.call_stack == ()
+            assert captured.awaited_by == ()
+        finally:
+            loop.close()
+
+    package = types.ModuleType("_molt_call_graph_package")
+    package.__path__ = []
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, package.__name__ + ".tasks", tasks)
+    exports = types.ModuleType(package.__name__ + ".exports")
+    exports.__package__ = package.__name__
+    exports._EXPOSE_GRAPH = present
+    root = ast.parse((STDLIB_ROOT / "asyncio/__init__.py").read_text(encoding="utf-8"))
+    reexport = next(
+        node
+        for node in root.body
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(child, ast.ImportFrom) and child.module == "tasks"
+            for child in node.body
+        )
+    )
+    exec(
+        compile(
+            ast.Module(body=[reexport], type_ignores=[]), "asyncio/__init__.py", "exec"
+        ),
+        exports.__dict__,
+    )
+    assert all(hasattr(exports, name) is present for name in names)
+    if present:
+        assert all(getattr(exports, name) is getattr(tasks, name) for name in names)
+
 
 _PROBE = f"""
 import importlib.util

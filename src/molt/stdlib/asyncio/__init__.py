@@ -1277,8 +1277,6 @@ from .tasks import (
     FIRST_COMPLETED as FIRST_COMPLETED,
     FIRST_EXCEPTION as FIRST_EXCEPTION,
     CancellationToken as CancellationToken,
-    FrameCallGraphEntry as FrameCallGraphEntry,
-    FutureCallGraph as FutureCallGraph,
     Runner as Runner,
     Task as Task,
     TaskGroup as TaskGroup,
@@ -1297,15 +1295,12 @@ from .tasks import (
     _wait_one as _wait_one,
     all_tasks as all_tasks,
     as_completed as as_completed,
-    capture_call_graph as capture_call_graph,
     create_eager_task_factory as create_eager_task_factory,
     create_task as create_task,
     current_task as current_task,
     eager_task_factory as eager_task_factory,
     ensure_future as ensure_future,
-    format_call_graph as format_call_graph,
     gather as gather,
-    print_call_graph as print_call_graph,
     run as run,
     run_coroutine_threadsafe as run_coroutine_threadsafe,
     shield as shield,
@@ -1318,6 +1313,15 @@ from .tasks import (
     wait_for as wait_for,
     wrap_future as wrap_future,
 )
+
+if _EXPOSE_GRAPH:
+    from .tasks import (
+        FrameCallGraphEntry as FrameCallGraphEntry,
+        FutureCallGraph as FutureCallGraph,
+        capture_call_graph as capture_call_graph,
+        format_call_graph as format_call_graph,
+        print_call_graph as print_call_graph,
+    )
 
 from . import locks as locks
 from .locks import (

@@ -382,6 +382,14 @@ completion, including a return before a lazy hook's tail. Parameter stores and
 callbacks follow the same fact lifetime as all other bindings. There is no
 consumer-side reconstruction of that activation's control flow.
 
+Versioned stdlib APIs gate their producers and imports, not just their public
+aliases. The asyncio call-graph classes and helpers, including their dataclasses
+dependency, are constructed only for Python 3.14+. Their `_EXPOSE_GRAPH` selector
+uses the existing target-version intrinsic's proven minor field before another
+acquisition can invalidate that binding. This lets ordinary unreachable-region
+proof omit the source requirement on older targets; it does not grant permission
+to discard a reached import merely because its bound name has no later load.
+
 A named writer delta wakes only its prior target sources and reached body contexts.
 Revisions of completed scans wait until pending admissions and first body demands
 drain, then run against the latest premise in one wave. New opacity facts still
