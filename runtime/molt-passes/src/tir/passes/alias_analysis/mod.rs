@@ -335,6 +335,13 @@ impl AliasAnalysisResult {
         }
     }
 
+    /// A final-TIR access whose heap footprint is a read even when it misses.
+    /// The Boolean result also observes thread-local exception state; a heap
+    /// reaching definition alone does not authorize eliminating the check.
+    pub(super) fn is_read_only_access(op: &TirOp) -> bool {
+        op.opcode == crate::tir::ops::OpCode::TryBuffer2dLoadI64
+    }
+
     pub(super) fn typed_slot_region(&self, op: &TirOp) -> MemRegion {
         if let Some((target, offset)) = typed_slot_obj_offset(op) {
             let root = self.aliases.root(target);
