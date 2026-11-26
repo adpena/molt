@@ -12,12 +12,22 @@ use crate::tir::dominators::{
     ProgramPointDominance, checked_exception_observer, exception_label_to_block,
 };
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{kind_to_opcode_table, opcode_canonical_kind_table};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::passes::PassStats;
 use crate::tir::passes::typed_slot_access::fixed_layout_inputs;
 use crate::tir::passes::value_identity::{
     ScalarFacts, build_forwarding_map, forwarded_python_value_source,
 };
+
+/// Read the source kind only when its lifted opcode agrees. In particular a
+/// preserved tuple constructor must still be carried by a Copy.
+fn lifted_kind(op: &TirOp) -> Option<OpKind> {
+    let kind = op
+        .origin
+        .or_else(|| opcode_canonical_kind_table(op.opcode))?;
+    (kind_to_opcode_table(kind).unwrap_or(OpCode::Copy) == op.opcode).then_some(kind)
+}
 
 fn plain_borrowing_op(op: &TirOp) -> bool {
     op.runtime.is_none()
@@ -50,8 +60,11 @@ pub(crate) fn forward_materialized_tuple_fields(
     let mut reads = Vec::new();
     for block in func.blocks.values() {
         for (index, op) in block.ops.iter().enumerate() {
-            match (op.opcode, op.origin, op.results.as_slice()) {
-                (OpCode::Copy, Some(OpKind::TupleNew), [result]) if plain_borrowing_op(op) => {
+            let [result] = op.results.as_slice() else {
+                continue;
+            };
+            match lifted_kind(op) {
+                Some(OpKind::TupleNew) if plain_borrowing_op(op) => {
                     if let Some(check) = block.ops.get(index + 1)
                         && check.opcode == OpCode::CheckException
                         && !check.is_async_work_poll()
@@ -60,14 +73,14 @@ pub(crate) fn forward_materialized_tuple_fields(
                         tuples.insert(*result, (block.id, index + 1, &op.operands));
                     }
                 }
-                (OpCode::ConstInt, None | Some(OpKind::Const), [result]) => {
+                Some(OpKind::Const) => {
                     if op.operands.is_empty()
                         && let Some(AttrValue::Int(value)) = op.attrs.get("value")
                     {
                         constants.insert(*result, *value);
                     }
                 }
-                (OpCode::Index, None | Some(OpKind::Index), [_]) if plain_borrowing_op(op) => {
+                Some(OpKind::Index) if plain_borrowing_op(op) => {
                     if let [receiver, key] = op.operands.as_slice() {
                         reads.push((block.id, index, *receiver, *key));
                     }
