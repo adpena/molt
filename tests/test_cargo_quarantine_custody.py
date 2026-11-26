@@ -495,7 +495,9 @@ def test_observed_profile_recovery_preserves_triple_profiles_and_dependencies(
 
 
 @pytest.mark.parametrize("triple", ["", "wasm32-wasip1"])
-def test_toolchain_profile_recovery_preserves_sibling_partitions(tmp_path, triple):
+def test_toolchain_profile_recovery_preserves_sibling_partitions(
+    tmp_path: Path, triple: str | None
+) -> None:
     target = tmp_path / "target"
     partitions = target / ".molt-toolchains"
     owned = unit(partitions / ("a" * 64) / triple, "debug")
@@ -519,7 +521,9 @@ def test_toolchain_profile_recovery_preserves_sibling_partitions(tmp_path, tripl
         f".molt-toolchains/{'a' * 64}/wasm32-wasip1/debug/extra",
     ],
 )
-def test_malformed_toolchain_coordinate_preserves_incremental_state(tmp_path, profile):
+def test_malformed_toolchain_coordinate_preserves_incremental_state(
+    tmp_path: Path, profile: str
+) -> None:
     target = tmp_path / "target"
     owned = unit(target, profile)
 
