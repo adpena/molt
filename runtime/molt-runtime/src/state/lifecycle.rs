@@ -40,7 +40,7 @@ use crate::object::utf8_cache::{
 };
 use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
-    CURRENT_TOKEN, EXCEPTION_STACK, GENERATOR_RAISE, GilGuard, GilReleaseGuard, MoltObject,
+    CURRENT_TOKEN, EXCEPTION_HANDLER_DEPTH, GENERATOR_RAISE, GilGuard, GilReleaseGuard, MoltObject,
     PARSE_ARENA, TASK_RAISE_ACTIVE, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE,
     alloc_string, builtin_classes_retire_identities, builtin_classes_shutdown, call_callable0,
     clear_exception, clear_exception_type_cache, clear_thread_exception_for_teardown, dec_ref_bits,
@@ -656,10 +656,7 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
         .unwrap_or_default();
     let fallback = ACTIVE_EXCEPTION_FALLBACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-    let _ = EXCEPTION_STACK.try_with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let _ = std::mem::take(&mut *stack);
-    });
+    let _ = EXCEPTION_HANDLER_DEPTH.try_with(|depth| depth.set(0));
     super::recursion::assert_thread_recursion_idle();
     let _ = GENERATOR_RAISE.try_with(|flag| flag.set(false));
     let _ = TASK_RAISE_ACTIVE.try_with(|flag| flag.set(false));

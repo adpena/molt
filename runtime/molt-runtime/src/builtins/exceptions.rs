@@ -198,9 +198,9 @@ pub(crate) use activation::{
     activation_exception_state_drop, activation_exception_state_visit,
 };
 pub(crate) use state::{
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, EXCEPTION_STACK_BASELINE,
-    ExceptionContextFallback, ExceptionsRuntimeState, GENERATOR_RAISE, TASK_RAISE_ACTIVE,
-    THREAD_LAST_EXCEPTION, exception_clear_reason_set, exception_pending_flag,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_HANDLER_DEPTH,
+    EXCEPTION_STACK_BASELINE, ExceptionContextFallback, ExceptionsRuntimeState, GENERATOR_RAISE,
+    TASK_RAISE_ACTIVE, THREAD_LAST_EXCEPTION, exception_clear_reason_set, exception_pending_flag,
 };
 use state::{
     debug_exception_clear, debug_exception_flow, debug_exception_pending, debug_exception_raise,
@@ -2490,8 +2490,8 @@ pub(crate) fn exceptions_release_runtime_class_anchor(_py: &PyToken<'_>, state: 
 
 pub(crate) fn exception_handler_active() -> bool {
     // Use try_with to avoid panicking during TLS destruction.
-    EXCEPTION_STACK
-        .try_with(|stack| !stack.borrow().is_empty())
+    EXCEPTION_HANDLER_DEPTH
+        .try_with(|depth| depth.get() != 0)
         .unwrap_or(false)
 }
 
@@ -2669,7 +2669,13 @@ pub(crate) fn exception_stack_push_in(py: &PyToken<'_>) {
 
 fn exception_stack_push_on(tls: &'static crate::state::ExecutionTls) {
     // Only the number of handler levels is ever read; a level carries no value.
-    tls.exception_stack.borrow_mut().push(0);
+    let depth = &tls.exception_handler_depth;
+    depth.set(
+        depth
+            .get()
+            .checked_add(1)
+            .expect("exception handler depth overflow"),
+    );
     tls.active_exception_stack
         .borrow_mut()
         .push(MoltObject::none().bits());
@@ -2768,9 +2774,7 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
         }
         return;
     }
-    EXCEPTION_STACK.with(|stack| {
-        stack.borrow_mut().pop();
-    });
+    EXCEPTION_HANDLER_DEPTH.with(|depth| depth.set(current_depth - 1));
     let detached = ACTIVE_EXCEPTION_STACK.with(|stack| stack.borrow_mut().pop());
     if let Some(bits) = detached
         && !obj_from_bits(bits).is_none()
@@ -2821,15 +2825,12 @@ pub(crate) fn set_task_raise_active(active: bool) {
 }
 
 pub(crate) fn exception_stack_depth() -> usize {
-    EXCEPTION_STACK.with(|stack| stack.borrow().len())
+    EXCEPTION_HANDLER_DEPTH.with(|depth| depth.get())
 }
 
 pub(crate) fn exception_stack_set_depth(_py: &PyToken<'_>, target: usize) {
     crate::gil_assert();
-    {
-        let stack = EXCEPTION_STACK.of(_py);
-        stack.borrow_mut().resize(target, 0)
-    };
+    EXCEPTION_HANDLER_DEPTH.of(_py).set(target);
     exception_context_align_depth(_py, target);
 }
 
