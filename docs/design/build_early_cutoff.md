@@ -609,12 +609,15 @@ the admitted generation in the child. Resource captures and their cached
 content projections are reused: no second SDK enumeration or executable probe
 is introduced to compute this key.
 
-LLVM SDK file selection uses one listing per directory. Directory entries
-provide regular-file types, and file symlinks retain their lexical path and
-resolved type. Verification and attestation continue to measure the selected
-contents. In ten interleaved pairs on the macOS arm64 managed SDK, selection
-returned the same 6,113 paths in the same order and took a median of 49.9 ms,
-down from 61.0 ms. The measurement covers file selection.
+LLVM SDK verification, compiler admission and attestation share
+host resource selection below the CLI. Header trees follow directory aliases and retain each
+regular file's lexical name and resolved content. The live fence checks
+directory listings and reselects aliases, including dangling paths that may
+later acquire targets outside the listed tree. SDK library facts project the
+same observed metadata as the content inventory. Verification and attestation
+still check the selected file content. An earlier ten-pair macOS arm64 managed
+SDK probe measured file selection alone at 49.9 ms from 61.0 ms and covered
+6,113 paths before directory-alias coverage was added.
 
 Rust source, job counts, output paths and unrelated Cargo
 configuration bytes are excluded from this graph key. Ordinary source edits

@@ -207,6 +207,10 @@ def llvm_input_record(
     if verification.release is None:
         raise ValueError("release compiler requires a manifest-pinned LLVM release")
     config = inputs.resources.file_identity(verification.llvm_config)
+    resources = inputs.resources.content_identity()
+    # The portable LLVM record addresses individual files. Live directory
+    # roots group the custody check and never replace its selected file labels.
+    resources["roots"] = sorted(item.label for item in inputs.resources.files)
     return validate_llvm_inputs(
         {
             "linkage": "static-llvm-explicit-system",
@@ -223,7 +227,7 @@ def llvm_input_record(
             "system_static_dependencies": capture_system_static_dependencies(
                 inputs.link_plan, inputs.resources
             ),
-            "resources": inputs.resources.content_identity(),
+            "resources": resources,
         }
     )
 

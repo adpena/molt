@@ -33,10 +33,10 @@ from molt.cli.runtime_identity_schema import (
 from molt.exact_json import canonical_json_sha256
 from molt.tool_releases import ToolDiscovery, tool_release
 from molt.rust_toolchain import cargo_configuration_paths, rust_flag_spans
+from molt.cargo_resource_selection import CargoResourceRoot
 from molt.cli.cargo_resource_custody import (
     CargoExecutableCustody,
     CargoResourceCustody,
-    CargoResourceRoot,
 )
 from molt.cli.cargo_search_path import cargo_search_path, derives_cargo_search_path
 from molt.cli.runtime_c_resources import _resolve_c_build_resources

@@ -13,7 +13,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
-from molt.cli.cargo_resource_custody import (
+from molt.cargo_resource_selection import (
     CargoResourceIdentity,
     CargoResourceRoot,
     is_apple_sdk,

@@ -24,6 +24,7 @@ from types import MappingProxyType
 import pytest
 
 from molt.cli import cargo_command as cargo_argv
+from molt import cargo_resource_selection as resource_selection
 from molt.cli import cargo_resource_custody as resource_custody
 from molt.cli import runtime_cargo_plan as plans
 from molt.cli import runtime_tool_selection
@@ -712,7 +713,7 @@ def plan_root(
         plans,
         "_rust_resource_roots",
         lambda *args, **kwargs: (
-            resource_custody.CargoResourceRoot("rust/test", resources),
+            resource_selection.CargoResourceRoot("rust/test", resources),
         ),
     )
     return tmp_path
@@ -1283,9 +1284,9 @@ def test_link_response_aliases_share_one_bounded_byte_capture(tmp_path, monkeypa
 
     monkeypatch.setattr(resource_custody, "capture_stable_regular_file", capture)
     roots = (
-        resource_custody.CargoResourceRoot("ordinary-first", response),
-        resource_custody.CargoResourceRoot("rust/link-response/first", response),
-        resource_custody.CargoResourceRoot("rust/link-response/second", response),
+        resource_selection.CargoResourceRoot("ordinary-first", response),
+        resource_selection.CargoResourceRoot("rust/link-response/first", response),
+        resource_selection.CargoResourceRoot("rust/link-response/second", response),
     )
     custody = resource_custody.CargoResourceCustody.capture(roots)
     assert captures == [response]
@@ -2973,20 +2974,20 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
     value = rule.encode(flags, variable=key)
     installation = readonly_wasi_sdk()
     captured = []
-    original = resource_custody.CargoResourceRoot.walk
+    original = resource_selection.CargoResourceRoot.walk
 
     def walk(
-        resource: resource_custody.CargoResourceRoot,
+        resource: resource_selection.CargoResourceRoot,
         *,
         resolved_parents: dict[Path, Path] | None = None,
-    ) -> resource_custody.CargoResourceWalk:
+    ) -> resource_selection.CargoResourceWalk:
         assert not resource.path.is_relative_to(installation.sdk), (
             "managed SDK recursively recaptured"
         )
         captured.append(resource.path)
         return original(resource, resolved_parents=resolved_parents)
 
-    monkeypatch.setattr(resource_custody.CargoResourceRoot, "walk", walk)
+    monkeypatch.setattr(resource_selection.CargoResourceRoot, "walk", walk)
     plan = _plan(
         plan_root,
         target="wasm32-wasip1",

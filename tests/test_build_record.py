@@ -471,10 +471,10 @@ def test_equal_byte_cargo_tool_alias_retargeting_cannot_reuse_output(
 ) -> None:
     import shutil
 
+    from molt.cargo_resource_selection import CargoResourceRoot
     from molt.cli.cargo_resource_custody import (
         CargoExecutableCustody,
         CargoResourceCustody,
-        CargoResourceRoot,
     )
     from tests.executable_test_support import native_executable_donor
 

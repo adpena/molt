@@ -661,7 +661,16 @@ def test_sdk_content_inventory_preserves_lexical_file_links(tmp_path: Path) -> N
         pytest.skip("this Windows host cannot create SDK symlink fixtures")
 
     assert llvm_toolchain._content_paths(prefix, (library,)) == tuple(
-        sorted((header, resource, library, file_link, alternate / resource.name))
+        sorted(
+            (
+                header,
+                resource,
+                library,
+                file_link,
+                alternate / resource.name,
+                directory_link / header.name,
+            )
+        )
     )
 
 
