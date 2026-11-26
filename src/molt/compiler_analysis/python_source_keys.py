@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from molt.python_private_names import python_source_field
+from molt.python_private_names import python_source_fields
 import hashlib
 import struct
 from collections.abc import Iterator
@@ -92,43 +92,43 @@ class _AstDigestStream:
         else:
             self.buffer.extend(payload)
 
-    def framed(self, payload: bytes) -> None:
-        length = len(payload).to_bytes(8, "big")
+    def framed(self, prefix: bytes, payload: bytes) -> None:
+        header = prefix + len(payload).to_bytes(8, "big")
         if len(payload) < 256:
-            self.write(length + payload)
+            self.write(header + payload)
         else:
-            self.write(length)
+            self.write(header)
             self.write(payload)
 
-    def scalar(self, value: object) -> bool:
+    def scalar(self, value: object, prefix: bytes) -> bool:
         kind = type(value)
         if value is None:
-            self.write(b"n")
+            self.write(prefix + b"n")
         elif value is Ellipsis:
-            self.write(b"e")
+            self.write(prefix + b"e")
         elif kind is bool:
-            self.write(b"t" if value else b"f")
+            self.write(prefix + (b"t" if value else b"f"))
         elif kind is int:
             integer = cast(int, value)
             if -9223372036854775808 <= integer <= 9223372036854775807:
-                self.write(b"i" + struct.pack("!q", integer))
+                self.write(prefix + b"i" + struct.pack("!q", integer))
             else:
                 magnitude = abs(integer)
-                self.write(b"-" if integer < 0 else b"+")
                 self.framed(
-                    magnitude.to_bytes((magnitude.bit_length() + 7) // 8, "big")
+                    prefix + (b"-" if integer < 0 else b"+"),
+                    magnitude.to_bytes((magnitude.bit_length() + 7) // 8, "big"),
                 )
         elif kind is float:
-            self.write(b"d" + struct.pack("!d", cast(float, value)))
+            self.write(prefix + b"d" + struct.pack("!d", cast(float, value)))
         elif kind is complex:
             number = cast(complex, value)
-            self.write(b"c" + struct.pack("!dd", number.real, number.imag))
+            self.write(prefix + b"c" + struct.pack("!dd", number.real, number.imag))
         elif kind is str:
-            self.write(b"s")
-            self.framed(cast(str, value).encode("utf-8", errors="surrogatepass"))
+            self.framed(
+                prefix + b"s", cast(str, value).encode("utf-8", errors="surrogatepass")
+            )
         elif kind is bytes:
-            self.write(b"b")
-            self.framed(cast(bytes, value))
+            self.framed(prefix + b"b", cast(bytes, value))
         else:
             return False
         return True
@@ -217,7 +217,12 @@ def python_ast_digest(tree: ast.AST) -> str:
                     schemas[type(value)] = schema
             stream.write(schema.header)
             frames.append(
-                _AstDigestFrame(value, iter(schema.names), stream, ast_slots=True)
+                _AstDigestFrame(
+                    value,
+                    python_source_fields(value, schema.names, _AST_MISSING),
+                    stream,
+                    ast_slots=True,
+                )
             )
         else:
             values = cast(list[object] | tuple[object, ...] | frozenset[object], value)
@@ -246,17 +251,18 @@ def python_ast_digest(tree: ast.AST) -> str:
                 frames.pop()
                 continue
             if frame.ast_slots:
-                child = python_source_field(
-                    cast(ast.AST, frame.owner), cast(str, child), _AST_MISSING
-                )
                 if child is _AST_MISSING:
                     stream.write(b"0")
                     continue
-                stream.write(b"1")
-            elif frame.members is not None:
-                stream = _AstDigestStream(b"molt.python-ast.v3.member\0")
-            if stream.scalar(child):
+                prefix = b"1"
+            else:
+                prefix = b""
+                if frame.members is not None:
+                    stream = _AstDigestStream(b"molt.python-ast.v3.member\0")
+            if stream.scalar(child, prefix):
                 continue
+            if prefix:
+                stream.write(prefix)
             value = child
             break
         else:

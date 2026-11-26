@@ -221,7 +221,9 @@ def test_stream_flush_boundaries_and_large_payloads_preserve_bytes() -> None:
     expected = hashlib.sha256(b"test-domain\0")
     for size in (0, 1, 255, 256, _AST_BUFFER_SIZE - 1, _AST_BUFFER_SIZE, 100_000):
         payload = b"x" * size
-        stream.framed(payload)
+        prefix = b"1s"
+        stream.framed(prefix, payload)
+        expected.update(prefix)
         expected.update(size.to_bytes(8, "big"))
         expected.update(payload)
         assert len(stream.buffer) < _AST_BUFFER_SIZE

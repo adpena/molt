@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import ast
 import copy
+from collections.abc import Iterable, Iterator
+from itertools import repeat
 from typing import Any, cast
 
 _SPELLINGS = "_molt_private_source_fields"
@@ -26,10 +28,19 @@ def mangle_private_name(private: str | None, name: str) -> str:
 def python_source_field(node: ast.AST, field: str, default: Any = None) -> Any:
     """Read source spelling without concealing a subsequent AST field edit."""
     current = getattr(node, field, default)
-    pair = getattr(node, _SPELLINGS, {}).get(field)
+    spellings = getattr(node, _SPELLINGS, None)
+    pair = None if spellings is None else spellings.get(field)
     if pair is not None and current == pair[1]:
         return pair[0].copy() if isinstance(pair[0], list) else pair[0]
     return current
+
+
+def python_source_fields(
+    node: ast.AST, fields: Iterable[str], default: object
+) -> Iterator[object]:
+    """Stream fields of one read-only node through the source spelling authority."""
+    get_field = python_source_field if getattr(node, _SPELLINGS, None) else getattr
+    return map(get_field, repeat(node), fields, repeat(default))
 
 
 def python_definition_name(node: ast.AST) -> str:
