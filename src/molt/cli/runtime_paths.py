@@ -134,7 +134,7 @@ def _cargo_target_root(project_root: Path) -> Path:
     if cached is not None and all(
         os.environ.get(name) == value for name, value in cached[0]
     ):
-        _claim_checkout_state(cached[1])
+        _claim_checkout_state(cached[1], cargo_output=True)
         return cached[1]
     environment = _RecordingEnvironment(os.environ)
     target = project_cargo_target_dir(project_root, environment)
@@ -142,7 +142,7 @@ def _cargo_target_root(project_root: Path) -> Path:
         _CARGO_TARGET_ROOTS[key] = (environment.observed(), target)
     # A build that selects a checkout target uses it (HF-313); the memo makes
     # this one stat per process.
-    _claim_checkout_state(target)
+    _claim_checkout_state(target, cargo_output=True)
     record_checkout_target_use(target, checkout=Path(project_root))
     return target
 

@@ -5,6 +5,7 @@ import inspect
 import molt.cli as cli
 from molt.cli import arg_helpers
 from molt.cli import build_output_layout
+import pytest
 
 _BUILD_OUTPUT_LAYOUT_NAMES = (
     "_BUILD_OR_DEPLOY_PROFILE_CHOICES",
@@ -93,6 +94,45 @@ def test_build_scope_owns_cached_managed_target_and_control(tmp_path, monkeypatc
         assert allowed is True
     with checkout_state.checkout_state_retirement(control) as allowed:
         assert allowed is True
+
+
+@pytest.mark.parametrize("materialize", [False, True])
+def test_checkout_target_claim_records_first_materialization(
+    tmp_path, monkeypatch, developer_host_context, unbound_checkout_family, materialize
+):
+    from molt import build_record, checkout_state, dx
+    from molt.cli import runtime_paths
+
+    source = tmp_path / "source"
+    source.mkdir()
+    artifacts = tmp_path / "artifacts"
+    target = dx.cargo_target_dir_for_artifact_root(
+        artifacts, "record", source_root=source
+    )
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+
+    with (
+        build_record.recording(tmp_path / "recording", capture_result=True) as ledger,
+        build_output_layout.build_scope(),
+    ):
+        assert runtime_paths._cargo_target_root(source) == target
+        assert not target.exists()
+        (initial,) = [claim for claim in ledger.claims if claim.root == target]
+        assert initial.directory_identity is None
+        claim_index = ledger.claims.index(initial)
+        build_output_layout._claim_artifacts_root(tmp_path / "app-artifacts")
+        if materialize:
+            target.mkdir(parents=True)
+        build_output_layout._record_completed_cargo_target_claims(ledger)
+        (claim,) = [claim for claim in ledger.claims if claim.root == target]
+        assert (claim.directory_identity is not None) is materialize
+        assert ledger.claims.index(claim) == claim_index
+        claim.verify()
+        with checkout_state.checkout_state_retirement(target.parent.parent) as allowed:
+            assert allowed is False
+
+    assert target.exists() is materialize
 
 
 def test_build_scope_retains_initial_maintenance_choice_as_guard_default_drifts(
