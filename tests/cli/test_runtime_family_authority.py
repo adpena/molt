@@ -2975,12 +2975,16 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
     captured = []
     original = resource_custody.CargoResourceRoot.walk
 
-    def walk(resource):
+    def walk(
+        resource: resource_custody.CargoResourceRoot,
+        *,
+        resolved_parents: dict[Path, Path] | None = None,
+    ) -> resource_custody.CargoResourceWalk:
         assert not resource.path.is_relative_to(installation.sdk), (
             "managed SDK recursively recaptured"
         )
         captured.append(resource.path)
-        return original(resource)
+        return original(resource, resolved_parents=resolved_parents)
 
     monkeypatch.setattr(resource_custody.CargoResourceRoot, "walk", walk)
     plan = _plan(

@@ -1040,6 +1040,42 @@ def test_a_process_reuses_a_current_capture_and_recaptures_a_changed_one(
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX regular-file selection")
+def test_cargo_file_roots_reselect_one_parent_and_each_leaf(
+    tmp_path: Path,
+) -> None:
+    version = tmp_path / "version"
+    alternate = tmp_path / "alternate"
+    selected = tmp_path / "selected"
+    for directory in (version, alternate):
+        directory.mkdir()
+        for name in ("api.h", "other.h"):
+            (directory / name).write_bytes(f"{directory.name}:{name}".encode())
+    selected.symlink_to(version, target_is_directory=True)
+    header = selected / "api.h"
+    roots = (
+        CargoResourceRoot("header", header),
+        CargoResourceRoot("other", selected / "other.h"),
+    )
+
+    first = CargoResourceCustody.capture(roots)
+    selected.unlink()
+    selected.symlink_to(alternate, target_is_directory=True)
+    with pytest.raises(ValueError, match="selected content changed"):
+        first.verify()
+    second = CargoResourceCustody.capture(roots)
+    assert second.file_identity(header).path == alternate / "api.h"
+
+    leaf = alternate / "api.h"
+    leaf.unlink()
+    leaf.symlink_to(version / "api.h")
+    with pytest.raises(ValueError, match="changed since identity capture"):
+        second.verify()
+    third = CargoResourceCustody.capture(roots)
+    assert third.file_identity(header).path == version / "api.h"
+    assert third.file_identity(header).sha256 == first.file_identity(header).sha256
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows always walks exactly")
 def test_settled_directory_tokens_detect_a_new_resource(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

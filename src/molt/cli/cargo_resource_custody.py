@@ -96,6 +96,15 @@ class CargoResourceEntry:
 _DirectoryToken = tuple[int, int, int, int]
 
 
+def _resolve_file_parent(path: Path, parents: dict[Path, Path]) -> Path:
+    parent = path.parent
+    resolved = parents.get(parent)
+    if resolved is None:
+        resolved = parent.resolve(strict=True)
+        parents[parent] = resolved
+    return resolved / path.name
+
+
 def _directory_token(path: Path) -> _DirectoryToken:
     """Adding, removing or renaming an entry changes its directory's mtime."""
     metadata = path.stat()
@@ -117,6 +126,9 @@ class CargoResourceWalk:
     # A directory changed within the racy window of the walk may change again
     # within one timestamp tick, so its token cannot prove an unchanged list.
     racy: bool = False
+    # A single non-link POSIX file can share its parent's resolution with
+    # sibling roots. Directory walks and leaf aliases keep their own fence.
+    direct_file: bool = False
 
 
 class CargoResourceIdentity(Enum):
@@ -164,7 +176,9 @@ class CargoResourceRoot:
             racy=max(token[2], token[3]) >= started_ns - DIGEST_RACY_WINDOW_NS,
         )
 
-    def walk(self) -> CargoResourceWalk:
+    def walk(
+        self, *, resolved_parents: dict[Path, Path] | None = None
+    ) -> CargoResourceWalk:
         """Capture lexical file edges without unfolding directory backedges.
 
         Each directory is resolved once; a file reached through real
@@ -181,10 +195,18 @@ class CargoResourceRoot:
                     f"required runtime resource is missing: {self.path}"
                 ) from None
             return CargoResourceWalk((), None, ())
-        if stat.S_ISREG(metadata.st_mode) or self.path.is_file():
-            content = executable_content_path(self.path, label=self.label)
+        direct_file = os.name != "nt" and stat.S_ISREG(metadata.st_mode)
+        if direct_file or stat.S_ISREG(metadata.st_mode) or self.path.is_file():
+            content = (
+                _resolve_file_parent(self.path, resolved_parents)
+                if direct_file and resolved_parents is not None
+                else executable_content_path(self.path, label=self.label)
+            )
             return CargoResourceWalk(
-                (CargoResourceEntry(self.label, self.path, content),), content, ()
+                (CargoResourceEntry(self.label, self.path, content),),
+                content,
+                (),
+                direct_file=direct_file,
             )
         if not self.path.is_dir():
             raise ValueError(f"runtime resource root is not a directory: {self.path}")
@@ -261,7 +283,13 @@ _CAPTURED_RESOURCES: dict[tuple[CargoResourceRoot, ...], CargoResourceCustody] =
 _WALKED_ROOTS: dict[CargoResourceRoot, CargoResourceWalk] = {}
 
 
-def _walk_unchanged(root: CargoResourceRoot, walk: CargoResourceWalk) -> bool:
+def _walk_unchanged(
+    root: CargoResourceRoot,
+    walk: CargoResourceWalk,
+    resolved_parents: dict[Path, Path],
+    *,
+    verify_files: bool = False,
+) -> bool:
     """Unchanged directory tokens prove an unchanged listing on POSIX, as git's
     untracked cache does; a racy walk or Windows always walks again."""
     if os.name == "nt" or walk.racy:
@@ -269,6 +297,13 @@ def _walk_unchanged(root: CargoResourceRoot, walk: CargoResourceWalk) -> bool:
     if walk.resolved_root is None:
         return not (root.path.exists() or root.path.is_symlink())
     try:
+        if walk.direct_file:
+            content = _resolve_file_parent(root.path, resolved_parents)
+            # verify() checks leaf generations immediately after selection.
+            # A cached walk reused for capture has no prior leaf proof to check.
+            return content == walk.resolved_root and (
+                verify_files or stat.S_ISREG(content.lstat().st_mode)
+            )
         if root.path.resolve(strict=True) != walk.resolved_root:
             return False
         return all(_directory_token(path) == token for path, token in walk.directories)
@@ -276,10 +311,12 @@ def _walk_unchanged(root: CargoResourceRoot, walk: CargoResourceWalk) -> bool:
         return False
 
 
-def _current_walk(root: CargoResourceRoot) -> CargoResourceWalk:
+def _current_walk(
+    root: CargoResourceRoot, resolved_parents: dict[Path, Path]
+) -> CargoResourceWalk:
     walk = _WALKED_ROOTS.get(root)
-    if walk is None or not _walk_unchanged(root, walk):
-        walk = root.walk()
+    if walk is None or not _walk_unchanged(root, walk, resolved_parents):
+        walk = root.walk(resolved_parents=resolved_parents)
         _WALKED_ROOTS[root] = walk
     return walk
 
@@ -356,7 +393,8 @@ class CargoResourceCustody:
         snapshots: dict[Path, StableRegularFileIdentity] = {}
         files: list[CargoFileCustody] = []
         digests = host_file_digest_cache()
-        walks = tuple(_current_walk(root) for root in roots)
+        resolved_parents: dict[Path, Path] = {}
+        walks = tuple(_current_walk(root, resolved_parents) for root in roots)
         selected = tuple(
             (entry.label, entry.entrypoint, entry.content)
             for walk in walks
@@ -421,8 +459,9 @@ class CargoResourceCustody:
             verified.add(item.identity.path)
 
     def _selection_unchanged(self) -> bool:
+        resolved_parents: dict[Path, Path] = {}
         return all(
-            _walk_unchanged(root, walk)
+            _walk_unchanged(root, walk, resolved_parents, verify_files=True)
             for root, walk in zip(self.roots, self.walks, strict=True)
         )
 
