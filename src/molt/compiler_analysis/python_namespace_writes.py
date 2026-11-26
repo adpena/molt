@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import _SourceImportCacheWrite
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 22
+SUMMARY_SCHEMA: Final = 23
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -749,6 +749,9 @@ def _star_local_names(
     return local_names
 
 
+_MappingSlot: TypeAlias = tuple[ast.AST, str]
+
+
 class _MappingFlow:
     """Which names a function writes through: one module's parameter and
     local write summaries, to a fixed point over the module's own functions.
@@ -769,43 +772,61 @@ class _MappingFlow:
 
     def __init__(self, tree: ast.Module) -> None:
         self.parents: dict[ast.AST, ast.AST] = {}
-        for node in ast.walk(tree):
-            for child in ast.iter_child_nodes(node):
-                self.parents[child] = node
+        self.scopes: dict[ast.AST, ast.AST | None] = {}
+        scope_bindings: dict[ast.AST, set[str]] = {}
+        directives: dict[ast.AST, set[str]] = {}
+        loads: list[ast.Name] = []
         bindings: dict[str, int] = {}
         declared_global: set[str] = set()
-        for node in ast.walk(tree):
+        has_star_import = False
+        pending: list[tuple[ast.AST, ast.AST | None]] = [(tree, None)]
+        while pending:
+            node, scope = pending.pop()
+            self.scopes[node] = scope
             if isinstance(node, ast.Global):
                 declared_global.update(node.names)
-            scope = self._scope(node)
-            if scope is not None:
-                continue
-            for name in self._bound_names(node):
-                bindings[name] = bindings.get(name, 0) + 1
-        self.functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
-        for node in tree.body:
-            if (
-                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and not node.decorator_list
-                and bindings.get(node.name) == 1
-                and node.name not in declared_global
-            ):
-                self.functions[node.name] = node
-        # Module-level names that shadow the evaluation builtins.
+            if scope is None:
+                for name in self._bound_names(node):
+                    bindings[name] = bindings.get(name, 0) + 1
+                if isinstance(node, ast.ImportFrom):
+                    has_star_import |= any(alias.name == "*" for alias in node.names)
+            else:
+                names = self._bound_names(node)
+                if names:
+                    scope_bindings.setdefault(scope, set()).update(names)
+                if isinstance(node, (ast.Global, ast.Nonlocal)):
+                    directives.setdefault(scope, set()).update(node.names)
+                if isinstance(node, ast.Name) and (
+                    isinstance(node.ctx, ast.Load)
+                    or isinstance(parent := self.parents.get(node), ast.AugAssign)
+                    and parent.target is node
+                ):
+                    loads.append(node)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                scope_bindings.setdefault(node, set()).update(self._params(node))
+            child_scope = node if isinstance(node, self._SCOPES) else scope
+            for child in ast.iter_child_nodes(node):
+                self.parents[child] = node
+                pending.append((child, child_scope))
+        self.scope_bindings = {
+            scope: names.difference(directives.get(scope, ()))
+            for scope, names in scope_bindings.items()
+        }
+        self.functions = {
+            node.name: node
+            for node in tree.body
+            if not has_star_import
+            and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not node.decorator_list
+            and bindings.get(node.name) == 1
+            and node.name not in declared_global
+        }
         self.rebound_builtins = {
             name
             for name in ("eval", "exec")
-            if bindings.get(name) or name in declared_global
+            if has_star_import or bindings.get(name) or name in declared_global
         }
-        # (function node, name) pairs proven written, for every function of
-        # the module, methods and nested ones included; grown to a fixed point.
-        self.all_functions = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
-        self.written: set[tuple[ast.AST, str]] = set()
-        self._solve()
+        self.written = self._solve(loads, directives)
 
     @staticmethod
     def _bound_names(node: ast.AST) -> list[str]:
@@ -826,12 +847,7 @@ class _MappingFlow:
 
     def _scope(self, node: ast.AST) -> ast.AST | None:
         """The nearest enclosing function, lambda or class of ``node``."""
-        current = self.parents.get(node)
-        while current is not None:
-            if isinstance(current, self._SCOPES):
-                return current
-            current = self.parents.get(current)
-        return None
+        return self.scopes.get(node)
 
     def _enclosing(
         self, node: ast.AST
@@ -859,138 +875,128 @@ class _MappingFlow:
         ]
 
     def _scope_binds(self, scope: ast.AST, name: str) -> bool:
-        """Whether a nested scope binds ``name`` itself (a different variable)."""
-        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            if name in self._params(scope):
-                return True
-        for node in ast.walk(scope):
-            if node is scope or self._scope(node) is not scope:
-                continue
-            if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
-                return False
-            if name in self._bound_names(node):
-                return True
-        return False
+        names = self.scope_bindings.get(scope)
+        return names is not None and name in names
 
-    def _call_writes(self, call: ast.Call, value: ast.AST) -> bool:
-        """Whether passing ``value`` to ``call`` may write through it."""
+    def _call_write_dependencies(
+        self, call: ast.Call, value: ast.AST
+    ) -> tuple[_MappingSlot, ...] | None:
+        """None is an opaque write. Otherwise the actual depends on its formals."""
         func = call.func
-        if isinstance(func, ast.Name) and func.id in {"eval", "exec"}:
-            caller = self._scope(call)
-            shadowed = func.id in self.rebound_builtins or (
-                caller is not None and self._scope_binds(caller, func.id)
-            )
-            if not shadowed:
-                return False
-        if not (isinstance(func, ast.Name) and func.id in self.functions):
-            return True
-        caller = self._scope(call)
-        if caller is not None and self._scope_binds(caller, func.id):
-            return True
-        callee = self.functions[func.id]
+        if not isinstance(func, ast.Name):
+            return None
+        scope = self._scope(call)
+        while scope is not None:
+            if self._scope_binds(scope, func.id):
+                return None
+            scope = self._scope(scope)
+        if func.id in {"eval", "exec"} and func.id not in self.rebound_builtins:
+            return ()
+        callee = self.functions.get(func.id)
+        if callee is None:
+            return None
         params = [arg.arg for arg in (*callee.args.posonlyargs, *callee.args.args)]
-        names: list[str] = []
+        slots = []
         for index, argument in enumerate(call.args):
             if isinstance(argument, ast.Starred):
-                return True
+                return None
             if argument is value:
                 if index >= len(params):
-                    return True
-                names.append(params[index])
+                    return None
+                slots.append((callee, params[index]))
         for keyword in call.keywords:
             if keyword.value is value:
                 if keyword.arg is None or keyword.arg not in params:
-                    return True
-                names.append(keyword.arg)
-        return any((callee, name) in self.written for name in names)
+                    return None
+                slots.append((callee, keyword.arg))
+        return tuple(slots)
 
-    def _use_writes(self, value: ast.AST, parent: ast.AST | None) -> bool:
-        """Whether one use of a mapping-valued expression may write it."""
-        if isinstance(parent, ast.Expr):
-            return False
+    def _write_dependencies(
+        self, value: ast.AST, parent: ast.AST | None
+    ) -> tuple[_MappingSlot, ...] | None:
+        """The write effect of a use, or the slots whose effects it inherits."""
+        if isinstance(
+            parent, (ast.Expr, ast.Compare, ast.comprehension, ast.For, ast.Assert)
+        ):
+            return ()
         if isinstance(parent, ast.Subscript) and parent.value is value:
-            return not isinstance(parent.ctx, ast.Load)
+            return () if isinstance(parent.ctx, ast.Load) else None
         if isinstance(parent, ast.Attribute) and parent.value is value:
             grandparent = self.parents.get(parent)
-            return not (
-                isinstance(grandparent, ast.Call)
+            return (
+                ()
+                if isinstance(grandparent, ast.Call)
                 and grandparent.func is parent
                 and parent.attr in _READ_METHODS
+                else None
             )
-        if isinstance(parent, (ast.Compare, ast.comprehension, ast.For)):
-            return False
         if isinstance(parent, ast.Call) and parent.func is not value:
             if (
                 isinstance(parent.func, ast.Name)
                 and parent.func.id in _WHOLE_READ_CALLS
             ):
-                return False
-            return self._call_writes(parent, value)
-        if isinstance(parent, ast.Assert):
-            return False
+                return ()
+            return self._call_write_dependencies(parent, value)
         if (
             isinstance(parent, ast.Assign)
             and parent.value is value
             and len(parent.targets) == 1
             and isinstance(parent.targets[0], ast.Name)
         ):
-            function = self._enclosing(parent)
-            return (
-                function is None
-                or self._scope(parent) is not function
-                or (function, parent.targets[0].id) in self.written
-            )
-        return True
+            owner = self._enclosing(parent)
+            if owner is not None:
+                return ((owner, parent.targets[0].id),)
+        return None
 
-    def _name_writes(
-        self, function: ast.FunctionDef | ast.AsyncFunctionDef, name: str
-    ) -> bool:
-        for node in ast.walk(function):
-            if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
-                if self._scope(node) is function:
-                    return True
-            if not (
-                isinstance(node, ast.Name)
-                and node.id == name
-                and isinstance(node.ctx, ast.Load)
-            ):
-                continue
+    def _use_writes(self, value: ast.AST, parent: ast.AST | None) -> bool:
+        dependencies = self._write_dependencies(value, parent)
+        return dependencies is None or any(
+            slot in self.written for slot in dependencies
+        )
+
+    def _solve(
+        self, loads: Iterable[ast.Name], directives: dict[ast.AST, set[str]]
+    ) -> set[_MappingSlot]:
+        """Publish each affected slot once and wake only uses that read its fact."""
+        functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+        written: set[_MappingSlot] = {
+            (scope, name)
+            for scope, names in directives.items()
+            if isinstance(scope, functions)
+            for name in names
+        }
+        consumers: dict[_MappingSlot, set[_MappingSlot]] = {}
+        captures: set[_MappingSlot] = set()
+        for node in loads:
             scope = self._scope(node)
-            if scope is not function:
-                # A nested scope that captures the name may write it later.
-                inner = scope
-                while inner is not None and inner is not function:
-                    if self._scope_binds(inner, name):
-                        break
-                    inner = self._scope(inner)
-                else:
-                    return True
+            if scope is None:
                 continue
-            if self._use_writes(node, self.parents.get(node)):
-                return True
-        return False
-
-    def _solve(self) -> None:
-        candidates = [
-            (function, name)
-            for function in self.all_functions
-            for name in {
-                *self._params(function),
-                *(
-                    node.id
-                    for node in ast.walk(function)
-                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-                ),
-            }
-        ]
-        changed = True
-        while changed:
-            changed = False
-            for function, name in candidates:
-                key = (function, name)
-                if key not in self.written and self._name_writes(function, name):
-                    self.written.add(key)
-                    changed = True
+            slot = (scope, node.id)
+            if isinstance(scope, functions):
+                dependencies = self._write_dependencies(node, self.parents.get(node))
+                if dependencies is None:
+                    written.add(slot)
+                else:
+                    for dependency in dependencies:
+                        consumers.setdefault(dependency, set()).add(slot)
+            # A nested scope can retain a mapping unless it has its own
+            # binding of the name. Visit each scope/name capture at most once.
+            while not self._scope_binds(scope, node.id) and slot not in captures:
+                captures.add(slot)
+                outer = self._scope(scope)
+                if outer is None:
+                    break
+                scope = outer
+                slot = (scope, node.id)
+                if isinstance(scope, functions):
+                    written.add(slot)
+        pending = list(written)
+        while pending:
+            for consumer in consumers.get(pending.pop(), ()):
+                if consumer not in written:
+                    written.add(consumer)
+                    pending.append(consumer)
+        return written
 
     def escape_writes(self, value: ast.AST, parent: ast.AST | None) -> bool:
         return self._use_writes(value, parent)
@@ -1999,6 +2005,13 @@ class _NamespaceWriteCollector:
         node, parent = site.node, site.parent
         assert isinstance(node, ast.Attribute)
         if isinstance(node.ctx, (ast.Store, ast.Del)):
+            if (
+                node.attr == "__builtins__"
+                and isinstance(parent, ast.AugAssign)
+                and parent.target is node
+            ):
+                # The in-place operation runs before the attribute store.
+                self._namespace_use(site, "builtins")
             is_module, module = self._module_receiver(node.value)
             if is_module:
                 # ``__class__`` and ``__dict__`` replacement change every name.
@@ -2032,6 +2045,10 @@ class _NamespaceWriteCollector:
             is_module, module = self._module_receiver(node.value)
             if is_module:
                 self._namespace_use(site, module)
+        elif node.attr == "__builtins__":
+            # A function can publish the live builtins of its activation,
+            # including a native initializer created from another module.
+            self._namespace_use(site, "builtins")
         elif node.attr in _GLOBALS_ATTRIBUTES:
             self._reflection_use(site, None)
         elif node.attr in _CODE_ATTRIBUTES:
@@ -2066,7 +2083,9 @@ class _NamespaceWriteCollector:
             elif attribute == "__dict__":
                 is_module, module = self._module_receiver(node.args[0])
                 if is_module:
-                    self._reflection_use(site, module)
+                    self._namespace_use(site, module)
+            elif attribute == "__builtins__":
+                self._namespace_use(site, "builtins")
             elif attribute is None or attribute in _NAMESPACE_BUILTINS:
                 is_module, module = self._module_receiver(node.args[0])
                 if is_module and module == "builtins":
@@ -2186,12 +2205,13 @@ class _NamespaceWriteCollector:
     def _namespace_use(self, site: _Site, module: str | None) -> None:
         self._reflection_use(site, module)
         writes, name = self._item_write(site)
-        if writes and name is None and not self._escape_writes(site):
-            # The mapping escapes into a local or a call argument that no
-            # resolved callee writes through (`_MappingFlow`).
+        if not writes:
             return
-        if writes:
-            self._record(module, name, "namespace", site)
+        if name is None and (keys := self._escape_keys(site)) is not None:
+            for key in sorted(keys):
+                self._record(module, key, "namespace", site)
+            return
+        self._record(module, name, "namespace", site)
 
     def _escape_writes(self, site: _Site) -> bool:
         """Whether a foreign namespace mapping that escapes at ``site`` may be

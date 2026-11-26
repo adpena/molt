@@ -3253,6 +3253,54 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
     assert prepared.runtime_import_support_policy.needs_runtime_import_support
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
+@pytest.mark.parametrize(
+    ("access", "operation", "needs_finder"),
+    [
+        ("fn.__builtins__", "ns.get('len')", False),
+        ("getattr(fn, '__builtins__')", "ns['len'] = fn", False),
+        ("fn.__builtins__", "ns['__import__'] = fn", True),
+        ("getattr(builtins, '__dict__')", "del ns['__import__']", True),
+        ("fn.__builtins__", "ns[key] = fn", True),
+        ("fn.__builtins__", "ns |= {'__import__': fn}", True),
+    ],
+)
+def test_builtins_mapping_write_controls_runtime_import_support(
+    tmp_path: Path, access: str, operation: str, needs_finder: bool
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    source = (
+        "import builtins\n"
+        "def fn(*args):\n    pass\n"
+        "def modify(key):\n"
+        f"    ns = {access}\n"
+        f"    {operation}\n"
+        "modify(key=input())\n"
+        "import math\n"
+    )
+    entry_path.write_text(source, encoding="utf-8")
+    prepared, error = cli_module_graph._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=ast.parse(source, filename=str(entry_path)),
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target=admit_target("native"),
+        target_sys_platform=None,
+    )
+    assert error is None
+    assert prepared is not None
+    assert (
+        prepared.runtime_import_support_policy.needs_runtime_import_support
+        is needs_finder
+    )
+    assert ("importlib.machinery" in prepared.module_graph) is needs_finder
+
+
 def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_lazy(
     tmp_path: Path,
 ) -> None:

@@ -185,6 +185,12 @@ receiver behavior.
    travel with the foreign writes, so only activated owners count; the graph aggregates them into
    `PythonNamespacePremise.namespace_reflected` and writes no member through them. A module that is
    reflected, or reaches its own mapping, keeps its dictionary namespace.
+   A function's `__builtins__` can expose the canonical builtins mapping, including through
+   generated initializer metadata. Mapping uses publish a separate write effect when a key
+   may change. A named local write carries its key, and an opaque consumer carries an unknown
+   key. Local aliases and known formal arguments link to the slots that can write through
+   them. The solver follows the reverse of those links when a slot becomes writable.
+   The runtime import loader demand consumes writes that can reach `__import__`.
    **Code rebinding (2026-11-14).** `types.FunctionType(code, globals)` runs existing code over
    another globals mapping, so a function's global reads are its module's only while no code can
    obtain a code object. The traversal records a `code` row (module and name always `None`) for a

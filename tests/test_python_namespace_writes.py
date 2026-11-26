@@ -1466,6 +1466,11 @@ def test_foreign_namespace_escape_follows_parameter_write_summaries(
         "def deco(fn):\n    return lambda ns: ns.update(x=1)\n"
         "@deco\ndef reader(ns):\n    return ns.get('x')\n"
         "def run(name):\n    reader(sys.modules[name].__dict__)\n",
+        # The nested reader can resolve to the outer parameter.
+        "def reader(ns):\n    return ns.get('x')\n"
+        "def outer(reader):\n"
+        "    def run(name):\n        reader(sys.modules[name].__dict__)\n"
+        "    return run\n",
         # 3. A callee name the module binds twice may name the writer.
         "def reader(ns):\n    return ns.get('x')\n"
         "def writer(ns):\n    ns['x'] = 1\n"
@@ -1480,6 +1485,16 @@ def test_namespace_escape_through_an_unproven_reader_stays_a_write(body: str) ->
     source = "import sys\n" + body
     rows = [w for w in _summary(source).foreign_writes if w.construct == "namespace"]
     assert rows, "the premise must stay poisoned"
+
+
+def test_inplace_write_reaches_function_builtins_before_attribute_store() -> None:
+    result = _summary("def patch(fn, values):\n    fn.__builtins__ |= values\n")
+    assert any(
+        write.construct == "namespace"
+        and write.module == "builtins"
+        and write.name is None
+        for write in result.foreign_writes
+    )
 
 
 # Read-side facts (static module cells, call_anatomy.md 4.5a): a module whose

@@ -303,7 +303,11 @@ def _writes_import_state(write: PythonNamespaceWrite) -> bool:
     under a computed name)."""
     if write.construct in ("import_hooks", "import_binding"):
         return True
-    return write.module == "builtins" and write.name in (None, "__import__")
+    return (
+        write.construct in {"attribute", "setattr", "namespace", "module_escape"}
+        and write.module == "builtins"
+        and write.name in (None, "__import__")
+    )
 
 
 def _module_graph_needs_runtime_import_support(
