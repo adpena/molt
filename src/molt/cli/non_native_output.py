@@ -1214,7 +1214,18 @@ def _prepare_non_native_build_result_in_generation(
                 link_args.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
             try:
-                linker_identity = wasm_toolchain.resolve_wasm_linker(molt_root)
+                linker = wasm_toolchain.resolve_wasm_linker(molt_root)
+                linker_observation = StableRegularFileObservation.capture(
+                    linker.path.resolve(strict=True), label="WASM linker"
+                )
+                link_executable = linker_observation.identity
+                if link_executable.sha256 != linker.sha256:
+                    raise ValueError("WASM linker differs from its admitted toolchain")
+                # Transport the role entrypoint and exact content coordinate.
+                # The content is already in the link inputs and both cache keys.
+                runtime_admission_args.extend(
+                    ("--wasm-linker", str(linker.path), str(link_executable.path))
+                )
                 # wasm-ld reads the tool's import allowlist directly; neither
                 # the tool's Python closure nor any argument names it. As a
                 # producer-bound input it keys the final link and the build
@@ -1225,7 +1236,7 @@ def _prepare_non_native_build_result_in_generation(
                         StableRegularFileObservation(identity, side_sdk_capture_ns)
                         for identity in side_sdk_archives
                     )
-                    + (application_observation,)
+                    + (application_observation, linker_observation)
                     + tuple(
                         StableRegularFileObservation.capture(
                             path.resolve(), label="WASM link input"
@@ -1239,13 +1250,16 @@ def _prepare_non_native_build_result_in_generation(
                                 ),
                                 app_export_contract_path,
                                 wasm_facts_scanner,
-                                linker_identity.path,
                                 link_allowlist,
                                 *external_native_fingerprint_inputs,
                             )
                         )
                         if path.resolve()
-                        not in (*side_sdk_paths, application_observation.identity.path)
+                        not in (
+                            *side_sdk_paths,
+                            application_observation.identity.path,
+                            link_executable.path,
+                        )
                     )
                 )
                 admitted_link_inputs = tuple(
@@ -1357,6 +1371,7 @@ def _prepare_non_native_build_result_in_generation(
                     _wasm_tool_source_identities(molt_root, tool)
                 )
                 if input_report.active():
+                    input_report.report_probe(linker.path)
                     # Warm final-link reuse can skip the reads these authorities
                     # performed on a miss. The build record still owns them.
                     internal_inputs = {
@@ -1453,6 +1468,8 @@ def _prepare_non_native_build_result_in_generation(
                     verify_stable_regular_file_identity(
                         identity, label="WASM link input"
                     )
+                if linker.path.resolve(strict=True) != link_executable.path:
+                    raise ValueError("WASM linker entrypoint changed after admission")
             except (OSError, ValueError) as exc:
                 return None, _fail(str(exc), json_output, command="build")
             published_products = deployment_plan.build_products(
