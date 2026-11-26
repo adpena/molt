@@ -4093,7 +4093,7 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "match op.opcode" not in body
     assert "OpCode::" not in body
 
-    transparent_body = _rust_fn_body(alias, "fn transparent_alias_root(")
+    transparent_body = _rust_fn_body(alias, "fn is_transparent_alias_op(")
     assert "no_heap_alias_source" in transparent_body
     assert "opcode_alias_transparent_alias_role_table" not in transparent_body
     assert "copy_kind_is_explicit_no_heap_move" not in transparent_body
@@ -6483,9 +6483,15 @@ def test_drop_insertion_delegates_droppable_predicate_to_drop_eligibility() -> N
     """DropInsertion owns placement, not the composed root/raw droppability test."""
     drop = _read_rs_module_cluster(tir_path("passes/drop_insertion.rs"))
     lattice = _read_rs_module_cluster(tir_path("passes/ownership_lattice_min.rs"))
-    assert "let droppable =" not in drop
-    assert "raw_scalars.contains" not in drop
-    assert "live.is_raw_scalar(v)" not in drop
+    # Physical insertion ends at publication of the drop authority. The
+    # following diagnostic dump reports each operand's physical carrier.
+    placement, publication, _ = drop.partition(
+        "insert(DROP_INSERTED_ATTR.to_string(), AttrValue::Bool(true));"
+    )
+    assert publication
+    assert "let droppable =" not in placement
+    assert "raw_scalars.contains" not in placement
+    assert "live.is_raw_scalar(v)" not in placement
     assert "DropEligibility::new(" in drop
     assert "let raw_scalars = compute_raw_scalars(func);" in drop
     assert "DropEligibility::new(&aliases, &ownership_root_facts, &raw_scalars)" in drop
