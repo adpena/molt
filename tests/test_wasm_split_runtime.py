@@ -1460,7 +1460,19 @@ def test_split_runtime_direct_indirect_call_uses_initialized_table_refs(
         "    return a + b\n"
         "\n"
         "funcs = [add]\n"
-        "print(apply(funcs[0], 1 << 60, 7))\n",
+        "print(apply(funcs[0], 1 << 60, 7))\n"
+        "from _intrinsics import load_intrinsic, require_intrinsic\n"
+        "admitted = require_intrinsic('molt_capabilities_has')\n"
+        "name = ''.join(('molt_', 'capabilities_has'))\n"
+        "resolved = load_intrinsic(name)\n"
+        "alias = load_intrinsic('_' + name)\n"
+        "print(callable(admitted), resolved is alias, resolved('time.wall') == admitted('time.wall'))\n"
+        "missing = ''.join(('molt_', 'absent_probe'))\n"
+        "print(load_intrinsic(missing) is None)\n"
+        "try:\n"
+        "    require_intrinsic(missing)\n"
+        "except RuntimeError as error:\n"
+        "    print(error)\n",
         encoding="utf-8",
     )
     out_dir = tmp_path / "out"
@@ -1472,7 +1484,12 @@ def test_split_runtime_direct_indirect_call_uses_initialized_table_refs(
     run = _run_split_direct(out_dir, timeout=60)
 
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip() == "1152921504606846983"
+    assert run.stdout.splitlines() == [
+        "1152921504606846983",
+        "True True True",
+        "True",
+        "intrinsic unavailable: molt_absent_probe",
+    ]
     assert "null function" not in run.stderr, run.stderr
     assert "function signature mismatch" not in run.stderr, run.stderr
 

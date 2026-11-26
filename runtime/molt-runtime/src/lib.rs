@@ -23,7 +23,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_51206194566f5b22_gil_v16")]
+#[unsafe(export_name = molt_codegen_abi::generated_object_abi_link_symbol!("gil"))]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -34,7 +34,7 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_51206194566f5b22_free_threaded_v16")]
+#[unsafe(export_name = molt_codegen_abi::generated_object_abi_link_symbol!("free_threaded"))]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 // A runtime callable's typed identity (HF-881): its `RuntimeCallable` key,

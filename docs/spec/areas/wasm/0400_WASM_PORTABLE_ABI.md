@@ -95,6 +95,13 @@ Molt additionally preserves result ownership, which machine types alone cannot
 express. Wasm receiver tests execute all four actual host binders against real
 modules; product startup tests cover runtime/app initialization ordering.
 
+A Wasm host acquires runtime custody through `molt_runtime_execution_enter`
+before invoking an attached compiled entry. That boundary initializes the
+runtime on its first acquisition. The compiled entry publishes the
+application resolver and module registry and then runs application
+initialization in that attached context. Intrinsic lookup uses that resolver
+on demand, including for split applications using the shared table.
+
 ### Runtime callable keys and the shared table
 
 A runtime callable or runtime poll is a key on every target

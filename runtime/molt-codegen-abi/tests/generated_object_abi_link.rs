@@ -165,6 +165,16 @@ fn incompatible_pointer_record_refcount_and_context_revisions_cannot_link() {
         .expect("create pointer ABI link-contract outputs within Cargo image custody");
     for (mode, old_symbol, new_symbol) in [
         (
+            "gil_intrinsic_manifest_v16",
+            "molt_generated_object_abi_51206194566f5b22_gil_v16",
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+        ),
+        (
+            "free_intrinsic_manifest_v16",
+            "molt_generated_object_abi_51206194566f5b22_free_threaded_v16",
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ),
+        (
             "gil_context_v7",
             "molt_generated_object_abi_69bab6cda2adac1b_gil_v7",
             GENERATED_OBJECT_ABI_GIL_SYMBOL,

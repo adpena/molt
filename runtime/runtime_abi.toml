@@ -2118,11 +2118,6 @@ return_contract = "raw_bits"
 type = 0
 
 [[import]]
-name = "set_intrinsic_manifest"
-return_contract = "raw_bits"
-type = 3
-
-[[import]]
 name = "del_attr_generic"
 return_contract = "owned_object"
 type = 17
@@ -8507,7 +8502,6 @@ boundary_entries = [
   "molt_c_heap_type_canonicalize",
   "molt_c_heap_register_buffer_exporter",
   "molt_c_heap_register_buffer_releaser",
-  "molt_set_intrinsic_manifest",
   "molt_c_heap_register",
   "molt_c_heap_unregister",
   "molt_cpython_abi_wasm_export_anchor_count",
