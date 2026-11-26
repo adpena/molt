@@ -77,8 +77,9 @@ schema = "molt-perf-methodology-v1"
 # A proven linked-runtime probe and completed call facts can prune source
 # branches directly, changing admitted dependencies and emitted instructions.
 # One synchronous source-outcome dependency observation can reduce compile time.
-version = 90
-content_sha256 = "37d6dc0089e1e87e3497d354c2a43f7373b7447900d7abf9344b0152220d6844"
+# Tool source closure keys use the selected per-file content digests.
+version = 91
+content_sha256 = "a2b4eae84580617fe467577a9168af71ff1af79b71885c9b2b624f0b4a9ba93e"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -87,6 +88,22 @@ role = "times each process and samples its peak RSS"
 [[methodology]]
 path = "tools/perf_scoreboard_measure.py"
 role = "runs the cold and warm samples for one cell"
+
+[[methodology]]
+path = "tools/startup_bench.py"
+role = "measures startup samples and interprets fresh Node phase diagnostics"
+
+[[methodology]]
+path = "tools/startup_node_probe.js"
+role = "observes Node and WASM startup phases in the measured guest process"
+
+[[methodology]]
+path = "tools/output_startup_size_audit.py"
+role = "selects and builds the startup workload artifacts and environment"
+
+[[mechanics]]
+path = "tools/command_execution.py"
+reason = "runs the commands under process custody; benchmark callers own the measured intervals"
 
 [[methodology]]
 path = "tools/perf_scoreboard_model.py"
@@ -234,6 +251,10 @@ reason = "resolves a pinned host; selected engine bytes are recorded separately"
 [[mechanics]]
 path = "src/molt/toolchain_identity.py"
 reason = "captures executable bytes and metadata before samples; identities are recorded, never timing corrections"
+
+[[mechanics]]
+path = "src/molt/toolchain_facts.py"
+reason = "places the shared digest store; source hashes and the selected inputs decide workload identity"
 
 [[mechanics]]
 path = "tools/sample_profile.py"

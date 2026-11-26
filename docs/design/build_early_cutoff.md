@@ -43,6 +43,13 @@ An independent open or listing, including one of the same directory, still
 carries its own audit observation and generation boundary. Worker logs retain
 their conservative metadata boundary when no in-process topology is available.
 
+Wasm link and deployment tool keys bind the selected source paths and their
+per-file digests, plus the topology when an unknown relative import needs
+conservative coverage. Sources reached by dependency analysis keep their
+captured bytes. Coverage-only sources use the existing stable file-digest
+store and report their captured tokens to the build record. A source that
+later enters dependency analysis must match that covered generation.
+
 ## Problem
 
 A `molt build` whose inputs did not change still runs the whole pipeline to

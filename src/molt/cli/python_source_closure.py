@@ -13,12 +13,13 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Lock
 from types import MappingProxyType
 import tomllib
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
+from molt import input_report
 from molt.cli.atomic_io import _atomic_write_text
 from molt.file_publication import PublicationDurability
 from molt.default_paths import _default_molt_cache
-from molt.cli.module_source import PythonSourceSnapshot
+from molt.cli.module_source import PythonSourceChangedError, PythonSourceSnapshot
 from molt.compiler_analysis.python_namespace_graph import (
     NO_GRAPH_NAMESPACE_WRITES,
     PythonGraphNamespaceWrites,
@@ -48,6 +49,15 @@ from molt.cli.python_import_resolution import (
     resolve_local_import_requests,
     relative_python_module_name,
 )
+
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    verify_stable_regular_file_identity,
+)
+
+
+if TYPE_CHECKING:
+    from molt.toolchain_identity import FileDigestCache
 
 
 _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
@@ -142,6 +152,10 @@ class _GraphDomain:
     entries: _StoredGraphEntries
     cache_pruned: bool
     snapshots: dict[Path, PythonSourceSnapshot] = field(default_factory=dict)
+    coverage_store: FileDigestCache | None = None
+    coverage_identities: dict[Path, StableRegularFileIdentity] = field(
+        default_factory=dict
+    )
     relative_keys: dict[Path, str] = field(default_factory=dict)
     package_children: dict[Path, frozenset[str]] = field(default_factory=dict)
     inventories: dict[tuple[str | None, bool], _CoveredSourceDomain] = field(
@@ -152,8 +166,36 @@ class _GraphDomain:
 
     def capture(self, path: Path) -> PythonSourceSnapshot:
         if path not in self.snapshots:
-            self.snapshots[path] = self.resolver.capture_source(path)
+            snapshot = self.resolver.capture_source(path)
+            covered = self.coverage_identities.get(path)
+            if covered is not None and (
+                covered.size != len(snapshot.content)
+                or covered.sha256 != snapshot.sha256
+            ):
+                raise PythonSourceChangedError(
+                    f"local Python source changed after coverage: {path}"
+                )
+            self.snapshots[path] = snapshot
         return self.snapshots[path]
+
+    def source_identity(self, path: Path) -> tuple[int, str]:
+        snapshot = self.snapshots.get(path)
+        if snapshot is not None:
+            return len(snapshot.content), snapshot.sha256
+        # An owner admitted through symbolic coverage contributes bytes to the
+        # key without entering the resolver's semantic worklist.
+        identity = self.coverage_identities.get(path)
+        if identity is None:
+            label = "local Python source coverage"
+            assert self.coverage_store is not None
+            identity = self.coverage_store.identity(path, label=label)
+            verify_stable_regular_file_identity(identity, label=label)
+            self.coverage_identities[path] = identity
+        if input_report.first_report(identity):
+            input_report.report_captured_file(
+                path, identity.stat_token(), identity.sha256
+            )
+        return identity.size, identity.sha256
 
     def relative_key(self, path: Path) -> str:
         if path not in self.relative_keys:
@@ -169,9 +211,7 @@ class _GraphDomain:
             allowed_prefix=policy.allowed_prefix,
             include_parent_packages=policy.include_parent_packages,
         )
-        paths = tuple(dict.fromkeys(item.path for item in inventory.sources))
-        for path in paths:
-            self.capture(path)
+        paths = frozenset(item.path for item in inventory.sources)
         topology = {
             "roots": [self.relative_key(path) for path in self.resolver.search_roots],
             "sources": [
@@ -183,7 +223,7 @@ class _GraphDomain:
             ],
         }
         covered = _CoveredSourceDomain(
-            frozenset(paths),
+            paths,
             hashlib.sha256(
                 json.dumps(topology, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),
@@ -769,7 +809,6 @@ def local_python_import_closure(
     if query in domain.receipts:
         return domain.receipts[query]
     resolver = domain.resolver
-    snapshots = domain.snapshots
     capture = domain.capture
 
     manifest, dynamic_import_overrides = (
@@ -939,36 +978,43 @@ def local_python_import_closure(
         covered = domain.inventory(policy)
         reached.update(covered.paths)
         topology_digest = covered.topology_digest
+        if domain.coverage_store is None:
+            from molt.toolchain_facts import host_file_digest_cache
+
+            domain.coverage_store = host_file_digest_cache(operation_local=True)
+    if manifest is not None:
+        manifest_path, manifest_content = manifest
+        reached.add(manifest_path)
+    else:
+        manifest_path, manifest_content = None, b""
+    paths = tuple(sorted(reached, key=lambda path: path.as_posix()))
+    digest = hashlib.sha256(b"molt.local-python-source-closure.v2\0")
+    digest.update(topology_digest.encode("ascii"))
+    digest.update(b"\0")
+    hashes: dict[Path, str] = {}
+    source_bytes = 0
+    for path in paths:
+        if path == manifest_path:
+            size, sha256 = (
+                len(manifest_content),
+                hashlib.sha256(manifest_content).hexdigest(),
+            )
+        else:
+            size, sha256 = domain.source_identity(path)
+        digest.update(domain.relative_key(path).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(sha256))
+        hashes[path] = sha256
+        source_bytes += size
     resolver.import_topology.validate()
+    if domain.coverage_store is not None:
+        domain.coverage_store.flush()
     if domain.cache_pruned or next_entries != domain.persisted_entries:
         _write_graph_cache(root, next_entries)
     _remember_process_graph_entries(root, next_entries)
     domain.entries = next_entries
     domain.persisted_entries = next_entries
     domain.cache_pruned = False
-    content_by_path = {path: snapshots[path].content for path in reached}
-    if manifest is not None:
-        content_by_path[manifest[0]] = manifest[1]
-    paths = tuple(sorted(content_by_path, key=lambda path: path.as_posix()))
-    digest = hashlib.sha256()
-    if topology_digest:
-        digest.update(b"local-python-source-domain-v1\0")
-        digest.update(topology_digest.encode("ascii"))
-        digest.update(b"\0")
-    hashes: dict[Path, str] = {}
-    source_bytes = 0
-    for path in paths:
-        content = content_by_path[path]
-        digest.update(domain.relative_key(path).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(content)
-        digest.update(b"\0")
-        hashes[path] = (
-            snapshots[path].sha256
-            if path in snapshots
-            else hashlib.sha256(content).hexdigest()
-        )
-        source_bytes += len(content)
     result = LocalPythonSourceClosure(
         paths, hashes, digest.hexdigest(), source_bytes, topology_digest
     )

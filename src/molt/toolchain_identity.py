@@ -907,6 +907,7 @@ class FileDigestCache:
         self.store = store
         self._max_age_ns = max_age_ns
         self._started_ns = time.time_ns()
+        self._store_exists = os.name != "nt" and store.is_file()
         self._recorded: dict[str, tuple[StatToken, str, int] | None] = {}
         self._pending: dict[str, tuple[StatToken, str]] = {}
         # Set when the shared store reports contention (SqliteFailure.CONTENTION:
@@ -987,7 +988,8 @@ class FileDigestCache:
         # host store.
         if key not in self._recorded:
             rows: list[Any] = []
-            if not self._unavailable:
+            # Begin a new store only on flush, after the inputs have been observed.
+            if self._store_exists and not self._unavailable:
                 try:
                     rows = (
                         self._read_connection()
@@ -1092,6 +1094,7 @@ class FileDigestCache:
                         "DELETE FROM digests WHERE recorded_ns < ?",
                         (self._started_ns - self._max_age_ns,),
                     )
+                self._store_exists = True
             except sqlite3.OperationalError as error:
                 self._contended(error)
         for path, (token, sha256) in self._pending.items():

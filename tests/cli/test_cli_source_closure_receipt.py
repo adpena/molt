@@ -47,12 +47,11 @@ def test_receipt_uses_captured_python_and_manifest_bytes(tmp_path, monkeypatch):
     monkeypatch.setattr(PythonSourceSnapshot, "capture", capture_then_edit)
     monkeypatch.setattr(graph.tomllib, "loads", parse_then_edit)
     receipt = graph.local_python_import_closure(tmp_path, (seed,))
-    expected = hashlib.sha256()
-    for path in receipt.paths:
+    expected = hashlib.sha256(b"molt.local-python-source-closure.v2\0\0")
+    for path in sorted(original):
         expected.update(path.relative_to(tmp_path).as_posix().encode())
         expected.update(b"\0")
-        expected.update(original[path])
-        expected.update(b"\0")
+        expected.update(hashlib.sha256(original[path]).digest())
     assert receipt.content_digest == expected.hexdigest()
     assert dict(receipt.source_sha256) == {
         path: hashlib.sha256(content).hexdigest() for path, content in original.items()
@@ -252,27 +251,38 @@ def test_canonical_fingerprint_paths_are_projected_without_resolving(
     assert pathspecs == ("source.py",)
 
 
-def test_inventory_receipt_captures_bytes_once_without_parsing_covered_owners(
-    tmp_path, monkeypatch
-):
+def test_inventory_receipt_fences_covered_owners_without_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.toolchain_identity import StableRegularFileVersion
+
     seed = _write(tmp_path / "entry.py", "__package__ = unknown\nfrom . import child\n")
     owner = _write(tmp_path / "owner.py", "future syntax not parsed by host !!!\n")
     original = owner.read_bytes()
     capture = LocalPythonModuleResolver.capture_source
-    calls = Counter()
+    verify = graph.verify_stable_regular_file_identity
+    captured: Counter[Path] = Counter()
+    fenced: Counter[Path] = Counter()
 
-    def capture_then_change(resolver, path):
-        calls[path] += 1
-        snapshot = capture(resolver, path)
-        if path == owner:
+    def observe_source(
+        resolver: LocalPythonModuleResolver, path: Path
+    ) -> PythonSourceSnapshot:
+        captured[path] += 1
+        return capture(resolver, path)
+
+    def verify_then_change(identity: StableRegularFileVersion, *, label: str) -> None:
+        verify(identity, label=label)
+        fenced[identity.path] += 1
+        if identity.path == owner:
             owner.write_text("a different source generation\n", encoding="utf-8")
-        return snapshot
 
     with monkeypatch.context() as patch:
-        patch.setattr(LocalPythonModuleResolver, "capture_source", capture_then_change)
+        patch.setattr(LocalPythonModuleResolver, "capture_source", observe_source)
+        patch.setattr(graph, "verify_stable_regular_file_identity", verify_then_change)
         receipt = graph.local_python_import_closure(tmp_path, (seed,))
     assert set(receipt.paths) == {seed, owner}
-    assert calls == {seed: 1, owner: 1}
+    assert captured == {seed: 1}
+    assert fenced == {owner: 1}
     assert receipt.source_sha256[owner] == hashlib.sha256(original).hexdigest()
     changed = graph.local_python_import_closure(tmp_path, (seed,))
     assert changed.content_digest != receipt.content_digest

@@ -187,13 +187,14 @@ class ProbeTool:
         }
 
 
-def host_file_digest_cache() -> FileDigestCache:
-    """This process's stat-keyed digest cache over the host cache namespace."""
+def host_file_digest_cache(*, operation_local: bool = False) -> FileDigestCache:
+    """Use the host digest store, with a private reader for threaded operations."""
     _max_gb, max_age_days = resolve_budget(None, None, os.environ)
-    return file_digest_cache(
-        file_digest_cache_path(_default_molt_cache()),
-        max_age_ns=max_age_days * 86_400 * 1_000_000_000,
-    )
+    store = file_digest_cache_path(_default_molt_cache())
+    max_age_ns = max_age_days * 86_400 * 1_000_000_000
+    if operation_local:
+        return FileDigestCache(store, max_age_ns=max_age_ns)
+    return file_digest_cache(store, max_age_ns=max_age_ns)
 
 
 def capture_probe_tool(path: Path, *, label: str) -> ProbeTool:
