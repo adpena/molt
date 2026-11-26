@@ -31,6 +31,8 @@ from molt.cli.runtime_wasm_generation import (  # noqa: E402
 from molt.artifact_publication import copy_reconstructible_artifact  # noqa: E402
 from molt.toolchain_identity import (  # noqa: E402
     StableRegularFileIdentity,
+    executable_content_path,
+    stable_executable_probe,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
@@ -41,6 +43,7 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
 )
 from molt.cli import wasm_link_inputs, wasm_toolchain  # noqa: E402
 from molt.link_outputs import wasm_link_output_paths  # noqa: E402
+from molt.llvm_linker_roles import executable_selects_linker_role  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
 from molt.dx import configured_artifact_root, proof_scratch_root  # noqa: E402
 
@@ -105,7 +108,8 @@ def _verify_runtime_generation(
 def _link_admitted_standard_object(
     args: argparse.Namespace,
     *,
-    wasm_ld: str,
+    wasm_ld: Path,
+    wasm_ld_identity: StableRegularFileIdentity | None,
     runtime_admission: RuntimeWasmRelocAdmission,
     app_object: Path,
     linked: Path | None,
@@ -170,40 +174,43 @@ def _link_admitted_standard_object(
             or primary.parent / "wasm-link-evidence",
             phase_timings_ms=phase_timings_ms,
         )
-        status = 0
-        if linked is not None:
-            status = link_standard_object(
-                wasm_ld=wasm_ld,
-                app_object=app_object,
-                stdlib_archive=args.stdlib_archive,
-                runtime=runtime,
-                allowlist=native.allowlist,
-                linked=linked,
-                app_export_contract=args.app_export_contract,
-                native_link_requirements=native.requirements,
-                selection_roles=selection_roles,
-                optimize=args.optimize,
-                optimize_level=args.optimize_level,
-                preserve_debug=args.preserve_debug_sections,
-                phase_timings_ms=phase_timings_ms,
-                freestanding=args.freestanding,
-            )
+        with stable_executable_probe(
+            wasm_ld, label="WASM linker", identity=wasm_ld_identity
+        ) as (entrypoint, _):
+            status = 0
+            if linked is not None:
+                status = link_standard_object(
+                    wasm_ld=str(entrypoint),
+                    app_object=app_object,
+                    stdlib_archive=args.stdlib_archive,
+                    runtime=runtime,
+                    allowlist=native.allowlist,
+                    linked=linked,
+                    app_export_contract=args.app_export_contract,
+                    native_link_requirements=native.requirements,
+                    selection_roles=selection_roles,
+                    optimize=args.optimize,
+                    optimize_level=args.optimize_level,
+                    preserve_debug=args.preserve_debug_sections,
+                    phase_timings_ms=phase_timings_ms,
+                    freestanding=args.freestanding,
+                )
+            if status == 0 and split_output_dir is not None:
+                status = link_side_module(
+                    wasm_ld=str(entrypoint),
+                    app_object=app_object,
+                    stdlib_archive=args.stdlib_archive,
+                    app=outputs["app"],
+                    app_export_contract=args.app_export_contract,
+                    native_link_requirements=native.requirements,
+                    sdk_archives=side_sdk_archives,
+                    selection_roles=selection_roles,
+                    preserve_debug=args.preserve_debug_sections,
+                    phase_timings_ms=phase_timings_ms,
+                )
         if status == 0 and split_output_dir is not None:
-            status = link_side_module(
-                wasm_ld=wasm_ld,
-                app_object=app_object,
-                stdlib_archive=args.stdlib_archive,
-                app=outputs["app"],
-                app_export_contract=args.app_export_contract,
-                native_link_requirements=native.requirements,
-                sdk_archives=side_sdk_archives,
-                selection_roles=selection_roles,
-                preserve_debug=args.preserve_debug_sections,
-                phase_timings_ms=phase_timings_ms,
-            )
-            if status == 0:
-                assert deploy_runtime is not None
-                copy_reconstructible_artifact(deploy_runtime, outputs["runtime"])
+            assert deploy_runtime is not None
+            copy_reconstructible_artifact(deploy_runtime, outputs["runtime"])
         if status == 0 and selection_roles:
             from molt.cli.link_selection_admission import write_link_selection
 
@@ -308,6 +315,13 @@ def main() -> int:
         metavar=("PATH", "SHA256"),
         help="Producer-bound input bytes; repeat for each admitted input",
     )
+    parser.add_argument(
+        "--wasm-linker",
+        nargs=2,
+        type=Path,
+        metavar=("ENTRYPOINT", "CONTENT"),
+        help="Use the admitted linker entrypoint and producer-bound content",
+    )
     parser.add_argument("--app-export-contract", type=Path, required=True)
     args = parser.parse_args()
     if args.split_runtime and args.runtime_shared is None:
@@ -325,8 +339,11 @@ def main() -> int:
         if args.split_runtime
         else None
     )
+    wasm_ld: Path | None = None
     try:
         expected_inputs: dict[Path, str] = {}
+        wasm_ld_identity: StableRegularFileIdentity | None = None
+        linker_content = args.wasm_linker[1] if args.wasm_linker is not None else None
         side_sdk_archives = (
             wasm_link_inputs.wasm_side_module_sdk_archives()
             if args.split_runtime
@@ -349,8 +366,25 @@ def main() -> int:
                 input_versions.append(identity)
             if identity.sha256 != digest:
                 raise ValueError(f"WASM input changed after producer admission: {path}")
+            if path == linker_content:
+                wasm_ld_identity = identity
         if expected_inputs and sdk_versions.keys() - expected_inputs.keys():
             raise ValueError("selected side-module SDK differs from producer admission")
+        if args.wasm_linker is not None:
+            wasm_ld, _ = args.wasm_linker
+            if wasm_ld_identity is None or not executable_selects_linker_role(
+                wasm_ld, "wasm-ld"
+            ):
+                raise ValueError(
+                    "WASM linker has no producer-bound executable identity"
+                )
+            if (
+                executable_content_path(wasm_ld, label="WASM linker")
+                != wasm_ld_identity.path
+            ):
+                raise ValueError(
+                    "WASM linker entrypoint changed after producer admission"
+                )
     except (OSError, ValueError) as exc:
         print(f"Invalid producer-bound WASM input: {exc}", file=sys.stderr)
         return 1
@@ -389,15 +423,17 @@ def main() -> int:
         except (OSError, ValueError) as exc:
             print(f"Invalid native WASM link plan: {exc}", file=sys.stderr)
             return 1
-    try:
-        wasm_ld = str(wasm_toolchain.resolve_wasm_linker(_REPO_ROOT).path)
-    except wasm_toolchain.WasmLinkerContractError as exc:
-        print(f"WASM linker is unavailable: {exc}", file=sys.stderr)
-        return 1
+    if wasm_ld is None:
+        try:
+            wasm_ld = wasm_toolchain.resolve_wasm_linker(_REPO_ROOT).path
+        except wasm_toolchain.WasmLinkerContractError as exc:
+            print(f"WASM linker is unavailable: {exc}", file=sys.stderr)
+            return 1
 
     return _link_admitted_standard_object(
         args,
         wasm_ld=wasm_ld,
+        wasm_ld_identity=wasm_ld_identity,
         runtime_admission=admitted_runtime,
         app_object=output,
         linked=linked,

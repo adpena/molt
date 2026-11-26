@@ -23152,6 +23152,11 @@ def _install_fake_wasm_link_runner(
         ]
         assert scanner.resolve() in {path for path, _digest in expected_inputs}
         assert (linker.resolve(), linker_identity.sha256) in expected_inputs
+        selected_linker = command.index("--wasm-linker")
+        assert command[selected_linker + 1 : selected_linker + 3] == [
+            str(linker),
+            str(linker.resolve()),
+        ]
         assert allowlist.resolve() in {path for path, _digest in expected_inputs}
         for archive in sdk_archives:
             assert ((archive.path, archive.sha256) in expected_inputs) == (

@@ -50,6 +50,12 @@ captured bytes. Coverage-only sources use the existing stable file-digest
 store and report their captured tokens to the build record. A source that
 later enters dependency analysis must match that covered generation.
 
+The compiler sends the lexical `wasm-ld` entrypoint and its resolved content
+coordinate with the link request. The linker subprocess uses the existing
+expected-input digest to validate that file and holds the executable identity
+fence through linking. The build record retains the lexical lookup, and link
+cache keys use the selected bytes independently of the transport path.
+
 ## Problem
 
 A `molt build` whose inputs did not change still runs the whole pipeline to
