@@ -56,6 +56,8 @@ fn a_word_test_elides_rc_only_on_its_proven_paths() {
                 molt_ir::FunctionReturnAbi::Void,
             );
             let word = func.blocks[&func.entry_block].args[0].id;
+            let tested_word = func.fresh_value();
+            let forwarded_word = func.fresh_value();
             let tested = func.fresh_value();
             let condition = func.fresh_value();
             let release = || make_op(OpCode::DecRef, vec![word], vec![]);
@@ -66,7 +68,10 @@ fn a_word_test_elides_rc_only_on_its_proven_paths() {
             );
             let under_guard = add_block(
                 &mut func,
-                vec![release()],
+                vec![
+                    release(),
+                    make_op(OpCode::DecRef, vec![forwarded_word], vec![]),
+                ],
                 Terminator::Branch {
                     target: exit,
                     args: vec![],
@@ -90,7 +95,15 @@ fn a_word_test_elides_rc_only_on_its_proven_paths() {
             );
             func.label_id_map.insert(fast.0, 23);
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry.ops.push(make_op(opcode, vec![word], vec![tested]));
+            entry
+                .ops
+                .push(make_op(OpCode::Copy, vec![word], vec![tested_word]));
+            entry
+                .ops
+                .push(make_op(OpCode::Copy, vec![word], vec![forwarded_word]));
+            entry
+                .ops
+                .push(make_op(opcode, vec![tested_word], vec![tested]));
             entry
                 .ops
                 .push(make_op(OpCode::Copy, vec![tested], vec![condition]));
@@ -111,8 +124,8 @@ fn a_word_test_elides_rc_only_on_its_proven_paths() {
             };
 
             let stats = run_post_drop(&mut func, &mut AnalysisManager::new());
-            assert_eq!(stats.ops_removed, usize::from(!bypass), "{opcode:?}");
-            assert_eq!(func.blocks[&under_guard].ops.len(), usize::from(bypass));
+            assert_eq!(stats.ops_removed, 2 * usize::from(!bypass), "{opcode:?}");
+            assert_eq!(func.blocks[&under_guard].ops.len(), 2 * usize::from(bypass));
             assert_eq!(func.blocks[&slow].ops.len(), 1);
             assert_eq!(func.blocks[&exit].ops.len(), 1);
         }
