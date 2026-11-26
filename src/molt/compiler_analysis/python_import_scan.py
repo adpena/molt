@@ -2133,55 +2133,22 @@ def _collect_imports(
                 if ref.phase != "call"
             )
 
-    def record_protocol_use(node: ast.AST) -> None:
+    def record_protocol_use(node: ast.Call) -> None:
         nonlocal uses_runtime_import_protocol
         if _runtime_import_protocol is None or uses_runtime_import_protocol:
             return
-        if isinstance(node, ast.Call):
-            argument_count = (
-                None
-                if any(isinstance(arg, ast.Starred) for arg in node.args)
-                or any(keyword.arg is None for keyword in node.keywords)
-                else len(node.args) + len(node.keywords)
+        argument_count = (
+            None
+            if any(isinstance(arg, ast.Starred) for arg in node.args)
+            or any(keyword.arg is None for keyword in node.keywords)
+            else len(node.args) + len(node.keywords)
+        )
+        call = binding_index.call_fact(node)
+        uses_runtime_import_protocol = call is not None and bool(
+            possible_runtime_import_call_identities(
+                call.callee_identities, argument_count
             )
-            call = binding_index.call_fact(node)
-            uses_runtime_import_protocol = call is not None and bool(
-                possible_runtime_import_call_identities(
-                    call.callee_identities, argument_count
-                )
-            )
-        # A literal ``import``/``from ... import`` statement names its modules,
-        # so the closed graph holds them and the module registry serves them
-        # (bedrock §13 D8): it does not need the Python import machinery. Only
-        # a call that may reach an import entry point does; a write of the
-        # import state (hooks, ``sys.modules``, ``builtins.__import__``) is the
-        # graph policy's separate fact (HF-841).
-
-    def record_deferred_inventory(node: ast.AST) -> None:
-        # Full depth describes source permission and protocol requirements;
-        # execution belongs to the source-demand owner. Inventory alone cannot
-        # admit a dormant import, cache write, or source execution.
-        if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.may_execute(node):
-            return
-        record_protocol_use(node)
-        if _dynamic_relative_import_discovery is None:
-            return
-        if isinstance(node, ast.ImportFrom) and node.level:
-            request = StaticImportRequest.statement(
-                node.module or "",
-                level=node.level,
-                fromlist=tuple(alias.name for alias in node.names),
-            )
-            if plan_static_import_request(
-                request, _import_contexts(node)
-            ).requires_runtime:
-                _dynamic_relative_import_discovery.required = True
-        elif isinstance(node, ast.Call):
-            transfers = _conditional_import_call_plans(node)
-            if transfers is not None and any(
-                transfer.site.plan.requires_runtime for transfer in transfers
-            ):
-                _dynamic_relative_import_discovery.required = True
+        )
 
     def _visit(
         node: ast.AST,
@@ -2534,7 +2501,8 @@ def _collect_imports(
                 binding_index.expression_result(node.subject), "escape", contents=True
             )
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            record_protocol_use(node)
+            # Literal statements use the registry and publish separate binding
+            # and namespace effects. A call may need the runtime protocol.
             _record_import_statement(node)
             if isinstance(node, ast.ImportFrom) and _source_demands is not None:
                 _source_demands.extend(
@@ -2574,20 +2542,21 @@ def _collect_imports(
     for region in python_execution_regions(
         cast(ast.Module, tree),
         target_python=target_python.feature_version,
-        include_deferred=import_scan_mode == "full" and source_owner is None,
+        # Permission to compile a body does not execute it. Source discovery
+        # revisits bodies on activation; the inventory and an admitted runtime
+        # catalog retain the full published source surface.
+        include_deferred=(
+            import_scan_mode == "full"
+            and source_owner is None
+            and (
+                _purpose is SourceImportPurpose.INVENTORY
+                or _runtime_catalog is not None
+            )
+        ),
         source_owner=source_owner,
         body=_source_body(tree, source_owner, ast_digest_admission),
         fact_result=binding_index.expression_result,
     ):
-        if (
-            _purpose is SourceImportPurpose.EXECUTION
-            and source_owner is None
-            and region.owner is not None
-            and _runtime_catalog is None
-        ):
-            if region.phase == "evaluate":
-                record_deferred_inventory(region.node)
-            continue
         demand_start = len(_source_demands) if _source_demands is not None else 0
         if region.phase == "evaluate":
             _visit(region.node)
