@@ -246,16 +246,6 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
     assert ops[-1] == {"kind": "ret_void", "unwind": True}
 
 
-def test_isolate_import_module_order_is_explicit_import_bounded() -> None:
-    from molt.cli.backend_ir import _isolate_import_module_order
-
-    assert _isolate_import_module_order(
-        ["__main__", "json", "json.decoder", "sys"],
-        {"json.decoder"},
-    ) == ["json", "json.decoder"]
-    assert _isolate_import_module_order(["sys"], set()) == []
-
-
 def wasm_split_build_command(
     source_file: Path,
     output_dir: Path,

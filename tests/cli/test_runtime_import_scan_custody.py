@@ -880,7 +880,10 @@ def test_owner_analysis_persists_source_pure_and_completes_each_catalog(
     "source,needs_custody",
     [
         ("print(1)\n", False),
-        ("import importlib.machinery\nprint(1)\n", True),
+        (
+            "import importlib.machinery\nfrom math import isqrt\nprint(isqrt(4))\n",
+            True,
+        ),
     ],
     ids=["print-only", "runtime-import"],
 )
@@ -928,9 +931,15 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
     assert plan.runtime_import_scan_custody is graph.runtime_import_scan_custody
     custody = plan.runtime_import_scan_custody
     assert (custody is not None) is needs_custody
+    assert plan.runtime_import_dispatch_roots <= plan.known_modules
     if custody is not None:
         custody.validate_graph(plan.module_graph)
         assert set(custody.modules).issubset(plan.runtime_import_dispatch_roots)
+        # A from-list operand can request a submodule before resolution knows
+        # it is a plain attribute. Its missing lookup carries no initializer.
+        assert "math.isqrt" in plan.explicit_imports
+        assert "math.isqrt" not in plan.runtime_import_dispatch_roots
+        assert "math" in plan.runtime_import_dispatch_roots
     analysis, error = _prepare_frontend_analysis(
         module_graph=plan.module_graph,
         scan_authority=plan.scan_authority,
