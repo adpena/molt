@@ -41,7 +41,7 @@ pub(super) fn collect_guarded_rc_sites(
             if opcode_proves_immediate_on_true(op.opcode)
                 && let ([operand], [result]) = (op.operands.as_slice(), op.results.as_slice())
             {
-                tests.insert(*result, *operand);
+                tests.insert(*result, alias.root(*operand));
             }
             has_rc |= refcount_balance_role(op.opcode).is_refcount_balance();
         }
@@ -99,7 +99,7 @@ pub(super) fn collect_guarded_rc_sites(
             for (index, op) in func.blocks[&block_id].ops.iter().enumerate() {
                 if refcount_balance_role(op.opcode).is_refcount_balance()
                     && let [word] = op.operands.as_slice()
-                    && active.contains(word)
+                    && active.contains(&alias.root(*word))
                 {
                     sites.insert((block_id, index));
                 }
