@@ -4,10 +4,12 @@ use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 
 use crate::object::ObjectShapeId;
+use crate::object::builders::alloc_tuple_owned;
+use crate::object::seq_access::pin_tuple;
 use crate::{
-    PyToken, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_string, alloc_tuple, dec_ref_bits,
-    exception_pending, inc_ref_bits, molt_getattr_builtin_attached_body, molt_index_attached_body,
-    obj_from_bits, object_type_id, raise_exception, string_obj_to_owned,
+    PyToken, TYPE_ID_STRING, alloc_string, alloc_tuple, dec_ref_bits, exception_pending,
+    inc_ref_bits, molt_getattr_builtin_attached_body, molt_index_attached_body, obj_from_bits,
+    object_type_id, raise_exception, string_obj_to_owned,
 };
 
 pub(crate) unsafe fn operator_visit_owned_edges(
@@ -308,52 +310,50 @@ pub(crate) fn molt_operator_itemgetter_call_attached_body(
     crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let items_bits = unsafe { itemgetter_items_bits(self_ptr) };
-        let items_ptr = obj_from_bits(items_bits).as_ptr();
-        let Some(items_ptr) = items_ptr else {
+        let Some(items) = obj_from_bits(items_bits)
+            .as_ptr()
+            .and_then(|ptr| unsafe { pin_tuple(_py, ptr) })
+        else {
             return MoltObject::none().bits();
         };
-        unsafe {
-            if object_type_id(items_ptr) != TYPE_ID_TUPLE {
-                return MoltObject::none().bits();
-            }
-            let Some(items) = crate::object::seq_access::snapshot(
-                _py,
-                items_ptr,
-                "sequence snapshot allocation failed",
-            ) else {
-                return MoltObject::none().bits();
-            };
-            if items.len() == 1 {
-                let res_bits = molt_index_attached_body(_py, obj_bits, items[0]);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return res_bits;
-            }
-            let mut out: Vec<u64> = Vec::with_capacity(items.len());
-            for &item_bits in items.iter() {
-                let res_bits = molt_index_attached_body(_py, obj_bits, item_bits);
-                if exception_pending(_py) {
-                    for bits in out.iter() {
-                        dec_ref_bits(_py, *bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                out.push(res_bits);
-            }
-            let tuple_ptr = alloc_tuple(_py, out.as_slice());
-            if tuple_ptr.is_null() {
-                for bits in out.iter() {
-                    dec_ref_bits(_py, *bits);
-                }
-                return MoltObject::none().bits();
-            }
-            for bits in out.iter() {
-                dec_ref_bits(_py, *bits);
-            }
-            MoltObject::from_ptr(tuple_ptr).bits()
-        }
+        project_captured_tuple(_py, &items, |key| {
+            molt_index_attached_body(_py, obj_bits, key)
+        })
     })
+}
+
+fn project_captured_tuple(
+    py: &PyToken<'_>,
+    keys: &[u64],
+    mut project: impl FnMut(u64) -> u64,
+) -> u64 {
+    if let [key] = keys {
+        let result = project(*key);
+        return if exception_pending(py) {
+            MoltObject::none().bits()
+        } else {
+            result
+        };
+    }
+
+    let mut projected = Vec::with_capacity(keys.len());
+    for &key in keys {
+        let value = project(key);
+        if exception_pending(py) {
+            break;
+        }
+        projected.push(value);
+    }
+    if !exception_pending(py) {
+        let result = alloc_tuple_owned(py, &projected);
+        if !result.is_null() {
+            return MoltObject::from_ptr(result).bits();
+        }
+    }
+    for value in projected {
+        dec_ref_bits(py, value);
+    }
+    MoltObject::none().bits()
 }
 
 fn resolve_attr_path(_py: &PyToken<'_>, obj_bits: u64, name: &str) -> u64 {
@@ -398,50 +398,16 @@ pub(crate) fn molt_operator_attrgetter_call_attached_body(
     crate::with_attached_entry_nopanic!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let attrs_bits = unsafe { attrgetter_attrs_bits(self_ptr) };
-        let attrs_ptr = obj_from_bits(attrs_bits).as_ptr();
-        let Some(attrs_ptr) = attrs_ptr else {
+        let Some(attrs) = obj_from_bits(attrs_bits)
+            .as_ptr()
+            .and_then(|ptr| unsafe { pin_tuple(_py, ptr) })
+        else {
             return MoltObject::none().bits();
         };
-        unsafe {
-            if object_type_id(attrs_ptr) != TYPE_ID_TUPLE {
-                return MoltObject::none().bits();
-            }
-            let Some(attrs) = crate::object::seq_access::snapshot(
-                _py,
-                attrs_ptr,
-                "sequence snapshot allocation failed",
-            ) else {
-                return MoltObject::none().bits();
-            };
-            if attrs.len() == 1 {
-                let name = string_obj_to_owned(obj_from_bits(attrs[0])).unwrap_or_default();
-                let res_bits = resolve_attr_path(_py, obj_bits, &name);
-                return res_bits;
-            }
-            let mut out: Vec<u64> = Vec::with_capacity(attrs.len());
-            for &attr_bits in attrs.iter() {
-                let name = string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_default();
-                let res_bits = resolve_attr_path(_py, obj_bits, &name);
-                if exception_pending(_py) {
-                    for bits in out.iter() {
-                        dec_ref_bits(_py, *bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                out.push(res_bits);
-            }
-            let tuple_ptr = alloc_tuple(_py, out.as_slice());
-            if tuple_ptr.is_null() {
-                for bits in out.iter() {
-                    dec_ref_bits(_py, *bits);
-                }
-                return MoltObject::none().bits();
-            }
-            for bits in out.iter() {
-                dec_ref_bits(_py, *bits);
-            }
-            MoltObject::from_ptr(tuple_ptr).bits()
-        }
+        project_captured_tuple(_py, &attrs, |attr| {
+            let name = string_obj_to_owned(obj_from_bits(attr)).unwrap_or_default();
+            resolve_attr_path(_py, obj_bits, &name)
+        })
     })
 }
 
@@ -464,26 +430,10 @@ pub(crate) fn molt_operator_methodcaller_call_attached_body(
             let name = string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_default();
             return raise_exception::<u64>(_py, BuiltinExc::AttributeError, &name);
         }
-        let args_ptr = obj_from_bits(args_bits).as_ptr();
-        let arg_snapshot = if let Some(args_ptr) = args_ptr {
-            unsafe {
-                if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    let Some(snapshot) = crate::object::seq_access::snapshot(
-                        _py,
-                        args_ptr,
-                        "sequence snapshot allocation failed",
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    Some(snapshot)
-                } else {
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let arg_list = arg_snapshot.as_deref().unwrap_or(&[]);
+        let args = obj_from_bits(args_bits)
+            .as_ptr()
+            .and_then(|ptr| unsafe { pin_tuple(_py, ptr) });
+        let arg_list = args.as_deref().unwrap_or(&[]);
         let mapping = if obj_from_bits(kwargs_bits).as_ptr().is_some() {
             kwargs_bits
         } else {
