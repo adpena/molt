@@ -18225,6 +18225,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_push__molt_context_66fa900595616b00",
         },
+        "molt_exception_push_or_defer" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_exception_push_or_defer__molt_context_66fa900595616b00",
+        },
         "molt_exception_reduce" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_reduce__molt_context_66fa900595616b00",

@@ -159,7 +159,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // services pending work first.
             OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
                 let word = if op.is_async_work_poll() {
-                    self.async_work_poll(b, true, record, op.frame_location())
+                    self.async_work_poll(b, true, record, op.frame_location(), None)
                 } else {
                     b.call_runtime(RuntimeFn::ExceptionLastPending, &[])
                         .expect("molt_exception_last_pending returns a word")

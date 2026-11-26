@@ -338,6 +338,7 @@ impl<'ctx> OpLoweringFixture<'ctx, '_> {
 
     fn lower_op(&mut self, source: crate::tir::blocks::BlockId, op: &TirOp) {
         let at = crate::codegen_ssa::walk::Position {
+            exception_level: None,
             source,
             op_index: 0,
             frame: crate::codegen_ssa::frame::ActiveFrame::Absent,
