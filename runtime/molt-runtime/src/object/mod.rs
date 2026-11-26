@@ -4916,14 +4916,6 @@ unsafe fn dec_ref_ptr_terminal_body(
                 Some(HeapDropPolicy::Buffer2d) => {
                     let buffer = buffer2d_ptr(ptr);
                     if !buffer.is_null() {
-                        match &mut (*buffer).data {
-                            buffer2d::Buffer2DStorage::I64(data, ..) => {
-                                drop(backing::tracked_vec_box_from_raw(*data));
-                            }
-                            buffer2d::Buffer2DStorage::Boxed(data, ..) => {
-                                drop(backing::tracked_vec_box_from_raw(*data));
-                            }
-                        }
                         std::ptr::drop_in_place(buffer);
                     }
                 }

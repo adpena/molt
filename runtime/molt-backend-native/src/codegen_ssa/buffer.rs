@@ -6,10 +6,9 @@ use molt_codegen_abi::boxed_word::{
 };
 use molt_codegen_abi::word::WordComparison;
 use molt_codegen_abi::{
-    BUFFER2D_COLS_OFFSET, BUFFER2D_ROWS_OFFSET, BUFFER2D_STORAGE_PACKED,
-    BUFFER2D_STORAGE_PTR_OFFSET, BUFFER2D_STORAGE_TAG_OFFSET, HEADER_TYPE_ID_OFFSET,
-    LIST_STORAGE_DATA_OFFSET, MOLT_REFCOUNT_ATOMIC, POINTER_MASK,
-    THREAD_RECORD_EXCEPTION_PENDING_OFFSET, TYPE_ID_BUFFER2D,
+    BUFFER2D_COLS_OFFSET, BUFFER2D_ROWS_OFFSET, BUFFER2D_STORAGE_DATA_OFFSET,
+    BUFFER2D_STORAGE_PACKED, BUFFER2D_STORAGE_TAG_OFFSET, HEADER_TYPE_ID_OFFSET,
+    MOLT_REFCOUNT_ATOMIC, POINTER_MASK, THREAD_RECORD_EXCEPTION_PENDING_OFFSET, TYPE_ID_BUFFER2D,
 };
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
@@ -114,9 +113,7 @@ fn checked_slot<B: CodegenBuilder>(
     let row_base = b.int_binary(IntBinary::Mul, row, cols, false);
     let index = b.int_binary(IntBinary::Add, row_base, col, false);
     let offset = b.shift_left(index, 3);
-    let storage = b.load_word(buffer, BUFFER2D_STORAGE_PTR_OFFSET);
-    let storage = b.word_to_address(storage);
-    let data = b.load_word(storage, LIST_STORAGE_DATA_OFFSET);
+    let data = b.load_word(buffer, BUFFER2D_STORAGE_DATA_OFFSET);
     let address = b.int_binary(IntBinary::Add, data, offset, false);
     b.word_to_address(address)
 }
