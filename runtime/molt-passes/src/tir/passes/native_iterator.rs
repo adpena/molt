@@ -141,9 +141,7 @@ impl<'a> Sources<'a> {
                 pending.extend(incoming.iter().map(|&item| (item, required)));
                 continue;
             }
-            let Some(&op) = self.ops.get(&value) else {
-                return None;
-            };
+            let &op = self.ops.get(&value)?;
             if let Some(source) = forwarded_python_value_source(op) {
                 pending.push((source, required));
                 continue;
