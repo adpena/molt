@@ -29,6 +29,8 @@ use crate::tir::ops::{AttrValue, OpCode, TirOp};
 /// for the ops that end their block with an edge.
 pub(crate) struct Position<'a, B: CodegenBuilder> {
     pub(crate) source: BlockId,
+    pub(crate) op_index: usize,
+    pub(crate) initial_homes: &'a super::frame::HomeInitializations,
     /// A compiled poll's raw frame address from its physical parameter.
     pub(crate) poll_frame: Option<B::Word>,
     pub(crate) blocks: &'a HashMap<BlockId, B::Block>,
@@ -187,6 +189,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             | OpCode::Pow
             | OpCode::CheckedAdd
             | OpCode::CheckedMul
+            | OpCode::TryBuffer2dLoadI64
             | OpCode::Neg
             | OpCode::Pos
             | OpCode::Not
@@ -302,10 +305,12 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             OpCode::BuildSet => self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd),
             OpCode::Raise => self.raise_op(b, op),
             OpCode::FrameSetLocation => {
-                self.frame_op(b, op, frame, at.poll_frame);
+                self.frame_op(b, op, frame, at.poll_frame, false);
             }
             OpCode::Copy => {
-                if !self.frame_op(b, op, frame, at.poll_frame)
+                let initializes_home = op.origin == Some(molt_ir::OpKind::FrameHomeStore)
+                    && at.initial_homes.contains(&(at.source, at.op_index));
+                if !self.frame_op(b, op, frame, at.poll_frame, initializes_home)
                     && !self.preserved_op(b, op)
                     && !op
                         .origin
@@ -816,6 +821,11 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         let len = b.constant(func.name.len() as u64);
         (stride, verbose, name, len)
     });
+    let initial_homes = if trace.is_none() {
+        layout.initial_home_stores(func, &rpo, &exception_targets)
+    } else {
+        Default::default()
+    };
     let mut op_index = 0usize;
     if entry_has_predecessor {
         b.jump(blocks[&entry_id], &entry_args);
@@ -825,8 +835,10 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             b.switch_to_block(blocks[&id]);
         }
         let block = &func.blocks[&id];
-        let at = Position {
+        let mut at = Position {
             source: id,
+            op_index: 0,
+            initial_homes: &initial_homes,
             poll_frame,
             blocks: &blocks,
             exception_targets: &exception_targets,
@@ -841,7 +853,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             functions,
             call_sites: &call_sites,
         };
-        for op in &block.ops {
+        for (index_in_block, op) in block.ops.iter().enumerate() {
             if let Some((stride, verbose, name, len)) = trace
                 && op_index.is_multiple_of(stride)
             {
@@ -855,6 +867,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                 b.call_runtime(RuntimeFn::DebugTrace, &[name, len, index]);
             }
             op_index += 1;
+            at.op_index = index_in_block;
             cx.lower_op(b, &at, op, frame);
         }
         let mut edge_diagnostics = Vec::new();

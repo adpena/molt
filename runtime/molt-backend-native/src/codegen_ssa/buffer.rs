@@ -52,7 +52,101 @@ fn normalize<B: CodegenBuilder>(b: &mut B, index: B::Word, extent: B::Word) -> B
     b.int_binary(IntBinary::Add, index, correction, false)
 }
 
+fn can_access<B: CodegenBuilder>(operands: &Operands<'_, B>, op: &TirOp) -> bool {
+    !MOLT_REFCOUNT_ATOMIC
+        && operands.held(op.operands[0]) == HeldCarrier::Boxed
+        && op.operands[1..]
+            .iter()
+            .all(|&id| matches!(operands.held(id), HeldCarrier::Boxed | HeldCarrier::RawI64))
+}
+
+fn checked_buffer<B: CodegenBuilder>(
+    b: &mut B,
+    operands: &Operands<'_, B>,
+    owner: ValueId,
+    cold: B::Block,
+) -> B::Value {
+    let object = operands.resolve(b, owner);
+    let object = b.expect_word(object);
+    let is_pointer = generate_has_tag(b, object, BoxTag::Ptr);
+    require(b, is_pointer, cold, "buffer_pointer");
+    let pointer = b.and(object, POINTER_MASK);
+    let kind = b.load_u32(pointer, HEADER_TYPE_ID_OFFSET);
+    let buffer_kind = b.constant(u64::from(TYPE_ID_BUFFER2D));
+    let exact = b.compare(WordComparison::Equal, kind, buffer_kind);
+    require(b, exact, cold, "buffer_exact");
+
+    let thread = b.thread_record_word();
+    let hint = b.load_byte(thread, THREAD_RECORD_EXCEPTION_PENDING_OFFSET);
+    let clear = b.is_zero(hint);
+    require(b, clear, cold, "buffer_exception_clear");
+    b.word_to_address(pointer)
+}
+
+/// The slot address exists only within this access. Promotion and reentry
+/// cannot intervene between checking storage and the load or store.
+fn checked_slot<B: CodegenBuilder>(
+    b: &mut B,
+    operands: &Operands<'_, B>,
+    buffer: B::Value,
+    row: ValueId,
+    col: ValueId,
+    cold: B::Block,
+) -> B::Value {
+    let tag = b.load_word(buffer, BUFFER2D_STORAGE_TAG_OFFSET);
+    let packed_tag = b.constant(BUFFER2D_STORAGE_PACKED);
+    let packed = b.compare(WordComparison::Equal, tag, packed_tag);
+    require(b, packed, cold, "buffer_packed");
+
+    let row = exact_i64(b, operands, row, cold);
+    let col = exact_i64(b, operands, col, cold);
+    let rows = b.load_word(buffer, BUFFER2D_ROWS_OFFSET);
+    let cols = b.load_word(buffer, BUFFER2D_COLS_OFFSET);
+    let row = normalize(b, row, rows);
+    let col = normalize(b, col, cols);
+    let row_in = b.compare(WordComparison::UnsignedLessThan, row, rows);
+    let col_in = b.compare(WordComparison::UnsignedLessThan, col, cols);
+    let in_bounds = b.both(row_in, col_in);
+    require(b, in_bounds, cold, "buffer_in_bounds");
+
+    // The constructor checks rows * cols and allocates that many i64s.
+    // Together the two bounds establish that this address is in storage.
+    let row_base = b.int_binary(IntBinary::Mul, row, cols, false);
+    let index = b.int_binary(IntBinary::Add, row_base, col, false);
+    let offset = b.shift_left(index, 3);
+    let storage = b.load_word(buffer, BUFFER2D_STORAGE_PTR_OFFSET);
+    let storage = b.word_to_address(storage);
+    let data = b.load_word(storage, LIST_STORAGE_DATA_OFFSET);
+    let address = b.int_binary(IntBinary::Add, data, offset, false);
+    b.word_to_address(address)
+}
+
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    pub(super) fn try_buffer_load(&mut self, b: &mut B, op: &TirOp) {
+        let operands = self.operands();
+        let zero = b.constant(0);
+        let miss = b.bit_constant(false);
+        let (word, success) = if can_access(&operands, op) {
+            let cold = b.create_block("buffer_load_miss");
+            let done = b.create_block("buffer_load_done");
+            let word = b.append_block_param(done, MachineKind::Word);
+            let success = b.append_block_param(done, MachineKind::Bit);
+            let owner = checked_buffer(b, &operands, op.operands[0], cold);
+            let slot = checked_slot(b, &operands, owner, op.operands[1], op.operands[2], cold);
+            let value = b.load_word(slot, 0);
+            let hit = b.bit_constant(true);
+            b.jump(done, &[b.word_value(value), b.bit_value(hit)]);
+            b.switch_to_block(cold);
+            b.jump(done, &[b.word_value(zero), b.bit_value(miss)]);
+            b.switch_to_block(done);
+            (word, success)
+        } else {
+            (b.word_value(zero), b.bit_value(miss))
+        };
+        self.bind(op.results[0], word, HeldCarrier::RawI64);
+        self.bind(op.results[1], success, HeldCarrier::RawBool);
+    }
+
     pub(super) fn packed_buffer_call(&mut self, b: &mut B, op: &TirOp, entry: RuntimeFn) -> bool {
         let dimension = match entry {
             RuntimeFn::Buffer2dRows => Some(BUFFER2D_ROWS_OFFSET),
@@ -63,64 +157,19 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         // The GIL protects the current storage pointer through the access.
         // Each operation acquires it afresh, because a store may promote it.
         let operands = self.operands();
-        if MOLT_REFCOUNT_ATOMIC
-            || operands.held(op.operands[0]) != HeldCarrier::Boxed
-            || op.operands[1..]
-                .iter()
-                .any(|&id| !matches!(operands.held(id), HeldCarrier::Boxed | HeldCarrier::RawI64))
-        {
+        if !can_access(&operands, op) {
             return false;
         }
         let cold = b.create_block("buffer_access_cold");
         let done = b.create_block("buffer_access_done");
         let result = b.append_block_param(done, MachineKind::Word);
 
-        let object = operands.resolve(b, op.operands[0]);
-        let object = b.expect_word(object);
-        let is_pointer = generate_has_tag(b, object, BoxTag::Ptr);
-        require(b, is_pointer, cold, "buffer_pointer");
-        let pointer = b.and(object, POINTER_MASK);
-        let kind = b.load_u32(pointer, HEADER_TYPE_ID_OFFSET);
-        let buffer_kind = b.constant(u64::from(TYPE_ID_BUFFER2D));
-        let exact = b.compare(WordComparison::Equal, kind, buffer_kind);
-        require(b, exact, cold, "buffer_exact");
-
-        let thread = b.thread_record_word();
-        let hint = b.load_byte(thread, THREAD_RECORD_EXCEPTION_PENDING_OFFSET);
-        let clear = b.is_zero(hint);
-        require(b, clear, cold, "buffer_exception_clear");
-        let buffer = b.word_to_address(pointer);
-
+        let buffer = checked_buffer(b, &operands, op.operands[0], cold);
         let store = entry == RuntimeFn::Buffer2dSet;
         let answer = if let Some(offset) = dimension {
             b.load_word(buffer, offset)
         } else {
-            let tag = b.load_word(buffer, BUFFER2D_STORAGE_TAG_OFFSET);
-            let packed_tag = b.constant(BUFFER2D_STORAGE_PACKED);
-            let packed = b.compare(WordComparison::Equal, tag, packed_tag);
-            require(b, packed, cold, "buffer_packed");
-
-            let row = exact_i64(b, &operands, op.operands[1], cold);
-            let col = exact_i64(b, &operands, op.operands[2], cold);
-            let rows = b.load_word(buffer, BUFFER2D_ROWS_OFFSET);
-            let cols = b.load_word(buffer, BUFFER2D_COLS_OFFSET);
-            let row = normalize(b, row, rows);
-            let col = normalize(b, col, cols);
-            let row_in = b.compare(WordComparison::UnsignedLessThan, row, rows);
-            let col_in = b.compare(WordComparison::UnsignedLessThan, col, cols);
-            let in_bounds = b.both(row_in, col_in);
-            require(b, in_bounds, cold, "buffer_in_bounds");
-
-            // The constructor checks rows * cols and allocates that many i64s.
-            // Together the two bounds establish that this address is in storage.
-            let row_base = b.int_binary(IntBinary::Mul, row, cols, false);
-            let index = b.int_binary(IntBinary::Add, row_base, col, false);
-            let offset = b.shift_left(index, 3);
-            let storage = b.load_word(buffer, BUFFER2D_STORAGE_PTR_OFFSET);
-            let storage = b.word_to_address(storage);
-            let data = b.load_word(storage, LIST_STORAGE_DATA_OFFSET);
-            let address = b.int_binary(IntBinary::Add, data, offset, false);
-            let slot = b.word_to_address(address);
+            let slot = checked_slot(b, &operands, buffer, op.operands[1], op.operands[2], cold);
             if store {
                 let value = exact_i64(b, &operands, op.operands[3], cold);
                 b.store_word(slot, 0, value);

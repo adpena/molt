@@ -1784,6 +1784,7 @@ vectorize_opcode_facts = [
 repr_raw_i64_full_deopt_seed_rules = [
     { opcode = "CheckedAdd", rule = "checked_result0" },
     { opcode = "CheckedMul", rule = "checked_result0" },
+    { opcode = "TryBuffer2dLoadI64", rule = "checked_result0" },
     { opcode = "ConstInt", rule = "const_int_not_inline_safe" },
     # The late stage's fast arm (HF-821): the sum of two inline-int payloads is
     # exact in i64 and may leave the inline window.
@@ -3359,6 +3360,21 @@ result_absorbs_operands = false
 # total; UnboxInlineInt is total and meaningful where IsInlineInt holds.
 # BoxInlineInt is its inverse: the inline-int word of a value proven to fit the
 # inline window (RawI64Safe); it allocates nothing and cannot raise.
+# Reads mutable storage and pending-exception state. A miss never raises or
+# touches the result's Python representation; the slow CFG executes the call.
+[[opcode]]
+name = "TryBuffer2dLoadI64"
+may_call_python = false
+operand_arity = 3
+operand_independent_result_types = ["i64", "bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
 [[opcode]]
 name = "IsInlineInt"
 proves_immediate_on_true = true

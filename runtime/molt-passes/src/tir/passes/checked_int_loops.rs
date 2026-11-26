@@ -227,7 +227,11 @@ fn try_version_loop(
         return Err(Refusal::NoProfitableRewrite);
     }
     // Proofs alone need no second loop and cannot fail.
-    if guard.is_none() && selection.checked.is_empty() && selection.projections.is_empty() {
+    if guard.is_none()
+        && selection.checked.is_empty()
+        && selection.projections.is_empty()
+        && selection.packed_loads.is_empty()
+    {
         for &(block, index) in &selection.exact {
             func.blocks
                 .get_mut(&block)
@@ -744,6 +748,9 @@ fn select(
     // Project only call results reaching selected numerical work. Copies and
     // phis may forward the same value through more than one block.
     if !call_results.is_empty() {
+        let direct_numeric: HashSet<_> = numeric_inputs.iter().copied().collect();
+        let uses = std::cell::OnceCell::new();
+        let labels = std::cell::OnceCell::new();
         let mut sources: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
         for (result, source) in copies {
             sources.entry(result).or_default().push(source);
@@ -759,7 +766,34 @@ fn select(
                 continue;
             }
             if let Some(&site) = call_results.get(&value) {
-                selection.projections.push(site);
+                let (block, index) = site;
+                let ops = &func.blocks[&block].ops;
+                let call = &ops[index];
+                // An escaped Python reference or a handler payload can observe
+                // the physical boxed result. Only a sole numeric use may
+                // consume the packed word without constructing that object.
+                if crate::tir::call_targets::direct_boxed_runtime(call)
+                    == Some(molt_ir::runtime_fn_generated::RuntimeFn::Buffer2dGet)
+                    && call.argument_custody().is_none()
+                    && direct_numeric.contains(&value)
+                    && uses
+                        .get_or_init(|| super::dce::build_use_counts(func))
+                        .get(&value)
+                        == Some(&1)
+                    && ops.get(index + 1).is_some_and(|check| {
+                        !check.has_checked_invocation_binding()
+                            && check.exception_edge_kind()
+                                == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin)
+                            && crate::tir::type_refine::checked_result_observer(
+                                func, &labels, check,
+                            )
+                            .is_some()
+                    })
+                {
+                    selection.packed_loads.push(site);
+                } else {
+                    selection.projections.push(site);
+                }
             }
             if let Some(inputs) = sources.get(&value) {
                 numeric_inputs.extend(inputs);
@@ -785,6 +819,9 @@ struct Selection {
     checked: Vec<(BlockId, usize)>,
     /// Exact-int calls whose fast successors consume the inline payload.
     projections: Vec<(BlockId, usize)>,
+    /// A packed hit supplies the selected arithmetic directly; a miss runs
+    /// the original load and its exception transfer in the boxed clone.
+    packed_loads: Vec<(BlockId, usize)>,
     /// Ops whose exact result the ranges place inside i64: a plain machine op.
     exact: Vec<(BlockId, usize)>,
     /// Checked ops of an earlier versioning whose exact result the ranges
@@ -802,6 +839,7 @@ impl Selection {
 enum FastCheck {
     Overflow,
     CallResult,
+    PackedLoad,
 }
 
 /// A checked op: its first result is the wrapped value, its second the
@@ -969,6 +1007,7 @@ fn version(
     for (checks, kind) in [
         (&selection.checked, FastCheck::Overflow),
         (&selection.projections, FastCheck::CallResult),
+        (&selection.packed_loads, FastCheck::PackedLoad),
     ] {
         for &(block, index) in checks {
             by_block.entry(block.0).or_default().push((index, kind));
@@ -999,13 +1038,25 @@ fn version(
             let result = original.results[0];
             let flag = func.fresh_value();
             func.value_types.insert(flag, TirType::Bool);
-            let alternate = func.fresh_value();
-            func.value_types.insert(alternate, TirType::I64);
+            // A packed miss enters before the original call in its slow
+            // clone. That clone defines its own result at the original point.
+            let alternate = if matches!(check, FastCheck::PackedLoad) {
+                None
+            } else {
+                let value = func.fresh_value();
+                func.value_types.insert(value, TirType::I64);
+                Some(value)
+            };
             let fast_rest = func.fresh_block();
             let slow_rest = func.fresh_block();
 
             let slow_block = func.blocks.get_mut(&slow).expect("cloned block exists");
-            let slow_ops = slow_block.ops.split_off(split);
+            let slow_split = if matches!(check, FastCheck::PackedLoad) {
+                index
+            } else {
+                split
+            };
+            let slow_ops = slow_block.ops.split_off(slow_split);
             let slow_terminator = std::mem::replace(
                 &mut slow_block.terminator,
                 Terminator::Branch {
@@ -1032,7 +1083,9 @@ fn version(
                             id: transfer,
                             args: vec![],
                             ops: vec![TirOp {
-                                results: vec![alternate],
+                                results: vec![
+                                    alternate.expect("overflow transfer defines an exact result"),
+                                ],
                                 attrs: clone_attrs_without_simple_names(&original.attrs),
                                 ..original.clone()
                             }],
@@ -1045,7 +1098,7 @@ fn version(
                     added += 1;
                     (transfer, fast_rest)
                 }
-                FastCheck::CallResult => (fast_rest, slow_rest),
+                FastCheck::CallResult | FastCheck::PackedLoad => (fast_rest, slow_rest),
             };
             let fast_block = func.blocks.get_mut(&fast).expect("selected block exists");
             let mut rest_ops = fast_block.ops.split_off(split);
@@ -1055,7 +1108,17 @@ fn version(
                     checked.opcode = checked_opcode(original.opcode).expect("selected arithmetic");
                     checked.results.push(flag);
                 }
+                FastCheck::PackedLoad => {
+                    let mut load = TirOp::new(
+                        OpCode::TryBuffer2dLoadI64,
+                        original.operands,
+                        vec![result, flag],
+                    );
+                    load.source_span = original.source_span;
+                    *checked = load;
+                }
                 FastCheck::CallResult => {
+                    let alternate = alternate.expect("boxed call defines a physical result");
                     checked.results[0] = alternate;
                     fast_block.ops.push(TirOp::new(
                         OpCode::IsInlineInt,
@@ -1089,10 +1152,12 @@ fn version(
                 },
             );
             func.move_loop_terminator(fast, fast_rest);
-            variables
-                .get_mut(&result)
-                .expect("selected result is a loop value")
-                .push(alternate);
+            if let Some(alternate) = alternate {
+                variables
+                    .get_mut(&result)
+                    .expect("selected result is a loop value")
+                    .push(alternate);
+            }
         }
     }
 

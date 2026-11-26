@@ -334,6 +334,8 @@ impl<'ctx> OpLoweringFixture<'ctx, '_> {
     fn lower_op(&mut self, source: crate::tir::blocks::BlockId, op: &TirOp) {
         let at = crate::codegen_ssa::walk::Position {
             source,
+            op_index: 0,
+            initial_homes: &Default::default(),
             poll_frame: None,
             blocks: &HashMap::default(),
             exception_targets: &HashMap::default(),

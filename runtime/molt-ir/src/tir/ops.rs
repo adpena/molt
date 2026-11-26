@@ -446,6 +446,8 @@ pub enum OpCode {
     ScfFor,
     ScfWhile,
     ScfYield,
+    /// A checked packed load. The raw i64 is meaningful only on success.
+    TryBuffer2dLoadI64,
 }
 
 /// Attribute value for operation metadata.

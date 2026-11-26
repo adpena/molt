@@ -402,6 +402,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             OpCode::Mod => self.binary_arith_op(b, op, OpKind::Mod),
             OpCode::Pow => self.binary_arith_op(b, op, OpKind::Pow),
             OpCode::CheckedAdd | OpCode::CheckedMul => self.checked_arith_op(b, op),
+            OpCode::TryBuffer2dLoadI64 => self.try_buffer_load(b, op),
             OpCode::Neg => self.unary_op(b, op, OpKind::Neg),
             OpCode::Pos => self.unary_op(b, op, OpKind::Pos),
             OpCode::Not => self.unary_op(b, op, OpKind::Not),
@@ -531,6 +532,61 @@ mod tests {
     }
 
     const BOXED: HeldCarrier = HeldCarrier::Boxed;
+
+    #[test]
+    fn packed_buffer_load_preserves_i64_and_misses_without_a_runtime_call() {
+        use molt_codegen_abi::{
+            BUFFER2D_STORAGE_PACKED, HEADER_SIZE_BYTES, TYPE_ID_BUFFER2D, box_ptr_bits,
+        };
+        let cells = [i64::MIN, i64::MAX];
+        let data = [cells.as_ptr() as u64, 2, 2];
+        let header_words = HEADER_SIZE_BYTES as usize / size_of::<u64>();
+        let mut object = [0u64; HEADER_SIZE_BYTES as usize / size_of::<u64>() + 4];
+        object[0] = u64::from(TYPE_ID_BUFFER2D);
+        object[header_words..].copy_from_slice(&[
+            1,
+            2,
+            BUFFER2D_STORAGE_PACKED,
+            data.as_ptr() as u64,
+        ]);
+        let owner = box_ptr_bits(object[header_words..].as_ptr() as u64) as u64;
+        let run = |owner, row, col, expected: Option<i64>| {
+            let run = operator(
+                OpCode::TryBuffer2dLoadI64,
+                &[BOXED, HeldCarrier::RawI64, BOXED],
+                &[
+                    Value::Word(owner),
+                    Value::Word(row as u64),
+                    Value::Word(col),
+                ],
+                2,
+                &[],
+                true,
+            );
+            let expected = expected.filter(|_| !molt_codegen_abi::MOLT_REFCOUNT_ATOMIC);
+            assert_eq!(
+                run.results,
+                [
+                    Value::Word(expected.unwrap_or(0) as u64),
+                    Value::Bit(expected.is_some())
+                ]
+            );
+            assert_eq!(
+                run.fact,
+                [Some(HeldCarrier::RawI64), Some(HeldCarrier::RawBool)]
+            );
+            assert!(run.runtime_calls.is_empty() && run.refcounts.is_empty());
+        };
+        run(owner, 0i64, inline(0), Some(i64::MIN));
+        run(owner, -1, inline(-1), Some(i64::MAX));
+        run(owner, i64::MIN, inline(0), None);
+        run(owner, 0, inline(2), None);
+        run(owner, 0, NONE_WORD, None);
+        run(NONE_WORD, 0, inline(0), None);
+        object[header_words + 2] = 1;
+        std::hint::black_box(&object);
+        run(owner, 0, inline(0), None);
+    }
 
     #[test]
     fn identity_compares_object_words_and_boxes_a_raw_operand_once() {

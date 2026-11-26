@@ -351,7 +351,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::UnboxVal => Some(unary_op(molt_ir::OpKind::Unbox, op, out_var)),
         // The final lowering stage runs only for targets whose backend consumes
         // final TIR (FinalLowering::FinalTir), so its ops never reach SimpleIR.
-        OpCode::IsInlineInt
+        OpCode::TryBuffer2dLoadI64
+        | OpCode::IsInlineInt
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord
         | OpCode::IsFloatWord

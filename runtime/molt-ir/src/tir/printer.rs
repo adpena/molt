@@ -318,6 +318,7 @@ pub fn opcode_name(op: &OpCode, spelling: OpcodeSpelling) -> &'static str {
         OpCode::BoxVal => "box_val",
         OpCode::UnboxVal if spelling == OpcodeSpelling::Mlir => "unbox",
         OpCode::UnboxVal => "unbox_val",
+        OpCode::TryBuffer2dLoadI64 => "try_buffer2d_load_i64",
         OpCode::IsInlineInt => "is_inline_int",
         OpCode::UnboxInlineInt => "unbox_inline_int",
         OpCode::IsBoolWord => "is_bool_word",

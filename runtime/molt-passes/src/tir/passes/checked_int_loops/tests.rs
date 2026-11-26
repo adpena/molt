@@ -338,6 +338,81 @@ fn the_inline_result_guard_resumes_after_the_call_and_its_exception_check() {
 }
 
 #[test]
+fn packed_buffer_load_enters_before_the_original_call_on_miss() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    for exposed in [false, true] {
+        let Fixture { mut func, .. } = branching_loop(false);
+        let owner = func.blocks[&func.entry_block].args[0].id;
+        let fail = func.fresh_block();
+        let label = 170;
+        func.label_id_map.insert(fail.0, label);
+        func.blocks
+            .insert(fail, block(fail, vec![], vec![], Terminator::Unreachable));
+        let result = int(&mut func);
+        let side = func.fresh_value();
+        let body = func
+            .blocks
+            .values_mut()
+            .find(|b| b.ops.iter().any(|op| op.opcode == OpCode::InplaceAdd))
+            .unwrap();
+        let index = body.ops[0].operands[1];
+        body.ops[0].operands[1] = result;
+        if exposed {
+            body.ops
+                .insert(1, op(OpCode::Is, vec![result, owner], vec![side]));
+        }
+        let mut call = op(OpCode::Call, vec![owner, index, index], vec![result]);
+        call.runtime = Some(RuntimeFn::Buffer2dGet);
+        call.origin = Some(OpKind::Call);
+        call.attrs.insert(
+            "s_value".into(),
+            AttrValue::Str(RuntimeFn::Buffer2dGet.symbol().into()),
+        );
+        let mut check = op(OpCode::CheckException, vec![], vec![]);
+        check.attrs.insert("value".into(), AttrValue::Int(label));
+        check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+        check.mark_async_work_poll();
+        body.ops.splice(0..0, [call, check]);
+        verify_function(&func).unwrap();
+        run(&mut func, &mut AnalysisManager::new(), true);
+        verify_function(&func).unwrap();
+        let probe = func.blocks.values().find(|block| {
+            block
+                .ops
+                .last()
+                .is_some_and(|op| op.opcode == OpCode::TryBuffer2dLoadI64)
+        });
+        if exposed {
+            assert!(probe.is_none());
+            continue;
+        }
+        let probe = probe.expect("a sole numeric consumer can read the packed i64");
+        let load = probe.ops.last().unwrap();
+        assert_eq!(
+            crate::representation_facts::analyze_representations(&func).get(&load.results[0]),
+            Some(&crate::Repr::RawI64FullDeopt)
+        );
+        let Terminator::CondBranch {
+            cond,
+            then_block,
+            else_block,
+            ..
+        } = probe.terminator
+        else {
+            panic!("packed load requires a failure continuation")
+        };
+        assert_eq!(cond, load.results[1]);
+        let slow = &func.blocks[&else_block];
+        assert_eq!(slow.ops[0].runtime, Some(RuntimeFn::Buffer2dGet));
+        assert!(slow.ops[1].is_async_work_poll());
+        assert!(func.blocks[&then_block].ops[0].is_async_work_poll());
+        for check in [&slow.ops[1], &func.blocks[&then_block].ops[0]] {
+            assert_eq!(check.attrs.get("value"), Some(&AttrValue::Int(label)));
+        }
+    }
+}
+
+#[test]
 fn the_overflow_path_reads_the_exact_result() {
     let Fixture { mut func, .. } = branching_loop(false);
     run(&mut func, &mut AnalysisManager::new(), false);
