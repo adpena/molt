@@ -494,6 +494,48 @@ def test_observed_profile_recovery_preserves_triple_profiles_and_dependencies(
     ]
 
 
+@pytest.mark.parametrize("triple", ["", "wasm32-wasip1"])
+def test_toolchain_profile_recovery_preserves_sibling_partitions(
+    tmp_path: Path, triple: str | None
+) -> None:
+    target = tmp_path / "target"
+    partitions = target / ".molt-toolchains"
+    owned = unit(partitions / ("a" * 64) / triple, "debug")
+    sibling = unit(partitions / ("b" * 64) / triple, "debug")
+    direct = unit(target / triple, "debug")
+
+    receipt = recover(target, (observation(owned),))
+
+    assert receipt.ownership_status == "quarantined" and not receipt.errors
+    assert [Path(move.original_path) for move in receipt.moved_paths] == [owned.parent]
+    assert (Path(receipt.quarantine_dir) / owned.relative_to(target)).is_dir()
+    assert not owned.exists() and sibling.exists() and direct.exists()
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        ".molt-toolchains/debug",
+        ".molt-toolchains/not-a-digest/wasm32-wasip1/debug",
+        f".molt-toolchains/{'a' * 64}/sessions/debug",
+        f".molt-toolchains/{'a' * 64}/wasm32-wasip1/debug/extra",
+    ],
+)
+def test_malformed_toolchain_coordinate_preserves_incremental_state(
+    tmp_path: Path, profile: str
+) -> None:
+    target = tmp_path / "target"
+    owned = unit(target, profile)
+
+    receipt = recover(target, (observation(owned),))
+
+    assert receipt.ownership_status == "deferred" and not receipt.moved_paths
+    assert receipt.errors == (
+        "ValueError: incremental observation lacks a Cargo coordinate",
+    )
+    assert owned.is_dir()
+
+
 def test_target_root_recovery_preserves_session_targets_and_old_evidence(tmp_path):
     target = tmp_path / "target"
     owned = unit(target, "release-fast")

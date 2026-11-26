@@ -7,6 +7,7 @@ import ctypes
 import json
 import os
 import platform
+import re
 import time
 from pathlib import Path
 import shlex
@@ -436,6 +437,26 @@ def _local_cargo_lock_filesystem(path: Path) -> bool:
     return False  # additional native filesystem witnesses are required
 
 
+def _is_profile_incremental_coordinate(parts: tuple[str, ...]) -> bool:
+    return (
+        len(parts) in {2, 3}
+        and parts[-1] == "incremental"
+        and all(
+            part.casefold() not in {".molt-toolchains", ".molt_state", "sessions"}
+            for part in parts[:-1]
+        )
+    )
+
+
+def is_toolchain_incremental_coordinate(parts: tuple[str, ...]) -> bool:
+    """RuntimeCargoPlan's digest partition followed by a host or target profile."""
+    return (
+        parts[:1] == (".molt-toolchains",)
+        and _is_profile_incremental_coordinate(parts[2:])
+        and re.fullmatch(r"[0-9a-f]{64}", parts[1]) is not None
+    )
+
+
 def _observed_incremental_units(
     target_dir: Path, observations: Sequence[CargoIncrementalObservation]
 ) -> dict[Path, Path]:
@@ -460,10 +481,9 @@ def _observed_incremental_units(
             raise ValueError("incremental observation is not absolute")
         source = path.resolve(strict=True)
         parts = source.relative_to(root).parts
-        if (
-            len(parts) not in {2, 3}
-            or parts[-1] != "incremental"
-            or any(part in {".molt_state", "sessions"} for part in parts)
+        if not (
+            _is_profile_incremental_coordinate(parts)
+            or is_toolchain_incremental_coordinate(parts)
         ):
             raise ValueError("incremental observation lacks a Cargo coordinate")
         if (

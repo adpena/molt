@@ -3237,17 +3237,17 @@ def _print_result(result: ReclaimResult, *, as_json: bool) -> None:
 
 def _incremental_coordinate(path: Path, root: Path) -> tuple[Path, Path]:
     from molt.file_publication import resolve_owned_path
+    from tools.memory_guard_core.cargo_quarantine import (
+        is_toolchain_incremental_coordinate,
+    )
 
     root, path = resolve_owned_path(root), resolve_owned_path(path)
     # RuntimeCargoPlan.with_build_directory owns this toolchain partition.
     relative = path.relative_to(root).parts
     if (
-        len(relative) not in {9, 10}
+        not is_toolchain_incremental_coordinate(relative[5:])
         or relative[:2] != ("target", "checkouts")
         or relative[3] != "sessions"
-        or relative[5] != ".molt-toolchains"
-        or re.fullmatch(r"[0-9a-f]{64}", relative[6]) is None
-        or relative[-1] != "incremental"
     ):
         raise ValueError(
             "requires a pinned session's toolchain/profile incremental root"
