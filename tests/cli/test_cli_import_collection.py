@@ -3295,21 +3295,110 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
         ("getattr(builtins, '__dict__')", "del ns['__import__']", True),
         ("fn.__builtins__", "ns[key] = fn", True),
         ("fn.__builtins__", "ns |= {'__import__': fn}", True),
+        (
+            "getattr(next(*(iter((fn,)),)), key)",
+            "ns['__import__'] = fn",
+            True,
+        ),
+        (
+            "getattr(next(iter((fn,))), key)",
+            "ns['__import__'] = fn",
+            True,
+        ),
+        ("getattr(next(iter((fn,))), key)", "ns['len'] = fn", False),
+        (
+            "getattr(next(iter(()), fn), key)",
+            "ns['__import__'] = fn",
+            True,
+        ),
+        (
+            "getattr(next(iter(lambda: fn, None)), key)",
+            "ns['__import__'] = fn",
+            True,
+        ),
+        (
+            "getattr(next(enumerate((fn,)))[1], key)",
+            "ns['__import__'] = fn",
+            True,
+        ),
+        (
+            "getattr(next(zip((fn,)))[0], key)",
+            "ns['__import__'] = fn",
+            True,
+        ),
+        (
+            "getattr(next(map(lambda value: value, (fn,))), key)",
+            "ns['__import__'] = fn",
+            True,
+        ),
+        (
+            "getattr(next(filter(None, (fn,))), key)",
+            "ns['__import__'] = fn",
+            True,
+        ),
+        ("getattr(next(reversed((fn,))), key)", "ns['__import__'] = fn", True),
+        ("getattr(fn, str('__builtins__'))", "select(ns)('__import__', fn)", True),
+        ("getattr(fn, str('__builtins__'))", "select(ns)", False),
+        (
+            "getattr(fn, str('__builtins__'))",
+            "descriptor()(ns, '__import__', fn)",
+            True,
+        ),
+        ("getattr(fn, str('__builtins__'))", "select(ns)('len', fn)", False),
+        (
+            "getattr(fn, str('__builtins__'))",
+            "select(ns.copy())('__import__', fn)",
+            False,
+        ),
     ],
 )
 def test_builtins_mapping_write_controls_runtime_import_support(
     tmp_path: Path, access: str, operation: str, needs_finder: bool
 ) -> None:
-    entry_path = tmp_path / "demo.py"
     source = (
         "import builtins\n"
         "def fn(*args):\n    pass\n"
+        "def select(mapping):\n    return mapping.__setitem__\n"
+        "def descriptor():\n    return dict.__setitem__\n"
         "def modify(key):\n"
         f"    ns = {access}\n"
         f"    {operation}\n"
         "modify(key=input())\n"
         "import math\n"
     )
+    _assert_graph_import_finder(tmp_path, source, needs_finder)
+
+
+@pytest.mark.usefixtures("isolated_frontend_state")
+@pytest.mark.parametrize(
+    ("payload", "key", "needs_finder"),
+    [
+        ("next(alias((fn,), 1))", "__import__", True),
+        ("next(pairwise((fn, fn)))[0]", "__import__", True),
+        ("next(batched(iterable=(fn,), n=1))[0]", "__import__", True),
+        ("next(chain((), alias(repeat(fn, 1), 1)))", "__import__", True),
+        ("next(batched(iterable=(fn,), n=1))[0]", "len", False),
+    ],
+)
+def test_native_iterator_payload_reaches_namespace_writer(
+    tmp_path: Path, payload: str, key: str, needs_finder: bool
+) -> None:
+    source = (
+        "from itertools import islice as alias, batched, chain, pairwise, repeat\n"
+        "def fn(*args): pass\n"
+        "def modify(name):\n"
+        f"    ns = getattr({payload}, name)\n"
+        f"    ns[{key!r}] = fn\n"
+        "modify(input())\n"
+        "import math\n"
+    )
+    _assert_graph_import_finder(tmp_path, source, needs_finder)
+
+
+def _assert_graph_import_finder(
+    tmp_path: Path, source: str, needs_finder: bool
+) -> None:
+    entry_path = tmp_path / "demo.py"
     entry_path.write_text(source, encoding="utf-8")
     prepared, error = cli_module_graph._prepare_entry_module_graph(
         source_path=entry_path,

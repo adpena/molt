@@ -28,7 +28,12 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypeAlias, cast, g
 
 from molt.python_canonical_ast import canonical_python_module
 from molt.python_private_names import python_import_binding
-from molt.compiler_analysis.python_builtin_shapes import builtin_method_writes_receiver
+from molt.compiler_analysis.python_builtin_shapes import (
+    MappingWriteScope,
+    builtin_mapping_write_scope,
+    builtin_method_writes_receiver,
+    literal_mapping_update_keys,
+)
 from molt.compiler_analysis.python_lexical_scope import (
     LexicalDefinitionNode,
     PythonDependencyAuthority,
@@ -150,9 +155,6 @@ _READ_METHODS: Final = frozenset(
         "__len__",
         "__iter__",
     }
-)
-_ITEM_WRITE_METHODS: Final = frozenset(
-    {"pop", "setdefault", "__setitem__", "__delitem__"}
 )
 # Builtins that read an argument without keeping it.
 _WHOLE_READ_CALLS: Final = frozenset(
@@ -348,6 +350,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         not in {
             "module_escape",
             "own_module_escape",
+            "namespace",
         }
     ):
         raise ValueError("invalid module borrow requirements")
@@ -366,6 +369,12 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         borrowed_if.append(ModuleBorrowRequirement(call, operand[1]))
     if borrowed_if != sorted(set(borrowed_if)):
         raise ValueError("noncanonical module borrow requirements")
+    if (
+        construct == "namespace"
+        and borrowed_if
+        and (name is not None or len(borrowed_if) != 1 or borrowed_if[0].position != 0)
+    ):
+        raise ValueError("invalid namespace update receiver")
     return PythonNamespaceWrite(
         module,
         name,
@@ -749,28 +758,6 @@ def _star_local_names(
     return local_names
 
 
-def _literal_update_keys(call: ast.Call) -> frozenset[str] | None:
-    """Names written by dict.update with literal dictionaries and keywords."""
-    if len(call.args) > 1:
-        return None
-    names: set[str] = set()
-    mappings = list(call.args)
-    for keyword in call.keywords:
-        if keyword.arg is None:
-            mappings.append(keyword.value)
-        else:
-            names.add(keyword.arg)
-    for mapping in mappings:
-        if not isinstance(mapping, ast.Dict):
-            return None
-        for key in mapping.keys:
-            name = _literal_string(key)
-            if name is None:
-                return None
-            names.add(name)
-    return frozenset(names)
-
-
 _MappingSlot: TypeAlias = tuple[ast.AST, str]
 
 
@@ -1034,11 +1021,12 @@ class _MappingFlow:
         if (
             isinstance(parent, ast.Attribute)
             and parent.value is value
-            and parent.attr == "update"
+            and builtin_mapping_write_scope(parent.attr) is MappingWriteScope.UPDATE
             and isinstance(call := self.parents.get(parent), ast.Call)
             and call.func is parent
         ):
-            return _literal_update_keys(call)
+            update = literal_mapping_update_keys(call)
+            return frozenset(update) if update is not None else None
         if not (
             isinstance(parent, ast.Assign)
             and parent.value is value
@@ -1085,13 +1073,20 @@ class _MappingFlow:
                 if isinstance(call, ast.Call) and call.func is parent:
                     if parent.attr in _READ_METHODS:
                         continue
-                    if parent.attr in _ITEM_WRITE_METHODS and call.args:
+                    if (
+                        builtin_mapping_write_scope(parent.attr)
+                        is MappingWriteScope.KEY
+                        and call.args
+                    ):
                         key = _literal_string(call.args[0])
                         if key is not None:
                             keys.add(key)
                             continue
-                    if parent.attr == "update":
-                        update = _literal_update_keys(call)
+                    if (
+                        builtin_mapping_write_scope(parent.attr)
+                        is MappingWriteScope.UPDATE
+                    ):
+                        update = literal_mapping_update_keys(call)
                         if update is not None:
                             keys.update(update)
                             continue
@@ -2225,7 +2220,7 @@ class _NamespaceWriteCollector:
             if isinstance(grandparent, ast.Call) and grandparent.func is parent:
                 if parent.attr in _READ_METHODS:
                     return False, None
-                if parent.attr in _ITEM_WRITE_METHODS:
+                if builtin_mapping_write_scope(parent.attr) is MappingWriteScope.KEY:
                     return True, (
                         _literal_string(grandparent.args[0])
                         if grandparent.args
@@ -2245,6 +2240,31 @@ class _NamespaceWriteCollector:
         if name is None and (keys := self._escape_keys(site)) is not None:
             for key in sorted(keys):
                 self._record(module, key, "namespace", site)
+            return
+        value, parent, _ = self._consumer(site)
+        if (
+            name is None
+            and isinstance(parent, ast.Call)
+            and isinstance(parent.func, ast.Attribute)
+            and builtin_mapping_write_scope(parent.func.attr)
+            is MappingWriteScope.UPDATE
+            and parent.args
+            and parent.args[0] is value
+            and (keys := literal_mapping_update_keys(parent, unbound=True)) is not None
+        ):
+            for key in keys:
+                self._record(module, key, "namespace", site)
+            # A replacement descriptor can retain the argument or call any
+            # member. Keep the fallback until binding proves the operand borrow.
+            self._record(
+                module,
+                None,
+                "namespace",
+                site,
+                borrowed_if=(
+                    ModuleBorrowRequirement(python_node_source_key(parent), 0),
+                ),
+            )
             return
         self._record(module, name, "namespace", site)
 
@@ -2330,7 +2350,10 @@ class _NamespaceWriteCollector:
                         )
                     return
                 if spelling == "sys.modules":
-                    if parent.attr in _ITEM_WRITE_METHODS:
+                    if (
+                        builtin_mapping_write_scope(parent.attr)
+                        is MappingWriteScope.KEY
+                    ):
                         self._record_import_binding(
                             site,
                             grandparent.args[0] if grandparent.args else None,
@@ -2500,18 +2523,20 @@ def refine_namespace_writes(
         tuple[PythonSourceKey | None, PythonStringBound | None], PythonNamespaceWrite
     ] = {}
     for write in summary.foreign_writes:
+        if (
+            bindings is not None
+            and write.borrowed_if
+            and all(
+                bindings.module_operand_is_borrowed(*operand)
+                for operand in write.borrowed_if
+            )
+        ):
+            continue
         if write.construct in {"module_escape", "own_module_escape"}:
             key = (write.module, write.construct, write.source_owner)
             # Raw rows are already in source order. Only the first surviving
             # escape of this value class is needed by graph publication.
-            if key not in escapes and not (
-                bindings is not None
-                and write.borrowed_if
-                and all(
-                    bindings.module_operand_is_borrowed(*operand)
-                    for operand in write.borrowed_if
-                )
-            ):
+            if key not in escapes:
                 escapes[key] = replace(write, borrowed_if=())
             continue
         keys = keys_by_site.get(write.source_site)
@@ -2542,7 +2567,7 @@ def refine_namespace_writes(
                 (write.source_owner, write.key_bound), replace(write, key_source=None)
             )
             continue
-        rows.append(write)
+        rows.append(replace(write, borrowed_if=()) if write.borrowed_if else write)
     rows.extend(escapes.values())
     rows.extend(computed_stores.values())
     refined = tuple(sorted(set(rows), key=_source_order))

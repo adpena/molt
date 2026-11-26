@@ -147,17 +147,21 @@ class PythonActivationPartition(NamedTuple):
     classes: tuple[frozenset[str] | None, ...]
 
 
+PythonSourceArgument: TypeAlias = tuple[
+    int | str | None, frozenset[PythonSourceKey], frozenset[PythonSourceKey]
+]
+
+
 class PythonSourceCall(NamedTuple):
     """Source call value transfer, with argument facts already bound by analysis."""
 
     owner: PythonSourceKey
     callees: frozenset[PythonSourceKey]
     intrinsic_result: IdentityMask
-    arguments: tuple[
-        tuple[int | str | None, frozenset[PythonSourceKey], frozenset[PythonSourceKey]],
-        ...,
-    ]
+    arguments: tuple[PythonSourceArgument, ...]
     argument_strings: tuple[str | None, ...] = ()
+    bound_update_keys: tuple[str, ...] | None = None
+    unbound_update_keys: tuple[str, ...] | None = None
 
     def has_valid_source_form(self) -> bool:
         if self.owner[-1] == "Call":
@@ -169,6 +173,8 @@ class PythonSourceCall(NamedTuple):
             and len(self.arguments) == 1
             and self.arguments[0][0] == 0
             and self.argument_strings == (None,)
+            and self.bound_update_keys is None
+            and self.unbound_update_keys is None
         )
 
     def join(self, prior: PythonSourceCall) -> PythonSourceCall:
@@ -186,6 +192,16 @@ class PythonSourceCall(NamedTuple):
                 for name, earlier in zip(
                     self.argument_strings, prior.argument_strings, strict=True
                 )
+            ),
+            bound_update_keys=(
+                self.bound_update_keys
+                if self.bound_update_keys == prior.bound_update_keys
+                else None
+            ),
+            unbound_update_keys=(
+                self.unbound_update_keys
+                if self.unbound_update_keys == prior.unbound_update_keys
+                else None
             ),
         )
 
@@ -237,6 +253,8 @@ class PythonElementProtocol(StrEnum):
     # instance; a class attribute load returns the property itself.
     PROPERTY = "property"
     SUBSCRIPT = "subscript"
+    REFLECTED_BUILTINS = "reflected_builtins"
+    MAPPING_WRITE = "mapping_write"
     # Zero-argument `super()` as an attribute receiver: the origins are the
     # enclosing function's first argument. An attribute of it selects from
     # the strict ancestors of the argument's class and binds the argument.

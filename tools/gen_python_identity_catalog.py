@@ -21,6 +21,11 @@ bind_repository_imports(__file__)
 
 from tools.generator_io import generator_main  # noqa: E402
 from tools.intrinsic_manifest import parse_intrinsic_manifest  # noqa: E402
+from tools.public_objects import (  # noqa: E402
+    PublicConstructor,
+    PublicObjectProducer,
+    load_public_objects,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/molt/compiler_analysis/python_identity_catalog.toml"
@@ -55,6 +60,30 @@ class BuiltinRole(StrEnum):
     CALLER_FRAME = "caller_frame"
 
 
+class IteratorPayloadShape(StrEnum):
+    ITEM = "item"
+    TUPLE = "tuple"
+    VALUE = "value"
+
+
+class IteratorPayload(NamedTuple):
+    position: int | None
+    keyword: str | None
+    shape: IteratorPayloadShape
+
+
+def iterator_payload_slot(
+    constructor: PublicConstructor, parameter: object
+) -> tuple[int | None, str | None]:
+    positions = (*constructor.posonly[1:], *constructor.positional)
+    if constructor.vararg is not None and parameter == constructor.vararg:
+        if positions:
+            raise SchemaError("variadic iterator payload must be the positional tail")
+        return None, None
+    name = _reference(parameter, set(positions), "iterator parameter")
+    return positions.index(name), name if name in constructor.positional else None
+
+
 class BuiltinRow(NamedTuple):
     name: str
     identity: str
@@ -78,6 +107,8 @@ class IntrinsicCallable:
     native_initializer: str | None = None
     namespace_entry_read: tuple[int, int, int] | None = None
     none_without_feature: str | None = None
+    result_identity: str | None = None
+    iterator_payload: IteratorPayload | None = None
 
 
 @dataclass(frozen=True)
@@ -475,9 +506,13 @@ def load_schema(
     runtime_features = tomllib.loads(
         (ROOT / "runtime/molt-runtime/Cargo.toml").read_text(encoding="utf-8")
     )["features"]
+    public_objects = load_public_objects()
+    iterator_classes: set[str] = set()
     for row in rows:
         if not isinstance(row, dict) or set(row) - {"compiler_from"} not in (
             {"name", "identity", "target_property"},
+            {"name", "identity", "result_identity"},
+            {"name", "identity", "result_identity", "iterator_payload"},
             {"name", "identity", "import_behavior", "argument_roles"},
             {"name", "identity", "acquisition"},
             {"name", "identity", "attribute_read"},
@@ -491,6 +526,13 @@ def load_schema(
             raise SchemaError("intrinsic callable requires one explicit semantic facet")
         name = _name(row["name"], "intrinsic callable name")
         identity = _reference(row["identity"], identity_names, "intrinsic identity")
+        result_identity = (
+            _reference(
+                row["result_identity"], identity_names, "intrinsic result identity"
+            )
+            if "result_identity" in row
+            else None
+        )
         target_property = (
             _reference(row["target_property"], set(properties), "target property")
             if "target_property" in row
@@ -519,6 +561,34 @@ def load_schema(
         producer = producers.get(name)
         if producer is None:
             raise SchemaError(f"intrinsic callable {name!r} has no manifest producer")
+        iterator_payload = None
+        if "iterator_payload" in row:
+            record = row["iterator_payload"]
+            public = public_objects.get(name)
+            if (
+                not isinstance(record, dict)
+                or set(record) != {"parameter", "shape"}
+                or result_identity is None
+                or result_identity in iterator_classes
+                or producer.arity != 0
+                or public is None
+                or public.producer is not PublicObjectProducer.INTRINSIC
+                or public.constructor is None
+            ):
+                raise SchemaError(
+                    "iterator payload requires a stable native constructor"
+                )
+            slot = iterator_payload_slot(public.constructor, record["parameter"])
+            if public.constructor_312 is not None and slot != iterator_payload_slot(
+                public.constructor_312, record["parameter"]
+            ):
+                raise SchemaError("iterator payload moved between constructor versions")
+            try:
+                shape = IteratorPayloadShape(record["shape"])
+            except (TypeError, ValueError) as error:
+                raise SchemaError("unknown iterator payload shape") from error
+            iterator_payload = IteratorPayload(*slot, shape)
+            iterator_classes.add(result_identity)
         missing_feature = row.get("none_without_feature")
         if "none_without_feature" in row and (
             not isinstance(missing_feature, str)
@@ -635,6 +705,8 @@ def load_schema(
                 native_initializer,
                 namespace_entry_read,
                 missing_feature,
+                result_identity,
+                iterator_payload,
             )
         )
     if used_properties != set(properties):
@@ -672,7 +744,7 @@ def render_python(schema: Schema) -> str:
     lines = [
         "# @generated by tools/gen_python_identity_catalog.py from\n",
         "# src/molt/compiler_analysis/python_identity_catalog.toml,\n",
-        "# runtime/exception_kinds.toml and\n",
+        "# runtime/exception_kinds.toml, runtime/molt-runtime/src/intrinsics/public_objects.toml and\n",
         "# runtime/molt-runtime/src/intrinsics/manifest.pyi. DO NOT EDIT.\n",
         '"""Closed compiler-only identities, acquisitions and mutation guards."""\n\n',
         "from __future__ import annotations\n\n",
@@ -809,6 +881,40 @@ def render_python(schema: Schema) -> str:
                 f"(PythonIdentity.{result}, {protocol!r})",
             )
             for identity, result, protocol, _producer in schema.builtin_return_captures
+        ],
+    )
+    mapping(
+        "INTRINSIC_RESULT_IDENTITIES",
+        "PythonIdentity",
+        "PythonIdentity",
+        [
+            (f"PythonIdentity.{row.identity}", f"PythonIdentity.{row.result_identity}")
+            for row in schema.intrinsic_callables
+            if row.result_identity is not None
+        ],
+    )
+    lines.extend(
+        (
+            "class PythonIteratorPayloadKind(Enum):\n",
+            *[f"    {item.name} = {item.value!r}\n" for item in IteratorPayloadShape],
+            "\n\nclass PythonIteratorPayload(NamedTuple):\n",
+            "    position: int | None\n",
+            "    keyword: str | None\n",
+            "    kind: PythonIteratorPayloadKind\n\n\n",
+        )
+    )
+    mapping(
+        "NATIVE_ITERATOR_PAYLOADS",
+        "PythonIdentity",
+        "PythonIteratorPayload",
+        [
+            (
+                f"PythonIdentity.{row.result_identity}",
+                f"PythonIteratorPayload({payload.position!r}, {payload.keyword!r}, "
+                f"PythonIteratorPayloadKind.{payload.shape.name})",
+            )
+            for row in schema.intrinsic_callables
+            if (payload := row.iterator_payload) is not None
         ],
     )
     mapping(
