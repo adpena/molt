@@ -590,6 +590,19 @@ def test_the_batch_reuses_only_a_receipt_run_on_exactly_the_tree(
     exact = consumer_gate.proven_gates(repo, tree, exact=True)
     assert exact is not None and exact(gate)
 
+    # The working tree can still be committed after a known main failure or
+    # a successful isolated retry. Neither produces a passing cohort result.
+    receipt_path = consumer_gate.receipt_path(repo, tree)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    for field in ("preexisting_failures", "flaky_reruns"):
+        receipt_path.write_text(
+            json.dumps({**receipt, field: ["tests/test_lib.py::test_value"]}),
+            encoding="utf-8",
+        )
+        exact = consumer_gate.proven_gates(repo, tree, exact=True)
+        assert exact is not None and not exact(gate)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
     # An untracked file the tree lacks could have made the tests pass: the
     # lane precheck may still skip the gate, the batch may not.
     (repo / "helper.py").write_text("X = 1\n", encoding="utf-8")
@@ -733,6 +746,14 @@ def test_an_importer_run_asks_one_worker_per_file_at_its_declared_memory(
         if word.startswith("--molt-worker-memory-gb=")
     )
     half = (host_capacity.cpu_count() + 1) // 2
-    assert demand == host_capacity.HostWorkDemand(max(13, half), int(unit * 1024**3))
+    unit_bytes = int(unit * 1024**3)
+    assert demand == host_capacity.HostWorkDemand(
+        max(13, half), unit_bytes, minimum_workers=1
+    )
+    budget = host_capacity.HostWorkBudget(cpus=6, memory_bytes=6 * unit_bytes)
+    active = host_capacity.HostWorkGrant(workers=4, memory_bytes=4 * unit_bytes)
+    assert budget.grant_beside(demand, [active]) == host_capacity.HostWorkGrant(
+        workers=2, memory_bytes=2 * unit_bytes
+    )
     # One file still asks for half the host: it may hold thousands of tests.
     assert consumer_gate._importer_demand(argv, 1, root=root).workers == half
