@@ -676,3 +676,78 @@ fn finalizer_bearing_allocation_artifact_cannot_erase_fields() {
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(n_stores(&func), 1);
 }
+
+#[test]
+fn materialized_tuple_reads_require_success_and_a_reference_neutral_member() {
+    use molt_ir::OpKind;
+
+    let mut func = TirFunction::new(
+        "tuple_fields".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let opaque = func.blocks[&func.entry_block].args[0].id;
+    let handler = func.fresh_block();
+    func.label_id_map.insert(handler.0, 42);
+    let zero = func.fresh_value();
+    let minus_one = func.fresh_value();
+    let two = func.fresh_value();
+    let tuple = func.fresh_value();
+    let home = func.fresh_value();
+    let picked = func.fresh_value();
+    let heap = func.fresh_value();
+    let out_of_range = func.fresh_value();
+    let after_failure = func.fresh_value();
+    let constructor =
+        op(OpCode::Copy, vec![opaque, two], vec![tuple]).with_origin(OpKind::TupleNew);
+    let mut check = op(OpCode::CheckException, vec![], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(42));
+    check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+    let mut store = op(OpCode::Copy, vec![tuple], vec![home]).with_origin(OpKind::FrameHomeStore);
+    store.attrs.insert("value".into(), AttrValue::Int(0));
+    let release = op(OpCode::DecRef, vec![tuple], vec![]);
+    let read = |receiver, index, result| op(OpCode::Index, vec![receiver, index], vec![result]);
+    let success_read = read(home, minus_one, picked);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops = vec![
+        const_int(0, zero),
+        const_int(-1, minus_one),
+        const_int(2, two),
+        constructor.clone(),
+        check.clone(),
+        store.clone(),
+        success_read,
+        read(home, zero, heap),
+        read(home, two, out_of_range),
+        release.clone(),
+    ];
+    entry.terminator = Terminator::Return { values: vec![] };
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![read(tuple, minus_one, after_failure)],
+            terminator: Terminator::Unwind,
+        },
+    );
+    let stats = super::forward_materialized_tuple_fields(&mut func, &mut AnalysisManager::new());
+    assert_eq!(stats.values_changed, 1);
+    let ops = &func.blocks[&func.entry_block].ops;
+    assert_eq!(ops[3].origin, constructor.origin);
+    assert_eq!(ops[3].operands, constructor.operands);
+    assert_eq!(ops[4].exception_edge_kind(), check.exception_edge_kind());
+    assert_eq!(ops[4].attrs, check.attrs);
+    assert_eq!(ops[5].origin, store.origin);
+    assert_eq!(ops[5].operands, store.operands);
+    assert_eq!(
+        (ops[6].opcode, &ops[6].operands, &ops[6].results),
+        (OpCode::Copy, &vec![two], &vec![picked])
+    );
+    assert_eq!(ops[7].opcode, OpCode::Index);
+    assert_eq!(ops[8].opcode, OpCode::Index);
+    assert_eq!(ops[9].opcode, OpCode::DecRef);
+    assert_eq!(ops[9].operands, release.operands);
+    assert_eq!(func.blocks[&handler].ops[0].opcode, OpCode::Index);
+}

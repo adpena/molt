@@ -765,6 +765,16 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
                 }
             }
         }),
+        pass("materialized_tuple_fields", OpsOnly, |f, am, tti| {
+            if target_uses_tir_drop_insertion(tti) {
+                passes::sroa::forward_materialized_tuple_fields(f, am)
+            } else {
+                PassStats {
+                    name: "materialized_tuple_fields",
+                    ..Default::default()
+                }
+            }
+        }),
         pass("block_arg_prune_post_drop", Cfg, |f, _am, _tti| {
             let mut stats = passes::block_arg_prune::run(f);
             stats.name = "block_arg_prune_post_drop";
