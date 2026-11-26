@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeProgramScope;
 use crate::runtime_import_abi::NATIVE_RUNTIME_HELPER_IMPORTS;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::InstructionData;

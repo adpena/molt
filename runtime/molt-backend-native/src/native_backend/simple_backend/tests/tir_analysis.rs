@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeProgramScope;
 use molt_ir::OpKind;
 
 #[test]
