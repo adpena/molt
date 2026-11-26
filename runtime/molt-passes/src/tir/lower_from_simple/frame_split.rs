@@ -111,6 +111,7 @@ pub(super) fn split_stateful_frame(
     function_name: &str,
     params: &[String],
     mut ops: Vec<OpIR>,
+    observe_async_work: bool,
 ) -> FrameSplit {
     let Some(switch) = ops.iter().position(|op| op.kind == OpKind::StateSwitch) else {
         return FrameSplit { ops, layout: None };
@@ -373,6 +374,9 @@ pub(super) fn split_stateful_frame(
             })
             .collect(),
     );
+    if observe_async_work && !releases.is_empty() {
+        preserve_source_latch_polls(&mut ops, &liveness, &releases);
+    }
     let mut out = Vec::with_capacity(ops.len() + before.values().map(Vec::len).sum::<usize>());
     for (index, op) in ops.into_iter().enumerate() {
         if let Some(inserted) = before.remove(&index) {
@@ -526,12 +530,58 @@ fn slot_releases<'a>(
     releases
 }
 
+/// Preserve the source poll before a dying spill is released. Its finalizer
+/// can run Python, so a post-split latch walk cannot cross the release. The
+/// source CFG still identifies the exact successful check-to-continue edge.
+fn preserve_source_latch_polls(
+    ops: &mut [OpIR],
+    liveness: &SourceLiveness,
+    releases: &BTreeMap<usize, Vec<OpIR>>,
+) {
+    use molt_ir::tir::dominators::{SimpleExecutionDominance, SimpleProgramPoint};
+    let mut execution = None;
+    let cfg = &liveness.cfg;
+    for &check in releases.keys() {
+        let latch = check + 1;
+        if ops[check].kind != OpKind::CheckException
+            || ops[check].exception_edge != Some(ExceptionEdgeKind::Unwind)
+            || ops[check].value.is_none()
+            || ops
+                .get(latch)
+                .is_none_or(|op| op.kind != OpKind::LoopContinue)
+        {
+            continue;
+        }
+        let block = liveness.facts.block_for_op(latch);
+        let [header] = cfg.successors[block].as_slice() else {
+            continue;
+        };
+        if ops[cfg.blocks[*header].start_op].kind != OpKind::LoopStart {
+            continue;
+        }
+        let points = execution.get_or_insert_with(|| SimpleExecutionDominance::compute(cfg, ops));
+        if points.operation_is_reachable(latch)
+            && points.definition_available(
+                SimpleDefinitionSite::Operation(check),
+                SimpleProgramPoint::Before(latch),
+            )
+        {
+            ops[check].kind = OpKind::AsyncWorkPoll;
+        }
+    }
+}
+
 /// The last of the exception checks that follow `index`, or `index` itself.
 /// A frame slot transfer goes after them: the checks consume the pending
 /// exception of the operation they follow, and a release may run a finalizer.
 fn past_exception_checks(ops: &[OpIR], index: usize) -> usize {
     let mut position = index;
-    while position + 1 < ops.len() && ops[position + 1].kind == OpKind::CheckException {
+    while position + 1 < ops.len()
+        && matches!(
+            ops[position + 1].kind,
+            OpKind::CheckException | OpKind::AsyncWorkPoll
+        )
+    {
         position += 1;
     }
     position
@@ -746,7 +796,7 @@ mod tests {
     }
 
     fn split(ops: Vec<OpIR>) -> FrameSplit {
-        split_stateful_frame("poll", &["self".into()], ops)
+        split_stateful_frame("poll", &["self".into()], ops, true)
     }
 
     #[test]
@@ -1015,6 +1065,45 @@ mod tests {
             .unwrap();
         assert!(is_release(&out.ops[read + 1]));
         assert_eq!(out.ops[read + 1].value, Some(8));
+    }
+
+    #[test]
+    fn a_suspended_loop_services_its_authored_poll_before_releasing_a_dead_slot() {
+        for (exit, observation) in [
+            (OpKind::LoopContinue, OpKind::AsyncWorkPoll),
+            (OpKind::LoopBreak, OpKind::CheckException),
+        ] {
+            let check = OpIR {
+                value: Some(99),
+                exception_edge: Some(ExceptionEdgeKind::Unwind),
+                ..op(OpKind::CheckException)
+            };
+            let out = split(vec![
+                switch(8),
+                konst("k", 1),
+                op(OpKind::LoopStart),
+                add("spill", "k", "k"),
+                yield_("k", 1),
+                label(1),
+                add("last_read", "spill", "k"),
+                check,
+                op(exit),
+                op(OpKind::LoopEnd),
+                plain_label(99),
+                ret("k"),
+            ]);
+            let pos = out
+                .ops
+                .iter()
+                .position(|op| op.kind == observation && op.value == Some(99))
+                .unwrap();
+            assert_eq!(out.ops[pos].exception_edge, Some(ExceptionEdgeKind::Unwind));
+            assert!(
+                is_release(&out.ops[pos + 1]),
+                "slot finalization follows the original observation"
+            );
+            assert_eq!(out.ops[pos + 2].kind, exit);
+        }
     }
 
     #[test]

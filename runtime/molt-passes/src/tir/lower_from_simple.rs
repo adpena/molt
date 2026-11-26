@@ -116,10 +116,12 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     let working_ops = normalize_loop_indices(&ir.name, source_ops);
     // A stateful activation's values cross its suspensions here, once, for
     // every backend (`frame_split`).
+    let observe_async_work =
+        target_info.is_some_and(TargetInfo::supports_pending_call_eval_breaker_poll);
     let FrameSplit {
         ops: mut working_ops,
         layout: stateful_frame,
-    } = split_stateful_frame(&ir.name, &ir.params, working_ops);
+    } = split_stateful_frame(&ir.name, &ir.params, working_ops, observe_async_work);
     // RC drop-insertion substrate (design 20): function-level attrs do not live
     // in FunctionIR, so drop facts round-trip as leading SimpleIR marker ops. The
     // full `drop_inserted` marker tells native to disable its legacy value-tracker
@@ -157,12 +159,11 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
         parameter_custody: ir.parameter_custody.clone(),
         execution_context: ir.execution_context,
     };
-    let mut tir_func =
-        if target_info.is_some_and(TargetInfo::supports_pending_call_eval_breaker_poll) {
-            lower_prepared_with_async_work_materialization(&mut tmp_ir, stateful_frame.is_some())
-        } else {
-            lower_prepared_function(&tmp_ir)
-        };
+    let mut tir_func = if observe_async_work {
+        lower_prepared_with_async_work_materialization(&mut tmp_ir, stateful_frame.is_some())
+    } else {
+        lower_prepared_function(&tmp_ir)
+    };
     if let Some(FrameLayout {
         spill_base,
         frame_size,
