@@ -14,6 +14,7 @@ const CHUNK: u64 = 0x2_0000;
 const CHUNK_BYTES: u64 = 0x1000;
 const FUNCTION: u64 = 0x3_0000;
 const CODE: u64 = 0x4_0000;
+const RECURSION_LIMIT: u64 = 0x5_0000;
 const SLOT: u64 = 7;
 const SLOW_BASE: u64 = 0x9_0000;
 
@@ -212,6 +213,79 @@ impl FrameBuilder for Machine {
             (0..count).for_each(|index| body(self, index));
         }
     }
+}
+
+#[test]
+fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
+    let mut machine = Machine::new();
+    machine.write(THREAD, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET, 0);
+    machine.write(THREAD, crate::THREAD_RECORD_RECURSION_DEPTH_OFFSET, 8);
+    machine.write(
+        THREAD,
+        crate::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
+        RECURSION_LIMIT,
+    );
+    machine.write(RECURSION_LIMIT, 0, 10);
+    let code_slot = machine.read(CODE, CODE_FRAME_SLOT_OFFSET) - 1;
+    let function = boxed(FUNCTION);
+    let before_top = machine.read(THREAD, THREAD_RECORD_ARENA_TOP_OFFSET);
+    let before_frame = machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET);
+    let before_handoff = machine.read(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET);
+    let root = VirtualFramePrefix::default();
+    let parent = VirtualFramePrefix::from_counts(3, 1).unwrap();
+    let nested = VirtualFramePrefix::from_counts(11, 2).unwrap();
+    assert_eq!(
+        parent.arena_bytes,
+        (FRAME_RECORD_HEADER_BYTES + 3 * FRAME_HOME_BYTES) as u32
+    );
+    assert_eq!(
+        nested.arena_bytes,
+        (2 * FRAME_RECORD_HEADER_BYTES + 11 * FRAME_HOME_BYTES) as u32
+    );
+    assert!(VirtualFramePrefix::from_counts(u32::MAX, 1).is_none());
+    assert!(VirtualFramePrefix::from_counts(0, u32::MAX).is_none());
+    let with_space = VirtualFramePrefix {
+        arena_bytes: 0x1000,
+        ..parent
+    };
+    for (slot, homes, prefix, expected) in [
+        (code_slot, 2, root, 1),
+        (code_slot, 2, parent, 1),
+        (code_slot, 2, nested, 0),
+        (code_slot, 2, with_space, 0),
+        (code_slot + 1, 2, parent, 0),
+        (code_slot, u32::MAX, root, 0),
+    ] {
+        assert_eq!(
+            generate_frame_entry_admits(&mut machine, THREAD, function, slot, homes, prefix),
+            expected
+        );
+    }
+    machine.write(THREAD, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET, 1);
+    assert_eq!(
+        generate_frame_entry_admits(&mut machine, THREAD, function, code_slot, 2, root),
+        0
+    );
+    assert_eq!(
+        machine.read(THREAD, THREAD_RECORD_ARENA_TOP_OFFSET),
+        before_top
+    );
+    assert_eq!(
+        machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET),
+        before_frame
+    );
+    assert_eq!(
+        machine.read(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET),
+        before_handoff
+    );
+    assert_eq!(
+        machine.read(THREAD, crate::THREAD_RECORD_RECURSION_DEPTH_OFFSET),
+        8
+    );
+    assert!(
+        machine.events.is_empty(),
+        "the probe neither retains nor calls the runtime"
+    );
 }
 
 #[test]
@@ -479,48 +553,4 @@ fn a_task_without_an_initialized_record_links_through_the_runtime() {
     machine.events.clear();
     generate_stateful_frame_unlink(&mut machine, THREAD, 0);
     assert!(machine.events.is_empty());
-}
-
-#[test]
-fn an_entry_value_names_a_stateful_entry_apart_from_every_shape() {
-    assert_eq!(
-        FrameEntryKind::from_entry_value(FRAME_ENTRY_STATEFUL),
-        FrameEntryKind::Stateful
-    );
-    for shape in [
-        FrameShape {
-            homes: 0,
-            descending: false,
-        },
-        FrameShape {
-            homes: u32::MAX,
-            descending: true,
-        },
-    ] {
-        assert_eq!(
-            FrameEntryKind::from_entry_value(shape.entry_value()),
-            FrameEntryKind::Synchronous(shape)
-        );
-    }
-}
-
-#[test]
-fn an_entry_value_round_trips_the_frame_shape() {
-    for shape in [
-        FrameShape {
-            homes: 0,
-            descending: false,
-        },
-        FrameShape {
-            homes: 5,
-            descending: true,
-        },
-        FrameShape {
-            homes: u32::MAX,
-            descending: true,
-        },
-    ] {
-        assert!(shape.entry_value() >= 0);
-        assert_eq!(FrameShape::from_entry_value(shape.entry_value()), shape);
-    }
 }

@@ -3,7 +3,7 @@ use super::builder::CodegenBuilder;
 use super::control::coerce;
 use super::function::FunctionCx;
 use super::value_table::HeldCarrier;
-use molt_codegen_abi::frame_record::FrameEntryKind;
+use molt_ir::frame_entry::FrameEntryKind;
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::tir::values::ValueId;
 

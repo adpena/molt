@@ -215,7 +215,7 @@ fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
 #[test]
 fn run_inliner_uses_hot_budget_for_numeric_raw_lane_call_results() {
     let callee = over_base_budget_float_callee("eval_like");
-    let caller = loop_numeric_caller("eval_like");
+    let mut caller = loop_numeric_caller("eval_like");
     let mut forwarding_caller = caller.clone();
     forwarding_caller.name = "forwarding_caller".into();
     forwarding_caller.loop_roles.clear();
@@ -227,6 +227,38 @@ fn run_inliner_uses_hot_budget_for_numeric_raw_lane_call_results() {
     block.terminator = Terminator::Return {
         values: block.ops[0].results.clone(),
     };
+    // An intermediate block and its copy hide the producer from a direct
+    // operand census, but leave one real arithmetic demand.
+    let entry_id = caller.entry_block;
+    let continuation = caller.fresh_block();
+    let merged = caller.fresh_value();
+    let copy = caller.fresh_value();
+    caller.value_types.insert(merged, TirType::F64);
+    caller.value_types.insert(copy, TirType::F64);
+    let entry = caller.blocks.get_mut(&entry_id).unwrap();
+    let actual = entry.ops[0].results[0];
+    let mut tail = entry.ops.split_off(1);
+    tail.last_mut().unwrap().operands[0] = copy;
+    tail.insert(0, TirOp::new(OpCode::Copy, vec![merged], vec![copy]));
+    let terminator = std::mem::replace(
+        &mut entry.terminator,
+        Terminator::Branch {
+            target: continuation,
+            args: vec![actual],
+        },
+    );
+    caller.blocks.insert(
+        continuation,
+        TirBlock {
+            id: continuation,
+            args: vec![crate::tir::values::TirValue {
+                id: merged,
+                ty: TirType::F64,
+            }],
+            ops: tail,
+            terminator,
+        },
+    );
     let mut m = module(vec![caller, forwarding_caller, callee]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();

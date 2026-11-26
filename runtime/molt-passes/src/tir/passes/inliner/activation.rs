@@ -79,9 +79,12 @@ pub(super) struct Activations {
 struct CallerFacts {
     aliases: AliasUnionFind,
     raw: HashSet<ValueId>,
+    full_range_raw: HashSet<ValueId>,
     liveness: TirLivenessResult,
     last_read: HashMap<(BlockId, ValueId), usize>,
     parameters: HashSet<ValueId>,
+    immutable_cells: HashSet<ValueId>,
+    physical_home_arguments: HashSet<(BlockId, usize, ValueId)>,
     checked_results: HashSet<ValueId>,
     single_use_sequences: HashSet<ValueId>,
 }
@@ -147,6 +150,26 @@ impl Activations {
             .is_some_and(|facts| facts.kept_alive_at(site, value))
     }
 
+    /// An initialized immutable cell can independently own a captured
+    /// callable even when there is no surviving syntactic SSA use.
+    pub(super) fn immutable_cell_holds(&self, value: ValueId) -> bool {
+        self.caller
+            .as_ref()
+            .is_some_and(|facts| facts.immutable_cells.contains(&facts.aliases.root(value)))
+    }
+
+    /// Only reference-bearing homes need a runtime owner during the splice.
+    pub(super) fn frame_parameter_outlives(&self, site: &CallSite, value: ValueId) -> bool {
+        self.caller.as_ref().is_some_and(|facts| {
+            // A raw full-range int has no carrier refcount, but boxing
+            // it for a Python home can create a separate heap object.
+            !facts.full_range_raw.contains(&value)
+                && (facts.raw.contains(&value)
+                    || facts.kept_alive_at(site, value)
+                    || facts.physical_frame_holds(site, value))
+        })
+    }
+
     /// The body to splice for `callee` under `bindings`, or `None` when no
     /// activation keeps the call's reference contract.
     pub(super) fn prepare(
@@ -210,14 +233,33 @@ impl CallerFacts {
                 single_use_sequences.retain(|value| uses.get(value) == Some(&1));
             }
         }
+        let physical_home_arguments = super::super::frame_location_placement::held_call_arguments(
+            caller,
+            rewritten_reads,
+            &aliases,
+            &carriers,
+        );
+        let full_range_raw = carriers
+            .iter()
+            .filter_map(|(&id, carrier)| carrier.is_raw_i64_full_deopt().then_some(id))
+            .collect();
         let raw = carriers
             .into_iter()
             .filter_map(|(id, carrier)| carrier.carrier_refcount_is_noop().then_some(id))
             .collect();
         let liveness = surviving_read_liveness(caller, &aliases, &raw, rewritten_reads);
         let mut last_read = HashMap::default();
+        let mut immutable_cells = HashSet::default();
         for (&id, block) in &caller.blocks {
             for (index, op) in block.ops.iter().enumerate() {
+                if op.opcode == OpCode::StaticCellLoad
+                    && let [result] = op.results[..]
+                    && op
+                        .global_slot()
+                        .is_some_and(|slot| slot.cell && slot.init_once)
+                {
+                    immutable_cells.insert(aliases.root(result));
+                }
                 if !rewritten_reads.contains(&(id, index)) {
                     for &operand in &op.operands {
                         last_read.insert((id, aliases.root(operand)), index);
@@ -236,12 +278,23 @@ impl CallerFacts {
         Self {
             aliases,
             raw,
+            full_range_raw,
             liveness,
             last_read,
             parameters,
+            immutable_cells,
+            physical_home_arguments,
             checked_results,
             single_use_sequences,
         }
+    }
+
+    fn physical_frame_holds(&self, site: &CallSite, value: ValueId) -> bool {
+        self.physical_home_arguments.contains(&(
+            site.block,
+            site.op_index,
+            self.aliases.root(value),
+        ))
     }
 
     /// A later read must survive every admitted splice. Original coordinates

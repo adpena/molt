@@ -940,7 +940,7 @@ enum FastCheck {
 
 /// A checked op: its first result is the wrapped value, its second the
 /// overflow flag.
-fn is_checked(opcode: OpCode) -> bool {
+pub(super) fn is_checked(opcode: OpCode) -> bool {
     use crate::tir::op_kinds_generated::{
         ReprRawI64FullDeoptSeedRule, opcode_repr_raw_i64_full_deopt_seed_rule_table,
     };

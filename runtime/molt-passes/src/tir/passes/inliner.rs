@@ -9,7 +9,13 @@ mod call_sites;
 mod clone_body;
 mod driver;
 mod eligibility;
+mod packed_read;
+mod packed_splice;
+pub(crate) mod packed_wrapper;
+mod packed_wrapper_prefix;
+mod packed_wrapper_resume;
 mod splice;
+mod sync_frame;
 
 #[cfg(test)]
 mod tests;

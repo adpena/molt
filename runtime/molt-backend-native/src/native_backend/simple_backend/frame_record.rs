@@ -4,10 +4,11 @@
 
 use super::*;
 use crate::codegen_ssa::frame::{self, FrameBody, FramePlacement};
-use molt_codegen_abi::frame_record::{FrameBuilder, FrameEntryKind};
+use molt_codegen_abi::frame_record::{FrameBuilder, VirtualFramePrefix};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
+use molt_ir::frame_entry::FrameEntryKind;
 
 /// What one function's frame transitions call off their inline paths.
 #[derive(Clone, Copy)]
@@ -46,6 +47,26 @@ impl RecordWordBuilder for NativeFrameBuilder<'_, '_> {
     fn load_shared_word(&mut self, address: Value, offset: i32) -> Value {
         self.words.load_shared_word(address, offset)
     }
+}
+
+pub(crate) fn emit_frame_entry_probe(
+    builder: &mut FunctionBuilder<'_>,
+    sites: NativeFrameSites,
+    thread: Value,
+    function: Value,
+    code: Value,
+    homes: u32,
+    prefix: VirtualFramePrefix,
+) -> Value {
+    let mut b = NativeFrameBuilder {
+        words: NativeWords { builder },
+        sites,
+        slow_blocks: Vec::new(),
+        tasks: None,
+    };
+    molt_codegen_abi::frame_record::generate_frame_entry_admits(
+        &mut b, thread, function, code, homes, prefix,
+    )
 }
 
 impl NativeFrameBuilder<'_, '_> {

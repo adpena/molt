@@ -92,7 +92,7 @@ use crate::tir::target_info::TargetInfo;
 use super::activation::Activations;
 use super::call_sites::{InlineSiteUses, collect_call_sites};
 use super::eligibility::{
-    callee_op_count, classify_inline_eligibility, is_inline_safe, is_numeric_raw_lane_return_type,
+    callee_op_count, classify_with_wrapper, is_inline_safe, is_numeric_raw_lane_return_type,
 };
 use super::splice::splice_call_site;
 
@@ -139,6 +139,8 @@ pub fn run_inliner(
     let hot_cap = tti.hot_inline_op_limit();
     let mut diagnostics =
         (backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1")).then(Vec::new);
+    let final_tir = tti.lowering.final_lowering == crate::tir::target_info::FinalLowering::FinalTir;
+    let mut wrappers = HashMap::default();
 
     // Evaluate a callee once, and look for an SSA witness at each site that
     // requests a larger budget. The body stays module-owned.
@@ -151,10 +153,26 @@ pub fn run_inliner(
             !call_graph.callers(*id).is_empty() && !non_inlinable.contains(&f.name)
         })
         .filter_map(|(idx, (f, id))| {
-            let budget = match classify_inline_eligibility(id, f, call_graph, summaries, tti) {
+            if final_tir
+                && call_graph.callees(id).len() >= 2
+                && f.exact_param_types
+                    .iter()
+                    .any(|ty| matches!(ty, crate::tir::types::TirType::Class(_)))
+                && let Some(proof) = super::packed_wrapper::summarize(id, f, |callee| {
+                    index_of
+                        .get(callee.index())
+                        .copied()
+                        .flatten()
+                        .map(|index| &module.functions[index])
+                })
+            {
+                wrappers.insert(id, proof);
+            }
+            let wrapper = wrappers.get(&id);
+            let budget = match classify_with_wrapper(id, f, call_graph, summaries, tti, wrapper) {
                 InlineEligibility::Eligible => InlineBudget::Ordinary,
                 InlineEligibility::WhyNot(InlineWhyNot::OverBudget)
-                    if is_inline_safe(id, f, call_graph) =>
+                    if wrapper.is_some() || is_inline_safe(id, f, call_graph) =>
                 {
                     InlineBudget::NeedsBenefit {
                         numeric: is_numeric_raw_lane_return_type(&f.return_type),
@@ -285,11 +303,25 @@ pub fn run_inliner(
                     (&mut right[0], &left[callee_idx])
                 };
                 let callee_has_exception_handling = callee.has_exception_handling;
-                if let Some(continuation) =
+                let splice = if let Some(summary) = wrappers.get(&site.callee) {
+                    let continuation = super::packed_wrapper_resume::splice(
+                        caller,
+                        callee,
+                        &site,
+                        summary,
+                        &mut activations,
+                    );
+                    if continuation.is_some() && diagnostics.is_some() {
+                        eprintln!("[packed-wrapper splice] {} -> {}", caller.name, callee.name);
+                    }
+                    continuation.map(|block| (block, true))
+                } else {
                     splice_call_site(caller, callee, &site, &mut activations)
-                {
+                        .map(|block| (block, false))
+                };
+                if let Some((continuation, preserve_poll)) = splice {
                     stats.sites_inlined += 1;
-                    if let Some((poll_block, poll_index)) = poll {
+                    if !preserve_poll && let Some((poll_block, poll_index)) = poll {
                         inlined_call_polls.push(
                             if poll_block == site.block && poll_index > site.op_index {
                                 (continuation, poll_index - site.op_index - 1)

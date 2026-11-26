@@ -204,3 +204,60 @@ fn placement_is_idempotent() {
     assert_eq!((publications(&func), origin_locations(&func)), first);
     assert_eq!(again.total_changes(), 0);
 }
+
+/// An alias of a physical home has its own lifetime proof only until the
+/// exact stored view ceases to reach the call on every possible edge.
+#[test]
+fn a_closed_caller_home_holds_only_the_reaching_boxed_view() {
+    use crate::tir::passes::alias_analysis::build_alias_union_find;
+    use molt_ir::deterministic_hash::HashSet;
+
+    let mut func = lift(
+        "local",
+        serde_json::json!([
+            {"kind":"frame_home_store", "value":0, "args":["p"], "out":"home"},
+            {"kind":"copy", "args":["home"], "out":"alias"},
+            {"kind":"call","s_value":"before","args":["alias"],"out":"ignored"},
+            {"kind":"check_exception","exception_edge":"origin","value":9},
+            {"kind":"if","args":["p"]},
+            {"kind":"frame_home_clear","value":0},
+            {"kind":"end_if"},
+            {"kind":"call","s_value":"after","args":["alias"],"out":"last"},
+            {"kind":"check_exception","exception_edge":"origin","value":9}
+        ]),
+    );
+    func.blocks.get_mut(&func.entry_block).unwrap().ops[0]
+        .attrs
+        .insert("value".into(), AttrValue::Int(1));
+    let aliases = build_alias_union_find(&func);
+    let sites: HashSet<_> = func
+        .blocks
+        .iter()
+        .flat_map(|(&id, b)| {
+            b.ops
+                .iter()
+                .enumerate()
+                .filter_map(move |(at, op)| (op.opcode == OpCode::Call).then_some((id, at)))
+        })
+        .collect();
+    assert_eq!(sites.len(), 2);
+    let (&before, _) = sites
+        .iter()
+        .map(|site| (site, &func.blocks[&site.0].ops[site.1]))
+        .find(|(_, op)| matches!(op.attrs.get("s_value"), Some(AttrValue::Str(name)) if name == "before"))
+        .unwrap();
+    let arg = func.blocks[&before.0].ops[before.1].operands[0];
+    let view = aliases.root(arg);
+    let expected = HashSet::from_iter([(before.0, before.1, view)]);
+    assert_eq!(
+        held_call_arguments(&func, &sites, &aliases, &HashMap::default()),
+        expected
+    );
+    let full = HashMap::from_iter([(view, crate::repr::Repr::RawI64FullDeopt)]);
+    assert!(held_call_arguments(&func, &sites, &aliases, &full).is_empty());
+    func.attrs.insert(
+        crate::tir::function::FRAME_LOCALS_EXPOSED_ATTR.into(),
+        AttrValue::Bool(true),
+    );
+    assert!(held_call_arguments(&func, &sites, &aliases, &HashMap::default()).is_empty());
+}

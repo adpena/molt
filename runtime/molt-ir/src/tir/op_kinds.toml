@@ -1537,6 +1537,9 @@ gvn_numberable_attr_key_opcodes = [
 # wire under their own kind and carry no frontend facts.
 final_tir_opcodes = [
     "TryBuffer2dLoadI64",
+    "ProbeInlineField",
+    "FrameEntryAdmits",
+    "StringLiteralCellReady",
     "IsInlineInt",
     "UnboxInlineInt",
     "IsFloatWord",
@@ -1557,6 +1560,12 @@ final_tir_opcodes = [
     "CallNative",
     "GlobalSlotBase",
 ]
+
+# A value rooted in another owner, with no independent reference credit.
+ownership_held_view_opcodes = ["StaticCellLoad", "FunctionClosure", "ProbeInlineField"]
+
+# TIR-only operands that can name a compiled function without a wire kind.
+late_compiled_function_reference_opcodes = ["DirectCall", "CodeIs", "StringLiteralCellReady"]
 
 # proven_result_type_seed_opcodes: constants whose intrinsic result type is
 # useful as a proven-map seed. This is intentionally separate from
@@ -3373,6 +3382,47 @@ side_effecting = true
 purity = "impure"
 may_access_arbitrary_heap = false
 result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# Read a borrowed field word from a proven fixed layout. A miss returns None.
+[[opcode]]
+name = "ProbeInlineField"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["dynbox"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# Test the shared physical frame-entry contract without reserving storage.
+[[opcode]]
+name = "FrameEntryAdmits"
+may_call_python = false
+operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StringLiteralCellReady"
+may_call_python = false
+operand_arity = 0
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 

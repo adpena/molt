@@ -10,6 +10,7 @@ use crate::tir::types::TirType;
 
 use super::super::ip_summary::ModuleSummaries;
 use super::activation::releases_unowned_parameter;
+use super::packed_wrapper::PackedWrapper;
 
 /// inlining this arc (and likely permanently - these are never simple leaves).
 fn is_generator_or_async_op(opcode: OpCode) -> bool {
@@ -19,9 +20,8 @@ fn is_generator_or_async_op(opcode: OpCode) -> bool {
 /// Whether `callee` may be inlined under phases a + b.
 ///
 /// Conservative-correct exclusions (any one disqualifies):
-/// * **recursive** - a member of the call graph's recursive set (a recursion
-///   cycle, a self-edge, or a function with an opaque call). Inlining a recursive
-///   callee is unbounded.
+/// * **recursive** - a static call cycle makes copying unbounded. An opaque
+///   call needs a charged, observable splice that can publish its frame.
 /// * **over budget** - `op_count` exceeds the cost model's
 ///   [`inline_budget`](crate::tir::target_info::TargetInfo::inline_budget) for
 ///   this callee. The op count is the same metric the
@@ -73,10 +73,7 @@ pub fn is_inlineable(
 /// reason is deterministic): the [`inline_safety_gate`] correctness gates
 /// (execution context -> physical partition -> recursion -> handlers ->
 /// generator -> entry-predecessor -> closure -> unowned parameter release)
-/// first, then
-/// the cost-model op-count budget ([`InlineWhyNot::OverBudget`]). This matches the
-/// short-circuit order of the prior `is_inline_safe && within_budget` predicate
-/// exactly, so the bool is byte-identical at every call site.
+/// first, then the cost-model op-count budget ([`InlineWhyNot::OverBudget`]).
 pub fn classify_inline_eligibility(
     callee_id: molt_ir::FunctionId,
     callee: &TirFunction,
@@ -84,11 +81,24 @@ pub fn classify_inline_eligibility(
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
 ) -> InlineEligibility {
+    classify_with_wrapper(callee_id, callee, call_graph, summaries, tti, None)
+}
+
+/// A source-validated composed wrapper has its own frame-preserving rewrite.
+/// All ordinary call sites retain the frameless eligibility policy.
+pub(super) fn classify_with_wrapper(
+    callee_id: molt_ir::FunctionId,
+    callee: &TirFunction,
+    call_graph: &CallGraph,
+    summaries: &ModuleSummaries,
+    tti: &TargetInfo,
+    wrapper: Option<&PackedWrapper>,
+) -> InlineEligibility {
     // A closure callee inlines where its environment is the callee's own
     // closure tuple, which a final-TIR target reads from the proven call's
     // function object (design 78 5.10); the splice admits only those sites.
     let closures = tti.lowering.final_lowering == crate::tir::target_info::FinalLowering::FinalTir;
-    if let Some(reason) = inline_safety_gate(callee_id, callee, call_graph, closures) {
+    if let Some(reason) = inline_safety_gate(callee_id, callee, call_graph, closures, wrapper) {
         return InlineEligibility::WhyNot(reason);
     }
     if callee_op_count(callee_id, callee, summaries) > tti.inline_budget(&callee.name) {
@@ -112,15 +122,14 @@ pub(super) fn callee_op_count(
 
 /// The first failing **correctness** (safety) gate for inlining `callee`, or
 /// `None` if every safety gate passes. This is the single source of truth for the
-/// safety verdict, shared by [`is_inline_safe`] (the bool the split-field driver
-/// uses) and [`classify_inline_eligibility`] (the typed reason). It deliberately
+/// safety verdict consumed by [`classify_inline_eligibility`]. It deliberately
 /// EXCLUDES the cost-model budget - that is [`InlineWhyNot::OverBudget`], applied
 /// only by [`classify_inline_eligibility`].
 ///
 /// Gate order begins with Python execution-context and physical partition
 /// restrictions, then preserves the existing structural safety order:
-/// 1. **recursive** - a member of the call graph's recursive set (cycle, self-edge,
-///    or opaque-call function). Inlining is unbounded.
+/// 1. **recursive** - a static call cycle makes copying unbounded. An opaque
+///    call is safe only with the observable splice's activation charge.
 /// 2. **exception HANDLER region** - [`TirFunction::has_exception_handlers`]
 ///    (`try`/`except` or generator/async state regions); the splice does not remap
 ///    handler labels. Observation-only callees (`CheckException`, no handler) are
@@ -138,14 +147,20 @@ fn inline_safety_gate(
     callee: &TirFunction,
     call_graph: &CallGraph,
     closures_at_proven_sites: bool,
+    wrapper: Option<&PackedWrapper>,
 ) -> Option<InlineWhyNot> {
-    if callee.execution_context != molt_ir::ExecutionContextPolicy::None {
+    let observable = closures_at_proven_sites
+        && callee.execution_context == molt_ir::ExecutionContextPolicy::Local
+        && wrapper.is_some_and(|proof| proof.wrapper.entry.function == callee_id);
+    if callee.execution_context != molt_ir::ExecutionContextPolicy::None && !observable {
         return Some(InlineWhyNot::ExecutionContext);
     }
     if callee.is_codegen_partition() {
         return Some(InlineWhyNot::CodegenPartition);
     }
-    if call_graph.recursive_set().contains(callee_id) {
+    if call_graph.in_static_cycle(callee_id)
+        || (!observable && call_graph.has_opaque_call(callee_id))
+    {
         return Some(InlineWhyNot::Recursive);
     }
     if callee.has_exception_handlers() {
@@ -172,13 +187,13 @@ fn inline_safety_gate(
     None
 }
 
-/// The conservative safety policy for exceeding the ordinary inline budget.
+/// The conservative ordinary safety policy for exceeding the inline budget.
 pub(super) fn is_inline_safe(
     callee_id: molt_ir::FunctionId,
     callee: &TirFunction,
     call_graph: &CallGraph,
 ) -> bool {
-    inline_safety_gate(callee_id, callee, call_graph, false).is_none()
+    inline_safety_gate(callee_id, callee, call_graph, false, None).is_none()
 }
 
 /// True when the callee return type can carry a raw numeric lane across the

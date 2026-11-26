@@ -453,6 +453,8 @@ _OPCODE_FACT_SETS = (
     "temporary_release_opcodes",
     "async_work_poll_after_opcodes",
     "inliner_numeric_raw_lane_consumer_opcodes",
+    "ownership_held_view_opcodes",
+    "late_compiled_function_reference_opcodes",
     "exception_handling_opcodes",
     "exception_handler_region_opcodes",
     "structured_scf_marker_opcodes",

@@ -92,10 +92,26 @@ pub trait RecordWordBuilder: WordBuilder {
 /// Whether the recursion limit admits one more Python frame on `thread`.
 /// Counts nothing; [`generate_recursion_count`] counts the admitted frame.
 pub fn generate_recursion_admits<B: RecordWordBuilder>(b: &mut B, thread: B::Word) -> B::Predicate {
+    generate_recursion_admits_after(b, thread, 0)
+}
+
+/// Check an entry beneath `virtual_parents` logical calls without writing the
+/// physical depth word. Read the current limit at this call's observation.
+pub fn generate_recursion_admits_after<B: RecordWordBuilder>(
+    b: &mut B,
+    thread: B::Word,
+    virtual_parents: u32,
+) -> B::Predicate {
     let limit_at = b.load_word(thread, THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET);
     let limit = b.load_shared_word(limit_at, 0);
     let depth = b.load_word(thread, THREAD_RECORD_RECURSION_DEPTH_OFFSET);
-    b.compare(WordComparison::UnsignedLessThan, depth, limit)
+    if virtual_parents == 0 {
+        return b.compare(WordComparison::UnsignedLessThan, depth, limit);
+    }
+    let logical = b.add_immediate(depth, i64::from(virtual_parents));
+    let no_wrap = b.compare(WordComparison::UnsignedLessThan, depth, logical);
+    let fits = b.compare(WordComparison::UnsignedLessThan, logical, limit);
+    b.both(no_wrap, fits)
 }
 
 /// Count one Python frame that [`generate_recursion_admits`] admitted.

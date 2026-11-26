@@ -38,16 +38,6 @@ use crate::{
 /// (molt-runtime `LocationId::ABSENT`, which asserts the value).
 pub const FRAME_LOCATION_ABSENT: u64 = u64::MAX;
 
-/// Bits 0..32 of a `trace_enter_slot` value: the frame's home count.
-pub const FRAME_ENTRY_HOMES_MASK: i64 = 0xffff_ffff;
-/// Set in a `trace_enter_slot` value when the frame clears its slots last to
-/// first (CPython 3.14 and later; molt-runtime `FramePolicy::descending`).
-pub const FRAME_ENTRY_DESCENDING: i64 = 1 << 32;
-/// The `trace_enter_slot` value of a stateful activation's entry (a
-/// generator, coroutine or async-generator poll): it links its task's
-/// persistent record, whose bindings live in the task payload.
-pub const FRAME_ENTRY_STATEFUL: i64 = 1 << 33;
-
 /// Above this many homes a pop releases them in one counted loop instead of
 /// one inline release per home.
 pub const FRAME_POP_INLINE_HOMES: u32 = 8;
@@ -60,57 +50,22 @@ pub enum HomeCount<W> {
     Dynamic(W),
 }
 
-/// What a synchronous frame entry declares: the `trace_enter_slot` value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FrameShape {
-    pub homes: u32,
-    pub descending: bool,
+/// Occupancy of virtual ancestors in the physical frame arena.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VirtualFramePrefix {
+    pub arena_bytes: u32,
+    pub recursion_depth: u32,
 }
 
-impl FrameShape {
-    /// Decode a `trace_enter_slot` value.
-    pub const fn from_entry_value(value: i64) -> Self {
-        Self {
-            homes: (value & FRAME_ENTRY_HOMES_MASK) as u32,
-            descending: value & FRAME_ENTRY_DESCENDING != 0,
-        }
-    }
-
-    pub const fn entry_value(self) -> i64 {
-        self.homes as i64
-            | if self.descending {
-                FRAME_ENTRY_DESCENDING
-            } else {
-                0
-            }
-    }
-}
-
-/// How a compiled frame entry links its record: the decoded
-/// `trace_enter_slot` value. An entry with no value is runtime-linked.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrameEntryKind {
-    /// A synchronous function pushes and pops an arena record inline.
-    Synchronous(FrameShape),
-    /// A stateful activation links and unlinks its task's persistent record.
-    Stateful,
-}
-
-impl FrameEntryKind {
-    pub const fn from_entry_value(value: i64) -> Self {
-        if value & FRAME_ENTRY_STATEFUL != 0 {
-            Self::Stateful
-        } else {
-            Self::Synchronous(FrameShape::from_entry_value(value))
-        }
-    }
-
-    /// The synchronous shape, or `None` for a stateful entry.
-    pub const fn shape(self) -> Option<FrameShape> {
-        match self {
-            Self::Synchronous(shape) => Some(shape),
-            Self::Stateful => None,
-        }
+impl VirtualFramePrefix {
+    /// Reserve one record header per ancestor and one home word pair per slot.
+    pub fn from_counts(homes: u32, depth: u32) -> Option<Self> {
+        let bytes =
+            i64::from(depth) * FRAME_RECORD_HEADER_BYTES + i64::from(homes) * FRAME_HOME_BYTES;
+        Some(Self {
+            arena_bytes: u32::try_from(bytes).ok()?,
+            recursion_depth: depth,
+        })
     }
 }
 
@@ -177,6 +132,90 @@ fn home_bytes<B: FrameBuilder>(b: &mut B, homes: HomeCount<B::Word>) -> HomeCoun
 
 const _: () = assert!(FRAME_HOME_BYTES == 16);
 
+/// The initialized code and reservation bounds for a frame that can enter
+/// without invoking the runtime. Call within an attempt's guarded arm.
+fn checked_frame_entry<B: FrameBuilder>(
+    b: &mut B,
+    thread: B::Word,
+    function: B::Word,
+    code_slot: B::Word,
+    homes: HomeCount<B::Word>,
+    occupied: u32,
+) -> (B::Word, B::Word, B::Word) {
+    use WordComparison::{Equal, UnsignedLessThan};
+    let is_object = generate_has_tag(b, function, BoxTag::Ptr);
+    b.require(is_object);
+    let function_ptr = b.and(function, POINTER_MASK);
+    let type_id = b.load_header_u32(function_ptr, HEADER_TYPE_ID_OFFSET);
+    let is_function = compare_immediate(b, Equal, type_id, u64::from(TYPE_ID_FUNCTION));
+    b.require(is_function);
+    let code = b.load_word(function_ptr, FUNCTION_CODE_OFFSET);
+    let has_code = generate_has_tag(b, code, BoxTag::Ptr);
+    b.require(has_code);
+    let code_ptr = b.and(code, POINTER_MASK);
+    // The code stores its slot id plus one.
+    let owner = b.load_word(code_ptr, CODE_FRAME_SLOT_OFFSET);
+    let expected = b.add_immediate(code_slot, 1);
+    let owns_slot = b.compare(Equal, owner, expected);
+    b.require(owns_slot);
+
+    // Room in the current arena chunk.
+    let start = b.load_word(thread, THREAD_RECORD_ARENA_TOP_OFFSET);
+    let base = b.add_immediate(start, FRAME_RECORD_HEADER_BYTES + i64::from(occupied));
+    let end = match home_bytes(b, homes) {
+        HomeCount::Constant(count) => b.add_immediate(base, i64::from(count) * FRAME_HOME_BYTES),
+        HomeCount::Dynamic(bytes) => b.add(base, bytes),
+    };
+    let limit = b.load_word(thread, THREAD_RECORD_ARENA_LIMIT_OFFSET);
+    // end <= limit, as one unsigned compare. An empty arena (top and
+    // limit both zero) never fits.
+    let past_limit = b.add_immediate(limit, 1);
+    let fits = b.compare(UnsignedLessThan, end, past_limit);
+    b.require(fits);
+    (code, base, end)
+}
+
+/// Whether the captured function can enter the current arena through the
+/// proved fast path. This does not take the handoff or reserve a record.
+pub fn generate_frame_entry_admits<B: FrameBuilder>(
+    b: &mut B,
+    thread: B::Word,
+    function: B::Word,
+    code_slot: B::Word,
+    homes: u32,
+    prefix: VirtualFramePrefix,
+) -> B::Word {
+    let result = b.local();
+    let no = b.constant(0);
+    b.set(result, no);
+    b.attempt(
+        |b| {
+            let pending = b.load_word(thread, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET);
+            let pending = b.and(pending, 0xff);
+            let clear = compare_immediate(b, WordComparison::Equal, pending, 0);
+            b.require(clear);
+            let recursion = crate::thread_record::generate_recursion_admits_after(
+                b,
+                thread,
+                prefix.recursion_depth,
+            );
+            b.require(recursion);
+            checked_frame_entry(
+                b,
+                thread,
+                function,
+                code_slot,
+                HomeCount::Constant(homes),
+                prefix.arena_bytes,
+            );
+            let yes = b.constant(1);
+            b.set(result, yes);
+        },
+        |_| {},
+    );
+    b.get(result)
+}
+
 /// Generate a synchronous frame's entry.
 ///
 /// Requires: `thread` is this invocation's thread record; `code_slot` is the
@@ -196,43 +235,12 @@ pub fn generate_frame_push<B: FrameBuilder>(
     code_slot: B::Word,
     homes: HomeCount<B::Word>,
 ) -> B::Local {
-    use WordComparison::{Equal, UnsignedLessThan};
     let result = b.local();
     b.attempt(
         |b| {
             // The handoff: a function object whose code owns this slot.
             let function = b.load_word(thread, THREAD_RECORD_PENDING_INVOCATION_OFFSET);
-            let is_object = generate_has_tag(b, function, BoxTag::Ptr);
-            b.require(is_object);
-            let function_ptr = b.and(function, POINTER_MASK);
-            let type_id = b.load_header_u32(function_ptr, HEADER_TYPE_ID_OFFSET);
-            let is_function = compare_immediate(b, Equal, type_id, u64::from(TYPE_ID_FUNCTION));
-            b.require(is_function);
-            let code = b.load_word(function_ptr, FUNCTION_CODE_OFFSET);
-            let has_code = generate_has_tag(b, code, BoxTag::Ptr);
-            b.require(has_code);
-            let code_ptr = b.and(code, POINTER_MASK);
-            // The code stores its slot id plus one.
-            let owner = b.load_word(code_ptr, CODE_FRAME_SLOT_OFFSET);
-            let expected = b.add_immediate(code_slot, 1);
-            let owns_slot = b.compare(Equal, owner, expected);
-            b.require(owns_slot);
-
-            // Room in the current arena chunk.
-            let start = b.load_word(thread, THREAD_RECORD_ARENA_TOP_OFFSET);
-            let base = b.add_immediate(start, FRAME_RECORD_HEADER_BYTES);
-            let end = match home_bytes(b, homes) {
-                HomeCount::Constant(count) => {
-                    b.add_immediate(base, i64::from(count) * FRAME_HOME_BYTES)
-                }
-                HomeCount::Dynamic(bytes) => b.add(base, bytes),
-            };
-            let limit = b.load_word(thread, THREAD_RECORD_ARENA_LIMIT_OFFSET);
-            // end <= limit, as one unsigned compare. An empty arena (top and
-            // limit both zero) never fits.
-            let past_limit = b.add_immediate(limit, 1);
-            let fits = b.compare(UnsignedLessThan, end, past_limit);
-            b.require(fits);
+            let (code, base, end) = checked_frame_entry(b, thread, function, code_slot, homes, 0);
             let zero = b.constant(0);
             b.store_word(thread, THREAD_RECORD_ARENA_TOP_OFFSET, end);
 

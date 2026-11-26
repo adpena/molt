@@ -448,6 +448,12 @@ pub enum OpCode {
     ScfYield,
     /// A checked packed load. The raw i64 is meaningful only on success.
     TryBuffer2dLoadI64,
+    /// An inline field borrowed from a held, layout-proven receiver.
+    ProbeInlineField,
+    /// A captured function and synchronous frame shape can use the current arena.
+    FrameEntryAdmits,
+    /// An owned literal's cell in this output object has already been filled.
+    StringLiteralCellReady,
 }
 
 /// Attribute value for operation metadata.

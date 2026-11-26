@@ -45,6 +45,16 @@ enum Word {
 }
 
 impl Word {
+    fn after_poll(self, op: &TirOp) -> Self {
+        if op.is_async_work_poll()
+            && let Some(location) = op.frame_location()
+        {
+            self.meet(Word::Known(location))
+        } else {
+            self
+        }
+    }
+
     fn meet(self, other: Self) -> Self {
         if self == other { self } else { Word::Unknown }
     }
@@ -117,6 +127,29 @@ pub(super) fn is_frame_home_kind(kind: molt_ir::OpKind) -> bool {
             | molt_ir::OpKind::FrameHomeTake
             | molt_ir::OpKind::FrameHomeCell
             | molt_ir::OpKind::FrameHomePrivateCell
+    )
+}
+
+/// Explicit runtime entries that bypass the frame home's typed TIR operations.
+pub(super) fn direct_frame_runtime(op: &TirOp) -> bool {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    matches!(
+        op.runtime,
+        Some(
+            RuntimeFn::FrameCellPublish
+                | RuntimeFn::FrameClassLocalsSet
+                | RuntimeFn::FrameContextSet
+                | RuntimeFn::FrameHomeLoad
+                | RuntimeFn::FrameHomeTake
+                | RuntimeFn::FrameLocalsBegin
+                | RuntimeFn::FrameLocalsSet
+                | RuntimeFn::FrameRecordEnter
+                | RuntimeFn::FrameRecordExit
+                | RuntimeFn::ClassFrameEnter
+                | RuntimeFn::ClassFrameExit
+                | RuntimeFn::ClassFrameSetLocation
+                | RuntimeFn::TraceSetLine
+        )
     )
 }
 
@@ -198,17 +231,23 @@ enum SlotRelease {
 
 /// Meet incoming slot facts into `target`'s entry: a fact holds only if it
 /// holds on every incoming edge.
-fn join_slots(entry: &mut HashMap<BlockId, Slots>, target: BlockId, slots: &Slots) -> bool {
+fn join_slots<T: Copy + Eq>(
+    entry: &mut HashMap<BlockId, Vec<T>>,
+    target: BlockId,
+    slots: &[T],
+    meet: impl Fn(T, T) -> T,
+) -> bool {
     match entry.get_mut(&target) {
         None => {
-            entry.insert(target, slots.clone());
+            entry.insert(target, slots.to_vec());
             true
         }
         Some(current) => {
             let mut changed = false;
             for (have, incoming) in current.iter_mut().zip(slots) {
-                if *have && !incoming {
-                    *have = false;
+                let result = meet(*have, *incoming);
+                if *have != result {
+                    *have = result;
                     changed = true;
                 }
             }
@@ -217,18 +256,19 @@ fn join_slots(entry: &mut HashMap<BlockId, Slots>, target: BlockId, slots: &Slot
     }
 }
 
-/// Map every binding release to whether its previous binding is
-/// finalizer-free, keyed by (block, op index).
-pub(super) fn binding_releases(
+/// A home's facts before each reachable block. A check transfers its current
+/// bindings to the exceptional successor before any later store in that block.
+fn reaching_slot_entries<T: Copy + Eq>(
     func: &TirFunction,
-    types: &HashMap<ValueId, TirType>,
     labels: &HashMap<i64, BlockId>,
     order: &[BlockId],
-) -> HashMap<(BlockId, usize), bool> {
-    let count = slot_count(func);
-    let mut entry: HashMap<BlockId, Slots> = HashMap::default();
+    initial: Vec<T>,
+    meet: impl Fn(T, T) -> T + Copy,
+    transfer: impl Fn(&TirOp, &mut Vec<T>),
+) -> HashMap<BlockId, Vec<T>> {
+    let mut entry: HashMap<BlockId, Vec<T>> = HashMap::default();
     // Before the activation's own entry operation nothing is proven.
-    entry.insert(func.entry_block, vec![false; count]);
+    entry.insert(func.entry_block, initial);
     let mut changed = true;
     while changed {
         changed = false;
@@ -239,17 +279,38 @@ pub(super) fn binding_releases(
             let block = &func.blocks[bid];
             for op in &block.ops {
                 if let Some(handler) = check_handler(op, labels) {
-                    changed |= join_slots(&mut entry, handler, &slots);
+                    changed |= join_slots(&mut entry, handler, &slots, meet);
                 }
-                slot_transfer(op, func, types, &mut slots);
+                transfer(op, &mut slots);
             }
             for succ in dominators::terminator_successors(&block.terminator) {
                 if func.blocks.contains_key(&succ) {
-                    changed |= join_slots(&mut entry, succ, &slots);
+                    changed |= join_slots(&mut entry, succ, &slots, meet);
                 }
             }
         }
     }
+    entry
+}
+
+/// Map every binding release to whether its previous binding is
+/// finalizer-free, keyed by (block, op index).
+pub(super) fn binding_releases(
+    func: &TirFunction,
+    types: &HashMap<ValueId, TirType>,
+    labels: &HashMap<i64, BlockId>,
+    order: &[BlockId],
+) -> HashMap<(BlockId, usize), bool> {
+    let entry = reaching_slot_entries(
+        func,
+        labels,
+        order,
+        vec![false; slot_count(func)],
+        |a, b| a && b,
+        |op, state| {
+            slot_transfer(op, func, types, state);
+        },
+    );
     let mut releases = HashMap::default();
     for bid in order {
         let Some(mut slots) = entry.get(bid).cloned() else {
@@ -268,6 +329,184 @@ pub(super) fn binding_releases(
         }
     }
     releases
+}
+
+/// A reference-bearing argument held by its suspended physical caller, at the
+/// original call instruction. Only the post-store view names the actual Python
+/// object in the home: a raw full-range integer can box into a different object.
+pub(super) fn held_call_arguments(
+    func: &TirFunction,
+    sites: &molt_ir::deterministic_hash::HashSet<(BlockId, usize)>,
+    aliases: &super::alias_analysis::AliasUnionFind,
+    carriers: &HashMap<ValueId, crate::repr::Repr>,
+) -> molt_ir::deterministic_hash::HashSet<(BlockId, usize, ValueId)> {
+    use molt_ir::OpKind;
+    use molt_ir::deterministic_hash::HashSet;
+    use molt_ir::frame_entry::FrameEntryKind;
+
+    let mut held = HashSet::default();
+    if sites.is_empty()
+        || func.execution_context != ExecutionContextPolicy::Local
+        || func.frame_locals_exposed()
+        || func.has_state_machine()
+        || func.has_exception_handlers()
+    {
+        return held;
+    }
+    let Some(enter) = func.blocks[&func.entry_block].ops.first() else {
+        return held;
+    };
+    let Some(AttrValue::Int(encoded)) = enter.attrs.get("value") else {
+        return held;
+    };
+    let Some(shape) = FrameEntryKind::from_entry_value(*encoded).shape() else {
+        return held;
+    };
+    if enter.opcode != OpCode::Copy
+        || enter.origin != Some(OpKind::TraceEnterSlot)
+        || shape.entry_value() != *encoded
+    {
+        return held;
+    }
+
+    let labels = dominators::exception_label_to_block(func);
+    let Some(entry_failure) = func.blocks[&func.entry_block]
+        .ops
+        .get(1)
+        .and_then(|op| check_handler(op, &labels))
+    else {
+        return held;
+    };
+    let mut outside_roots = vec![entry_failure];
+    let boxed = |value| {
+        carriers
+            .get(&value)
+            .is_none_or(|r| !r.carrier_refcount_is_noop())
+    };
+    let requested: HashSet<_> = sites
+        .iter()
+        .flat_map(|&(id, at)| {
+            func.blocks[&id]
+                .ops
+                .get(at)
+                .into_iter()
+                .flat_map(|op| &op.operands)
+        })
+        .copied()
+        .filter(|&v| boxed(v))
+        .map(|v| aliases.root(v))
+        .collect();
+    let mut view_slots = HashMap::default();
+    let mut tracked_slots = HashMap::default();
+    for (&id, block) in &func.blocks {
+        let mut exited = false;
+        for (at, op) in block.ops.iter().enumerate() {
+            if op.origin == Some(OpKind::TraceEnterSlot) && (id != func.entry_block || at != 0) {
+                return held;
+            }
+            if exited && let Some(target) = check_handler(op, &labels) {
+                outside_roots.push(target);
+            }
+            exited |= op.origin == Some(OpKind::TraceExit);
+            if direct_frame_runtime(op) {
+                return held;
+            }
+            if !super::frame_home_placement::is_home_store(op) {
+                continue;
+            }
+            let ([_], [view]) = (&*op.operands, &*op.results) else {
+                continue;
+            };
+            if !requested.contains(view)
+                || !boxed(*view)
+                || super::frame_home_placement::boxes_heap_int(op, carriers)
+            {
+                continue;
+            }
+            let Some(slot) = home_slot(op).filter(|&s| s < shape.homes as usize) else {
+                continue;
+            };
+            let next = tracked_slots.len();
+            let index = *tracked_slots.entry(slot).or_insert(next);
+            view_slots.insert(*view, index);
+        }
+        if exited {
+            outside_roots.extend(dominators::terminator_successors(&block.terminator));
+        }
+    }
+    if view_slots.is_empty() {
+        return held;
+    }
+    let transfer = |op: &TirOp, state: &mut Vec<Option<ValueId>>| {
+        if op.opcode != OpCode::Copy {
+            return;
+        }
+        match op.origin {
+            Some(
+                OpKind::TraceEnterSlot
+                | OpKind::TraceExit
+                | OpKind::FrameLocalsSet
+                | OpKind::FrameContextSet,
+            ) => state.fill(None),
+            Some(kind) if is_frame_home_kind(kind) => {
+                let Some(slot) = home_slot(op) else {
+                    state.fill(None);
+                    return;
+                };
+                if let Some(&index) = tracked_slots.get(&slot) {
+                    state[index] = op
+                        .results
+                        .first()
+                        .copied()
+                        .filter(|v| view_slots.get(v) == Some(&index));
+                }
+            }
+            _ => {}
+        }
+    };
+    // A failed entry has no record, and code after the pop no longer owns a
+    // home, including when it rejoins a path on which the activation exists.
+    let outside = dominators::reachable_blocks_from_roots_with(
+        func,
+        outside_roots,
+        dominators::CfgEdgePolicy::Full,
+    );
+    let order = block_order(func);
+    let entries = reaching_slot_entries(
+        func,
+        &labels,
+        &order,
+        vec![None; tracked_slots.len()],
+        |a, b| if a == b { a } else { None },
+        transfer,
+    );
+    for id in order {
+        if outside.contains(&id) {
+            continue;
+        }
+        let Some(mut state) = entries.get(&id).cloned() else {
+            continue;
+        };
+        for (at, op) in func.blocks[&id].ops.iter().enumerate() {
+            if op.origin == Some(OpKind::TraceExit) {
+                break;
+            }
+            if sites.contains(&(id, at)) {
+                for &arg in &op.operands {
+                    let view = aliases.root(arg);
+                    if boxed(arg)
+                        && view_slots
+                            .get(&view)
+                            .is_some_and(|&s| state[s] == Some(view))
+                    {
+                        held.insert((id, at, view));
+                    }
+                }
+            }
+            transfer(op, &mut state);
+        }
+    }
+    held
 }
 
 // ---------------------------------------------------------------------------
@@ -337,11 +576,7 @@ fn for_each_reaching_word(
                     let edge = op.frame_location().map_or(word, Word::Known);
                     changed |= join_word(entry.entry(handler).or_default(), edge);
                 }
-                if op.is_async_work_poll()
-                    && let Some(location) = op.frame_location()
-                {
-                    word = word.meet(Word::Known(location));
-                }
+                word = word.after_poll(op);
             }
             for succ in dominators::terminator_successors(&block.terminator) {
                 if func.blocks.contains_key(&succ) {
@@ -362,6 +597,7 @@ fn for_each_reaching_word(
                 continue;
             }
             visit(bid, index, op, word);
+            word = word.after_poll(op);
         }
     }
 }

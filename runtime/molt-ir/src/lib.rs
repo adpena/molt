@@ -18,6 +18,7 @@ pub mod code_slots;
 pub mod content_digest;
 pub mod debug_artifacts;
 pub mod deterministic_hash;
+pub mod frame_entry;
 pub mod function_table;
 pub mod ir;
 pub mod ir_schema;

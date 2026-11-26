@@ -969,6 +969,10 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
     fn site(&mut self, body: SiteBody, args: &[Self::Value]) -> Self::Value {
         let helper = match body {
             SiteBody::FieldGet { offset } => self.backend.field_slot_get_helper(offset),
+            SiteBody::FieldProbe { offset } => self.backend.field_slot_probe_helper(offset),
+            SiteBody::FrameEntryProbe { homes, prefix } => {
+                self.backend.frame_entry_probe_helper(homes, prefix)
+            }
             SiteBody::FieldSet { offset, suffix } => {
                 self.backend.field_slot_set_helper(offset, suffix)
             }
@@ -1084,11 +1088,7 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         self.state.frame_homes.set(slot);
     }
 
-    fn pop_frame(
-        &mut self,
-        base: Self::Word,
-        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
-    ) {
+    fn pop_frame(&mut self, base: Self::Word, kind: Option<molt_ir::frame_entry::FrameEntryKind>) {
         crate::codegen_ssa::frame::leave(self, base, kind);
     }
     fn return_value(&mut self, value: Option<Self::Value>) {

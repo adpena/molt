@@ -506,7 +506,7 @@ mod tests {
         use super::super::returns::{OwnedFrame, emit_return};
         use super::super::scalar::tests::{Edge, Interpreter};
         use crate::ir::{ExecutionContextPolicy, ExternFunctionSignature};
-        use molt_codegen_abi::frame_record::FrameEntryKind;
+        use molt_ir::frame_entry::FrameEntryKind;
         use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
         let boxed_seven = Value::Word(molt_codegen_abi::QNAN_TAG_INT_I64 as u64 | 7);

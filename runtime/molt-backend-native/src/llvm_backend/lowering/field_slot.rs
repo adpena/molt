@@ -5,7 +5,9 @@
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use molt_codegen_abi::field_slot::{generate_field_slot_get, generate_field_slot_set};
+use molt_codegen_abi::field_slot::{
+    generate_field_slot_get, generate_field_slot_probe, generate_field_slot_set,
+};
 use molt_codegen_abi::list_item::ListLocking;
 use molt_codegen_abi::word::WordBuilder;
 
@@ -34,6 +36,14 @@ impl<'ctx> LlvmBackend<'ctx> {
                     .into_int_value()
             })
         })
+    }
+
+    pub(super) fn field_slot_probe_helper(&self, offset: i32) -> FunctionValue<'ctx> {
+        self.site_helper(
+            &format!("__molt_field_slot_probe_{offset}"),
+            2,
+            |b, words| generate_field_slot_probe(b, words[0], offset, ListLocking::BUILD),
+        )
     }
 
     /// The field store body at `offset`: `(context, object, value,

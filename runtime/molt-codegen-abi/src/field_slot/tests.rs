@@ -111,6 +111,42 @@ fn an_inline_field_reads_as_an_owned_word() {
     }
 }
 
+#[test]
+fn an_inline_field_probe_borrows_an_initialized_value_without_dispatch() {
+    let field = boxed(VALUE);
+    let mut m = Machine::receiver(HEADER_FLAG_HAS_PTRS, field);
+    m.object(VALUE, TYPE_ID_STRING, 0, 0, 0);
+    assert_eq!(
+        generate_field_slot_probe(&mut m, boxed(OBJECT), OFFSET, ListLocking::Gil),
+        field
+    );
+    assert!(m.events.is_empty(), "probing does not retain the field");
+
+    for (receiver, locking) in [
+        (int(4), ListLocking::Gil),
+        (boxed(OBJECT), ListLocking::FreeThreaded),
+    ] {
+        assert_eq!(
+            generate_field_slot_probe(&mut m, receiver, OFFSET, locking),
+            QNAN | TAG_NONE
+        );
+    }
+    m.write_bytes(
+        OBJECT,
+        HEADER_FLAGS_OFFSET,
+        HEADER_FLAG_HAS_INSTANCE_DICT.into(),
+        4,
+    );
+    assert_eq!(
+        generate_field_slot_probe(&mut m, boxed(OBJECT), OFFSET, ListLocking::Gil),
+        QNAN | TAG_NONE
+    );
+    assert!(
+        m.events.is_empty(),
+        "misses retain no word and make no runtime call"
+    );
+}
+
 /// The runtime owns an empty field (class fallback or AttributeError), a
 /// dictionary-backed one, and a receiver whose field base may move.
 #[test]

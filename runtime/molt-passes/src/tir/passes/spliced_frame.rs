@@ -37,8 +37,9 @@ use crate::tir::values::ValueId;
 /// How a level's binding keys name its bindings (the runtime's key spaces).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KeySpace {
-    /// A payload offset of a generator or coroutine binding. The runtime's
-    /// key space 0 names a synchronous frame's code slot.
+    /// A synchronous home is indexed by its code object's localsplus slot.
+    CodeSlot = 0,
+    /// A payload offset of a generator or coroutine binding.
     StatefulOffset = 1,
 }
 
@@ -64,7 +65,7 @@ pub(crate) struct Level {
     pub(crate) bindings: Vec<Binding>,
 }
 
-fn const_int(func: &mut TirFunction, value: i64, ops: &mut Vec<TirOp>) -> ValueId {
+pub(crate) fn const_int(func: &mut TirFunction, value: i64, ops: &mut Vec<TirOp>) -> ValueId {
     let result = func.fresh_value();
     func.value_types.insert(result, TirType::I64);
     let mut op = TirOp::new(OpCode::ConstInt, vec![], vec![result]);
@@ -119,28 +120,38 @@ fn link_ops(
 ) -> (Vec<TirOp>, ValueId) {
     let mut ops = Vec::new();
     for level in levels {
-        let location = const_int(func, level.location.unwrap_or(-1), &mut ops);
-        let key_space = const_int(func, level.key_space as i64, &mut ops);
-        runtime_call(
-            func,
-            RuntimeFn::SplicedFrameLink,
-            vec![level.function, location, level.identity],
-            span,
-            &mut ops,
-        );
-        for binding in &level.bindings {
-            let key = const_int(func, binding.key, &mut ops);
-            runtime_call(
-                func,
-                RuntimeFn::SplicedFrameBind,
-                vec![key_space, key, binding.value, binding.present],
-                span,
-                &mut ops,
-            );
-        }
+        link_level(func, level, span, &mut ops);
     }
     let count = const_int(func, levels.len() as i64, &mut ops);
     (ops, count)
+}
+
+/// Prepend an enclosing level to an already authored sequence of links.
+pub(crate) fn link_level(
+    func: &mut TirFunction,
+    level: &Level,
+    span: Option<(u32, u32)>,
+    ops: &mut Vec<TirOp>,
+) {
+    let location = const_int(func, level.location.unwrap_or(-1), ops);
+    let key_space = const_int(func, level.key_space as i64, ops);
+    runtime_call(
+        func,
+        RuntimeFn::SplicedFrameLink,
+        vec![level.function, location, level.identity],
+        span,
+        ops,
+    );
+    for binding in &level.bindings {
+        let key = const_int(func, binding.key, ops);
+        runtime_call(
+            func,
+            RuntimeFn::SplicedFrameBind,
+            vec![key_space, key, binding.value, binding.present],
+            span,
+            ops,
+        );
+    }
 }
 
 /// Whether `op` is one of this facility's runtime calls.
@@ -455,7 +466,13 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
                 break;
             };
             let covered = &ops[end..close];
-            let bracketed = !covered.iter().any(is_spliced_frame_call);
+            // A check inside a live bracket can branch to a cold Origin that
+            // consumes its still-linked records, even if the covered operation
+            // later proves callback-free. Removing its links alone would pop
+            // the physical caller on that edge.
+            let bracketed = !covered
+                .iter()
+                .any(|op| is_spliced_frame_call(op) || op.opcode == OpCode::CheckException);
             if bracketed && !covered.iter().any(|op| may_observe_frames(op, &exact)) {
                 dead.extend(start..end);
                 dead.push(close);
@@ -533,4 +550,78 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
             .expect("pruning splice snapshots preserves live edges");
     }
     pruned
+}
+
+/// Refresh escaped frames at a suspension or return. The common unobserved
+/// path proceeds directly to the continuation.
+pub(crate) fn publish_if_observed(caller: &mut TirFunction, source: BlockId, frame: &Level) {
+    let ops = snapshot_ops(caller, frame);
+    if_frame_observed(caller, source, frame.identity, ops);
+}
+
+/// Retire an observed inner frame under its virtual callers. Both the final
+/// snapshot's back chain and cleanup that can run Python use that chain.
+pub(crate) fn retire_if_observed_under(
+    caller: &mut TirFunction,
+    source: BlockId,
+    identity: ValueId,
+    frame: Option<&Level>,
+    callers: &[Level],
+) {
+    let (mut ops, unlink) = if callers.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        bracket_ops(caller, callers, None)
+    };
+    if let Some(frame) = frame {
+        ops.extend(snapshot_ops(caller, frame));
+    }
+    ops.push(finish_op(caller, identity));
+    ops.extend(unlink);
+    if_frame_observed(caller, source, identity, ops);
+}
+
+fn snapshot_ops(caller: &mut TirFunction, frame: &Level) -> Vec<TirOp> {
+    let (mut ops, unlink) = bracket_ops(caller, std::slice::from_ref(frame), None);
+    ops.extend(unlink);
+    ops
+}
+
+fn if_frame_observed(
+    caller: &mut TirFunction,
+    source: BlockId,
+    identity: ValueId,
+    ops: Vec<TirOp>,
+) {
+    let Terminator::Branch { target, args } = caller.blocks[&source].terminator.clone() else {
+        unreachable!("a frame publication continues along one edge");
+    };
+    let snapshot = caller.fresh_block();
+    caller.blocks.insert(
+        snapshot,
+        TirBlock {
+            id: snapshot,
+            args: Vec::new(),
+            ops,
+            terminator: Terminator::Branch {
+                target,
+                args: args.clone(),
+            },
+        },
+    );
+    let observed = caller.fresh_value();
+    caller.value_types.insert(observed, TirType::Bool);
+    let block = caller.blocks.get_mut(&source).unwrap();
+    block.ops.push(TirOp::new(
+        OpCode::SplicedFrameObserved,
+        vec![identity],
+        vec![observed],
+    ));
+    block.terminator = Terminator::CondBranch {
+        cond: observed,
+        then_block: snapshot,
+        then_args: Vec::new(),
+        else_block: target,
+        else_args: args,
+    };
 }

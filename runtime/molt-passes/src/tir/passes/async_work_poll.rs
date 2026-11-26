@@ -29,6 +29,69 @@ use super::exception_observation::{
     post_operation_observation,
 };
 
+/// Split one authored poll into the pending-work service arm and, when
+/// needed, a work-free exception observation. The producer stays before the
+/// pending test, so work arriving during the producer is serviced at return.
+pub(super) fn split_pending_work(
+    func: &mut TirFunction,
+    id: BlockId,
+    at: usize,
+    service_ops: Vec<TirOp>,
+    fast_ops: Vec<TirOp>,
+) {
+    use crate::tir::blocks::TirBlock;
+    use crate::tir::types::TirType;
+    let pending = func.fresh_value();
+    func.value_types.insert(pending, TirType::Bool);
+    let service = func.fresh_block();
+    let rest = func.fresh_block();
+    let fast = if fast_ops.is_empty() {
+        rest
+    } else {
+        func.fresh_block()
+    };
+    let source = func.blocks.get_mut(&id).expect("poll source");
+    let tail = source.ops.split_off(at + 1);
+    let original = source.ops.pop().expect("authored poll");
+    debug_assert!(original.is_async_work_poll());
+    let mut test = TirOp::new(OpCode::AsyncWorkPending, vec![], vec![pending]);
+    test.source_span = original.source_span;
+    source.ops.push(test);
+    let term = std::mem::replace(
+        &mut source.terminator,
+        Terminator::CondBranch {
+            cond: pending,
+            then_block: service,
+            then_args: vec![],
+            else_block: fast,
+            else_args: vec![],
+        },
+    );
+    let arm = |id, ops| TirBlock {
+        id,
+        args: vec![],
+        ops,
+        terminator: Terminator::Branch {
+            target: rest,
+            args: vec![],
+        },
+    };
+    func.blocks.insert(service, arm(service, service_ops));
+    if fast != rest {
+        func.blocks.insert(fast, arm(fast, fast_ops));
+    }
+    func.blocks.insert(
+        rest,
+        TirBlock {
+            id: rest,
+            args: vec![],
+            ops: tail,
+            terminator: term,
+        },
+    );
+    func.move_loop_terminator(id, rest);
+}
+
 pub(crate) fn is_call_return_poll(op: &TirOp) -> bool {
     if op.exception_source_kind() == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
     {

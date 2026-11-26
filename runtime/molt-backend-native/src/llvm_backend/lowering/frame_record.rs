@@ -10,12 +10,35 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::values::{BasicValue, IntValue, PointerValue};
-use molt_codegen_abi::frame_record::{FrameBuilder, FrameEntryKind};
+use molt_codegen_abi::frame_record::{FrameBuilder, VirtualFramePrefix};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
+use molt_ir::frame_entry::FrameEntryKind;
 
 impl<'ctx> LlvmBackend<'ctx> {
+    pub(super) fn frame_entry_probe_helper(
+        &self,
+        homes: u32,
+        prefix: VirtualFramePrefix,
+    ) -> FunctionValue<'ctx> {
+        self.site_helper(
+            &format!(
+                "__molt_frame_entry_probe_{homes}_{}_{}",
+                prefix.arena_bytes, prefix.recursion_depth
+            ),
+            4,
+            |b, words| {
+                let &[thread, function, code] = words else {
+                    unreachable!("frame entry probe arguments")
+                };
+                molt_codegen_abi::frame_record::generate_frame_entry_admits(
+                    b, thread, function, code, homes, prefix,
+                )
+            },
+        )
+    }
+
     fn ensure_frame_helper(&self, helper: FrameBody) -> FunctionValue<'ctx> {
         let name = match helper {
             FrameBody::Push { homes } => format!("__molt_frame_push_{homes}"),

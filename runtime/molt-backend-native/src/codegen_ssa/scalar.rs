@@ -225,7 +225,7 @@ pub(crate) mod tests {
         pub(crate) runtime: RuntimeModel,
         thread_record_slot: Option<usize>,
         pub(in crate::codegen_ssa) popped_frames:
-            Vec<(u64, Option<molt_codegen_abi::frame_record::FrameEntryKind>)>,
+            Vec<(u64, Option<molt_ir::frame_entry::FrameEntryKind>)>,
         pub(in crate::codegen_ssa) runtime_calls: Vec<RuntimeFn>,
         /// Each block's parameter kinds, by block number.
         pub(in crate::codegen_ssa) params: Vec<Vec<MachineKind>>,
@@ -457,7 +457,10 @@ pub(crate) mod tests {
                 "the model has no objects for {body:?}"
             );
             Value::Word(match body {
-                SiteBody::FieldGet { .. } | SiteBody::FieldSet { .. } => NONE_WORD,
+                SiteBody::FieldGet { .. }
+                | SiteBody::FieldProbe { .. }
+                | SiteBody::FieldSet { .. } => NONE_WORD,
+                SiteBody::FrameEntryProbe { .. } => 0,
                 SiteBody::ItemGet { cold, .. } => self
                     .run_runtime(cold, &words[..2])
                     .expect("an item read's miss answers a word"),
@@ -638,11 +641,7 @@ pub(crate) mod tests {
             self.frame_homes = slot;
         }
 
-        fn pop_frame(
-            &mut self,
-            base: u64,
-            kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
-        ) {
+        fn pop_frame(&mut self, base: u64, kind: Option<molt_ir::frame_entry::FrameEntryKind>) {
             self.popped_frames.push((base, kind));
         }
         fn return_value(&mut self, value: Option<Value>) {
