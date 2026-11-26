@@ -32,6 +32,24 @@ def validate_link_output_paths(
             raise ValueError(f"Link output role {role!r} aliases input: {path}")
 
 
+def wasm_artifact_paths(outputs: Mapping[str, Path]) -> dict[str, str]:
+    """Public artifact labels for the final-link publication's roles."""
+    roles = {
+        "wasm": "wasm",
+        "linked": "linked_wasm",
+        "optimizer": "wasm_optimizer_attestation",
+        "app": "app_wasm",
+        "runtime": "runtime_wasm",
+        "manifest": "manifest",
+        "worker_js": "worker_js",
+        "wrangler_config": "wrangler_config",
+        "bundle_tar": "bundle_tar",
+        "cwasm": "cwasm",
+        "runtime_cwasm": "runtime_cwasm",
+    }
+    return {roles[role]: str(path) for role, path in outputs.items() if role in roles}
+
+
 def wasm_link_output_paths(
     linked: Path | None,
     *,

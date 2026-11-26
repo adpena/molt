@@ -264,11 +264,13 @@ def _prepare_native_link(
     if output_binary.parent != Path("."):
         output_binary.parent.mkdir(parents=True, exist_ok=True)
     resolved_runtime_lib = runtime_codegen_binding.runtime_lib
+    from molt.cli.lockfiles import replayable_lock_notices
+
     result_inputs = None
     if (
         json_output
         and input_report.result_active()
-        and not warnings
+        and replayable_lock_notices(warnings) is not None
         and not staged_external_native_artifacts
         and sysroot_path is None
     ):

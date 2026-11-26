@@ -542,7 +542,7 @@ def active() -> bool:
 
 
 def result_active() -> bool:
-    """Only native JSON recording pays for result identities and claims."""
+    """Only structured build recording pays for result identities and claims."""
     return _CAPTURE_RESULT and active()
 
 
@@ -834,10 +834,13 @@ def report_directory(path: Path | str) -> None:
         _worker_log([WorkerFactKind.DIRECTORY, os.fspath(path), token])
 
 
-def report_probe(path: Path | str) -> None:
+def report_probe(path: Path | str) -> ProbeOutcome:
     report_use(path, kind=WorkerFactKind.PROBE)
-    if active():
-        _report_probe_fact(path, resolved_probe(path))
+    if not active():
+        return None
+    outcome = resolved_probe(path)
+    _report_probe_fact(path, outcome)
+    return outcome
 
 
 def report_build_output(

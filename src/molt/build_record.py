@@ -23,7 +23,7 @@ from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, assert_never
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
 
 from molt import file_publication, input_report
 from molt.durable_file_identity import (
@@ -44,7 +44,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v17"
+_SCHEMA = "molt-build-record-v18"
 _RECORD_NAMESPACE = _SCHEMA.removeprefix("molt-build-record-")
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
@@ -103,6 +103,7 @@ class FileValidation(StrEnum):
 
 if TYPE_CHECKING:
     from molt.backend_protocol import BackendEmissionOrigin
+    from molt.cli.lockfiles import LockCheckNotice
     from molt.toolchain_identity import FileDigestCache, StableRegularFileIdentity
 
 
@@ -329,7 +330,7 @@ class RecordedArtifact:
 
 
 @dataclass(frozen=True, slots=True)
-class NativeBuildFacts:
+class BuildResultFacts:
     target_triple: str | None
     entry: str
     deterministic: bool
@@ -352,17 +353,17 @@ class NativeBuildFacts:
         return result
 
     @classmethod
-    def from_payload(cls, value: object) -> NativeBuildFacts:
+    def from_payload(cls, value: object) -> BuildResultFacts:
         from dataclasses import fields
 
         if not isinstance(value, dict) or set(value) != {
             item.name for item in fields(cls)
         }:
-            raise ValueError("invalid native build facts")
+            raise ValueError("invalid build result facts")
         values = dict(value)
         for key in ("target_triple", "capabilities_source"):
             if values[key] is not None and not isinstance(values[key], str):
-                raise ValueError(f"invalid native build fact: {key}")
+                raise ValueError(f"invalid build result fact: {key}")
         for key in (
             "entry",
             "capability_policy_digest",
@@ -371,19 +372,19 @@ class NativeBuildFacts:
             "cranelift_flags",
         ):
             if not isinstance(values[key], str):
-                raise ValueError(f"invalid native build fact: {key}")
+                raise ValueError(f"invalid build result fact: {key}")
         for key in ("deterministic", "trusted", "native_arch_perf"):
             if type(values[key]) is not bool:
-                raise ValueError(f"invalid native build fact: {key}")
+                raise ValueError(f"invalid build result fact: {key}")
         for key in ("capabilities", "capability_profiles"):
             if not isinstance(values[key], list) or any(
                 not isinstance(item, str) for item in values[key]
             ):
-                raise ValueError(f"invalid native build fact: {key}")
+                raise ValueError(f"invalid build result fact: {key}")
             values[key] = tuple(values[key])
         algorithm, separator, digest = values["capability_policy_digest"].partition(":")
         if algorithm != "sha256" or separator != ":":
-            raise ValueError("invalid native capability policy digest")
+            raise ValueError("invalid build result capability policy digest")
         _record_digest(digest)
         return cls(**values)
 
@@ -432,15 +433,49 @@ class NativeResultInputs:
         )
 
 
+def _result_profiles(value: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) or not isinstance(item, str)
+        for key, item in value.items()
+    ):
+        raise ValueError("invalid build result profiles")
+    return tuple(sorted(value.items()))
+
+
+def _result_notices(value: object) -> tuple[LockCheckNotice, ...]:
+    if not isinstance(value, list):
+        raise ValueError("invalid build result notices")
+    if not value:
+        return ()
+    from molt.cli.lockfiles import LockCheckNotice
+
+    return tuple(LockCheckNotice(item) for item in value)
+
+
+def _verify_result_artifacts(artifacts: tuple[RecordedArtifact, ...]) -> None:
+    import sqlite3
+    from molt.toolchain_facts import host_file_digest_cache
+
+    digests = host_file_digest_cache()
+    for artifact in artifacts:
+        artifact.verify(digests=digests)
+    try:
+        digests.flush()
+    except sqlite3.Error as exc:
+        raise ValueError("build result digest cache unavailable") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class NativeBuildResult:
-    facts: NativeBuildFacts
+    kind: ClassVar[Literal["native"]] = "native"
+    facts: BuildResultFacts
     binary: RecordedArtifact
     inputs: NativeResultInputs
     compiler: RecordedArtifact
     selected_profiles: tuple[tuple[str, str], ...]
     emission_origin: BackendEmissionOrigin | None
     runtime_features: tuple[str, ...]
+    notices: tuple[LockCheckNotice, ...] = ()
 
     def verify_paths(self) -> None:
         for artifact in (
@@ -451,20 +486,9 @@ class NativeBuildResult:
             artifact.verify_path()
 
     def verify(self) -> None:
-        from molt.toolchain_facts import host_file_digest_cache
-        import sqlite3
-
-        digests = host_file_digest_cache()
-        for artifact in (
-            self.binary,
-            *self.inputs.artifacts().values(),
-            self.compiler,
-        ):
-            artifact.verify(digests=digests)
-        try:
-            digests.flush()
-        except sqlite3.Error as exc:
-            raise ValueError(f"build result digest cache unavailable: {exc}") from exc
+        _verify_result_artifacts(
+            (self.binary, *self.inputs.artifacts().values(), self.compiler)
+        )
         if self.emission_origin is not None and (
             self.emission_origin.output_size != self.inputs.archive.token.size
             or self.emission_origin.output_sha256 != self.inputs.archive.sha256
@@ -493,6 +517,7 @@ class NativeBuildResult:
 
     def payload(self) -> dict[str, object]:
         return {
+            "kind": self.kind,
             "facts": self.facts.payload(),
             "binary": self.binary.payload(),
             "compiler": self.compiler.payload(),
@@ -502,6 +527,7 @@ class NativeBuildResult:
             },
             "selected_profiles": dict(self.selected_profiles),
             "runtime_features": list(self.runtime_features),
+            "notices": list(self.notices),
             "emission_origin": None
             if self.emission_origin is None
             else self.emission_origin.payload(),
@@ -512,36 +538,180 @@ class NativeBuildResult:
         from molt.backend_protocol import BackendEmissionOrigin
         from molt.cli.runtime_identity_schema import validate_runtime_features
 
-        if not isinstance(value, dict) or set(value) != {
-            "facts",
-            "binary",
-            "inputs",
-            "compiler",
-            "selected_profiles",
-            "runtime_features",
-            "emission_origin",
-        }:
-            raise ValueError("invalid native build result")
-        profiles = value["selected_profiles"]
-        if not isinstance(profiles, dict) or any(
-            not isinstance(key, str) or not isinstance(item, str)
-            for key, item in profiles.items()
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") != cls.kind
+            or set(value)
+            != {
+                "kind",
+                "facts",
+                "binary",
+                "inputs",
+                "compiler",
+                "selected_profiles",
+                "runtime_features",
+                "notices",
+                "emission_origin",
+            }
         ):
-            raise ValueError("invalid native build profiles")
+            raise ValueError("invalid native build result")
         runtime_features = validate_runtime_features(value["runtime_features"])
         if not runtime_features:
             raise ValueError("native build result has no runtime features")
         return cls(
-            facts=NativeBuildFacts.from_payload(value["facts"]),
+            facts=BuildResultFacts.from_payload(value["facts"]),
             binary=RecordedArtifact.from_payload(value["binary"]),
             inputs=NativeResultInputs.from_payload(value["inputs"]),
             compiler=RecordedArtifact.from_payload(value["compiler"]),
-            selected_profiles=tuple(sorted(profiles.items())),
+            selected_profiles=_result_profiles(value["selected_profiles"]),
             runtime_features=runtime_features,
+            notices=_result_notices(value["notices"]),
             emission_origin=None
             if value["emission_origin"] is None
             else BackendEmissionOrigin.from_payload(value["emission_origin"]),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class WasmBuildResult:
+    """Structured view of a linked or split final-link publication."""
+
+    kind: ClassVar[Literal["wasm"]] = "wasm"
+    facts: BuildResultFacts
+    module: RecordedArtifact
+    linked_primary: RecordedArtifact | None
+    compiler: RecordedArtifact
+    selected_profiles: tuple[tuple[str, str], ...]
+    emission_origin: BackendEmissionOrigin | None
+    messages: tuple[str, ...]
+    notices: tuple[LockCheckNotice, ...]
+
+    @property
+    def primary(self) -> RecordedArtifact:
+        return self.linked_primary or self.module
+
+    def _artifacts(self) -> tuple[RecordedArtifact, ...]:
+        if self.linked_primary is None:
+            return self.module, self.compiler
+        return self.module, self.compiler, self.linked_primary
+
+    def verify_paths(self) -> None:
+        for artifact in self._artifacts():
+            artifact.verify_path()
+
+    def verify(self) -> None:
+        _verify_result_artifacts(self._artifacts())
+        if self.emission_origin is not None and (
+            self.emission_origin.output_size != self.module.token.size
+            or self.emission_origin.output_sha256 != self.module.sha256
+        ):
+            raise ValueError("Wasm module differs from original emission")
+
+    def verify_publication(
+        self,
+        selection: Path,
+        consumer: Path,
+        products: Mapping[str, Path],
+    ) -> None:
+        linked = products.get("linked")
+        app = products.get("app")
+        split_roles = {
+            "app",
+            "runtime",
+            "worker_js",
+            "wrangler_config",
+            "target_features",
+        }
+        if (
+            products.get("wasm") != self.module.path
+            or selection != self.module.path
+            or not {"manifest", "publication_receipt"} <= products.keys()
+            or (linked is None and app is None)
+            or (
+                app is not None
+                and (
+                    not split_roles <= products.keys()
+                    or products["manifest"].parent != app.parent
+                )
+            )
+            or (app is None and not split_roles.isdisjoint(products))
+            or len(set(products.values())) != len(products)
+            or (self.linked_primary is not None and self.linked_primary.path != linked)
+            or consumer
+            != (linked if self.linked_primary is not None else app or linked)
+        ):
+            raise ValueError("Wasm JSON result differs from the final-link publication")
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "facts": self.facts.payload(),
+            "module": self.module.payload(),
+            "linked_primary": None
+            if self.linked_primary is None
+            else self.linked_primary.payload(),
+            "compiler": self.compiler.payload(),
+            "selected_profiles": dict(self.selected_profiles),
+            "emission_origin": None
+            if self.emission_origin is None
+            else self.emission_origin.payload(),
+            "messages": list(self.messages),
+            "notices": list(self.notices),
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> WasmBuildResult:
+        from molt.backend_protocol import BackendEmissionOrigin
+
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") != cls.kind
+            or set(value)
+            != {
+                "kind",
+                "facts",
+                "module",
+                "linked_primary",
+                "compiler",
+                "selected_profiles",
+                "emission_origin",
+                "messages",
+                "notices",
+            }
+        ):
+            raise ValueError("invalid Wasm build result")
+        messages = value["messages"]
+        if (
+            not isinstance(messages, list)
+            or not messages
+            or any(not isinstance(message, str) for message in messages)
+        ):
+            raise ValueError("invalid Wasm build result messages")
+        origin = value["emission_origin"]
+        return cls(
+            facts=BuildResultFacts.from_payload(value["facts"]),
+            module=RecordedArtifact.from_payload(value["module"]),
+            linked_primary=None
+            if value["linked_primary"] is None
+            else RecordedArtifact.from_payload(value["linked_primary"]),
+            compiler=RecordedArtifact.from_payload(value["compiler"]),
+            selected_profiles=_result_profiles(value["selected_profiles"]),
+            emission_origin=None
+            if origin is None
+            else BackendEmissionOrigin.from_payload(origin),
+            messages=tuple(messages),
+            notices=_result_notices(value["notices"]),
+        )
+
+
+type RecordedBuildResult = NativeBuildResult | WasmBuildResult
+type BuildResultKind = Literal["native", "wasm"]
+
+
+def _result_from_payload(value: object) -> RecordedBuildResult:
+    if isinstance(value, dict) and value.get("kind") == "wasm":
+        return WasmBuildResult.from_payload(value)
+    return NativeBuildResult.from_payload(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -625,7 +795,7 @@ class InputLedger:
         default_factory=dict
     )
     products: BuildProducts | None = None
-    result: NativeBuildResult | None = None
+    result: RecordedBuildResult | None = None
     claims: list[RecordedBuildClaim] = field(default_factory=list)
     import_topologies: dict[int, ImportTopologyEvidence] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -788,7 +958,7 @@ class InputLedger:
 
     def build_result(self, value: object) -> None:
         try:
-            result = NativeBuildResult.from_payload(value)
+            result = _result_from_payload(value)
             result.verify()
         except (OSError, TypeError, ValueError) as exc:
             self.refuse(f"unreportable build result: {exc}")
@@ -1219,9 +1389,21 @@ def write_record(
                 return "selected WASM link output is not a published product"
         if ledger.result is not None:
             ledger.result.verify()
-            ledger.result.verify_claims(ledger.claims)
-            if ledger.result.binary.path != output.path:
-                return "build result differs from output selection"
+            if isinstance(ledger.result, NativeBuildResult):
+                ledger.result.verify_claims(ledger.claims)
+                if (
+                    ledger.result.binary.path != output.path
+                    or ledger.products is not None
+                ):
+                    return "native JSON result differs from output selection"
+            else:
+                if ledger.products is None or not ledger.products.publication_tokens:
+                    return "Wasm JSON result lacks finalized publication tokens"
+                ledger.result.verify_publication(
+                    output.path,
+                    ledger.products.consumer,
+                    dict(ledger.products.products),
+                )
             for claim in ledger.claims:
                 claim.verify()
     except (OSError, ValueError) as exc:
@@ -1282,9 +1464,10 @@ def write_record(
 @dataclass(frozen=True, slots=True)
 class BuildRecordHit:
     output: Path
-    result: NativeBuildResult | None = None
+    result: RecordedBuildResult | None = None
     # The product a user runs: the selected output, or a member of its family.
     consumer: Path | None = None
+    products: tuple[tuple[str, Path], ...] = ()
 
 
 def check(
@@ -1292,7 +1475,7 @@ def check(
     key: str,
     *,
     claim: Callable[[RecordedBuildClaim], None] | None = None,
-    require_result: bool = False,
+    result_kind: BuildResultKind | None = None,
     linked_output: str | None = None,
 ) -> BuildRecordHit | str:
     """The verified output when current, otherwise the first difference.
@@ -1311,15 +1494,16 @@ def check(
         result = (
             None
             if payload["result"] is None
-            else NativeBuildResult.from_payload(payload["result"])
+            else _result_from_payload(payload["result"])
         )
-        if require_result and result is None:
-            return "no native JSON result for this request"
+        if result_kind is not None and (result is None or result.kind != result_kind):
+            return f"no {result_kind} JSON result for this request"
         claims = [RecordedBuildClaim.from_payload(value) for value in payload["claims"]]
         if result is not None:
-            result.verify_claims(claims)
+            if isinstance(result, NativeBuildResult):
+                result.verify_claims(claims)
             if claim is None:
-                return "native JSON result requires build custody"
+                return "JSON result requires build custody"
             for selection_claim in claims:
                 selection_claim.verify()
                 claim(selection_claim)
@@ -1336,14 +1520,15 @@ def check(
         products = recorded_output["products"]
         if not isinstance(products, list):
             return "unreadable record: invalid products"
-        product_paths = set()
+        product_roles: dict[str, Path] = {}
         for role, product, token in products:
-            if not isinstance(role, str) or not role:
+            if not isinstance(role, str) or not role or role in product_roles:
                 return "unreadable record: invalid product role"
             product_path = _record_path(product)
-            product_paths.add(product_path)
+            product_roles[role] = product_path
             if stat_token(product_path) != StatToken.from_payload(token):
                 return f"product {product_path} changed"
+        product_paths = set(product_roles.values())
         recorded_linked = recorded_output.get("linked_selection")
         if linked_output is not None:
             if recorded_linked is None:
@@ -1374,12 +1559,17 @@ def check(
         if time.time_ns() - metadata.st_mtime_ns > _RECORD_REFRESH_INTERVAL_NS:
             os.utime(path)
         if result is not None:
-            if result.binary.path != selection.path:
-                return "native JSON result differs from output selection"
+            if isinstance(result, NativeBuildResult):
+                if result.binary.path != selection.path or product_roles:
+                    return "native JSON result differs from output selection"
+            else:
+                result.verify_publication(selection.path, consumer, product_roles)
             for selection_claim in claims:
                 selection_claim.verify()
             result.verify()
-        return BuildRecordHit(selection.path, result, consumer)
+        return BuildRecordHit(
+            selection.path, result, consumer, tuple(product_roles.items())
+        )
     except FileNotFoundError:
         return "no record for this request"
     except (

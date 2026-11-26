@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         NativeBuildResult,
         NativeResultInputs,
         RecordedArtifact,
+        WasmBuildResult,
     )
 
 from molt.toolchain_identity import (
@@ -359,6 +360,21 @@ def _recorded_toolchain_artifact(
     return facts
 
 
+def _recorded_compiler_and_output(
+    observed: Mapping[str, Any], output: Path
+) -> tuple[RecordedArtifact, RecordedArtifact]:
+    from molt.build_record import RecordedArtifact
+
+    compiler = RecordedArtifact.capture(Path(observed["compiler"]["path"]))
+    artifact = RecordedArtifact.capture(output)
+    for name, captured in (("compiler", compiler), ("artifact", artifact)):
+        if observed[name] != _recorded_toolchain_artifact(
+            captured, executable=name == "compiler"
+        ):
+            raise ValueError(f"{name} observation changed before recording")
+    return compiler, artifact
+
+
 def _record_native_build_result(
     *,
     data: Mapping[str, Any],
@@ -372,12 +388,14 @@ def _record_native_build_result(
     if not input_report.result_active():
         return
     from dataclasses import fields
-    from molt.build_record import NativeBuildFacts, NativeBuildResult, RecordedArtifact
+    from molt.build_record import BuildResultFacts, NativeBuildResult
     from molt.backend_protocol import BackendEmissionOrigin
+    from molt.cli.lockfiles import replayable_lock_notices
     from molt.cli.runtime_identity_schema import validate_runtime_features
 
+    notices = replayable_lock_notices(warnings)
     if (
-        warnings
+        notices is None
         or diagnostics_error is not None
         or any(
             data.get(key)
@@ -399,7 +417,7 @@ def _record_native_build_result(
     if result_inputs is None:
         input_report.refuse("native JSON lacks pre-link artifact identities")
         return
-    supported_fields = {field.name for field in fields(NativeBuildFacts)} | {
+    supported_fields = {field.name for field in fields(BuildResultFacts)} | {
         "target",
         "output",
         "consumer_output",
@@ -436,22 +454,14 @@ def _record_native_build_result(
             or observed.get("compiled_with_verified") is not False
         ):
             raise ValueError("unsupported native toolchain observation")
-        compiler = RecordedArtifact.capture(Path(observed["compiler"]["path"]))
-        binary = RecordedArtifact.capture(Path(data["output"]))
+        compiler, binary = _recorded_compiler_and_output(observed, Path(data["output"]))
         runtime_features = validate_runtime_features(
             observed["runtime"]["runtime_features"]
         )
-        for name, artifact in (
-            ("compiler", compiler),
-            ("runtime", runtime),
-            ("artifact", binary),
+        if observed["runtime"] != _recorded_toolchain_artifact(
+            runtime, executable=False, runtime_features=runtime_features
         ):
-            if observed[name] != _recorded_toolchain_artifact(
-                artifact,
-                executable=name == "compiler",
-                runtime_features=runtime_features if name == "runtime" else None,
-            ):
-                raise ValueError(f"native {name} observation changed before recording")
+            raise ValueError("native runtime observation changed before recording")
         if (
             data["artifacts"]
             != {
@@ -469,8 +479,8 @@ def _record_native_build_result(
             or data["sysroot"] is not None
         ):
             raise ValueError("unsupported native JSON result")
-        facts = NativeBuildFacts.from_payload(
-            {field.name: data[field.name] for field in fields(NativeBuildFacts)}
+        facts = BuildResultFacts.from_payload(
+            {field.name: data[field.name] for field in fields(BuildResultFacts)}
         )
         profiles = observed.get("selected_profiles", {})
         if not isinstance(profiles, dict) or any(
@@ -487,6 +497,7 @@ def _record_native_build_result(
             tuple(sorted(profiles.items())),
             None if origin is None else BackendEmissionOrigin.from_payload(origin),
             runtime_features,
+            notices,
         )
         result.verify()
         input_report.report_build_result(result.payload())
@@ -537,7 +548,7 @@ def _emit_reused_native_build_result(result: NativeBuildResult) -> int:
     data["observed_toolchain"] = observed
     return _emit_build_result_json(
         data=data,
-        warnings=(),
+        warnings=result.notices,
         json_output=True,
         returncode=0,
         diagnostics_error=None,
@@ -1079,6 +1090,149 @@ def _report_non_native_products(
     input_report.report_build_products(os.fspath(consumer_output or output), products)
 
 
+def _record_wasm_build_result(
+    data: Mapping[str, Any],
+    products: Mapping[str, Path],
+    warnings: Sequence[str],
+) -> None:
+    from dataclasses import fields
+    from molt import input_report
+    from molt.build_record import BuildResultFacts, RecordedArtifact, WasmBuildResult
+    from molt.link_outputs import wasm_artifact_paths
+    from molt.cli.lockfiles import replayable_lock_notices
+
+    fact_fields = {field.name for field in fields(BuildResultFacts)}
+    notices = replayable_lock_notices(warnings)
+    if (
+        notices is None
+        or data.get("target") != "wasm"
+        or data.get("emit") != "wasm"
+        or data.get("sysroot") is not None
+        or set(data)
+        - fact_fields
+        - {
+            "target",
+            "emit",
+            "sysroot",
+            "output",
+            "consumer_output",
+            "bundle_root",
+            "artifacts",
+            "linked",
+            "require_linked",
+            "linked_output",
+            "observed_toolchain",
+            "cache",
+            "messages",
+        }
+    ):
+        input_report.refuse(
+            "Wasm JSON contains invocation-specific or additional results"
+        )
+        return
+    try:
+        app = products.get("app")
+        linked = products.get("linked")
+        if data.get("artifacts") != wasm_artifact_paths(products) or (
+            data.get("bundle_root") != (str(app.parent) if app is not None else None)
+            or data.get("linked_output")
+            != (str(linked) if linked is not None else None)
+        ):
+            raise ValueError("Wasm JSON artifacts differ from the publication plan")
+        observed = data["observed_toolchain"]
+        if (
+            not isinstance(observed, dict)
+            or set(observed)
+            - {
+                "kind",
+                "compiled_with_verified",
+                "compiler",
+                "artifact",
+                "runtime",
+                "selected_profiles",
+                "emission_origin",
+            }
+            or observed.get("kind") != "molt-build-observation-v1"
+            or observed.get("compiled_with_verified") is not False
+            or "runtime" not in observed
+            or observed["runtime"] is not None
+        ):
+            raise ValueError("unsupported Wasm toolchain observation")
+        compiler, primary = _recorded_compiler_and_output(
+            observed, Path(data["output"])
+        )
+        raw = products["wasm"]
+        require_linked = data["require_linked"]
+        if data["linked"] is not (linked is not None) or require_linked is not (
+            primary.path != raw
+        ):
+            raise ValueError(
+                "Wasm JSON link selection differs from the publication plan"
+            )
+        module = RecordedArtifact.capture(raw) if require_linked else primary
+        result = WasmBuildResult.from_payload(
+            {
+                "kind": WasmBuildResult.kind,
+                "facts": {name: data[name] for name in fact_fields},
+                "module": module.payload(),
+                "linked_primary": primary.payload() if require_linked else None,
+                "compiler": compiler.payload(),
+                "selected_profiles": observed["selected_profiles"],
+                "emission_origin": observed.get("emission_origin"),
+                "messages": data["messages"],
+                "notices": list(notices),
+            }
+        )
+        result.verify_publication(raw, Path(data["consumer_output"]), products)
+        input_report.report_build_result(result.payload())
+    except (OSError, TypeError, KeyError, ValueError) as exc:
+        input_report.refuse(f"Wasm JSON result cannot be retained: {exc}")
+
+
+def _emit_reused_wasm_build_result(
+    result: WasmBuildResult, consumer: Path, products: Mapping[str, Path]
+) -> int:
+    from molt.link_outputs import wasm_artifact_paths
+
+    data = result.facts.payload()
+    observed: dict[str, object] = {
+        "kind": "molt-build-observation-v1",
+        "compiled_with_verified": False,
+        "compiler": _recorded_toolchain_artifact(result.compiler, executable=True),
+        "artifact": _recorded_toolchain_artifact(result.primary, executable=False),
+        "runtime": None,
+        "selected_profiles": dict(result.selected_profiles),
+    }
+    if result.emission_origin is not None:
+        observed["emission_origin"] = result.emission_origin.payload()
+    data.update(
+        {
+            "target": "wasm",
+            "emit": "wasm",
+            "sysroot": None,
+            "output": str(result.primary.path),
+            "consumer_output": str(consumer),
+            "artifacts": wasm_artifact_paths(products),
+            "linked": "linked" in products,
+            "require_linked": result.linked_primary is not None,
+            "observed_toolchain": observed,
+            "cache": {"enabled": True, "hit": True, "hit_tier": "build-record"},
+            "messages": list(result.messages),
+        }
+    )
+    if "app" in products:
+        data["bundle_root"] = str(products["app"].parent)
+    if "linked" in products:
+        data["linked_output"] = str(products["linked"])
+    return _emit_build_result_json(
+        data=data,
+        warnings=result.notices,
+        json_output=True,
+        returncode=0,
+        diagnostics_error=None,
+    )
+
+
 def _emit_non_native_build_result(
     *,
     output: Path,
@@ -1120,6 +1274,8 @@ def _emit_non_native_build_result(
     success_messages: Sequence[str] = (),
     finalize_inputs: Callable[[], None] | None = None,
 ) -> int:
+    from molt import input_report
+
     custody_error = _finish_build_input_custody(finalize_inputs)
     diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
         diagnostics_enabled=diagnostics_enabled,
@@ -1186,6 +1342,14 @@ def _emit_non_native_build_result(
             runtime_feedback_payload=runtime_feedback_payload,
             emit_ir_path=emit_ir_path,
         )
+        if (
+            custody_error is None
+            and diagnostics_error is None
+            and published_products is not None
+            and publication_tokens is not None
+            and input_report.result_active()
+        ):
+            _record_wasm_build_result(data, published_products, warnings)
         return _emit_build_result_json(
             data=data,
             warnings=warnings,

@@ -734,7 +734,7 @@ def test_json_cutoff_emits_a_current_result_without_running_compiler(
             path.write_text(f"compiled {name}", encoding="utf-8")
             paths.append(path)
         result = build_record.NativeBuildResult(
-            build_record.NativeBuildFacts(
+            build_record.BuildResultFacts(
                 None,
                 str(project / "app.py"),
                 False,
@@ -813,7 +813,9 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
         assert file_path is not None
         calls.append(file_path)
         source_path = Path(file_path).resolve()
-        source = source_path.read_text(encoding="utf-8")
+        from molt.cli.module_source import PythonSourceSnapshot
+
+        source = PythonSourceSnapshot.capture(source_path).text
         root = _find_project_root(source_path)
         out_dir = _resolve_out_dir(root, request.out_dir)
         layout = _resolve_build_output_layout(
@@ -836,46 +838,124 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
         module = layout.output_artifact
         linked = layout.linked_output_path
         module.write_text(f"module of {source}", encoding="utf-8")
-        if layout.split_runtime:
-            plan = WasmDeploymentPlan.create(
-                wasm_link_output_paths(linked, split_output_dir=module.parent),
-                output_root=module.parent,
-                split=True,
-                loader_assets=("loader_bridge.js",),
-                target_feature_asset="target_features.json",
-                bundle=True,
-                precompile=False,
-            )
-            receipt = publication_receipt_path(plan.outputs["manifest"])
-            for role, path in plan.build_products(module, receipt).items():
-                if path != module:
-                    path.write_text(f"{role} of {source}", encoding="utf-8")
+        split = layout.split_runtime
+        if not split and not request.json_output:
+            assert linked is not None
+            manifest = module.with_name("manifest.json")
+            attestation = linked.with_name(linked.name + ".wasm-opt.json")
+            linked.write_text(f"linked {source}", encoding="utf-8")
+            manifest.write_text(f"manifest of {source}", encoding="utf-8")
+            attestation.write_text(f"optimizer for {source}", encoding="utf-8")
             if report_products:
                 build_results._report_non_native_products(
                     module,
-                    plan.outputs["app"],
-                    plan.artifacts(),
-                    published_products=plan.build_products(module, receipt),
+                    linked,
+                    {
+                        "wasm": str(module),
+                        "linked_wasm": str(linked),
+                        "wasm_optimizer_attestation": str(attestation),
+                        "manifest": str(manifest),
+                    },
                 )
             return 0
-        assert linked is not None
-        manifest = module.with_name("manifest.json")
-        attestation = linked.with_name(linked.name + ".wasm-opt.json")
-        linked.write_text(f"linked {source}", encoding="utf-8")
-        manifest.write_text(f"manifest of {source}", encoding="utf-8")
-        attestation.write_text(f"optimizer for {source}", encoding="utf-8")
-        if report_products:
+        plan = WasmDeploymentPlan.create(
+            wasm_link_output_paths(
+                linked,
+                split_output_dir=module.parent if split else None,
+                optimize=linked is not None,
+            ),
+            output_root=module.parent,
+            split=split,
+            loader_assets=("loader_bridge.js",),
+            target_feature_asset="target_features.json",
+            bundle=split,
+            precompile=False,
+        )
+        receipt = publication_receipt_path(plan.outputs["manifest"])
+        products = plan.build_products(module, receipt)
+        for role, path in products.items():
+            if path != module:
+                path.write_text(f"{role} of {source}", encoding="utf-8")
+        consumer = (
+            plan.outputs.get("app") if split and not request.require_linked else linked
+        )
+        assert consumer is not None
+        if not report_products:
+            return 0
+        if not request.json_output:
             build_results._report_non_native_products(
                 module,
-                linked,
-                {
-                    "wasm": str(module),
-                    "linked_wasm": str(linked),
-                    "wasm_optimizer_attestation": str(attestation),
-                    "manifest": str(manifest),
-                },
+                consumer,
+                plan.artifacts(),
+                published_products=products,
             )
-        return 0
+            return 0
+        from molt.capability_manifest import CapabilityManifest
+        from molt.link_outputs import wasm_artifact_paths
+        from molt.cli.lockfiles import _check_lockfiles
+
+        warnings: list[str] = []
+        lock_error = _check_lockfiles(root, True, warnings, True, False, "build")
+        if lock_error is not None:
+            return lock_error
+
+        compiler = root / "wasm-compiler"
+        if not compiler.exists():
+            compiler.write_bytes(b"compiler")
+        primary = linked if request.require_linked and linked is not None else module
+        tokens = {path: input_report.stat_token(path) for path in products.values()}
+        assert all(token is not None for token in tokens.values())
+        return build_results._emit_non_native_build_result(
+            output=primary,
+            consumer_output=consumer,
+            bundle_root=plan.root if split else None,
+            cache=True,
+            cache_hit=False,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            cache_hit_tier=None,
+            backend_daemon_cached=None,
+            backend_daemon_cache_tier=None,
+            backend_daemon_config_digest=None,
+            target=request.target,
+            target_triple=None,
+            source_path=source_path,
+            deterministic=True,
+            trusted=False,
+            resolved_capability_policy=CapabilityManifest().resolve(),
+            capabilities_source=None,
+            sysroot_path=None,
+            emit_mode="wasm",
+            profile="dev",
+            native_arch_perf_enabled=False,
+            diagnostics_enabled=False,
+            build_diagnostics_payload=lambda: (None, None),
+            pgo_profile_payload=None,
+            runtime_feedback_payload=None,
+            emit_ir_path=None,
+            warnings=warnings,
+            json_output=True,
+            resolved_diagnostics_verbosity="summary",
+            artifacts=wasm_artifact_paths(products),
+            published_products=products,
+            publication_tokens={
+                path: token for path, token in tokens.items() if token is not None
+            },
+            success_messages=(f"Successfully built {primary}",),
+            extra_fields={
+                "linked": layout.linked,
+                "require_linked": request.require_linked,
+                **({"linked_output": str(linked)} if linked is not None else {}),
+                "observed_toolchain": build_results._observed_build_toolchain(
+                    backend_bin=compiler,
+                    runtime_lib=None,
+                    output=primary,
+                    selected_profiles={},
+                ),
+            },
+        )
 
     return build
 
@@ -1054,16 +1134,76 @@ def test_split_cutoff_invalidates_the_full_publication(
 
 
 @pytest.mark.parametrize(
-    "options",
-    [
-        {"json_output": True},
-        {"precompile": True},
-    ],
+    ("split", "linked"), [(False, True), (True, False), (True, True)]
 )
-def test_wasm_requests_beyond_the_verified_family_never_cut_off(
-    project: Path, tmp_path: Path, options: dict[str, Any]
+def test_structured_wasm_replays_the_verified_publication(
+    project: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    split: bool,
+    linked: bool,
 ) -> None:
-    request = _wasm_request(project, tmp_path / "web", **options)
+    import json
+
+    (project / "uv.lock").touch()
+    monkeypatch.setenv("UV_NO_SYNC", "1")
+    calls: list[str] = []
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_wasm_build(calls))
+    )
+    out = tmp_path / "wasm"
+    request = _wasm_request(
+        project,
+        out,
+        json_output=True,
+        linked=linked,
+        require_linked=not split,
+        split_runtime=split,
+        linked_output="named.wasm" if linked else None,
+    )
+    _run_wasm(build, request)
+    original = json.loads(capsys.readouterr().out)
+    _run_wasm(build, request)
+    replayed = json.loads(capsys.readouterr().out)
+    assert len(calls) == 1
+    assert replayed["data"].pop("cache")["hit_tier"] == "build-record"
+    original["data"].pop("cache")
+    assert replayed == original
+    assert replayed["warnings"] == ["Skipping uv.lock check because UV_NO_SYNC=1."]
+    assert replayed["data"]["consumer_output"] == str(
+        out / ("app.wasm" if split else "named.wasm")
+    )
+    assert replayed["data"]["output"] == str(
+        out / ("output.wasm" if split else "named.wasm")
+    )
+
+    touched = out / ("loader_bridge.js" if split else "manifest.json")
+    touched.write_bytes(b"changed after publication")
+    _run_wasm(build, request)
+    assert len(calls) == 2
+    assert touched.read_bytes() != b"changed after publication"
+    capsys.readouterr()
+
+    (project / "app.py").write_bytes(b"print('edited')\n")
+    _run_wasm(build, request)
+    assert len(calls) == 3
+    capsys.readouterr()
+    _run_wasm(build, request)
+    assert len(calls) == 3
+    assert (
+        json.loads(capsys.readouterr().out)["data"]["cache"]["hit_tier"]
+        == "build-record"
+    )
+
+    (project / "uv.lock").unlink()
+    build_record._BUILDS_ENTERED = 0
+    assert build(request) != 0
+    assert "Missing lockfiles" in capsys.readouterr().out
+
+
+def test_precompiled_wasm_never_cuts_off(project: Path, tmp_path: Path) -> None:
+    request = _wasm_request(project, tmp_path / "web", precompile=True)
     assert build_command._early_cutoff_request(request) is None
 
 

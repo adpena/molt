@@ -345,7 +345,7 @@ def test_input_custody_failure_prevents_success_result(
 def _native_record_fixture(tmp_path: Path):
     from dataclasses import replace
     from molt.build_record import (
-        NativeBuildFacts,
+        BuildResultFacts,
         NativeBuildResult,
         NativeResultInputs,
         RecordedArtifact,
@@ -373,7 +373,7 @@ def _native_record_fixture(tmp_path: Path):
     for name, path in paths.items():
         path.write_text(f"owned {name}", encoding="utf-8")
     result = NativeBuildResult(
-        NativeBuildFacts(
+        BuildResultFacts(
             None,
             str(tmp_path / "app.py"),
             False,
