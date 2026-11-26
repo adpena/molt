@@ -145,7 +145,9 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     assert!(pass_manager.contains("tti.supports_pending_call_eval_breaker_poll()"));
 
     // Both native backends use the same service boundary and frame location.
-    assert!(walker.contains("self.async_work_poll(b, false, at.frame.record(), op.frame_location())"));
+    assert!(
+        walker.contains("self.async_work_poll(b, false, at.frame.record(), op.frame_location())")
+    );
     assert!(walker.contains("RuntimeFn::AsyncWorkPollAndExceptionPending"));
     let generated =
         fs::read_to_string(root.join("runtime/molt-ir/src/tir/op_kinds_generated.rs")).unwrap();
