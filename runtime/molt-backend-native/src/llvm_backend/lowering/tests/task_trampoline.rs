@@ -507,9 +507,8 @@ fn task_trampolines_execute_lazy_construction_payload_custody_and_failures() {
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-task-trampoline-object")
         .expect("create the LLVM task object within Cargo image custody");
     let object = artifacts.path().join("llvm_task_trampolines.o");
-    backend
-        .emit_object(&object)
-        .expect("emit the LLVM task object");
+    let object_bytes = backend.emit_object().expect("emit the LLVM task object");
+    std::fs::write(&object, object_bytes).expect("write the LLVM task object for linking");
     let none = (nanbox::QNAN | nanbox::TAG_NONE).to_string();
     let provider = provider
         .replace("@ABI@", molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL)

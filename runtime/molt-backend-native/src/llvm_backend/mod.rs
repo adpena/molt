@@ -390,14 +390,16 @@ impl<'ctx> LlvmBackend<'ctx> {
         result
     }
 
-    /// Emit a native object file (`.o`) at the given optimization level.
-    pub fn emit_object(&self, path: &std::path::Path) -> Result<(), String> {
+    /// Emit the target object for publication by the caller.
+    pub fn emit_object(&self) -> Result<Vec<u8>, String> {
         use inkwell::targets::FileType;
 
         self.ensure_generated_object_abi_anchor();
-        self.machine
-            .write_to_file(&self.module, FileType::Object, path)
-            .map_err(|e| e.to_string())
+        let object = self
+            .machine
+            .write_to_memory_buffer(&self.module, FileType::Object)
+            .map_err(|e| e.to_string())?;
+        Ok(object.as_slice().to_vec())
     }
 
     /// Emit LLVM assembly (`.s`) for debugging or manual inspection.

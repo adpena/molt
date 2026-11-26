@@ -13,7 +13,6 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
     use crate::tir::types::TirType;
     use molt_ir::deterministic_hash::HashMap;
 
-    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-rc-determinism").unwrap();
     let mut first_ir = None;
     for level in [
         MoltOptLevel::O0,
@@ -100,11 +99,7 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
                 first_ir = Some(ir);
             }
             backend.optimize().unwrap();
-            let path = artifacts
-                .path()
-                .join(format!("level-{level:?}-attempt-{attempt}.o"));
-            backend.emit_object(&path).unwrap();
-            let bytes = std::fs::read(path).unwrap();
+            let bytes = backend.emit_object().unwrap();
             let object = object::File::parse(bytes.as_slice()).unwrap();
             assert!(
                 !object.symbols().any(|symbol| symbol
@@ -222,17 +217,7 @@ fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
         CodegenTarget::Host,
         MoltOptLevel::O0,
     );
-    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-object-abi")
-        .expect("create LLVM object outputs within Cargo image custody");
-    let artifact = artifacts.path().join(if cfg!(windows) {
-        "backend.obj"
-    } else {
-        "backend.o"
-    });
-    backend
-        .emit_object(&artifact)
-        .expect("direct LLVM object emission");
-    let bytes = std::fs::read(&artifact).expect("read direct LLVM object");
+    let bytes = backend.emit_object().expect("direct LLVM object emission");
     let object = object::File::parse(bytes.as_slice()).expect("parse direct LLVM object");
     let pointer_bytes = if object.is_64() { 8 } else { 4 };
     let anchor = object
@@ -282,13 +267,7 @@ fn wasm32_target_emits_a_relocatable_wasm_object_with_32_bit_pointers() {
     let layout = backend.module.get_data_layout();
     let layout = layout.as_str().to_str().expect("UTF-8 data layout");
     assert!(layout.contains("p:32:32"), "wasm32 layout: {layout}");
-    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-wasm32-object")
-        .expect("create LLVM wasm32 object output");
-    let artifact = artifacts.path().join("backend.o");
-    backend
-        .emit_object(&artifact)
-        .expect("wasm32 object emission");
-    let bytes = std::fs::read(&artifact).expect("read wasm32 object");
+    let bytes = backend.emit_object().expect("wasm32 object emission");
     assert_eq!(
         &bytes[..8],
         b"\0asm\x01\0\0\0",
