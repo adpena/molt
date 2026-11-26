@@ -186,7 +186,10 @@ impl ReturnParameterSearch {
                 }
             }
             for op in &block.ops {
+                // A checked projection must pass the continuation proof.
+                // Copy forwarding would instead ask about the mixed-use ABI word.
                 if op.has_valid_shape()
+                    && op.checked_call_result_source().is_none()
                     && let Some(source) = forwarded_python_value_source(op)
                 {
                     origins.insert(op.results[0], ReturnOrigin::Copy(source));

@@ -998,18 +998,67 @@ fn successful_return_formal_composes_across_shared_calls() {
 
     let driver = caller("driver", FunctionId(2), &[Literal::Int(41)]);
     let shared = HashSet::from_iter(["leaf".into(), "reverse".into(), "wrap".into()]);
+    #[derive(Debug)]
+    enum Observation {
+        CheckedWord,
+        OpaqueCall,
+        UncheckedCall,
+        CheckedProjection,
+        EarlyProjection,
+    }
     for target in [llvm(), cranelift()] {
-        for mode in 0..3 {
+        for observation in [
+            Observation::CheckedWord,
+            Observation::OpaqueCall,
+            Observation::UncheckedCall,
+            Observation::CheckedProjection,
+            Observation::EarlyProjection,
+        ] {
             let mut inner = reverse.clone();
             let ops = &mut inner.blocks.get_mut(&inner.entry_block).unwrap().ops;
-            match mode {
-                1 => ops
+            match observation {
+                Observation::CheckedWord => {}
+                Observation::OpaqueCall => ops
                     .iter_mut()
                     .find(|op| op.opcode == OpCode::Call)
                     .unwrap()
                     .set_proven_target(false),
-                2 => ops.retain(|op| op.opcode != OpCode::CheckException),
-                _ => {}
+                Observation::UncheckedCall => ops.retain(|op| op.opcode != OpCode::CheckException),
+                Observation::CheckedProjection | Observation::EarlyProjection => {
+                    // The exception edge still reads the physical result.
+                    // The return may use its normal-continuation projection.
+                    let word = ops
+                        .iter()
+                        .find(|op| op.opcode == OpCode::Call)
+                        .unwrap()
+                        .results[0];
+                    ops.last_mut().unwrap().operands.push(word);
+                    let exit = inner
+                        .blocks
+                        .keys()
+                        .copied()
+                        .find(|id| *id != inner.entry_block)
+                        .unwrap();
+                    let argument = inner.fresh_value();
+                    inner
+                        .blocks
+                        .get_mut(&exit)
+                        .unwrap()
+                        .args
+                        .push(crate::tir::values::TirValue {
+                            id: argument,
+                            ty: TirType::DynBox,
+                        });
+                    assert!(crate::tir::type_refine::project_checked_call_results(
+                        &mut inner,
+                        |_| true
+                    ));
+                    if matches!(observation, Observation::EarlyProjection) {
+                        let ops = &mut inner.blocks.get_mut(&inner.entry_block).unwrap().ops;
+                        let projection = ops.len() - 1;
+                        ops.swap(projection, projection - 1);
+                    }
+                }
             }
             let mut module = TirModule::with_own_table(
                 "m",
@@ -1018,13 +1067,19 @@ fn successful_return_formal_composes_across_shared_calls() {
             let outcome = run(&mut module, &target, &shared, false);
             assert!(outcome.clones.is_empty());
             let call = calls(body(&module, "driver"))[0];
+            let proved = matches!(
+                observation,
+                Observation::CheckedWord | Observation::CheckedProjection
+            );
             assert_eq!(
                 call.exact_result_proof(),
-                (mode == 0).then_some(TirType::I64)
+                proved.then_some(TirType::I64),
+                "{observation:?}"
             );
             assert_eq!(
                 call.exact_result_range(),
-                (mode == 0).then_some(IntRange::point(41))
+                proved.then_some(IntRange::point(41)),
+                "{observation:?}"
             );
         }
     }
