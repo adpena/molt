@@ -518,6 +518,9 @@ def test_every_backend_gets_one_absolute_cache_root_from_molt(tmp_path, monkeypa
     its own caches under the root molt.default_paths resolves.
     """
     monkeypatch.chdir(tmp_path)
+    # Daemon identity also observes the selected Cargo toolchain. Keep test
+    # discovery inside its custody root even when the host has pinned sccache.
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "tool-state"))
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir()
 
