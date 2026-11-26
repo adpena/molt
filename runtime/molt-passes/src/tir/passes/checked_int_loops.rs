@@ -66,6 +66,8 @@
 //! versioned and refused loop to stderr and as a debug artifact.
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_ir::repr::Repr;
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 
 use crate::tir::analysis::{AnalysisManager, ExecReachable, LoopForest, PredMap};
@@ -140,43 +142,54 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, final_tir: bool) ->
     let mut headers = forest.headers.clone();
     headers.sort_by_key(|header| std::cmp::Reverse(forest.bodies[header].len()));
     let mut covered: HashSet<BlockId> = HashSet::default();
-    let mut ranges = None;
-    let mut copies = None;
-    let labels = exception_label_to_block(func);
-    for header in headers {
-        if covered.contains(&header) {
-            continue;
-        }
-        let body = &forest.bodies[&header];
-        let outcome = check_loop_shape(func, body, &labels).and_then(|()| {
-            let vr = ranges.get_or_insert_with(|| am.get::<ValueRange>(func).clone());
-            let entry = if final_tir {
-                am.get::<ExecReachable>(func);
-                am.get::<PredMap>(func);
-                let reachable = am.cached::<ExecReachable>().expect("reachability cached");
-                let preds = am.cached::<PredMap>().expect("predecessors cached");
-                plain_preheader(func, header, body, preds, reachable, &labels).map(|preheader| {
-                    GuardedEntry {
-                        preheader,
-                        header_preds: &preds[&header],
-                        copies: copies.get_or_insert_with(|| build_copy_map(func)),
+    let mut headers = headers.into_iter().peekable();
+    while headers.peek().is_some() {
+        // Keep function-wide proofs for every candidate in this revision. Only
+        // an admitted rewrite needs to release the borrow and mutate the body.
+        let next = {
+            let facts = LoopFacts::new(func);
+            headers.find_map(|header| {
+                if covered.contains(&header) {
+                    return None;
+                }
+                let body = &forest.bodies[&header];
+                let result = check_loop_shape(func, body, facts.labels()).and_then(|()| {
+                    if am.cached::<ValueRange>().is_none() {
+                        let ranges =
+                            super::value_range::compute_in_with_scalar_facts(&facts.scalar, am);
+                        am.prepopulate::<ValueRange>(ranges);
                     }
-                })
-            } else {
-                None
-            };
-            try_version_loop(func, header, body, vr, final_tir, entry)
-        });
+                    let entry = if final_tir {
+                        am.get::<ExecReachable>(func);
+                        am.get::<PredMap>(func);
+                        facts.guarded_entry(header, body, am)
+                    } else {
+                        None
+                    };
+                    let ranges = am.cached::<ValueRange>().expect("value ranges cached");
+                    plan_version(&facts, header, body, ranges, final_tir, entry)
+                });
+                match result {
+                    Ok(rewrite) => Some((header, body, rewrite)),
+                    Err(reason) => {
+                        if debug {
+                            report.push((header, Err(reason)));
+                        }
+                        None
+                    }
+                }
+            })
+        };
+        let Some((header, body, rewrite)) = next else {
+            break;
+        };
+        let outcome = rewrite.apply(func, body);
         if let Ok(added) = outcome {
             stats.ops_added += added;
             // An exact proof alone adds no op: the attribute is the change.
             stats.values_changed += usize::from(added == 0);
             covered.extend(body.iter().copied());
-            // Value ranges change with the CFG: recompute them for the next
-            // loop instead of reading the cached result of the old function.
             am.invalidate_cfg();
-            ranges = None;
-            copies = None;
         }
         if debug {
             report.push((header, outcome));
@@ -188,24 +201,84 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, final_tir: bool) ->
     stats
 }
 
-fn try_version_loop(
-    func: &mut TirFunction,
+/// Lazy projections of the same immutable TIR revision. Small rejected loops
+/// inspect their own blocks without rescanning unrelated code.
+struct LoopFacts<'f> {
+    scalar: ScalarFacts<'f>,
+    labels: OnceCell<HashMap<i64, BlockId>>,
+    copies: OnceCell<HashMap<ValueId, ValueId>>,
+    repr: OnceCell<HashMap<ValueId, Repr>>,
+    inline_safe: OnceCell<HashSet<ValueId>>,
+    constants: OnceCell<HashSet<ValueId>>,
+    incomings: OnceCell<HashMap<(BlockId, usize), Vec<ValueId>>>,
+}
+
+impl<'f> LoopFacts<'f> {
+    fn new(func: &'f TirFunction) -> Self {
+        Self {
+            scalar: ScalarFacts::new(func),
+            labels: OnceCell::new(),
+            copies: OnceCell::new(),
+            repr: OnceCell::new(),
+            inline_safe: OnceCell::new(),
+            constants: OnceCell::new(),
+            incomings: OnceCell::new(),
+        }
+    }
+
+    fn labels(&self) -> &HashMap<i64, BlockId> {
+        self.labels
+            .get_or_init(|| exception_label_to_block(self.scalar.body()))
+    }
+
+    fn representations(&self, vr: &crate::tir::ValueRangeResult) -> &HashMap<ValueId, Repr> {
+        self.repr
+            .get_or_init(|| crate::representation_facts::repr_by_value_from(&self.scalar, Some(vr)))
+    }
+
+    fn guarded_entry<'a>(
+        &'a self,
+        header: BlockId,
+        body: &HashSet<BlockId>,
+        am: &'a AnalysisManager,
+    ) -> Option<GuardedEntry<'a>> {
+        let func = self.scalar.body();
+        let reachable = am.cached::<ExecReachable>().expect("reachability cached");
+        let preds = am.cached::<PredMap>().expect("predecessors cached");
+        let preheader = plain_preheader(func, header, body, preds, reachable, self.labels())?;
+        Some(GuardedEntry {
+            preheader,
+            header_preds: &preds[&header],
+            copies: self.copies.get_or_init(|| build_copy_map(func)),
+        })
+    }
+}
+
+enum LoopRewrite {
+    Ascii(short_ascii::ShortAscii),
+    Arithmetic {
+        guard: Option<InvariantGuard>,
+        selection: Selection,
+    },
+}
+
+fn plan_version(
+    facts: &LoopFacts<'_>,
     header: BlockId,
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
     final_tir: bool,
     entry: Option<GuardedEntry<'_>>,
-) -> Result<usize, Refusal> {
+) -> Result<LoopRewrite, Refusal> {
+    let func = facts.scalar.body();
     if let Some(entry) = entry
-        && let Some(ascii) = short_ascii::ShortAscii::admit(func, header, body, vr, entry.preheader)
+        && let Some(ascii) =
+            short_ascii::ShortAscii::admit(facts, header, body, vr, entry.preheader)
     {
-        return commit_version(func, |candidate| {
-            version(candidate, body, &Selection::default(), None, Some(&ascii))
-        });
+        return Ok(LoopRewrite::Ascii(ascii));
     }
 
-    let facts = ScalarFacts::new(func);
-    let guard = entry.and_then(|entry| invariant_guard(func, header, body, vr, &facts, entry));
+    let guard = entry.and_then(|entry| invariant_guard(header, body, vr, facts, entry));
     // Only a guard that has work to do needs a speculative analysis body.
     let selection = if let Some(guard) = &guard {
         let mut fast = func.clone();
@@ -216,40 +289,55 @@ fn try_version_loop(
             .expect("preheader exists")
             .ops
             .extend(guard.unbox_ops());
-        let fast_facts = ScalarFacts::new(&fast);
-        let fast_vr = crate::tir::passes::value_range::compute_with_scalar_facts(&fast_facts);
-        select(&fast, header, body, &fast_vr, &fast_facts, final_tir)?
+        let fast_facts = LoopFacts::new(&fast);
+        let fast_vr =
+            crate::tir::passes::value_range::compute_with_scalar_facts(&fast_facts.scalar);
+        select(header, body, &fast_vr, &fast_facts, final_tir)?
     } else {
-        select(func, header, body, vr, &facts, final_tir)?
+        select(header, body, vr, facts, final_tir)?
     };
 
     if guard.is_none() && selection.is_empty() {
         return Err(Refusal::NoProfitableRewrite);
     }
-    // Proofs alone need no second loop and cannot fail.
-    if guard.is_none()
-        && selection.checked.is_empty()
-        && selection.projections.is_empty()
-        && selection.packed_loads.is_empty()
-    {
-        for &(block, index) in &selection.exact {
-            func.blocks
-                .get_mut(&block)
-                .expect("selected block exists")
-                .ops[index]
-                .mark_i64_exact_proof();
+    Ok(LoopRewrite::Arithmetic { guard, selection })
+}
+
+impl LoopRewrite {
+    fn apply(self, func: &mut TirFunction, body: &HashSet<BlockId>) -> Result<usize, Refusal> {
+        let (guard, selection) = match self {
+            Self::Ascii(ascii) => {
+                return commit_version(func, |candidate| {
+                    version(candidate, body, &Selection::default(), None, Some(&ascii))
+                });
+            }
+            Self::Arithmetic { guard, selection } => (guard, selection),
+        };
+        // Proofs alone need no second loop and cannot fail.
+        if guard.is_none()
+            && selection.checked.is_empty()
+            && selection.projections.is_empty()
+            && selection.packed_loads.is_empty()
+        {
+            for (block, index) in selection.exact {
+                func.blocks
+                    .get_mut(&block)
+                    .expect("selected block exists")
+                    .ops[index]
+                    .mark_i64_exact_proof();
+            }
+            for (block, index) in selection.unchecked {
+                uncheck(func, block, index);
+            }
+            return Ok(0);
         }
-        for &(block, index) in &selection.unchecked {
-            uncheck(func, block, index);
-        }
-        return Ok(0);
+        commit_version(func, |candidate| {
+            if let Some(guard) = &guard {
+                guard.install_payloads(candidate);
+            }
+            version(candidate, body, &selection, guard.as_ref(), None)
+        })
     }
-    commit_version(func, |candidate| {
-        if let Some(guard) = &guard {
-            guard.install_payloads(candidate);
-        }
-        version(candidate, body, &selection, guard.as_ref(), None)
-    })
 }
 
 /// SSA repair may fail after editing the CFG. Build only admitted versions
@@ -395,13 +483,13 @@ fn takes_inline_payload(opcode: OpCode) -> bool {
 /// `None` when no numeric op of the loop takes a boxed exact int defined
 /// outside it, or the loop has no single plain entry edge.
 fn invariant_guard(
-    func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
-    facts: &ScalarFacts<'_>,
+    facts: &LoopFacts<'_>,
     entry: GuardedEntry<'_>,
 ) -> Option<InvariantGuard> {
+    let func = facts.scalar.body();
     let preheader = entry.preheader;
     let mut defined: HashSet<ValueId> = HashSet::default();
     for bid in body {
@@ -409,13 +497,13 @@ fn invariant_guard(
         defined.extend(block.args.iter().map(|arg| arg.id));
         defined.extend(block.ops.iter().flat_map(|op| op.results.iter().copied()));
     }
-    let exact = facts.types();
-    let repr = std::cell::OnceCell::new();
+    let exact = facts.scalar.types();
     let carried = header_invariants(func, header, body, entry, &defined);
     let mut blocks: Vec<BlockId> = body.iter().copied().collect();
     blocks.sort_by_key(|block| block.0);
-    // Each operand read as a payload, with the invariant the guard tests.
-    let mut reads: Vec<(ValueId, ValueId)> = Vec::new();
+    let mut payloads = Vec::new();
+    let mut payload_by_invariant = HashMap::default();
+    let mut read_payloads = HashMap::default();
     for bid in blocks {
         for op in &func.blocks[&bid].ops {
             if !takes_inline_payload(op.opcode) {
@@ -432,36 +520,32 @@ fn invariant_guard(
                 };
                 // An exact int of any magnitude: the range stop of
                 // `for i in range(n)` is `n.__index__()`.
-                if matches!(exact.get(&operand), Some(TirType::I64 | TirType::BigInt))
-                    && matches!(
-                        repr.get_or_init(|| {
-                            crate::representation_facts::repr_by_value_from(facts, Some(vr))
-                        })
-                        .get(&operand),
-                        Some(molt_ir::repr::Repr::DynBox | molt_ir::repr::Repr::MaybeBigInt)
+                if read_payloads.contains_key(&operand)
+                    || !matches!(exact.get(&operand), Some(TirType::I64 | TirType::BigInt))
+                    || !matches!(
+                        facts.representations(vr).get(&operand),
+                        Some(Repr::DynBox | Repr::MaybeBigInt)
                     )
-                    && !reads.iter().any(|(read, _)| *read == operand)
                 {
-                    reads.push((operand, tested));
+                    continue;
                 }
+                let raw = if let Some(&raw) = payload_by_invariant.get(&tested) {
+                    raw
+                } else {
+                    let raw = ValueId(
+                        func.next_value
+                            .checked_add(u32::try_from(payloads.len()).ok()?)?,
+                    );
+                    payloads.push((tested, raw));
+                    payload_by_invariant.insert(tested, raw);
+                    raw
+                };
+                read_payloads.insert(operand, raw);
             }
         }
     }
-    if reads.is_empty() {
+    if payloads.is_empty() {
         return None;
-    }
-    let mut payloads: Vec<(ValueId, ValueId)> = Vec::new();
-    let mut read_payloads: HashMap<ValueId, ValueId> = HashMap::default();
-    for (operand, tested) in reads {
-        let raw = match payloads.iter().find(|(boxed, _)| *boxed == tested) {
-            Some(&(_, raw)) => raw,
-            None => {
-                let raw = ValueId(func.next_value + u32::try_from(payloads.len()).ok()?);
-                payloads.push((tested, raw));
-                raw
-            }
-        };
-        read_payloads.insert(operand, raw);
     }
     Some(InvariantGuard {
         header,
@@ -599,35 +683,38 @@ fn checked_opcode(opcode: OpCode) -> Option<OpCode> {
 
 /// Select raw-capable loop arithmetic and its required input proofs.
 fn select(
-    func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
-    facts: &ScalarFacts<'_>,
+    facts: &LoopFacts<'_>,
     final_tir: bool,
 ) -> Result<Selection, Refusal> {
-    let exact = facts.types();
+    let func = facts.scalar.body();
+    let exact = facts.scalar.types();
     let is_int = |value: &ValueId| exact.get(value) == Some(&TirType::I64);
     let header_args = &func.blocks[&header].args;
     if !header_args.iter().any(|arg| is_int(&arg.id)) {
         return Err(Refusal::NoExactAccumulator);
     }
-    let inline_safe = crate::representation_facts::raw_i64_safe_values_from(facts, vr);
-    let mut constants: HashSet<ValueId> = HashSet::default();
+    let inline_safe = facts
+        .inline_safe
+        .get_or_init(|| crate::representation_facts::raw_i64_safe_values_from(&facts.scalar, vr));
+    let constants = facts.constants.get_or_init(|| {
+        func.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .filter(|op| op.opcode == OpCode::ConstInt)
+            .filter_map(|op| op.results.first().copied())
+            .filter(is_int)
+            .collect()
+    });
     let mut arithmetic: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
     let mut checked_before: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
     let mut call_results = HashMap::default();
     let mut copies: Vec<(ValueId, ValueId)> = Vec::new();
     let mut phis: Vec<(BlockId, usize, ValueId)> = Vec::new();
-    for (&bid, block) in &func.blocks {
-        for op in &block.ops {
-            if op.opcode == OpCode::ConstInt && op.results.first().is_some_and(is_int) {
-                constants.insert(op.results[0]);
-            }
-        }
-        if !body.contains(&bid) {
-            continue;
-        }
+    for &bid in body {
+        let block = &func.blocks[&bid];
         for (index, arg) in block.args.iter().enumerate() {
             if is_int(&arg.id) {
                 phis.push((bid, index, arg.id));
@@ -669,7 +756,9 @@ fn select(
             }
         }
     }
-    let incomings = crate::representation_facts::block_arg_incomings_for(func);
+    let incomings = facts
+        .incomings
+        .get_or_init(|| crate::representation_facts::block_arg_incomings_for(func));
 
     // Start at the greatest fixed point and propagate each failed dependency
     // only to the candidates that use it. A seed stays raw even when its
@@ -763,7 +852,6 @@ fn select(
         } else {
             HashSet::default()
         };
-        let labels = std::cell::OnceCell::new();
         let mut sources: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
         for (result, source) in copies {
             sources.entry(result).or_default().push(source);
@@ -792,7 +880,9 @@ fn select(
                             && check.exception_edge_kind()
                                 == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin)
                             && crate::tir::type_refine::checked_result_observer(
-                                func, &labels, check,
+                                func,
+                                &facts.labels,
+                                check,
                             )
                             .is_some()
                     })

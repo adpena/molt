@@ -43,8 +43,9 @@ pub(crate) fn compute_scev_with_loop_forest(
 
     // Header args first (recognizes the IVs and populates iv_of_header).
     for &header in &loops.headers {
-        if let Some(args) = defs.header_args.get(&header) {
-            for &a in args {
+        if let Some(block) = func.blocks.get(&header) {
+            for arg in &block.args {
+                let a = arg.id;
                 let e = builder.scev(a);
                 if !matches!(e, ScevExpr::Unknown) {
                     exprs.insert(a, e);
