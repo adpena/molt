@@ -1250,8 +1250,14 @@ def test_frontend_semantic_token_cannot_escape_after_serializer_rewrites(monkeyp
         "_fuse_string_split_field_consumers_json",
         lambda ops: [{"kind": "CONST_NOT_IMPLEMENTED", "out": "sentinel"}],
     )
+    assert generator.map_ops_to_json([]) == []
+    split = MoltOp(
+        kind="STRING_SPLIT",
+        args=[MoltValue("input"), MoltValue("sep")],
+        result=MoltValue("split"),
+    )
     with pytest.raises(ValueError, match="escaped serialization"):
-        generator.map_ops_to_json([])
+        generator.map_ops_to_json([split])
 
 
 @pytest.mark.parametrize(

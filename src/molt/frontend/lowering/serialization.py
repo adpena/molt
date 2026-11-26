@@ -55,6 +55,9 @@ from molt.frontend.lowering.serialization_object_attr_ops import (
 
 
 _MAP_OPS_TO_JSON_KINDS_1: frozenset[FrontendOpKind] = frozenset({"ret_void", "ret"})
+_STRING_SPLIT_REWRITE_INPUTS: frozenset[WireOpKind] = frozenset(
+    {WireKinds.STRING_SPLIT, WireKinds.STRING_SPLIT_FIELD}
+)
 _FUSE_STRING_SPLIT_FIELD_CONSUMERS_JSON_KINDS_1: frozenset[WireOpKind] = frozenset(
     {"const", "const_bool"}
 )
@@ -616,10 +619,13 @@ class SerializationMixin(
                         last_entry["end_col_offset"] = mop.end_col_offset
 
         active_source_line: int | None = None
+        has_string_split = False
         for entry in json_ops:
             if not isinstance(entry, dict):
                 continue
             kind = entry.get("kind")
+            if kind in _STRING_SPLIT_REWRITE_INPUTS:
+                has_string_split = True
             if kind == WireKinds.LINE:
                 value = entry.get("value")
                 if isinstance(value, int) and value > 0:
@@ -629,8 +635,11 @@ class SerializationMixin(
             if active_source_line is not None:
                 entry.setdefault("source_line", active_source_line)
 
-        json_ops = self._scalarize_string_split_fields_json(json_ops)
-        json_ops = self._fuse_string_split_field_consumers_json(json_ops)
+        # The emitted wire kinds determine whether either rewrite can apply.
+        # Reuse the source-line walk above to admit the two passes.
+        if has_string_split:
+            json_ops = self._scalarize_string_split_fields_json(json_ops)
+            json_ops = self._fuse_string_split_field_consumers_json(json_ops)
         for entry in json_ops:
             validate_serialized_kind(entry["kind"], diagnostic_function)
         return json_ops
