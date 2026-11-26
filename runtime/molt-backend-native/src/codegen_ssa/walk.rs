@@ -833,7 +833,9 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
     if entry_has_predecessor {
         b.jump(blocks[&entry_id], &entry_args);
     }
-    for &id in &rpo {
+    let packed_branches =
+        super::checked_control::CheckedBranch::packed(func, &rpo, &exception_targets);
+    'block: for &id in &rpo {
         if id != entry_id || entry_has_predecessor {
             b.switch_to_block(blocks[&id]);
         }
@@ -871,6 +873,12 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             }
             op_index += 1;
             at.op_index = index_in_block;
+            if index_in_block + 1 == block.ops.len()
+                && let Some(branch) = packed_branches.get(&id)
+                && cx.try_buffer_branch(b, op, blocks[&branch.hit], blocks[&branch.miss])
+            {
+                continue 'block;
+            }
             cx.lower_op(b, &at, op, frame);
         }
         let mut edge_diagnostics = Vec::new();

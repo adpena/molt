@@ -121,6 +121,17 @@ fn checked_slot<B: CodegenBuilder>(
     b.word_to_address(address)
 }
 
+fn load_packed_i64<B: CodegenBuilder>(
+    b: &mut B,
+    operands: &Operands<'_, B>,
+    op: &TirOp,
+    miss: B::Block,
+) -> B::Word {
+    let owner = checked_buffer(b, operands, op.operands[0], miss);
+    let slot = checked_slot(b, operands, owner, op.operands[1], op.operands[2], miss);
+    b.load_word(slot, 0)
+}
+
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
     pub(super) fn try_buffer_load(&mut self, b: &mut B, op: &TirOp) {
         let operands = self.operands();
@@ -131,9 +142,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             let done = b.create_block("buffer_load_done");
             let word = b.append_block_param(done, MachineKind::Word);
             let success = b.append_block_param(done, MachineKind::Bit);
-            let owner = checked_buffer(b, &operands, op.operands[0], cold);
-            let slot = checked_slot(b, &operands, owner, op.operands[1], op.operands[2], cold);
-            let value = b.load_word(slot, 0);
+            let value = load_packed_i64(b, &operands, op, cold);
             let hit = b.bit_constant(true);
             b.jump(done, &[b.word_value(value), b.bit_value(hit)]);
             b.switch_to_block(cold);
@@ -145,6 +154,23 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         };
         self.bind(op.results[0], word, HeldCarrier::RawI64);
         self.bind(op.results[1], success, HeldCarrier::RawBool);
+    }
+
+    pub(super) fn try_buffer_branch(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        hit: B::Block,
+        miss: B::Block,
+    ) -> bool {
+        let operands = self.operands();
+        if !can_access(&operands, op) {
+            return false;
+        }
+        let value = load_packed_i64(b, &operands, op, miss);
+        self.bind(op.results[0], b.word_value(value), HeldCarrier::RawI64);
+        b.jump(hit, &[]);
+        true
     }
 
     pub(super) fn packed_buffer_call(&mut self, b: &mut B, op: &TirOp, entry: RuntimeFn) -> bool {
