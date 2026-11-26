@@ -211,17 +211,16 @@ impl SimpleBackend {
         self,
         ir: SimpleIR,
     ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
-        // Backend selection: MOLT_BACKEND=llvm is an explicit contract. A
-        // missing LLVM feature must fail closed instead of substituting a
-        // different backend and producing misleading validation evidence.
+        let backend = self.selected_object_backend();
+        self.compile_selected_checked(ir, backend)
+    }
+
+    pub(super) fn selected_object_backend(&self) -> NativeCodegenBackend {
         #[cfg(feature = "llvm")]
         if self.llvm_target.is_wasm() {
-            // LLVM is the one WebAssembly producer: the triple selects it.
-            return self.compile_selected_checked(ir, NativeCodegenBackend::Llvm);
+            return NativeCodegenBackend::Llvm;
         }
-        let backend_setting = env_setting(BackendEnv::MOLT_BACKEND);
-        let backend = select_native_codegen_backend(backend_setting.as_deref());
-        self.compile_selected_checked(ir, backend)
+        select_native_codegen_backend(env_setting(BackendEnv::MOLT_BACKEND).as_deref())
     }
 
     /// Compile directly through LLVM without mutating process-global backend
@@ -279,6 +278,18 @@ impl SimpleBackend {
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
         let program = self.prepare_native_codegen(&mut ir, backend, true, timing, &compile_start);
+        self.emit_prepared_object(program, backend, timing, compile_start)
+    }
+
+    pub(super) fn emit_prepared_object(
+        mut self,
+        program: NativeCodegenProgram,
+        backend: NativeCodegenBackend,
+        timing: bool,
+        compile_start: std::time::Instant,
+    ) -> CompileOutput {
+        #[cfg(not(feature = "llvm"))]
+        let _ = backend;
         //  LLVM backend dispatch
         // When MOLT_BACKEND=llvm and the llvm feature is compiled in, route
         // through the LLVM backend instead of Cranelift.  Each function is

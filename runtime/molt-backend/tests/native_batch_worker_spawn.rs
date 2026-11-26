@@ -221,9 +221,27 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
     let bytes = std::fs::read(&output_path).expect("read native application archive");
     let archive = ArchiveFile::parse(bytes.as_slice()).expect("native application archive");
     assert_eq!(archive.members().count(), 2);
+    let mut helper_definition = None;
+    let mut helper_import = None;
+    let helper = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("helper");
     for member in archive.members() {
-        let data = member.unwrap().data(bytes.as_slice()).unwrap();
+        let member = member.unwrap();
+        let data = member.data(bytes.as_slice()).unwrap();
         let object = object::File::parse(data).expect("native application object");
+        for symbol in object.symbols() {
+            if symbol
+                .name()
+                .ok()
+                .is_some_and(|name| name.strip_prefix('_').unwrap_or(name) == helper)
+            {
+                if symbol.is_definition() {
+                    helper_definition = Some(member.name().to_vec());
+                }
+                if symbol.is_undefined() {
+                    helper_import = Some(member.name().to_vec());
+                }
+            }
+        }
         assert!(
             !object.symbols().any(|symbol| symbol.is_undefined()
                 && matches!(
@@ -234,6 +252,10 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
         );
     }
 
+    assert_ne!(
+        helper_definition.expect("provider exports helper"),
+        helper_import.expect("caller imports helper")
+    );
     // Explicit invalid custody must fail before publication instead of silently
     // allocating in the process's unrelated platform temp directory.
     let nondirectory = tmp.path().join("scratch-file");

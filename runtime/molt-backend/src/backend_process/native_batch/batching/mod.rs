@@ -12,6 +12,6 @@ pub(crate) use partition::{
 };
 pub(crate) use stable::stable_native_batches;
 pub(crate) use types::{
-    NativeApplicationArtifactOptions, NativeApplicationArtifactResult, NativeBatchJobSpec,
-    NativeBatchObjectJob,
+    NativeApplicationArtifactOptions, NativeApplicationArtifactResult, NativeBatchInput,
+    NativeBatchJobSpec, NativeBatchObjectJob,
 };

@@ -270,7 +270,7 @@ impl SimpleBackend {
         Self::new_jit(std::sync::Arc::new(|_| None)).codegen_identity()
     }
 
-    fn codegen_identity(&self) -> serde_json::Value {
+    pub(super) fn codegen_identity(&self) -> serde_json::Value {
         let backend = self;
         let isa = backend.module.isa();
         let flags: BTreeMap<String, String> = isa

@@ -1,48 +1,36 @@
 use molt_backend::{SimpleBackend, SimpleIR};
 
 use super::super::super::stable_native_batches;
-use super::super::super::{ExternalFunctionDeclarations, external_function_declarations};
 
 pub(super) struct NativeApplicationBatchPlan {
-    pub(super) profile: Option<molt_backend::PgoProfileIR>,
-    pub(super) external_function_declarations: ExternalFunctionDeclarations,
-    pub(super) app_callable_manifest: molt_backend::passes::AppCallableManifest,
-    pub(super) module_context: molt_backend::NativeBackendModuleContext,
-    pub(super) batches: Vec<Vec<molt_backend::FunctionIR>>,
+    pub(super) archive: molt_backend::NativeTerminalArchive,
+    pub(super) batches: Vec<Vec<molt_backend::TerminalObjectRow>>,
 }
 
 impl NativeApplicationBatchPlan {
     pub(super) fn from_ir(
-        ir: SimpleIR,
+        mut ir: SimpleIR,
         batch_size: usize,
         batch_ops_budget: usize,
         module_context: Option<molt_backend::NativeBackendModuleContext>,
         app_callable_manifest: Option<molt_backend::passes::AppCallableManifest>,
-    ) -> Self {
-        let profile = ir.profile;
-        let mut all_functions = ir.functions;
-        let module_context = module_context
-            .unwrap_or_else(|| SimpleBackend::prepare_module_context(&mut all_functions));
-        let external_function_declarations = external_function_declarations(&all_functions);
-        // Shared-stdlib partitioning has already removed bodies referenced by
-        // application metadata. Its full-program manifest must travel with the
-        // partition rather than being recomputed from an incomplete universe.
-        let app_callable_manifest = app_callable_manifest
-            .unwrap_or_else(|| molt_backend::compute_app_callable_manifest_checked(&all_functions));
-        let body_functions = all_functions
-            .into_iter()
-            .filter(|func| !func.is_extern)
-            .collect();
-        let batches = stable_native_batches(body_functions, batch_size, batch_ops_budget);
-        Self {
-            profile,
-            external_function_declarations,
-            app_callable_manifest,
-            module_context,
-            batches,
-        }
+        backend: &mut SimpleBackend,
+    ) -> std::io::Result<Self> {
+        let linkage = module_context
+            .unwrap_or_else(|| SimpleBackend::prepare_module_context(&mut ir.functions));
+        backend.app_callable_manifest = app_callable_manifest;
+        backend.skip_ir_passes = true;
+        backend.skip_shared_stdlib_partition = true;
+        let mut archive = backend
+            .prepare_terminal_archive(ir, linkage)
+            .map_err(std::io::Error::other)?;
+        let batches = stable_native_batches(
+            std::mem::take(&mut archive.definitions),
+            batch_size,
+            batch_ops_budget,
+        );
+        Ok(Self { archive, batches })
     }
-
     pub(super) fn total_batches(&self) -> usize {
         self.batches.len()
     }
@@ -72,13 +60,22 @@ mod tests {
         assert!(manifest.compiled_bodies.contains("shared_buffer_get"));
         let context = SimpleBackend::prepare_module_context(&mut full.functions);
         full.functions.retain(|function| function.name == "app");
-        let plan = NativeApplicationBatchPlan::from_ir(full, 1, 100, Some(context), Some(manifest));
+        let plan = NativeApplicationBatchPlan::from_ir(
+            full,
+            1,
+            100,
+            Some(context),
+            Some(manifest),
+            &mut SimpleBackend::new(),
+        )
+        .unwrap();
         assert!(
-            plan.app_callable_manifest
+            plan.archive
+                .callables
                 .compiled_bodies
                 .contains("shared_buffer_get")
         );
         assert_eq!(plan.batches.len(), 1);
-        assert_eq!(plan.batches[0][0].name, "app");
+        assert_eq!(plan.batches[0][0].declaration.name, "app");
     }
 }

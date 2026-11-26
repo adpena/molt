@@ -11,7 +11,7 @@ pub(crate) use archive::{
 };
 pub(crate) use batching::{
     ExternalFunctionDeclarations, NativeApplicationArtifactOptions,
-    NativeApplicationArtifactResult, NativeBatchJobSpec, NativeBatchObjectJob,
+    NativeApplicationArtifactResult, NativeBatchInput, NativeBatchJobSpec, NativeBatchObjectJob,
     append_referenced_external_declarations, batch_external_function_names,
     external_function_declarations, release_native_backend_batch_memory_to_os,
     resolved_batch_op_budget_limit, resolved_batch_size_limit, stable_native_batches,

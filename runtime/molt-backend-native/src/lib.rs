@@ -89,7 +89,8 @@ pub use crate::ir::{
 };
 #[cfg(feature = "native-backend")]
 pub use crate::native_backend::{
-    CompileOutput, NativeBackendModuleContext, PreparedJitApplication, SimpleBackend,
+    CompileOutput, NativeBackendModuleContext, NativeTerminalArchive, NativeTerminalObject,
+    PreparedJitApplication, SimpleBackend, TerminalObjectRow,
 };
 #[cfg(feature = "jit")]
 pub use crate::native_backend::{

@@ -27,11 +27,36 @@ pub(crate) struct NativeApplicationArtifactResult {
     pub(crate) workers: Option<Vec<super::super::worker::NativeWorkerOrigin>>,
 }
 
+/// Source stdlib constituents keep their independent content keys. Application
+/// objects carry the terminal graph the parent partitioned for this target.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum NativeBatchInput {
+    Terminal {
+        terminal: molt_backend::NativeTerminalObject,
+    },
+    Source(SimpleIR),
+}
+
+impl NativeBatchInput {
+    pub(crate) fn declarations(&self) -> &[molt_backend::FunctionIR] {
+        match self {
+            Self::Source(ir) => &ir.functions,
+            Self::Terminal { terminal } => &terminal.declarations,
+        }
+    }
+}
+impl From<SimpleIR> for NativeBatchInput {
+    fn from(ir: SimpleIR) -> Self {
+        Self::Source(ir)
+    }
+}
+
 #[derive(serde::Deserialize, serde::Serialize)]
 pub(crate) struct NativeBatchObjectJob {
     /// Final program bindings belong only to the app metadata owner; reusable objects import them.
     pub(crate) code_slots: Option<molt_ir::code_slots::CodeSlotBindings>,
-    pub(crate) ir: SimpleIR,
+    pub(crate) ir: NativeBatchInput,
     pub(crate) module_context: NativeBackendModuleContext,
     pub(crate) codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment,
     pub(crate) target_triple: Option<String>,
@@ -56,7 +81,7 @@ impl NativeBatchObjectJob {
     /// Project the whole-program `context` to the rows this job's object can
     /// consume. The shared context is borrowed, never cloned per job.
     pub(crate) fn close_dependencies(mut self, context: &NativeBackendModuleContext) -> Self {
-        let mut names = NativeBackendModuleContext::object_dependencies(&self.ir.functions);
+        let mut names = NativeBackendModuleContext::object_dependencies(self.ir.declarations());
         if let Some(manifest) = &self.app_callable_manifest {
             names.extend(manifest.names().cloned());
         }

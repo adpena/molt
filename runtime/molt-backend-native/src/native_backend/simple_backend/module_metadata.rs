@@ -465,13 +465,22 @@ impl NativeFinalFunctions {
         })
     }
 
-    #[cfg(feature = "jit")]
-    pub(super) fn from_jit_artifact(
+    pub(super) fn from_terminal_wire(
         ir: SimpleIR,
         wires: Vec<Option<Vec<u8>>>,
     ) -> Result<Self, String> {
+        let mut symbols = BTreeSet::new();
+        if ir
+            .functions
+            .iter()
+            .any(|header| !header.ops.is_empty() || !symbols.insert(&header.name))
+        {
+            return Err("terminal declarations have source operations or duplicate symbols".into());
+        }
         if ir.functions.len() != wires.len() {
-            return Err("native JIT body row count differs from the declaration table".to_string());
+            return Err(
+                "native terminal body row count differs from the declaration table".to_string(),
+            );
         }
         let table = molt_ir::FunctionTable::of(&ir.functions);
         let by_symbol: BTreeMap<_, _> = table.ids().map(|id| (table.symbol(id), id)).collect();
@@ -488,13 +497,11 @@ impl NativeFinalFunctions {
                             && body.return_abi == declaration.return_abi
                             && body.param_names == declaration.params
                     })
-                    .ok_or_else(|| {
-                        format!("invalid terminal JIT body for `{}`", declaration.name)
-                    })?
+                    .ok_or_else(|| format!("invalid terminal body for `{}`", declaration.name))?
                 }
                 _ => {
                     return Err(format!(
-                        "native JIT body ownership differs for `{}`",
+                        "native terminal body ownership differs for `{}`",
                         declaration.name
                     ));
                 }
