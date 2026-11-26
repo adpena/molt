@@ -1065,6 +1065,22 @@ def _prepare_build_inputs(
         return None, resolved_build_entry_error
     assert resolved_build_entry is not None
 
+    if requires_runtime and is_wasm_target(target) and emit != "jit":
+        from molt.cli.models import _RuntimeArtifactState
+        from molt.cli.runtime_wasm_validation import _admit_runtime_wasm_validator
+
+        validator_state = _RuntimeArtifactState()
+        validator_error = _admit_runtime_wasm_validator(
+            validator_state,
+            project_root=prepared_build_roots.molt_root,
+            json_output=json_output,
+        )
+        if validator_error is not None:
+            return None, validator_error
+        prepared_build_roots = replace(
+            prepared_build_roots, wasm_validator=validator_state.runtime_wasm_validator
+        )
+
     return (
         prepared_build_preamble,
         prepared_build_roots,

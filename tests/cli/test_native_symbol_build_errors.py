@@ -31,6 +31,7 @@ from molt.cli.models import (
     _FrontendIntegrationState,
     _ModuleGraphMetadata,
     _PreparedBackendRuntimeContext,
+    _PreparedBuildRoots,
     _RuntimeArtifactState,
 )
 from molt.cli.backend_ir import _PreparedBackendIR
@@ -241,7 +242,12 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     )
     result = backend_pipeline._run_backend_pipeline(
         prepared_build_preamble=preamble,
-        prepared_build_roots=SimpleNamespace(project_root=tmp_path, molt_root=tmp_path),
+        prepared_build_roots=_PreparedBuildRoots(
+            cwd_root=tmp_path,
+            project_root=tmp_path,
+            molt_root=tmp_path,
+            sysroot_path=None,
+        ),
         prepared_build_config=config,
         resolved_build_entry=SimpleNamespace(entry_module="__main__"),
         prepared_frontend_pipeline_bundle=bundle,
