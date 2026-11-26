@@ -78,6 +78,7 @@ SRC_ROOT = REPO_ROOT / "src"
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import bench  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
+from tools.perf_schema import RUNTIME_INIT_TRACE  # noqa: E402
 
 from tools.safe_run import _run_measured_command  # noqa: E402
 
@@ -85,28 +86,6 @@ DOCS_COLD_START = REPO_ROOT / "docs" / "perf" / "COLD_START.md"
 
 PERFSCORE_SESSION_ID = "perfscore"
 COLD_START_GUARD_PREFIX = "MOLT_COLD_START"
-
-# The molt_runtime_init phase ladder (runtime_state.rs trace_runtime_init).
-# Order matters: each phase's delta is attributed to the named stage.
-RUNTIME_INIT_PHASES = (
-    "enter",
-    "state_allocated",
-    "runtime_reset_for_init",
-    "intrinsics_registered",
-    "serial_vtable",
-    "itertools_vtable",
-    "core_gil_vtable",
-    "resources",
-    "audit",
-    "io_mode",
-    "capabilities",
-    "ok",
-)
-
-_TRACE_RE = re.compile(
-    r"\[molt runtime_init\]\s+\+\s*(\d+)us\s+\(d\s*(\d+)us\)\s+(\S+)"
-)
-
 
 # ---------------------------------------------------------------------------
 # Probe sources
@@ -263,7 +242,7 @@ def _measure_runtime_init_phases(
     stderr. We collect the per-phase delta across runs and report the median
     per stage; the sum is the total molt_runtime_init cost.
     """
-    per_phase: dict[str, list[int]] = {p: [] for p in RUNTIME_INIT_PHASES}
+    per_phase: dict[str, list[int]] = {}
     for _ in range(samples):
         elapsed, stderr = _safe_run_elapsed(
             [str(binary)],
@@ -275,16 +254,12 @@ def _measure_runtime_init_phases(
         )
         if elapsed is None:
             continue
-        for m in _TRACE_RE.finditer(stderr):
-            delta = int(m.group(2))
-            stage = m.group(3)
-            if stage in per_phase:
-                per_phase[stage].append(delta)
-    out: dict[str, float] = {}
-    for stage, deltas in per_phase.items():
-        if deltas:
-            out[stage] = round(statistics.median(deltas) / 1000.0, 4)  # ms
-    return out
+        for match in RUNTIME_INIT_TRACE.finditer(stderr):
+            per_phase.setdefault(match.group(3), []).append(int(match.group(2)))
+    return {
+        stage: round(statistics.median(deltas) / 1000.0, 4)
+        for stage, deltas in per_phase.items()
+    }
 
 
 # ---------------------------------------------------------------------------

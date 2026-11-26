@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict, cast
@@ -24,6 +25,11 @@ from tools.compat.comparison import (
 )
 
 SCHEMA_VERSION = 7
+
+# The runtime writes fixed-width microsecond readings to stderr.
+RUNTIME_INIT_TRACE = re.compile(
+    r"\[molt runtime_init\] \+ *(\d+)us \(d *(\d+)us\) (\S+)"
+)
 
 
 class PhaseTimingStats(TypedDict):
