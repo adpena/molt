@@ -937,7 +937,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 # 54: keys and source requests preserve every Python string code point.
 # 55: bounded string spellings inform import and namespace invalidation.
 # 56: generic positional argument exposure retains its qualified call site.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 62
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 63
 
 
 def _import_scan_cache_key(
@@ -1717,6 +1717,10 @@ def _decode_import_scan_payload(
             for _, names, _ in values.namespaces
             for name, _ in names
         ) or any(not isinstance(name, str) for _, name, _ in values.attributes):
+            return None
+        if len({(site, name) for site, name, _ in values.attributes}) != len(
+            values.attributes
+        ):
             return None
     except (KeyError, TypeError, ValueError, IndexError):
         return None

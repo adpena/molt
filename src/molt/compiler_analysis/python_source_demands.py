@@ -322,7 +322,7 @@ class PythonSourceDemands:
         )
         self.namespaces: dict[SourceValue, _SourceNamespace] = {}
         self.bases: dict[SourceValue, frozenset[PythonSourceKey]] = {}
-        self.attributes: dict[SourceValue, tuple[str, frozenset[PythonSourceKey]]] = {}
+        self.attributes: dict[SourceValue, dict[str, frozenset[PythonSourceKey]]] = {}
         self.import_bindings: dict[SourceValue, _SourceImportBinding] = {}
         self.value_jobs: set[SourceValue] = set()
         # Body scans by class representative, and every argument tuple that
@@ -462,15 +462,12 @@ class PythonSourceDemands:
                             )
         for owner, name, origins in scan.source_values.attributes:
             value = (module_name, owner)
-            previous = self.attributes.get(value)
-            self._publish(
-                self.attributes,
-                value,
-                (
-                    name,
-                    origins | (previous[1] if previous is not None else frozenset()),
-                ),
-            )
+            selections = self.attributes.setdefault(value, {})
+            previous = selections.get(name)
+            joined = origins if previous is None else previous | origins
+            if previous != joined:
+                selections[name] = joined
+                self._invalidate_value(value)
         for element in scan.source_values.elements:
             value = (module_name, element.owner)
             previous = self.elements.get(value)
@@ -1998,15 +1995,14 @@ class PythonSourceDemands:
                     else:
                         candidates.update(self._returned_values(candidate, value))
         elif value in self.attributes:
-            name, owners = self.attributes[value]
-            if name in {"__builtins__", "f_builtins"}:
-                # Native metadata may become visible through a decorator or
-                # dynamic member whose callable source has no graph candidate.
-                candidates.add(_INTERPRETER_BUILTINS)
-            for owner in sorted(owners):
-                candidates.update(
-                    self._select_attribute((module_name, owner), name, value)
-                )
+            for name, owners in self.attributes[value].items():
+                if name in {"__builtins__", "f_builtins"}:
+                    # Native metadata can be visible without a source callable.
+                    candidates.add(_INTERPRETER_BUILTINS)
+                for owner in sorted(owners):
+                    candidates.update(
+                        self._select_attribute((module_name, owner), name, value)
+                    )
         elif value in self.import_bindings:
             binding = self.import_bindings[value]
             for imported in binding.modules:

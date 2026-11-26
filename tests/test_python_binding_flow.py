@@ -43,6 +43,8 @@ from molt.compiler_analysis.python_effects_generated import (
 )
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
+    PythonSourceProjection,
+    python_source_projection_key,
     _PythonAstDigestAdmission,
     python_ast_digest,
     python_node_source_key,
@@ -6769,8 +6771,18 @@ def test_attribute_builtin_identity_follows_alias_and_replacement(name, identity
     assert not facts.expression_is(ast.parse(replaced).body[-1].value.func, identity)
 
 
-def test_literal_getattr_selection_transports_callable_and_fallback_sources():
-    source = "import provider\ndef fallback(): return None\nvalue = getattr(provider, 'chosen', fallback)\n"
+@pytest.mark.parametrize(
+    ("operand", "members"),
+    [("'chosen'", {"chosen"}), ("key", {"chosen", "alternate"})],
+)
+def test_getattr_selection_transports_callable_and_fallback_sources(
+    operand: str, members: set[str]
+) -> None:
+    source = (
+        "import provider\ndef fallback(): return None\n"
+        "key = 'chosen' if input() else 'alternate'\n"
+        f"value = getattr(provider, {operand}, fallback)\n"
+    )
     tree = ast.parse(source)
     call = tree.body[-1].value
     facts = analyze_python_source_bindings(
@@ -6780,10 +6792,10 @@ def test_literal_getattr_selection_transports_callable_and_fallback_sources():
             callback_member_writes=0,
         ),
     )
-    selected = python_node_source_key(call.args[1])
-    assert {source: name for source, name, _ in facts.source_attributes}[
-        selected
-    ] == "chosen"
+    selected = python_source_projection_key(call, PythonSourceProjection.CALL_ATTRIBUTE)
+    assert {
+        name for site, name, _ in facts.source_attributes if site == selected
+    } == members
     origins = facts.expression_result(call).source_origins
     assert selected in origins
     assert python_node_source_key(tree.body[1]) in origins

@@ -55,7 +55,7 @@ from molt.compiler_analysis.static_truth import (
 from molt.compiler_analysis.python_binding_facts import (
     EnclosingBindingDeclarations,
     PythonParameterRef,
-    PythonStringAlternatives,
+    finite_python_strings,
     PythonStringValue,
 )
 from molt.compiler_analysis.python_namespace_graph import (
@@ -1025,11 +1025,9 @@ def _collect_imports(
         return id(node) not in native_cache_operands
 
     def cache_keys(node):
-        key = binding_index.static_value(node)
-        if type(key) is str:
-            return (key,)
-        if isinstance(key, PythonStringAlternatives):
-            return tuple(sorted(key.values))
+        keys = finite_python_strings(binding_index.static_value(node))
+        if keys is not None:
+            return keys
         captured = _resolve_string_constant(node, loader_metadata=True)
         return (captured,) if captured is not None else None
 
@@ -2170,14 +2168,7 @@ def _collect_imports(
             if any(isinstance(argument, ast.Starred) for argument in node.args):
                 return
             receiver, name = node.args[:2]
-            key = binding_index.static_value(name)
-            names = (
-                (key,)
-                if isinstance(key, str)
-                else tuple(sorted(key.values))
-                if isinstance(key, PythonStringAlternatives)
-                else None
-            )
+            names = finite_python_strings(binding_index.static_value(name))
         origins, _nested = cache_origins(receiver)
         if origins:
             attribute_writes.append(

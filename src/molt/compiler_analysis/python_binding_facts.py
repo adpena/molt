@@ -77,6 +77,35 @@ PythonStaticValue: TypeAlias = (
 )
 
 
+def finite_python_strings(value: PythonStaticValue) -> tuple[str, ...] | None:
+    """Spellings proved by the value transfer, in canonical order."""
+    if type(value) is str:
+        return (value,)
+    if isinstance(value, PythonStringAlternatives):
+        return tuple(sorted(value.values))
+    return None
+
+
+def join_python_static_values(
+    left: PythonStaticValue, right: PythonStaticValue
+) -> PythonStaticValue:
+    """Retain small finite string sets at control-flow joins."""
+    if left is None or right is None:
+        return None
+    if same_python_static_value(left, right):
+        return left
+    if not isinstance(left, (str, PythonStringAlternatives)) or not isinstance(
+        right, (str, PythonStringAlternatives)
+    ):
+        return None
+    left_values = left.values if isinstance(left, PythonStringAlternatives) else {left}
+    right_values = (
+        right.values if isinstance(right, PythonStringAlternatives) else {right}
+    )
+    values = left_values | right_values
+    return PythonStringAlternatives(frozenset(values)) if len(values) <= 8 else None
+
+
 def python_static_value_key(value: PythonStaticValue) -> tuple[object, ...]:
     """Exact identity of a static fact; never Python's bool/int equality.
 

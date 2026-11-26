@@ -110,6 +110,8 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonSourceElement,
     PythonIterationFact,
     PythonStringAlternatives,
+    finite_python_strings,
+    join_python_static_values,
     PythonStringValue,
     PythonModuleMetadataProof,
     NO_MODULE_METADATA_PROOF,
@@ -267,7 +269,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 75
+_ANALYSIS_SCHEMA: Final = 76
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -754,9 +756,7 @@ def _join_binding_payloads(
                 telemetry.join_payload_identity_skips += 1
             return left[1:]
         first_static, first_result = left[1:]
-        static_value = (
-            first_static if same_python_static_value(first_static, right[1]) else None
-        )
+        static_value = join_python_static_values(first_static, right[1])
         results = (first_result, right[2])
     else:
         normal_payloads = tuple(
@@ -766,15 +766,11 @@ def _join_binding_payloads(
         )
         if not normal_payloads:
             return None, UNKNOWN_EXPRESSION_RESULT
-        first_static = normal_payloads[0][0]
-        static_value = (
-            first_static
-            if all(
-                same_python_static_value(candidate, first_static)
-                for candidate, _result in normal_payloads[1:]
-            )
-            else None
-        )
+        static_value = normal_payloads[0][0]
+        for candidate, _result in normal_payloads[1:]:
+            static_value = join_python_static_values(static_value, candidate)
+            if static_value is None:
+                break
         results = tuple(result for _static_value, result in normal_payloads)
     if telemetry is not None:
         telemetry.join_payload_algebra_calls += 1
@@ -2964,7 +2960,7 @@ class _BindingTransferFacts:
     decoration_annotation_heads: dict[PythonSourceKey, IdentityMask] = field(
         default_factory=dict
     )
-    source_attributes: dict[PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]] = (
+    source_attributes: dict[PythonSourceKey, dict[str, frozenset[PythonSourceKey]]] = (
         field(default_factory=dict)
     )
     source_elements: dict[PythonSourceKey, PythonSourceElement] = field(
@@ -4160,6 +4156,12 @@ class _Analyzer:
             self._observed_stack[-1].deferred_execution |= refs
             self._observed_stack[-1].module_metadata_effects |= module_metadata_effects
 
+    def _publish_source_attribute(
+        self, site: PythonSourceKey, name: str, owners: frozenset[PythonSourceKey]
+    ) -> None:
+        selections = self.transfer.source_attributes.setdefault(site, {})
+        selections[name] = selections.get(name, frozenset()) | owners
+
     def _publish_source_call(self, call: PythonSourceCall) -> None:
         previous = self.transfer.source_calls.get(call.owner)
         self.transfer.source_calls[call.owner] = (
@@ -4353,12 +4355,7 @@ class _Analyzer:
             receiver_origins = self._known_expression_result(
                 node.value
             ).exposed_source_origins
-            previous_attribute = self.transfer.source_attributes.get(key)
-            self.transfer.source_attributes[key] = (
-                node.attr,
-                receiver_origins
-                | (previous_attribute[1] if previous_attribute else frozenset()),
-            )
+            self._publish_source_attribute(key, node.attr, receiver_origins)
         if callable_identities := identities & SOURCE_CALLABLE_IDENTITIES:
             # Positive provenance alone cannot rule out OTHER.
             self.transfer.source_callables[key] = (
@@ -4409,10 +4406,7 @@ class _Analyzer:
                 # from the star-imported modules, as an attribute read would.
                 star_export_lookup = True
                 origins |= {key}
-                self.transfer.source_attributes[key] = (
-                    node.id,
-                    self._star_import_origins,
-                )
+                self._publish_source_attribute(key, node.id, self._star_import_origins)
         # A rooted value can retire without calling Python. This fact, lookup
         # identity and provenance all travel on the source expression result.
         # Seal them together so a copy normalizes and hashes the result once.
@@ -4443,8 +4437,7 @@ class _Analyzer:
             effects | (previous.effects if previous is not None else NO_EFFECTS),
             static_value
             if previous is None
-            or same_python_static_value(previous.static_value, static_value)
-            else None,
+            else join_python_static_values(previous.static_value, static_value),
             binding_invalidated
             or (previous is not None and previous.binding_invalidated),
             binding_is_bound and (previous is None or previous.binding_is_bound),
@@ -5102,10 +5095,8 @@ class _Analyzer:
             selected = python_source_projection_key(
                 node, PythonSourceProjection.CALL_ATTRIBUTE
             )
-            previous = self.transfer.source_attributes.get(selected)
-            self.transfer.source_attributes[selected] = (
-                attribute_read[1],
-                owner.source_origins | (previous[1] if previous else frozenset()),
+            self._publish_source_attribute(
+                selected, attribute_read[1], owner.source_origins
             )
             source_result_projected = True
             result_fact = StaticExpressionResult(source_origins=frozenset({selected}))
@@ -5128,11 +5119,7 @@ class _Analyzer:
             mapping = python_source_projection_key(
                 node, PythonSourceProjection.CALL_ATTRIBUTE
             )
-            previous = self.transfer.source_attributes.get(mapping)
-            self.transfer.source_attributes[mapping] = (
-                "__dict__",
-                owner.source_origins | (previous[1] if previous else frozenset()),
-            )
+            self._publish_source_attribute(mapping, "__dict__", owner.source_origins)
             selected = python_source_projection_key(
                 node, PythonSourceProjection.CALL_MAPPING_VALUE
             )
@@ -5174,11 +5161,10 @@ class _Analyzer:
             builtins = python_source_projection_key(
                 node, PythonSourceProjection.CALL_NATIVE_BUILTINS
             )
-            prior_builtins = self.transfer.source_attributes.get(builtins)
-            self.transfer.source_attributes[builtins] = (
+            self._publish_source_attribute(
+                builtins,
                 "__dict__",
-                items[DataclassInitSpecField.BUILTINS].result.source_origins
-                | (prior_builtins[1] if prior_builtins else frozenset()),
+                items[DataclassInitSpecField.BUILTINS].result.source_origins,
             )
             attributes = (
                 (
@@ -5434,23 +5420,25 @@ class _Analyzer:
             and not node.keywords
             and not any(isinstance(arg, ast.Starred) for arg in node.args)
             and len(node.args) in ((2, 3) if may_getattr else (2,))
-            and (member := _literal_string(node.args[1])) is not None
+            and (
+                members := finite_python_strings(
+                    self.transfer.expressions[self._node_key(node.args[1])].static_value
+                )
+            )
         ):
-            # Literal selection uses the same member source graph as obj.member,
-            # including package __getattr__. Only the receiver is a borrow:
-            # getattr's default can become the result.
+            # Finite evaluated names use the same member graph as obj.member.
+            # The selected result, including getattr's default, may escape.
             if exact and callee != int(PythonIdentity.BUILTIN_DELATTR):
                 borrowed_module_operand = 0
             owner = argument_results[0]
-            # The literal's real source site distinguishes member projection
-            # from a joined replacement callee's ordinary call-result site.
-            selected = self._node_key(node.args[1])
-            source_result_projected = exact
-            previous = self.transfer.source_attributes.get(selected)
-            self.transfer.source_attributes[selected] = (
-                member,
-                owner.source_origins | (previous[1] if previous else frozenset()),
+            # A projection is separate from the name operand's own evaluation
+            # and from a replacement callee's ordinary result.
+            selected = python_source_projection_key(
+                node, PythonSourceProjection.CALL_ATTRIBUTE
             )
+            source_result_projected = exact
+            for member in members:
+                self._publish_source_attribute(selected, member, owner.source_origins)
             if exact:
                 argument_protocol_indices = frozenset()
                 effects |= READS_OBJECT_STATE | INVOKES_DESCRIPTOR | RAISES
@@ -5460,9 +5448,11 @@ class _Analyzer:
             if may_getattr:
                 selected_deferred |= frozenset({DeferredExecution(selected, "read")})
                 if exact:
-                    result = self._member_value(
-                        state_id, owner.identities, member, owner
-                    )
+                    result = NO_IDENTITIES
+                    for member in members:
+                        result |= self._member_value(
+                            state_id, owner.identities, member, owner
+                        )
                 result_fact = StaticExpressionResult(
                     source_origins=frozenset({selected}), evaluation_required=True
                 )
@@ -5475,8 +5465,11 @@ class _Analyzer:
                 result = int(PythonIdentity.INERT_VALUE)
                 if callee == int(PythonIdentity.BUILTIN_DELATTR):
                     effects |= WRITES_OBJECT_STATE | _RELEASE_CALLBACK_EFFECTS
-                    state_id = self._invalidate_member_target(
-                        state_id, owner.identities, member
+                    mutations = NO_INVALID_MEMBERS
+                    for member in members:
+                        mutations |= _member_write_mask(owner.identities, member)
+                    state_id = self.states.invalidate_members(
+                        state_id, mutations, definite=len(members) == 1
                     )
                     result_fact = StaticExpressionResult.scalar(None)
                     selected_deferred |= frozenset(
@@ -5623,12 +5616,7 @@ class _Analyzer:
         name on the instance selects, so the source demands must see it."""
         if not owner.exposed_source_origins:
             return frozenset()
-        previous = self.transfer.source_attributes.get(store)
-        self.transfer.source_attributes[store] = (
-            member,
-            owner.exposed_source_origins
-            | (previous[1] if previous is not None else frozenset()),
-        )
+        self._publish_source_attribute(store, member, owner.exposed_source_origins)
         return frozenset({DeferredExecution(store, "mutate")})
 
     def _super_receiver_origins(
@@ -6591,6 +6579,7 @@ class _Analyzer:
                 state_id = selected.state_id
                 identities = selected.identities
                 effects = test.effects | selected.effects
+                static_value = selected.static_value
                 result_override = selected.result
             else:
                 left = self.eval_expr(node.body, test.state_id, scope)
@@ -6598,6 +6587,9 @@ class _Analyzer:
                 state_id = self.states.join(left.state_id, right.state_id)
                 identities = left.identities | right.identities
                 effects = test.effects | left.effects | right.effects
+                static_value = join_python_static_values(
+                    left.static_value, right.static_value
+                )
                 result_override = join_static_expression_results(
                     (left.result, right.result)
                 )
@@ -9789,8 +9781,8 @@ class _Analyzer:
         )
         result_sources.update(self.transfer.source_completions)
         result_sources.update(
-            (source, origins)
-            for source, (_name, origins) in self.transfer.source_attributes.items()
+            (source, frozenset().union(*selections.values()))
+            for source, selections in self.transfer.source_attributes.items()
         )
         result_indices: dict[PythonSourceKey, int] = {}
         for source in result_sources:
@@ -10239,9 +10231,8 @@ class _Analyzer:
             module_getattr_may_be_bound=self._module_getattr_may_be_bound,
             source_attributes=tuple(
                 (owner, name, origins)
-                for owner, (name, origins) in sorted(
-                    self.transfer.source_attributes.items()
-                )
+                for owner, selections in sorted(self.transfer.source_attributes.items())
+                for name, origins in sorted(selections.items())
             ),
             source_bases=tuple(sorted(self.transfer.source_bases.items())),
             source_elements=tuple(

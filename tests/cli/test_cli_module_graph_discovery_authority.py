@@ -4008,6 +4008,36 @@ def test_qualified_argument_exposure_follows_publication(
         assert opaque(discover(writer, first.discovery))
 
 
+def test_finite_member_read_of_cache_value_reaches_only_selected_bodies(
+    tmp_path: Path,
+) -> None:
+    for leaf in ("chosen_leaf", "alternate_leaf", "dormant_leaf"):
+        (tmp_path / f"{leaf}.py").write_text("pass\n", encoding="utf-8")
+    (tmp_path / "provider.py").write_text(
+        "def chosen(): import chosen_leaf\n"
+        "def alternate(): import alternate_leaf\n"
+        "def dormant(): import dormant_leaf\n",
+        encoding="utf-8",
+    )
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "import sys, provider\n"
+        "member = 'chosen' if input() else 'alternate'\n"
+        "getattr(sys.modules[input()], member)()\n",
+        encoding="utf-8",
+    )
+    result = module_graph_discovery._discover_module_graph(
+        entry, [tmp_path], [tmp_path], tmp_path, None, set()
+    )
+    assert {"chosen_leaf", "alternate_leaf"} <= result.graph.keys()
+    assert "dormant_leaf" not in result.graph
+    assert result.discovery is not None
+    assert not any(
+        row.construct == "module_escape" and row.module is None
+        for row in result.discovery.namespace_writes.get("entry", ())
+    )
+
+
 def test_resolved_mutators_invalidate_only_their_reached_module(
     tmp_path: Path,
 ) -> None:
