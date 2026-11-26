@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import errno as _errno
 import asyncio as _asyncio
 import logging as _logging
 import sys
@@ -16,7 +17,6 @@ from asyncio import (
     IncompleteReadError,
     Protocol,
     _SOCKET,
-    _errno,
     _io_wait,
     _molt_socket_reader_at_eof,
     _molt_socket_reader_drop,

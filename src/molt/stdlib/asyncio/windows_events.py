@@ -32,8 +32,6 @@ if _sys.platform != "win32":
     def __getattr__(attr: str) -> Any:
         raise ImportError("asyncio.windows_events is only available on Windows")
 else:
-    # Re-export event loop classes from the main asyncio module, mirroring
-    # the synthetic module that asyncio/__init__.py builds at lines 6251-6264.
     from asyncio import SelectorEventLoop
     from asyncio import _ProactorEventLoop as ProactorEventLoop
     from asyncio import (

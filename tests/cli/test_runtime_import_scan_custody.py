@@ -667,9 +667,19 @@ def test_real_asyncio_graph_projection_retains_static_and_relative_discovery() -
     )
 
     assert projection.requires_runtime_package_anchor
-    assert "ssl" in projection.imports
+    assert "ssl" not in projection.imports
     assert "asyncio.exceptions" in projection.dynamic_relative_import_candidates
+    assert "asyncio.sslproto" in projection.dynamic_relative_import_candidates
     assert "asyncio.exceptions" not in projection.imports
+
+    provider = owner.with_name("sslproto.py")
+    tls = _collect_imports_for_graph(
+        ast.parse(provider.read_text(encoding="utf-8")),
+        "asyncio.sslproto",
+        purpose=SourceImportPurpose.INVENTORY,
+        import_scan_mode="module_init",
+    )
+    assert "ssl" in tls.imports
 
 
 @pytest.mark.long_pole

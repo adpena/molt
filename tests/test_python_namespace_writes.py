@@ -1234,6 +1234,40 @@ def test_writes_are_reported_in_source_order() -> None:
     assert [(write.name, write.line) for write in writes] == [("b", 2), ("a", 3)]
 
 
+@pytest.mark.parametrize("frame_writer", [None, "frame.f_locals"])
+def test_import_cache_key_survives_alias_only_when_frame_is_sealed(
+    frame_writer: str | None,
+) -> None:
+    from molt.compiler_analysis.python_import_scan import _collect_imports_for_graph
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_string_facts import PythonStringBound
+    from molt.target_python import TargetPythonVersion
+
+    tree = ast.parse(
+        "import sys as original_sys\ndef publish(suffix, value):\n"
+        "    key = f'plugins.{suffix}'\n"
+        "    original_sys.modules[key] = value\n"
+    )
+    # The receiver's global read can run arbitrary code because this import
+    # may be redirected. Its key is still scoped unless that code can edit
+    # the publisher's active frame.
+    scan = _collect_imports_for_graph(
+        tree,
+        module_name="publisher",
+        target_python=TargetPythonVersion(3, 13, 0),
+        namespace_premise=PythonNamespacePremise(
+            (), 0, 0, ("sys",), frame_locals_writer=frame_writer
+        ),
+    )
+    assert scan.namespace_summary is not None
+    (write,) = scan.namespace_summary.foreign_writes
+    assert write.name is None
+    assert write.key_bound == (
+        PythonStringBound("plugins.", "", 8) if frame_writer is None else None
+    )
+    assert decode_python_namespace_write(python_namespace_write_payload(write)) == write
+
+
 def test_same_line_namespace_cache_writes_keep_source_site_order():
     from dataclasses import replace
     from molt.compiler_analysis.python_namespace_writes import (

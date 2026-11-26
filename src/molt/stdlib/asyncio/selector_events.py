@@ -11,7 +11,7 @@ import selectors
 import ssl
 import weakref
 import warnings
-from asyncio import socket as socket
+from . import _SOCKET as socket
 
 
 import asyncio.base_events as base_events
@@ -25,10 +25,11 @@ import asyncio.trsock as trsock
 from asyncio import SelectorEventLoop as BaseSelectorEventLoop
 from asyncio.log import logger
 
-try:
-    SC_IOV_MAX = int(os.sysconf("SC_IOV_MAX"))
-except Exception:
-    SC_IOV_MAX = 1024
+SC_IOV_MAX = 1024
+if hasattr(os, "sysconf"):
+    _limit = os.sysconf("SC_IOV_MAX")
+    if isinstance(_limit, int) and _limit > 0:
+        SC_IOV_MAX = _limit
 
 __all__ = [
     "BaseSelectorEventLoop",

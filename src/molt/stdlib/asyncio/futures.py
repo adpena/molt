@@ -16,7 +16,6 @@ from asyncio import (
     CancelledError,
     InvalidStateError,
     _EXPOSE_GRAPH,
-    _contextvars,
     _require_asyncio_intrinsic,
     _task_registry_current,
     _molt_asyncio_future_cancel_fast,
@@ -131,7 +130,7 @@ class Future:
         _wake_waiter: bool = False,
     ) -> int | None:
         if context is None and not _wake_waiter:
-            context = _contextvars.copy_context()
+            context = contextvars.copy_context()
         if self.done():
             if _wake_waiter:
                 fn(self)

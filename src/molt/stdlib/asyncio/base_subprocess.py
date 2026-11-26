@@ -15,16 +15,11 @@ from . import transports
 logger = _logging.getLogger("asyncio")
 
 
-class BaseSubprocessTransport:
-    pass
+from .subprocess import Process
 
-
-class ReadSubprocessPipeProto:
-    pass
-
-
-class WriteSubprocessPipeProto:
-    pass
+BaseSubprocessTransport = Process
+ReadSubprocessPipeProto = Process
+WriteSubprocessPipeProto = Process
 
 
 __all__ = [

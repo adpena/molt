@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextvars
 from _compatibility_errors import (
     abstract_add_signal_handler_error as _abstract_add_signal_handler_error,
@@ -108,6 +109,7 @@ from asyncio import (
 )
 from . import protocols as protocols
 from . import transports as transports
+from .coroutines import _iscoroutinefunction
 from .protocols import DatagramProtocol, Protocol
 from .transports import DatagramTransport, Transport
 
@@ -694,7 +696,7 @@ class _EventLoop(AbstractEventLoop):
                 raise RuntimeError("Executor shutdown has been called")
             executor = self._default_executor
             if executor is None:
-                executor = _asyncio._concurrent.futures.ThreadPoolExecutor(
+                executor = concurrent.futures.ThreadPoolExecutor(
                     thread_name_prefix="asyncio"
                 )
                 self._default_executor = executor
@@ -986,7 +988,7 @@ class _EventLoop(AbstractEventLoop):
             thread.join()
 
     def set_default_executor(self, executor):
-        if not isinstance(executor, _asyncio._concurrent.futures.ThreadPoolExecutor):
+        if not isinstance(executor, concurrent.futures.ThreadPoolExecutor):
             raise TypeError("executor must be ThreadPoolExecutor instance")
         self._default_executor = executor
 
@@ -1005,7 +1007,7 @@ class _EventLoop(AbstractEventLoop):
             raise NotImplementedError(
                 "signal handlers are not supported on this platform"
             )
-        if _asyncio.iscoroutine(callback) or _asyncio.iscoroutinefunction(callback):
+        if _asyncio.iscoroutine(callback) or _iscoroutinefunction(callback):
             raise TypeError("coroutines cannot be used with add_signal_handler()")
         self._check_signal(sig)
         if self.is_closed():
