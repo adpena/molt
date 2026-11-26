@@ -1536,6 +1536,7 @@ gvn_numberable_attr_key_opcodes = [
 # module global slot sites (call_anatomy.md 4.5). They never cross the SimpleIR
 # wire under their own kind and carry no frontend facts.
 final_tir_opcodes = [
+    "TryBuffer2dLoadI64",
     "IsInlineInt",
     "UnboxInlineInt",
     "IsFloatWord",
