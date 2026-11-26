@@ -916,6 +916,11 @@ return_contract = "owned_object"
 type = 0
 
 [[import]]
+name = "exception_push_or_defer"
+return_contract = "raw_bits"
+type = 0
+
+[[import]]
 name = "exception_set_last"
 type = 2
 

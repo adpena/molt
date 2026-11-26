@@ -32,6 +32,7 @@ pub(crate) struct Position<'a, B: CodegenBuilder> {
     pub(crate) op_index: usize,
     pub(crate) frame: super::frame::ActiveFrame<B::Slot>,
     pub(crate) initial_homes: &'a super::frame::HomeInitializations,
+    pub(crate) exception_level: Option<(super::exception_levels::Event, B::Slot)>,
     /// A compiled poll's raw frame address from its physical parameter.
     pub(crate) poll_frame: Option<B::Word>,
     pub(crate) blocks: &'a HashMap<BlockId, B::Block>,
@@ -44,6 +45,15 @@ pub(crate) struct Position<'a, B: CodegenBuilder> {
 impl<B: RecordPlacement> FunctionCx<'_, B> {
     /// Lower one operation, or diagnose a violated terminal TIR invariant.
     pub(crate) fn lower_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) {
+        if let Some((
+            event
+            @ (super::exception_levels::Event::Enter | super::exception_levels::Event::Retire),
+            slot,
+        )) = at.exception_level
+        {
+            event.transition(b, slot);
+            return;
+        }
         match op.opcode {
             OpCode::ExceptionPending => self.exception_pending_op(b, op),
             OpCode::FrameEntryAdmits => self.frame_entry_admits(b, op),
@@ -387,7 +397,13 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             return;
         };
         let pending = if op.is_async_work_poll() {
-            self.async_work_poll(b, false, at.frame.record(), op.frame_location())
+            self.async_work_poll(
+                b,
+                false,
+                at.frame.record(),
+                op.frame_location(),
+                at.exception_level.map(|(_, slot)| slot),
+            )
         } else {
             let thread = b.thread_record_word();
             pending::exception_pending_word(b, thread)
@@ -434,6 +450,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 let origin = b.create_block("check_exc_origin");
                 b.branch_if(raised, (origin, &[]), (continued, &[]));
                 b.switch_to_block(origin);
+                if let Some((event, slot)) = at.exception_level {
+                    event.transition(b, slot);
+                }
                 let homes = at.frame.record();
                 // The site's own location; the normal path stores nothing.
                 if let Some(location) = op.frame_location() {
@@ -485,6 +504,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         payload: bool,
         record: Option<B::Slot>,
         location: Option<i64>,
+        exception_level: Option<B::Slot>,
     ) -> B::Word {
         let has_work = b.async_work_pending();
         let thread = b.thread_record_word();
@@ -494,6 +514,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let answer = b.append_block_param(done, MachineKind::Word);
         b.branch_if(has_work, (cold, &[]), (fast, &[]));
         b.switch_to_block(cold);
+        if let Some(slot) = exception_level {
+            super::exception_levels::Event::Observe.transition(b, slot);
+        }
         if let Some(location) = location {
             let homes = record.expect("location publication requires a frame");
             super::frame::store_location(b, homes, location);
@@ -806,6 +829,11 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
     } else {
         Default::default()
     };
+    let exception_levels = if trace.is_none() && runtime.contains(RuntimeFn::ExceptionPushOrDefer) {
+        super::exception_levels::slots(b, func, &exception_targets)
+    } else {
+        HashMap::default()
+    };
     let mut op_index = 0usize;
     if entry_has_predecessor {
         b.jump(blocks[&entry_id], &entry_args);
@@ -822,6 +850,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             op_index: 0,
             frame,
             initial_homes: &initial_homes,
+            exception_level: None,
             poll_frame,
             blocks: &blocks,
             exception_targets: &exception_targets,
@@ -837,6 +866,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             call_sites: &call_sites,
         };
         for (index_in_block, op) in block.ops.iter().enumerate() {
+            at.exception_level = exception_levels.get(&(id, index_in_block)).copied();
             if let Some((stride, verbose, name, len)) = trace
                 && op_index.is_multiple_of(stride)
             {
@@ -1583,7 +1613,7 @@ mod tests {
                     functions: &Default::default(),
                     call_sites: &Cell::new(0),
                 };
-                let answer = cx.async_work_poll(b, false, Some(slot), Some(13));
+                let answer = cx.async_work_poll(b, false, Some(slot), Some(13), None);
                 let answer = b.word_value(answer);
                 b.return_value(Some(answer));
             });
@@ -1642,7 +1672,7 @@ mod tests {
                     functions: &Default::default(),
                     call_sites: &Cell::new(0),
                 };
-                let answer = cx.async_work_poll(b, true, None, None);
+                let answer = cx.async_work_poll(b, true, None, None, None);
                 let answer = b.word_value(answer);
                 b.return_value(Some(answer));
             });

@@ -511,6 +511,26 @@ pub(crate) fn molt_exception_push_attached_body(_py: &crate::PyToken<'_>) -> u64
     })
 }
 
+/// Install the physical level now when its transition is observable or may
+/// allocate. Otherwise the compiled region installs it before its first reader.
+pub(crate) fn molt_exception_push_or_defer_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let tls = _py.execution_tls();
+        let depth = tls.exception_handler_depth.get();
+        let can_defer =
+            !trace_exception_stack() && depth >= tls.exception_stack_baseline.get() && {
+                let active = tls.active_exception_stack.borrow();
+                active.len() == depth && active.capacity() > depth
+            };
+        if can_defer {
+            0
+        } else {
+            exception_stack_push_in(_py);
+            1
+        }
+    })
+}
+
 pub(crate) fn molt_exception_pop_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         exception_stack_pop(_py);
@@ -586,6 +606,59 @@ pub extern "C" fn molt_exception_pending_detached() -> u64 {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn a_virtual_lexical_level_requires_unobserved_aligned_spare_context() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let tls = py.execution_tls();
+            let old_depth = tls.exception_handler_depth.replace(0);
+            let old_baseline = tls.exception_stack_baseline.replace(0);
+            let old_active = tls.active_exception_stack.replace(Vec::new());
+
+            assert_eq!(
+                molt_exception_push_or_defer_attached_body(py),
+                1,
+                "no spare slot"
+            );
+            assert_eq!(tls.exception_handler_depth.get(), 1);
+            exception_stack_pop(py);
+            let materialized = molt_exception_push_or_defer_attached_body(py);
+            assert_eq!(materialized, u64::from(trace_exception_stack()));
+            assert_eq!(tls.exception_handler_depth.get(), materialized as usize);
+            if materialized == 1 {
+                exception_stack_pop(py);
+            }
+
+            let dormant =
+                MoltObject::from_ptr(alloc_exception(py, BuiltinExc::KeyError, "dormant")).bits();
+            tls.active_exception_stack.borrow_mut().push(dormant);
+            assert_eq!(
+                molt_exception_push_or_defer_attached_body(py),
+                1,
+                "detached context depth"
+            );
+            exception_stack_pop(py);
+            assert_eq!(*tls.active_exception_stack.borrow(), [dormant]);
+            assert_eq!(tls.active_exception_stack.borrow_mut().pop(), Some(dormant));
+            dec_ref_bits(py, dormant);
+
+            tls.exception_stack_baseline.set(1);
+            assert_eq!(
+                molt_exception_push_or_defer_attached_body(py),
+                1,
+                "abnormal baseline"
+            );
+            exception_stack_pop(py);
+            assert_eq!(tls.exception_handler_depth.get(), 1);
+            tls.exception_stack_baseline.set(0);
+            exception_stack_pop(py);
+
+            tls.active_exception_stack.replace(old_active);
+            tls.exception_handler_depth.set(old_depth);
+            tls.exception_stack_baseline.set(old_baseline);
+        });
+    }
 
     #[test]
     fn pending_trace_diagnostics_preserve_identity_custody_and_stored_fields() {

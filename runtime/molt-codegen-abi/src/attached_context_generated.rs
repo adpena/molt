@@ -1424,6 +1424,7 @@ macro_rules! attached_symbol {
     ("molt_exception_pop") => { "molt_exception_pop__molt_context_66fa900595616b00" };
     ("molt_exception_prepare_raise") => { "molt_exception_prepare_raise__molt_context_66fa900595616b00" };
     ("molt_exception_push") => { "molt_exception_push__molt_context_66fa900595616b00" };
+    ("molt_exception_push_or_defer") => { "molt_exception_push_or_defer__molt_context_66fa900595616b00" };
     ("molt_exception_reduce") => { "molt_exception_reduce__molt_context_66fa900595616b00" };
     ("molt_exception_resolve_captured") => { "molt_exception_resolve_captured__molt_context_66fa900595616b00" };
     ("molt_exception_set_last") => { "molt_exception_set_last__molt_context_66fa900595616b00" };

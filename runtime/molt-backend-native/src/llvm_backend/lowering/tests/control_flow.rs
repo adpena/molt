@@ -5,6 +5,147 @@ use molt_ir::OpKind;
 use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
 #[test]
+fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical_refusals() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    let mut f = TirFunction::new(
+        "pending_level".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let handler = f.fresh_block();
+    f.label_id_map.insert(handler.0, 9);
+    let marker = |code| {
+        let mut op = TirOp::new(code, vec![], vec![]);
+        op.attrs.insert("value".into(), AttrValue::Int(9));
+        op
+    };
+    let level = |kind| TirOp::new(OpCode::Copy, vec![], vec![]).with_origin(kind);
+    let mut check = marker(OpCode::CheckException);
+    check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+    let mut service = check.clone();
+    service.mark_async_work_poll();
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry.ops = vec![
+        level(OpKind::ExceptionPush),
+        marker(OpCode::TryStart),
+        check,
+        service,
+        level(OpKind::ExceptionPop),
+    ];
+    entry.terminator = Terminator::Return { values: vec![] };
+    f.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![marker(OpCode::TryEnd), level(OpKind::ExceptionPop)],
+            terminator: Terminator::Unwind,
+        },
+    );
+
+    let compile = |f: &TirFunction, available| {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        if available {
+            backend
+                .runtime_callable_symbols
+                .insert(RuntimeFn::ExceptionPushOrDefer);
+        } else {
+            backend
+                .runtime_callable_symbols
+                .remove(RuntimeFn::ExceptionPushOrDefer);
+        }
+        let machine = lower_tir_to_llvm(f, &backend);
+        backend.module.verify().unwrap();
+        machine.print_to_string().to_string()
+    };
+    let ir = compile(&f, true);
+    assert_eq!(
+        ir.matches_execution("@molt_exception_push_or_defer(")
+            .count(),
+        1,
+        "{ir}"
+    );
+    assert_eq!(
+        ir.matches_execution("@molt_exception_push(").count(),
+        3,
+        "{ir}"
+    );
+    assert_eq!(
+        ir.matches_execution("@molt_async_work_poll_and_exception_pending(")
+            .count(),
+        1,
+        "{ir}"
+    );
+    assert_eq!(
+        ir.matches_execution("@molt_exception_pop(").count(),
+        2,
+        "{ir}"
+    );
+    assert!(!compile(&f, false).contains("@molt_exception_push_or_defer"));
+    let mut block = "";
+    let mut observers = 0;
+    for line in ir.lines() {
+        if !line.starts_with(' ')
+            && let Some((label, _)) = line.split_once(':')
+        {
+            block = label;
+        }
+        if line.contains("call ")
+            && (line.contains("@molt_async_work_poll_and_exception_pending")
+                || line.contains("@molt_exception_frame_origin"))
+        {
+            assert!(
+                block.starts_with("exception_level_ready"),
+                "{block}: {line}"
+            );
+            observers += 1;
+        }
+    }
+    assert_eq!(observers, 3, "{ir}");
+
+    // The normal and exceptional edges can have the same predecessor block.
+    // Its early check reaches the later operations without executing the push.
+    let mut bypass = f.clone();
+    let later = bypass.fresh_block();
+    bypass.label_id_map.insert(later.0, 11);
+    let entry = bypass.blocks.get_mut(&bypass.entry_block).unwrap();
+    let tail = entry.ops.split_off(2);
+    let mut early = marker(OpCode::CheckException);
+    early.attrs.insert("value".into(), AttrValue::Int(11));
+    early.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+    entry.ops.insert(0, early);
+    let rest = std::mem::replace(
+        &mut entry.terminator,
+        Terminator::Branch {
+            target: later,
+            args: vec![],
+        },
+    );
+    bypass.blocks.insert(
+        later,
+        TirBlock {
+            id: later,
+            args: vec![],
+            ops: tail,
+            terminator: rest,
+        },
+    );
+    assert!(!compile(&bypass, true).contains("@molt_exception_push_or_defer"));
+    let result = f.fresh_value();
+    f.value_types.insert(result, TirType::DynBox);
+    f.blocks.get_mut(&f.entry_block).unwrap().ops.insert(
+        2,
+        TirOp::new(OpCode::Copy, vec![], vec![result]).with_origin(OpKind::ExceptionActive),
+    );
+    assert!(
+        !compile(&f, true).contains("@molt_exception_push_or_defer"),
+        "an intervening context reader needs the actual level"
+    );
+}
+
+#[test]
 fn scoped_frame_record_captures_a_zero_home_owner_and_skips_a_frameless_pop() {
     for enters in [false, true] {
         let ctx = Context::create();

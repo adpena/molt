@@ -114,9 +114,6 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
         fs::read_to_string(root.join("runtime/molt-ir/src/tir/target_info.rs")).unwrap();
     let pass_manager =
         fs::read_to_string(root.join("runtime/molt-passes/src/tir/pass_manager.rs")).unwrap();
-    let walker =
-        fs::read_to_string(root.join("runtime/molt-backend-native/src/codegen_ssa/walk.rs"))
-            .unwrap();
     let mlir =
         fs::read_to_string(root.join("runtime/molt-backend-mlir/src/tir_to_mlir.rs")).unwrap();
 
@@ -144,11 +141,6 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     assert!(target_info.contains("supports_pending_call_eval_breaker_poll"));
     assert!(pass_manager.contains("tti.supports_pending_call_eval_breaker_poll()"));
 
-    // Both native backends use the same service boundary and frame location.
-    assert!(
-        walker.contains("self.async_work_poll(b, false, at.frame.record(), op.frame_location())")
-    );
-    assert!(walker.contains("RuntimeFn::AsyncWorkPollAndExceptionPending"));
     let generated =
         fs::read_to_string(root.join("runtime/molt-ir/src/tir/op_kinds_generated.rs")).unwrap();
     assert!(generated.contains(
