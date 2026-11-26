@@ -13,7 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
+from molt import cargo_resource_selection
+
+from molt.cargo_resource_selection import CargoResourceRoot
+from molt.cli.cargo_resource_custody import CargoResourceCustody
 from molt.cargo_execution_policy import (
     cargo_c_tool_environment_names,
     cargo_c_tool_words,
@@ -1076,14 +1079,46 @@ def test_cargo_file_roots_reselect_one_parent_and_each_leaf(
     assert third.file_identity(header).sha256 == first.file_identity(header).sha256
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory alias retargeting")
+def test_recursive_resource_fence_checks_aliases_outside_its_listed_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cargo_resource_selection, "DIGEST_RACY_WINDOW_NS", 0)
+    sdk, outside = tmp_path / "sdk", tmp_path / "outside"
+    sdk.mkdir()
+    for name in ("initial", "replacement"):
+        directory = outside / name
+        directory.mkdir(parents=True)
+        (directory / "api.h").write_bytes(name.encode())
+    bridge = outside / "current"
+    bridge.symlink_to(outside / "initial", target_is_directory=True)
+    include = sdk / "include"
+    include.symlink_to(bridge, target_is_directory=True)
+    tree = CargoResourceRoot("sdk", sdk)
+    header = include / "api.h"
+
+    first = CargoResourceCustody.capture((tree,))
+    assert not first.walks[0].racy
+    assert first.file_identity(header).path == outside / "initial" / "api.h"
+    bridge.unlink()
+    bridge.symlink_to(outside / "replacement", target_is_directory=True)
+    with pytest.raises(ValueError, match="selected content changed"):
+        first.verify()
+    replacement = CargoResourceCustody.capture((tree,))
+    assert replacement.file_identity(header).path == outside / "replacement" / "api.h"
+    assert replacement.content_identity() != first.content_identity()
+
+    (outside / "replacement" / "new.h").write_bytes(b"another header")
+    with pytest.raises(ValueError, match="resource selection changed"):
+        replacement.verify()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows always walks exactly")
 def test_settled_directory_tokens_detect_a_new_resource(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import cargo_resource_custody
-
     # Close the racy window so the directory-token proof itself is exercised.
-    monkeypatch.setattr(cargo_resource_custody, "DIGEST_RACY_WINDOW_NS", 0)
+    monkeypatch.setattr(cargo_resource_selection, "DIGEST_RACY_WINDOW_NS", 0)
     root = tmp_path / "sdk"
     (root / "include").mkdir(parents=True)
     (root / "include" / "api.h").write_bytes(b"header")
@@ -1109,10 +1144,8 @@ def test_a_freshly_changed_tree_is_always_walked_exactly(tmp_path: Path) -> None
 def test_root_sets_that_share_a_root_walk_it_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import cargo_resource_custody
-
-    monkeypatch.setattr(cargo_resource_custody, "DIGEST_RACY_WINDOW_NS", 0)
-    monkeypatch.setattr(cargo_resource_custody, "_WALKED_ROOTS", {})
+    monkeypatch.setattr(cargo_resource_selection, "DIGEST_RACY_WINDOW_NS", 0)
+    monkeypatch.setattr(cargo_resource_selection, "_WALKED_ROOTS", {})
     shared, other = tmp_path / "sdk", tmp_path / "libdir"
     for directory in (shared, other):
         directory.mkdir()
@@ -1141,8 +1174,8 @@ def test_a_recording_receives_each_shared_walk_once_with_captured_tokens(
     from molt import input_report
     from molt.cli import cargo_resource_custody
 
-    monkeypatch.setattr(cargo_resource_custody, "DIGEST_RACY_WINDOW_NS", 0)
-    monkeypatch.setattr(cargo_resource_custody, "_WALKED_ROOTS", {})
+    monkeypatch.setattr(cargo_resource_selection, "DIGEST_RACY_WINDOW_NS", 0)
+    monkeypatch.setattr(cargo_resource_selection, "_WALKED_ROOTS", {})
     monkeypatch.setattr(cargo_resource_custody, "_CAPTURED_RESOURCES", {})
     root, other = tmp_path / "sdk", tmp_path / "include"
     root.mkdir()
@@ -1210,9 +1243,7 @@ def test_a_recording_receives_each_shared_walk_once_with_captured_tokens(
 def test_an_apple_sdk_root_is_identified_by_its_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import cargo_resource_custody
-
-    monkeypatch.setattr(cargo_resource_custody, "DIGEST_RACY_WINDOW_NS", 0)
+    monkeypatch.setattr(cargo_resource_selection, "DIGEST_RACY_WINDOW_NS", 0)
     sdk = tmp_path / "MacOSX.sdk"
     (sdk / "usr/include").mkdir(parents=True)
     settings = sdk / "SDKSettings.json"

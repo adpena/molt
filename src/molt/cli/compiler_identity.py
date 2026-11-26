@@ -181,8 +181,12 @@ def admit_llvm_compiler_inputs(
     *,
     shared_capability: tuple[Mapping[str, object], frozenset[str]] | None = None,
 ) -> LlvmCompilerInputs:
-    from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
-    from molt.llvm_toolchain import sdk_content_paths, verify_available_llvm_toolchain
+    from molt.cargo_resource_selection import CargoResourceRoot
+    from molt.cli.cargo_resource_custody import CargoResourceCustody
+    from molt.llvm_toolchain import (
+        sdk_cargo_resource_roots,
+        verify_available_llvm_toolchain,
+    )
     from molt.llvm_link_plan import select_native_llvm_link_plan
 
     verification = verify_available_llvm_toolchain(root, environ=env)
@@ -196,16 +200,13 @@ def admit_llvm_compiler_inputs(
     # llvm-sys supplies the C wrappers; the native receiver consumes this exact
     # LLVM archive and system dependency plan, with all selected files in custody.
     # Keep the verifier's broader SDK content family; do not scan unrelated tools.
+    sdk_roots = sdk_cargo_resource_roots(
+        verification.prefix,
+        tuple(verification.prefix / fact.path for fact in verification.library_facts),
+    )
     resources = CargoResourceCustody.capture(
         (
-            *(
-                CargoResourceRoot(
-                    "compiler/llvm-sdk/"
-                    + path.relative_to(verification.prefix).as_posix(),
-                    path,
-                )
-                for path in sdk_content_paths(verification)
-            ),
+            *sdk_roots,
             CargoResourceRoot("compiler/llvm-config", verification.llvm_config),
             CargoResourceRoot("compiler/llvm-driver", link_plan.driver),
             *(
@@ -230,6 +231,13 @@ def admit_llvm_compiler_inputs(
         driver.size,
     ):
         raise CompilerIdentityError("LLVM dependency driver changed after verification")
+    sdk_file_count = sum(
+        len(walk.entries) for walk in resources.walks[: len(sdk_roots)]
+    )
+    if sdk_file_count != len(verification.content_facts):
+        raise CompilerIdentityError(
+            "LLVM SDK file selection changed after verification"
+        )
     for fact in verification.content_facts:
         identity = resources.file_identity(verification.prefix / fact.path)
         if (

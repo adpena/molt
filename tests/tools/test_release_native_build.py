@@ -821,7 +821,9 @@ def test_producer_publishes_only_complete_verified_generation(
             "22.1.8", Path(__file__).resolve().parents[2]
         ),
         link_closure=("lib/libLLVMCore.a",),
-        content_facts=(),
+        content_facts=llvm_toolchain._content_manifest(
+            sdk, (archive,), hash_contents=False
+        )[0],
         library_facts=(
             llvm_toolchain.LlvmLibraryFact(
                 "lib/libLLVMCore.a", 11, archive.stat().st_mtime_ns

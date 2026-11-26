@@ -19,7 +19,7 @@ import tempfile
 import tomllib
 from dataclasses import asdict, dataclass
 from collections.abc import Mapping, MutableMapping
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from molt.llvm_link_plan import (
     LLVM_NATIVE_LINK_PLAN_ENV,
@@ -64,6 +64,9 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
+
+if TYPE_CHECKING:
+    from molt.cargo_resource_selection import CargoResourceRoot
 
 
 class LlvmToolchainConfigError(RuntimeError):
@@ -1757,45 +1760,49 @@ def _sha256_file(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
+def sdk_cargo_resource_roots(
+    prefix: Path, required_libraries: tuple[Path, ...]
+) -> tuple[CargoResourceRoot, ...]:
+    """Select SDK headers and libraries used by validation and Cargo."""
+    from molt.cargo_resource_selection import CargoResourceIdentity, CargoResourceRoot
+
+    header_directories = (prefix / "include",) + tuple(
+        path
+        for path in sorted((prefix / "lib" / "clang").glob("*/include"))
+        if path.is_dir()
+    )
+    return (
+        *(
+            CargoResourceRoot(
+                "compiler/llvm-sdk/" + path.relative_to(prefix).as_posix(),
+                path,
+                required=False,
+                identity=CargoResourceIdentity.REGULAR_TREE,
+            )
+            for path in header_directories
+        ),
+        *(
+            CargoResourceRoot(
+                "compiler/llvm-sdk/" + path.relative_to(prefix).as_posix(), path
+            )
+            for path in required_libraries
+        ),
+    )
+
+
 def _content_paths(
-    prefix: Path,
-    required_libraries: tuple[Path, ...],
+    prefix: Path, required_libraries: tuple[Path, ...]
 ) -> tuple[Path, ...]:
-    """The SDK content LLVM consumers read: headers and the link-closure libraries.
+    from molt.cargo_resource_selection import observe_cargo_resource_roots
 
-    Only regular files enter, so unrelated trees (lldb's Python bindings, tools,
-    docs) and dangling distro symlinks never become build inputs.
-    """
-    selected = set(required_libraries)
-    pending = [prefix / "include"]
-    clang_resource_root = prefix / "lib" / "clang"
-    if clang_resource_root.is_dir():
-        pending.extend(clang_resource_root.glob("*/include"))
-    while pending:
-        directory = pending.pop()
-        try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    # Walk real directories once. File symlinks select their
-                    # target's type, and directory symlinks remain leaves.
-                    if entry.is_dir(follow_symlinks=False):
-                        pending.append(Path(entry.path))
-                    elif entry.is_file(follow_symlinks=False):
-                        selected.add(Path(entry.path))
-                    elif entry.is_symlink():
-                        path = Path(entry.path)
-                        if path.is_file():
-                            selected.add(path)
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-    return tuple(sorted(selected))
-
-
-def sdk_content_paths(verification: LlvmPrefixVerification) -> tuple[Path, ...]:
-    """The verified SDK's consumed content set (headers plus attested libraries)."""
-    return _content_paths(
-        verification.prefix,
-        tuple(verification.prefix / fact.path for fact in verification.library_facts),
+    return tuple(
+        sorted(
+            entry.entrypoint
+            for walk in observe_cargo_resource_roots(
+                sdk_cargo_resource_roots(prefix, required_libraries)
+            )
+            for entry in walk.entries
+        )
     )
 
 
@@ -2172,19 +2179,19 @@ def verify_llvm_toolchain_prefix(
                 }
             )
         )
-        library_facts = tuple(
-            LlvmLibraryFact(
-                path=str(path.relative_to(resolved)).replace("\\", "/"),
-                size=path.stat().st_size,
-                mtime_ns=path.stat().st_mtime_ns,
-            )
-            for path in required_libraries
-        )
         content_paths = _content_paths(resolved, required_libraries)
         content_facts, content_digest = _content_manifest(
             resolved,
             content_paths,
             hash_contents=content_policy == "full",
+        )
+        library_names = {
+            path.relative_to(resolved).as_posix() for path in required_libraries
+        }
+        library_facts = tuple(
+            LlvmLibraryFact(path=fact.path, size=fact.size, mtime_ns=fact.mtime_ns)
+            for fact in content_facts
+            if fact.path in library_names
         )
 
         def inspect_tool(item: tuple[str, Path]) -> LlvmToolVersionFact:
@@ -2388,7 +2395,12 @@ def write_llvm_toolchain_attestation(
                 )
         content_facts = verification.content_facts
         content_digest = verification.content_digest
-        content_paths = sdk_content_paths(verification)
+        content_paths = _content_paths(
+            verification.prefix,
+            tuple(
+                verification.prefix / fact.path for fact in verification.library_facts
+            ),
+        )
         rehashed_for_publication = False
         if content_digest is None or any(not fact.sha256 for fact in content_facts):
             content_facts, content_digest = _content_manifest(

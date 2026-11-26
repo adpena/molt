@@ -921,11 +921,11 @@ def test_snapshot_discard_never_unlinks_a_replacement(tmp_path):
 
 @pytest.mark.parametrize("data", [b"#define VALUE 42\n", b"--export=example\n"])
 def test_resource_custody_does_not_claim_native_executable_admission(tmp_path, data):
+    from molt.cargo_resource_selection import CargoResourceRoot
     from molt.cli.cargo_resource_custody import (
         CargoExecutableCustody,
         CargoFileCustody,
         CargoResourceCustody,
-        CargoResourceRoot,
     )
 
     path = tmp_path / "resource"

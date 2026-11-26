@@ -535,11 +535,14 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
     prefix = tmp_path / "llvm"
     library = prefix / "lib" / "libLLVM.a"
     header = prefix / "include" / "llvm-c" / "Core.h"
+    header_content = (
+        tmp_path / "distro-headers" / "Core.h" if os.name != "nt" else header
+    )
     unrelated = prefix / "lib" / "python3.12" / "site-packages" / "lldb" / "lldb.py"
     llvm_config = prefix / "bin" / "llvm-config"
     for path, content in (
         (library, b"LLVM-one"),
-        (header, b"/* core */"),
+        (header_content, b"/* core */"),
         (unrelated, b"# lldb"),
         (llvm_config, b"llvm-config"),
         (prefix / "bin/clang++", b"driver"),
@@ -548,6 +551,9 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+    if header_content != header:
+        header.parent.parent.mkdir()
+        header.parent.symlink_to(header_content.parent, target_is_directory=True)
     monkeypatch.setattr(
         llvm_toolchain,
         "verify_available_llvm_toolchain",
@@ -573,7 +579,9 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
                     hashlib.sha256(b"llvm-config").hexdigest(),
                 ),
             ),
-            content_facts=(),
+            content_facts=llvm_toolchain._content_manifest(
+                prefix, tuple(sorted((header, library))), hash_contents=False
+            )[0],
             library_facts=(
                 llvm_toolchain.LlvmLibraryFact(
                     path="lib/libLLVM.a", size=8, mtime_ns=0

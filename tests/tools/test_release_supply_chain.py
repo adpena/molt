@@ -109,7 +109,8 @@ def _with_static_dependency(inputs):
 
 
 def test_static_dependency_capture_reuses_package_notices(tmp_path, monkeypatch):
-    from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
+    from molt.cargo_resource_selection import CargoResourceRoot
+    from molt.cli.cargo_resource_custody import CargoResourceCustody
 
     paths = [tmp_path / "libone.a", tmp_path / "libtwo.a"]
     for index, path in enumerate(paths):
