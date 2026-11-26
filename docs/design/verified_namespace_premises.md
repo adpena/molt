@@ -204,6 +204,13 @@ receiver behavior.
    does not imply a writer to every module-global name. Dynamic mapping stores preserve actual
    callable source origins at their existing escape boundary even when storage identity becomes
    unknown; source-owned metaclass and mapping alternatives use the same value worklist.
+   Persistent binding storage separates a slot's raw namespace epoch from the current
+   callback epoch. Two identical slot payloads whose raw epoch is already `-1` stay
+   dirty for every later callback epoch, so a two-way join may retain that raw storage
+   without joining its value payload again. An explicitly dirty stored slot must also
+   have no owner to retain. This storage reuse preserves both predecessor histories,
+   their writes and deletion witnesses; late growth of the callback domain still
+   removes value and owner proof through the ordinary resolution rule.
    A supplied graph premise also seeds `entry_invalid_members`: a reached foreign writer may have
    run before this module's first canonical acquisition. Future callback writes and initial member
    uncertainty are separate policy facts. Standalone analysis retains its explicit initial premise;

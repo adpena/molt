@@ -78,8 +78,8 @@ schema = "molt-perf-methodology-v1"
 # branches directly, changing admitted dependencies and emitted instructions.
 # One synchronous source-outcome dependency observation can reduce compile time.
 # Tool source closure keys use the selected per-file content digests.
-version = 93
-content_sha256 = "de8b29194d2ceb3dfea42d082bb6bd7d38b09dd54f8f02cc47460d6e2042bccb"
+version = 94
+content_sha256 = "d5b1db41cd47c400eb9c0b660be0ff20180406f13c1712200b7d5c052e8ed045"
 
 [[methodology]]
 path = "tools/safe_run.py"
