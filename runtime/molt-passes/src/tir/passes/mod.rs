@@ -50,6 +50,7 @@ pub mod refcount_elim;
 pub mod sccp;
 pub mod scev;
 pub mod slice_reverse;
+mod native_iterator;
 pub(crate) mod spliced_frame;
 pub mod sroa;
 pub mod strength_reduction;

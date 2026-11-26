@@ -101,7 +101,7 @@ pub use self::driver::run_generator_fusion;
 pub use self::types::FusionStats;
 
 pub(in crate::tir::passes::generator_fusion) use self::attrs::{
-    attr_original_kind, attr_value_int, is_get_iter_op,
+    attr_original_kind, attr_value_int,
 };
 pub(in crate::tir::passes::generator_fusion) use self::attrs::{attr_task_kind, poll_callee};
 pub use self::recognize::PollRefusal;
@@ -110,6 +110,7 @@ pub(in crate::tir::passes::generator_fusion) use self::recognize::{
 };
 pub(in crate::tir::passes::generator_fusion) use self::splice::apply_fusion;
 pub(in crate::tir::passes::generator_fusion) use self::types::FusionCandidate;
+use super::native_iterator::is_get_iter_op;
 
 /// Byte size of the generator control header. Frame offsets `< GEN_CONTROL_BYTES`
 /// are the control slots — `GEN_SEND_OFFSET=0` (the `.send()` value),
