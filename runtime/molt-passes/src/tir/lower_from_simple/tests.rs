@@ -6,6 +6,50 @@ use crate::tir::blocks::Terminator;
 use crate::tir::ops::OpCode;
 use crate::tir::types::TirType;
 
+#[test]
+fn target_lift_exposes_only_initialized_immutable_cells() {
+    let input: FunctionIR = serde_json::from_value(serde_json::json!({
+        "name": "read_cells",
+        "return_abi": "value",
+        "params": ["module", "name"],
+        "ops": [
+            {"kind": "module_get_global", "args": ["module", "name"], "out": "known",
+             "global_slot": {"module": "m", "index": 0, "cell": true, "init_once": true}},
+            {"kind": "module_get_global", "args": ["module", "name"], "out": "mutable",
+             "global_slot": {"module": "m", "index": 1, "cell": true}},
+            {"kind": "ret", "args": ["known"]}
+        ]
+    }))
+    .unwrap();
+    for target in [
+        TargetInfo::native_release_fast(),
+        TargetInfo::from_llvm_feature_string(""),
+        TargetInfo::mlir_release_fast(),
+    ] {
+        let tir = lower_to_tir_for_target(&input, &target);
+        for op in tir.blocks.values().flat_map(|block| &block.ops) {
+            let Some(slot) = op.global_slot() else {
+                continue;
+            };
+            if slot.index == 0 && target.lowering.module_global_slots {
+                assert_eq!(op.opcode, OpCode::StaticCellLoad);
+                assert!(op.operands.is_empty());
+            } else {
+                assert_eq!(op.opcode, OpCode::ModuleGetGlobal);
+                assert_eq!(op.operands.len(), 2);
+            }
+        }
+        assert_eq!(
+            tir.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.global_slot().is_some())
+                .count(),
+            2
+        );
+    }
+}
+
 /// Helper: build a FunctionIR with given name, params, and ops.
 fn make_func(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
