@@ -1903,6 +1903,8 @@ alias_region_container_element_opcodes = [
     "DelIndex",
     "Index",
     "StoreIndex",
+    "TryBuffer2dLoadI64",
+    "TryBuffer2dStoreI64",
 ]
 
 alias_region_module_dict_opcodes = [
