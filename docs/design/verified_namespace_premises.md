@@ -139,9 +139,14 @@ receiver behavior.
    operand position. Graph refinement drops the row only when every use of the value,
    through local aliases included, borrows the module under the current call proof.
    The invocation transfer owns this fact and intersects it across reaching alternatives.
-   A missing or changed callee keeps the escape. A returned namespace entry or default
-   has independent provenance. General attribute lookup may invoke a receiver hook,
-   so reading `__dict__` through that path provides no unconditional borrow.
+   A missing or changed callee keeps the escape, including a local function shadowing
+   a builtin. The one-argument identity, callability and type queries borrow their
+   operand. Literal attribute selection keeps its receiver effects and may return
+   its default, so the default can escape. Identity comparisons cannot publish
+   the operands. Rich comparison and membership may hand them to Python.
+   A returned namespace entry or default has independent provenance. General
+   attribute lookup may invoke a receiver hook, so reading `__dict__` through
+   that path provides no unconditional borrow.
    Go's [escape analysis](https://go.dev/src/cmd/compile/internal/escape/escape.go)
    likewise carries per-operand effects and independent result flows.
    The same graph refinement reads computed store keys from the evaluated name operand.

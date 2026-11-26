@@ -15,6 +15,7 @@ from molt.frontend.lowering.op_kinds_generated import (
 import ast
 from typing import cast
 
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.compiler_analysis.python_namespace_writes import (
     own_namespace_literal_delete,
 )
@@ -239,14 +240,15 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         as the tolerant module global delete it equals (HF-844), so it reaches
         no namespace mapping; the HF-226 authority classifies the same
         statements through the same predicate."""
-        name = own_namespace_literal_delete(node)
+        delete = own_namespace_literal_delete(node)
         if (
-            name is not None
+            delete is not None
             and self.current_func_name == "molt_main"
             and not self._class_ns_stack
-            and not self.module_globals_rebound
+            and self._proven_builtin_identity(delete.globals_read)
+            is PythonIdentity.BUILTIN_GLOBALS
         ):
-            self._emit_delete_name(name, allow_missing=True)
+            self._emit_delete_name(delete.name, allow_missing=True)
             return None
         self.generic_visit(node)
         return None

@@ -5411,6 +5411,24 @@ def test_globals_pop_specializes_only_with_live_builtin_identity() -> None:
     assert not any(op.get("kind") == "dict_pop" for op in deferred_ops)
 
 
+@pytest.mark.parametrize(
+    ("setup", "deletes_global"),
+    [
+        ("def identity(globals):\n    return globals\n", True),
+        ("import builtins\nbuiltins.globals = dict\n", False),
+        ("globals = dict\n", False),
+    ],
+)
+def test_literal_namespace_delete_uses_the_binding_at_the_call(
+    setup: str, deletes_global: bool
+) -> None:
+    ir = compile_to_tir(setup + "globals().pop('target', None)\n")
+    main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    assert any(op["kind"] == "module_del_global_if_present" for op in main) == (
+        deletes_global
+    )
+
+
 @pytest.mark.parametrize("name", ["dict", "globals", "locals", "vars"])
 def test_shadowed_dictionary_constructor_does_not_bypass_method_dispatch(
     name: str,

@@ -276,8 +276,18 @@ def test_unscheduled_lazy_annotation_writers_keep_enclosing_owner(future) -> Non
     ],
 )
 def test_namespace_write_codec_rejects_unschedulable_or_malformed_owner(owner) -> None:
+    (write,) = _summary("import target\ntarget.flag = 1\n").foreign_writes
+    payload = python_namespace_write_payload(write)
+    payload[4] = owner
     with pytest.raises(ValueError):
-        decode_python_namespace_write(["target", "flag", "attribute", 1, owner, None])
+        decode_python_namespace_write(payload)
+
+
+def test_namespace_write_codec_rejects_a_non_string_construct() -> None:
+    with pytest.raises(ValueError, match="construct"):
+        decode_python_namespace_write(
+            ["sys.modules", None, [], 1, None, None, None, [], [1], []]
+        )
 
 
 @pytest.mark.parametrize(
@@ -1656,10 +1666,19 @@ def test_code_object_reads_are_code_rows(source: str, rows: int) -> None:
         ("x = 1\ndef f():\n    globals().pop('x', None)\n", 3),
         ("x = 1\nclass C:\n    globals().pop('x', None)\n", 3),
         ("x = 1\nglobals().__delitem__('x')\n", 2),
-        # A rebinding of ``globals`` anywhere in the module defeats the proof.
+        # A possible module binding defeats the proof.
         ("x = 1\nglobals().pop('x', None)\nglobals = dict\n", 2),
         ("from m import *\nglobals().pop('x', None)\n", 2),
-        ("def f(globals):\n    pass\nglobals().pop('x', None)\n", 3),
+        ("def f(globals):\n    pass\nglobals().pop('x', None)\n", 0),
+        (
+            "for _ in [globals for globals in ()]:\n    pass\nglobals().pop('x', None)\n",
+            0,
+        ),
+        ("[(globals := f) for f in fs]\nglobals().pop('x', None)\n", 2),
+        (
+            "def f():\n    global globals\n    globals = dict\nf()\nglobals().pop('x', None)\n",
+            5,
+        ),
     ],
 )
 def test_own_namespace_reach_is_any_use(source: str, line: int) -> None:
@@ -1680,7 +1699,8 @@ def test_own_namespace_reach_is_any_use(source: str, line: int) -> None:
     ],
 )
 def test_own_namespace_literal_delete_spelling(source: str, name: str | None) -> None:
-    assert own_namespace_literal_delete(ast.parse(source).body[0]) == name
+    deletion = own_namespace_literal_delete(ast.parse(source).body[0])
+    assert (deletion.name if deletion is not None else None) == name
 
 
 @pytest.mark.parametrize(
@@ -1688,7 +1708,10 @@ def test_own_namespace_literal_delete_spelling(source: str, name: str | None) ->
     [
         # A module value handed on escapes; an attribute access keeps it here.
         ("import m\npatch(m)\n", {("m", None, "module_escape")}),
-        ("import m\nm.f()\nprint(m.x)\nif m: pass\n", set()),
+        (
+            "import m\nm.f()\nprint(m.x)\nif m: pass\n",
+            {("m.x", None, "module_escape")},
+        ),
         ("import os\nos.path.join('a')\n", set()),
         (
             "import os\nholder.p = os.path\n",
@@ -1727,11 +1750,11 @@ def test_own_namespace_literal_delete_spelling(source: str, name: str | None) ->
                 (None, None, "own_module_escape"),
             },
         ),
-        # A function-local alias that is only read keeps its module here.
+        # The raw summary leaves the call's borrow to the typed transfer.
         (
             "import sys\ndef f(name):\n    m = sys.modules[name]\n"
             "    return getattr(m, 'x')\n",
-            set(),
+            {(None, None, "module_escape")},
         ),
         # A store through an alias writes the module: the value escapes.
         (

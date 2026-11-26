@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import _SourceImportCacheWrite
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 20
+SUMMARY_SCHEMA: Final = 22
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -259,7 +259,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
     (
         module,
         name,
-        construct,
+        raw_construct,
         line,
         owner,
         site,
@@ -268,6 +268,11 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         key_source,
         borrows,
     ) = raw
+    if type(raw_construct) is not str or raw_construct not in get_args(
+        PythonNamespaceWriteConstruct
+    ):
+        raise ValueError("invalid foreign namespace write construct")
+    construct = cast(PythonNamespaceWriteConstruct, raw_construct)
     if key_source is not None and (
         construct not in {"import_binding", "computed_member_store"}
         or construct == "import_binding"
@@ -287,7 +292,6 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         and type(module) is not str
         or name is not None
         and type(name) is not str
-        or construct not in get_args(PythonNamespaceWriteConstruct)
         or type(line) is not int
         or line < 1
     ):
@@ -370,7 +374,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         source_owner,
         source_site,
         key_bound,
-        tuple(initialized),
+        tuple(cast(list[str], initialized)),
         None if key_source is None else decode_python_source_key(key_source),
         tuple(borrowed_if),
     )
@@ -547,8 +551,13 @@ def _is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
 
-def own_namespace_literal_delete(statement: ast.stmt) -> str | None:
-    """The global a ``globals().pop("name", <constant>)`` statement deletes.
+class LiteralNamespaceDelete(NamedTuple):
+    name: str
+    globals_read: ast.Name
+
+
+def own_namespace_literal_delete(statement: ast.stmt) -> LiteralNamespaceDelete | None:
+    """The operands of a ``globals().pop("name", <constant>)`` statement.
 
     With its value discarded, the statement equals ``del name`` that tolerates
     an unbound name (HF-844). The frontend lowers it to that module global
@@ -577,35 +586,27 @@ def own_namespace_literal_delete(statement: ast.stmt) -> str | None:
         and not receiver.keywords
     ):
         return None
-    return _literal_string(call.args[0])
+    name = _literal_string(call.args[0])
+    return None if name is None else LiteralNamespaceDelete(name, receiver.func)
 
 
-def module_binds_name(tree: ast.Module, name: str) -> bool:
-    """Whether any scope of ``tree`` may bind ``name``: a store, ``del``,
-    definition, parameter, handler, pattern, import alias or star import."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            bound = node.id if not isinstance(node.ctx, ast.Load) else None
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bound = node.name
-        elif isinstance(node, ast.arg):
-            bound = node.arg
-        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
-            bound = node.name
-        elif isinstance(node, ast.MatchMapping):
-            bound = node.rest
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            if any(
-                alias.name == "*" or python_import_binding(alias) == name
-                for alias in node.names
-            ):
-                return True
-            continue
-        else:
-            continue
-        if bound == name:
-            return True
-    return False
+def module_binds_name(tree: ast.Module, name: str, *, eager_annotations: bool) -> bool:
+    """Whether lexical bindings can write this name in the module."""
+    declarations = python_scope_declarations(
+        tree.body, eager_annotations=eager_annotations
+    )
+    if name in declarations.bound:
+        return True
+    # A nested global directive can publish a module write. A star import
+    # has unknown exported names at this syntax boundary.
+    return any(
+        (isinstance(node, ast.Global) and name in node.names)
+        or (
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "*" for alias in node.names)
+        )
+        for node in ast.walk(tree)
+    )
 
 
 def _literal_module_name(node: ast.expr | None) -> str | None:
@@ -617,22 +618,6 @@ def _literal_module_name(node: ast.expr | None) -> str | None:
 
 
 _LEXICAL_DEFINITIONS: Final = get_args(LexicalDefinitionNode)
-# Builtins that read a module argument without keeping it.
-_MODULE_READ_CALLS: Final = frozenset(
-    {
-        "callable",
-        "dir",
-        "getattr",
-        "hasattr",
-        "hash",
-        "id",
-        "isinstance",
-        "print",
-        "repr",
-        "str",
-        "type",
-    }
-)
 # Alias and conditional-expression hops followed before a value counts as kept.
 _ESCAPE_ALIAS_DEPTH: Final = 4
 _HOOK_ATTRIBUTES: Final = frozenset(
@@ -1790,8 +1775,22 @@ class _NamespaceWriteCollector:
                 if depth > 0 and isinstance(parent.ctx, (ast.Store, ast.Del))
                 else ()
             )
-        if isinstance(parent, (ast.Expr, ast.Compare, ast.Assert)):
+        if isinstance(parent, ast.Expr):
             return ()
+        if isinstance(parent, ast.Assert) and parent.test is value:
+            return ()
+        if isinstance(parent, ast.Compare):
+            # Other comparisons and membership can pass this value to Python.
+            operands = (parent.left, *parent.comparators)
+            position = operands.index(value)
+            return (
+                ()
+                if all(
+                    isinstance(operation, (ast.Is, ast.IsNot))
+                    for operation in parent.ops[max(0, position - 1) : position + 1]
+                )
+                else None
+            )
         if isinstance(parent, ast.Call) and parent.func is value:
             return ()
         if isinstance(parent, (ast.If, ast.While, ast.IfExp)) and parent.test is value:
@@ -1805,11 +1804,6 @@ class _NamespaceWriteCollector:
         if isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not):
             return ()
         if isinstance(parent, ast.Call) and value in parent.args:
-            if (
-                isinstance(parent.func, ast.Name)
-                and parent.func.id in _MODULE_READ_CALLS
-            ):
-                return ()
             return (
                 ModuleBorrowRequirement(
                     python_node_source_key(parent),
@@ -2116,7 +2110,8 @@ class _NamespaceWriteCollector:
     def _literal_own_delete(self, site: _Site) -> bool:
         """Whether this ``globals()`` call is the receiver of a module-scope
         ``globals().pop("name", <constant>)`` statement
-        (``own_namespace_literal_delete``) and no scope rebinds ``globals``."""
+        (``own_namespace_literal_delete``) with no lexical module binding for
+        ``globals``."""
         if not site.module_scope or site.callback_deferred:
             return False
         method = site.parent
@@ -2134,7 +2129,9 @@ class _NamespaceWriteCollector:
         ):
             return False
         if self.globals_rebound is None:
-            self.globals_rebound = module_binds_name(self.tree, "globals")
+            self.globals_rebound = module_binds_name(
+                self.tree, "globals", eager_annotations=self.eager_annotations
+            )
         return not self.globals_rebound
 
     @staticmethod

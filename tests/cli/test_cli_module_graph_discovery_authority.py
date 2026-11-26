@@ -2386,6 +2386,82 @@ def test_current_namespace_read_keeps_imported_callable_source(
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    ("consumer", "escaped"),
+    [
+        ("id(owner)", False),
+        ("getattr(owner, 'run')()", False),
+        ("from builtins import id as identify\nidentify(owner)", False),
+        ("def id(arg): change(arg)\nid(owner)", True),
+        ("getattr(None, 'missing', owner).run = replacement", True),
+        ("owner is None", False),
+        (
+            "class Watch:\n    def __eq__(self, arg): change(arg)\nWatch() == owner",
+            True,
+        ),
+    ],
+)
+def test_module_value_borrow_requires_resolved_consumer(
+    tmp_path: Path, consumer: str, escaped: bool
+) -> None:
+    import sys
+    from molt.cli import module_resolution
+
+    (tmp_path / "api.py").write_text("def run(): return 1\n", encoding="utf-8")
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "import sys\nimport api\n"
+        "def replacement(): return 7\n"
+        "def change(module): setattr(module, 'run', replacement)\n"
+        "def run_probe():\n"
+        "    owner = sys.modules[sys.argv[1]]\n"
+        + "".join("    " + line + "\n" for line in consumer.splitlines())
+        + "run_probe()\nprint(api.run())\n",
+        encoding="utf-8",
+    )
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); "
+            "runpy.run_path(sys.argv.pop(1), run_name='__main__')",
+            str(tmp_path),
+            str(entry),
+            "api",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.stdout.strip() == ("7" if escaped else "1")
+
+    resolution = module_resolution._ModuleResolutionCache()
+    discovery = module_graph_discovery._ModuleGraphDiscovery(
+        resolution, module_graph_discovery._DEFAULT_TARGET_PYTHON_VERSION
+    )
+    module_graph_discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        tmp_path,
+        set(),
+        resolver_cache=resolution,
+        discovery=discovery,
+        full_scan_roots=True,
+    )
+    assert (
+        any(
+            write.module is None and write.construct == "module_escape"
+            for write in discovery.namespace_writes["entry"]
+        )
+        is escaped
+    )
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("reader", ["globals()", "locals()", "vars()"])
 @pytest.mark.parametrize(
     ("use", "escaped"),

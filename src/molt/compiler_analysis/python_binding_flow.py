@@ -4847,6 +4847,20 @@ class _Analyzer:
         selected_deferred: frozenset[DeferredExecution] = frozenset()
         source_result_projected = False
         borrowed_module_operand: int | None = None
+        if (
+            callee
+            in {
+                int(PythonIdentity.BUILTIN_ID),
+                int(PythonIdentity.BUILTIN_CALLABLE),
+                int(PythonIdentity.BUILTIN_TYPE),
+            }
+            and len(node.args) == 1
+            and not node.keywords
+            and not isinstance(node.args[0], ast.Starred)
+        ):
+            # These one-argument forms inspect the object, without returning it
+            # or passing it to Python. Any id audit hook receives the integer.
+            borrowed_module_operand = 0
         method_shape = None
         receiver_node: ast.expr | None = None
         receiver_slot: int | None = None
@@ -5390,7 +5404,10 @@ class _Analyzer:
             and (member := _literal_string(node.args[1])) is not None
         ):
             # Literal selection uses the same member source graph as obj.member,
-            # including package __getattr__. It never exposes the whole owner.
+            # including package __getattr__. Only the receiver is a borrow:
+            # getattr's default can become the result.
+            if callee != int(PythonIdentity.BUILTIN_DELATTR):
+                borrowed_module_operand = 0
             owner = argument_results[0]
             # The literal's real source site distinguishes member projection
             # from a joined replacement callee's ordinary call-result site.
@@ -5450,6 +5467,7 @@ class _Analyzer:
             # __instancecheck__, so this call does not publish either operand.
             # Keep callback and retirement effects, including the subject's
             # attribute hooks on a miss.
+            borrowed_module_operand = 0
             result_fact = StaticExpressionResult(kind="bool")
             effects |= UNKNOWN_EFFECTS
             argument_protocol_indices = frozenset()
