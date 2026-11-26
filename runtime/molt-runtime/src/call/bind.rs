@@ -668,18 +668,11 @@ pub(crate) unsafe fn call_owned_class_candidate(
         let Some(class) = class else {
             return call_owned_arguments(py, callable, positional);
         };
-        match CallArguments::moved(py, None, positional) {
-            Ok(mut arguments) => {
-                arguments.admit_custody(ArgumentCustody::Instruction);
-                call_with_adopted_callable(py, callable, arguments, |_, arguments| {
-                    call_type_with_arguments(py, class, arguments, Some(initializer_code))
-                })
-            }
-            Err(error) => {
-                dec_ref_bits(py, callable);
-                error
-            }
-        }
+        let mut arguments = CallArguments::adopted(py, positional);
+        arguments.admit_custody(ArgumentCustody::Instruction);
+        call_with_adopted_callable(py, callable, arguments, |_, arguments| {
+            call_type_with_arguments(py, class, arguments, Some(initializer_code))
+        })
     }
 }
 
@@ -722,22 +715,15 @@ pub(crate) unsafe fn call_owned_arguments(
                 inc_ref_bits(_py, self_bits);
                 inc_ref_bits(_py, func_bits);
                 dec_ref_bits(_py, callable_bits);
-                let result = call_owned_function(_py, func_bits, Some(self_bits), positional);
+                let result = call_owned_function(_py, func_bits, self_bits, positional);
                 dec_ref_bits(_py, func_bits);
                 return result;
             }
         }
-        match CallArguments::moved(_py, None, positional) {
-            Ok(arguments) => {
-                call_with_adopted_callable(_py, callable_bits, arguments, |callable, arguments| {
-                    call_bind_with_arguments(_py, callable, arguments)
-                })
-            }
-            Err(err) => {
-                dec_ref_bits(_py, callable_bits);
-                err
-            }
-        }
+        let arguments = CallArguments::adopted(_py, positional);
+        call_with_adopted_callable(_py, callable_bits, arguments, |callable, arguments| {
+            call_bind_with_arguments(_py, callable, arguments)
+        })
     }
 }
 

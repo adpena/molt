@@ -574,18 +574,20 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         }
     }
 
-    /// Adopt the references in the call entry's stable positional span. When
-    /// the instruction also owns a receiver, materialize their combined order.
-    pub(super) fn moved(
+    /// Adopt the references in a stable span for this synchronous call.
+    pub(super) fn adopted(py: &'a PyToken<'py>, positional: &'a [u64]) -> Self {
+        let mut arguments = Self::empty(py, CallForm::Stack);
+        arguments.positional = PositionalArguments::Adopted(positional);
+        arguments
+    }
+
+    /// Join two transferred spans when the call entry cannot hold them inline.
+    pub(super) fn moved_with_receiver(
         py: &'a PyToken<'py>,
-        receiver: Option<u64>,
+        receiver: u64,
         positional: &'a [u64],
     ) -> Result<Self, u64> {
         let mut arguments = Self::empty(py, CallForm::Stack);
-        let Some(receiver) = receiver else {
-            arguments.positional = PositionalArguments::Adopted(positional);
-            return Ok(arguments);
-        };
         if arguments
             .positional
             .owned_mut()

@@ -3,6 +3,57 @@ use crate::call::bind::test_support::*;
 use crate::object::builders::{alloc_list, alloc_tuple};
 
 #[test]
+fn loaded_native_method_binds_transferred_inline_arguments_without_a_heap_vector() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let receiver = alloc_list(py, &[]);
+            let item = crate::alloc_dict_with_pairs(py, &[]);
+            assert!(!receiver.is_null() && !item.is_null());
+            let receiver_bits = MoltObject::from_ptr(receiver).bits();
+            let item_bits = MoltObject::from_ptr(item).bits();
+            let refs = |ptr| (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot();
+            let receiver_refs = refs(receiver);
+            let item_refs = refs(item);
+            let site = crate::call::bind::method_site::TestSite::new(b"append");
+            for count in [1, 2, DIRECT_ARGV_MAX] {
+                let loaded = site.load(py, receiver_bits);
+                assert_eq!(loaded.self_or_null, receiver_bits);
+                inc_ref_bits(py, item_bits);
+                let mut operands = [MoltObject::none().bits(); DIRECT_ARGV_MAX];
+                operands[0] = item_bits;
+                let allocated = || ALLOC_BYTES_CALLARGS.load(std::sync::atomic::Ordering::Relaxed);
+                let before = allocated();
+                let result = crate::call::bind::inline_cache::call_loaded_method(
+                    py,
+                    loaded.callable,
+                    loaded.self_or_null,
+                    &operands[..count],
+                );
+                let bytes = allocated() - before;
+                assert!(obj_from_bits(result).is_none());
+                assert_eq!(exception_pending(py), count != 1);
+                if count == 1 {
+                    assert_eq!(bytes, 0);
+                } else {
+                    if count == DIRECT_ARGV_MAX {
+                        assert!(bytes >= ((count + 1) * std::mem::size_of::<u64>()) as u64);
+                    }
+                    crate::molt_exception_clear_attached_body(py);
+                }
+                assert_eq!(refs(receiver), receiver_refs);
+                assert_eq!(refs(item), item_refs + 1);
+                assert_eq!(crate::builtins::containers::list_len(receiver), 1);
+            }
+            site.release(py);
+            dec_ref_bits(py, receiver_bits);
+            assert_eq!(refs(item), item_refs);
+            dec_ref_bits(py, item_bits);
+        }
+    });
+}
+
+#[test]
 fn bound_call_slots_own_borrowed_values_and_transferred_containers() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
