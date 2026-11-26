@@ -1529,6 +1529,59 @@ def test_unknown_relative_inventory_covers_failed_owner_execution(
     assert "alternate.py" not in cache["entries"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX stable digest-cache lookup")
+def test_relative_inventory_reuses_unreached_digests_and_fences_edits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import toolchain_identity
+    from molt.cli.module_source import PythonSourceSnapshot
+
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    seed, covered = tmp_path / "entry.py", tmp_path / "covered.py"
+    seed.write_text("__package__ = unknown\nfrom . import value\n", encoding="utf-8")
+    covered.write_bytes(b"VALUE = 1\n")
+    first = local_python_import_closure(tmp_path, (seed,))
+    assert first.source_sha256[covered] == hashlib.sha256(b"VALUE = 1\n").hexdigest()
+
+    original_capture = graph.LocalPythonModuleResolver.capture_source
+    original_identity = toolchain_identity.stable_regular_file_identity
+    hashed: list[Path] = []
+
+    def capture(
+        resolver: LocalPythonModuleResolver, path: Path
+    ) -> PythonSourceSnapshot:
+        assert path != covered, "coverage acquired an unused source snapshot"
+        return original_capture(resolver, path)
+
+    def identity(
+        path: Path, *, label: str, expected_path_stat: os.stat_result | None = None
+    ) -> toolchain_identity.StableRegularFileIdentity:
+        hashed.append(path)
+        return original_identity(
+            path, label=label, expected_path_stat=expected_path_stat
+        )
+
+    monkeypatch.setattr(graph.LocalPythonModuleResolver, "capture_source", capture)
+    monkeypatch.setattr(toolchain_identity, "stable_regular_file_identity", identity)
+
+    def discover() -> graph.LocalPythonSourceClosure:
+        return local_python_import_closure(tmp_path, (seed,))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reads = [pool.submit(discover), pool.submit(discover)]
+        assert all(read.result() == first for read in reads)
+    assert covered not in hashed
+
+    previous = covered.stat()
+    covered.write_bytes(b"VALUE = 2\n")
+    os.utime(covered, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    after = discover()
+    assert covered in hashed
+    assert after.topology_digest == first.topology_digest
+    assert after.content_digest != first.content_digest
+    assert after.source_sha256[covered] == hashlib.sha256(b"VALUE = 2\n").hexdigest()
+
+
 def test_relative_inventory_uses_resolver_shadows_namespaces_and_new_topology(
     tmp_path, monkeypatch
 ):
@@ -1874,10 +1927,10 @@ def test_closure_profile_measures_explicit_cases_with_captured_identity(
     from tools import profile_python_source_closure as profiler
 
     sources = {"entry.py": b"import leaf\n", "leaf.py": b"VALUE = 1\n"}
-    expected_digest = hashlib.sha256()
+    expected_digest = hashlib.sha256(b"molt.local-python-source-closure.v2\0\0")
     for name, content in sorted(sources.items()):
         (tmp_path / name).write_bytes(content)
-        expected_digest.update(name.encode() + b"\0" + content + b"\0")
+        expected_digest.update(name.encode() + b"\0" + hashlib.sha256(content).digest())
     calls: list[int] = []
 
     def observe(root: Path, seeds: tuple[Path, ...]):
@@ -2356,7 +2409,7 @@ def test_operation_inventory_is_shared_across_seeds_and_premise_rounds(
         == hashlib.sha256(b"this is not valid python (\n").hexdigest()
     )
     assert len(inventories) == 1
-    assert len(captures) == 3 and set(captures) == {left, right, speculative}
+    assert len(captures) == 2 and set(captures) == {left, right}
     cache = json.loads(graph.python_source_closure_cache_path(tmp_path).read_bytes())
     assert "speculative.py" not in cache["entries"]
 

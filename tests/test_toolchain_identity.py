@@ -1784,7 +1784,11 @@ def test_new_digest_database_starts_cold_without_reading_legacy_rows(
     new_store = tmp_path / "v3.sqlite"
     cache = identity.FileDigestCache(new_store, max_age_ns=10**18)
     found = cache.lookup(path, expected_path_stat=metadata, label="legacy digest")
-    assert found is None
+    assert found is None and not new_store.exists()
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    observed = cache.identity(path, label="legacy digest")
+    assert observed.sha256 == digest and not new_store.exists()
+    cache.flush()
     with sqlite3.connect(new_store) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(digests)")}
         assert "dev" not in columns and "ino" not in columns
@@ -1915,7 +1919,9 @@ def test_digest_cache_statement_defects_stay_loud(
     """SQLITE_ERROR is a code defect, not contention: it must not switch the cache
     off silently, as an unencodable fact once switched the lowering cache off."""
     header = _settled_file(tmp_path / "api.h", b"header")
-    cache = identity.FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+    store = tmp_path / "digests.sqlite"
+    store.touch()
+    cache = identity.FileDigestCache(store, max_age_ns=10**18)
 
     def defect() -> sqlite3.Connection:
         raise _sqlite_error(
@@ -1932,7 +1938,9 @@ def test_digest_cache_corruption_stays_loud(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     header = _settled_file(tmp_path / "api.h", b"header")
-    cache = identity.FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+    store = tmp_path / "digests.sqlite"
+    store.touch()
+    cache = identity.FileDigestCache(store, max_age_ns=10**18)
 
     def corrupt() -> sqlite3.Connection:
         raise _sqlite_error(
