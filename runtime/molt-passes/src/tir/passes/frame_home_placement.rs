@@ -411,6 +411,7 @@ struct Planner<'a> {
     slots: usize,
     excluded_slots: HashSet<usize>,
     order: Vec<BlockId>,
+    loop_boundaries: HashSet<BlockId>,
     incoming: HashMap<BlockId, Vec<Incoming>>,
 }
 
@@ -529,6 +530,12 @@ impl<'a> Planner<'a> {
             slots,
             excluded_slots,
             order,
+            loop_boundaries: func
+                .loop_pairs
+                .values()
+                .chain(func.loop_cond_blocks.values())
+                .copied()
+                .collect(),
             incoming,
         }
     }
@@ -1035,8 +1042,7 @@ impl<'a> Planner<'a> {
         func.loop_roles
             .get(&bid)
             .is_none_or(|role| *role == crate::tir::blocks::LoopRole::None)
-            && !func.loop_pairs.values().any(|end| *end == bid)
-            && !func.loop_cond_blocks.values().any(|cond| *cond == bid)
+            && !self.loop_boundaries.contains(&bid)
     }
 
     fn write_all(&self, state: &mut State, at: Point, events: &mut Option<&mut Events>) {
@@ -1311,12 +1317,19 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
         }
     }
 
-    let mut before: BTreeMap<(BlockId, usize), Vec<TirOp>> = BTreeMap::new();
-    let mut polls: BTreeMap<(BlockId, usize), Vec<TirOp>> = BTreeMap::new();
-    // Readers inside a loop that write a carried binding under its flag. The
-    // reader op carries a marker until every other rewrite of its block is
-    // done, then its block splits there.
-    let mut carried_readers: Vec<(ValueId, Vec<TirOp>)> = Vec::new();
+    #[derive(Default)]
+    struct LocalWrites {
+        eager: Vec<TirOp>,
+        carried: Option<(ValueId, Vec<TirOp>)>,
+    }
+
+    enum Split {
+        Reader(ValueId, Vec<TirOp>),
+        Poll(LocalWrites),
+    }
+
+    let mut before: BTreeMap<_, LocalWrites> = BTreeMap::new();
+    let mut polls = BTreeMap::new();
     type EdgeWrites = (BlockId, usize, Vec<TirOp>, Option<(ValueId, Vec<TirOp>)>);
     let mut edges: Vec<EdgeWrites> = Vec::new();
     for (point, writes) in &plan.writes {
@@ -1329,29 +1342,22 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
                     Some(&(before, after)) if index == before => after,
                     _ => index,
                 };
-                before.entry((bid, index)).or_default().extend(ops);
-                if let Some((flag, carried_ops)) = carried {
-                    let reader = &mut func.blocks.get_mut(&bid).expect("planned block").ops[index];
-                    reader.attrs.insert(
-                        CARRIED_READER_ATTR.into(),
-                        AttrValue::Int(carried_readers.len() as i64),
-                    );
-                    carried_readers.push((flag, carried_ops));
-                }
+                before.insert(
+                    (bid, index),
+                    LocalWrites {
+                        eager: ops,
+                        carried,
+                    },
+                );
             }
             Point::PollCold(bid, index) => {
-                polls.entry((bid, index)).or_default().extend(ops);
-                if let Some((flag, carried_ops)) = carried {
-                    // The poll moves to its cold block with this marker, and
-                    // that block splits before it under the header's flag.
-                    let poll = &mut func.blocks.get_mut(&bid).expect("planned block").ops[index];
-                    debug_assert!(poll.is_async_work_poll());
-                    poll.attrs.insert(
-                        CARRIED_READER_ATTR.into(),
-                        AttrValue::Int(carried_readers.len() as i64),
-                    );
-                    carried_readers.push((flag, carried_ops));
-                }
+                polls.insert(
+                    (bid, index),
+                    LocalWrites {
+                        eager: ops,
+                        carried,
+                    },
+                );
             }
             Point::Edge(bid, index) => edges.push((bid, index, ops, carried)),
         }
@@ -1370,8 +1376,8 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
         if carried.is_none() && target != func.entry_block && ways_in.get(&target) == Some(&1) {
             let at = before.entry((target, 0)).or_default();
             let mut placed = ops;
-            placed.append(at);
-            *at = placed;
+            placed.append(&mut at.eager);
+            at.eager = placed;
             continue;
         }
         let split = func.fresh_block();
@@ -1427,12 +1433,16 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
         );
     }
 
-    let mut poll_positions: Vec<(BlockId, usize, Vec<TirOp>)> = Vec::new();
+    let mut splits = Vec::new();
     let block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     for bid in block_ids {
         let block = func.blocks.get_mut(&bid).expect("listed block");
         let len = block.ops.len();
-        let has_work = plan.candidates.iter().any(|(b, _)| *b == bid)
+        let has_work = plan
+            .candidates
+            .range((bid, 0)..=(bid, len))
+            .next()
+            .is_some()
             || before.range((bid, 0)..=(bid, len)).next().is_some()
             || polls.range((bid, 0)..=(bid, len)).next().is_some();
         if !has_work {
@@ -1442,7 +1452,10 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
         let mut ops = Vec::with_capacity(old.len());
         for (index, op) in old.into_iter().enumerate() {
             if let Some(writes) = before.remove(&(bid, index)) {
-                ops.extend(writes);
+                ops.extend(writes.eager);
+                if let Some((flag, writes)) = writes.carried {
+                    splits.push((bid, ops.len(), Split::Reader(flag, writes)));
+                }
             }
             if plan.candidates.contains(&(bid, index)) {
                 if op.results.is_empty() {
@@ -1458,33 +1471,42 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
                 continue;
             }
             if let Some(writes) = polls.remove(&(bid, index)) {
-                poll_positions.push((bid, ops.len(), writes));
+                splits.push((bid, ops.len(), Split::Poll(writes)));
             }
             ops.push(op);
         }
         if let Some(writes) = before.remove(&(bid, len)) {
-            ops.extend(writes);
+            assert!(writes.carried.is_none(), "carried writes require a reader");
+            ops.extend(writes.eager);
         }
         block.ops = ops;
     }
 
-    // Split each planned poll, last first within a block.
-    poll_positions.sort_by_key(|(bid, at, _)| (*bid, std::cmp::Reverse(*at)));
-    for (bid, at, writes) in poll_positions {
-        split_poll(func, bid, at, writes);
+    // Split from the end so earlier positions remain valid. At the same
+    // offset the poll splits first, leaving the reader's writes on its entry.
+    splits.sort_by_key(|(bid, at, _)| (*bid, *at));
+    let mut moved = HashMap::default();
+    for (bid, at, split) in splits.into_iter().rev() {
+        let cont = match split {
+            Split::Reader(flag, writes) => split_carried_reader(func, bid, at, flag, writes),
+            Split::Poll(writes) => {
+                let poll_at = writes.eager.len();
+                let (cold, rest) = split_poll(func, bid, at, writes.eager);
+                if let Some((flag, writes)) = writes.carried {
+                    split_carried_reader(func, cold, poll_at, flag, writes);
+                    stats.ops_added += 1;
+                }
+                rest
+            }
+        };
+        moved.entry(bid).or_insert(cont);
         stats.ops_added += 1;
     }
-    for (site, (flag, writes)) in carried_readers.into_iter().enumerate() {
-        split_carried_reader(func, site as i64, flag, writes);
-        stats.ops_added += 1;
-    }
+    func.remap_loop_terminators(&moved);
     carried_values
 }
 
-/// Marks the reader before which a carried binding is written.
-const CARRIED_READER_ATTR: &str = "frame_home_carried_reader";
-
-/// Split the block of the reader marked `site` so a carried binding is
+/// Split the block before a reader so a carried binding is
 /// written before it only when the loop body ran (the header's flag):
 ///
 /// ```text
@@ -1494,18 +1516,17 @@ const CARRIED_READER_ATTR: &str = "frame_home_carried_reader";
 ///         br ^cont
 /// cont:   reader ...                 ; the reader and the rest; bid's terminator
 /// ```
-fn split_carried_reader(func: &mut TirFunction, site: i64, flag: ValueId, writes: Vec<TirOp>) {
-    let marked = |op: &TirOp| op.attrs.get(CARRIED_READER_ATTR) == Some(&AttrValue::Int(site));
-    let (bid, at) = func
-        .blocks
-        .iter()
-        .find_map(|(bid, block)| block.ops.iter().position(marked).map(|at| (*bid, at)))
-        .expect("a marked reader");
+fn split_carried_reader(
+    func: &mut TirFunction,
+    bid: BlockId,
+    at: usize,
+    flag: ValueId,
+    writes: Vec<TirOp>,
+) -> BlockId {
     let write = func.fresh_block();
     let cont = func.fresh_block();
     let block = func.blocks.get_mut(&bid).expect("reader block");
-    let mut tail = block.ops.split_off(at);
-    tail[0].attrs.remove(CARRIED_READER_ATTR);
+    let tail = block.ops.split_off(at);
     let terminator = std::mem::replace(
         &mut block.terminator,
         Terminator::CondBranch {
@@ -1537,7 +1558,7 @@ fn split_carried_reader(func: &mut TirFunction, site: i64, flag: ValueId, writes
             terminator,
         },
     );
-    func.move_loop_terminator(bid, cont);
+    cont
 }
 
 /// Turn the poll at `at` into a pending-work test whose cold block writes the
@@ -1552,7 +1573,12 @@ fn split_carried_reader(func: &mut TirFunction, site: i64, flag: ValueId, writes
 ///        br ^rest
 /// rest:  ...                         ; ops after the poll; bid's terminator
 /// ```
-fn split_poll(func: &mut TirFunction, bid: BlockId, at: usize, writes: Vec<TirOp>) {
+fn split_poll(
+    func: &mut TirFunction,
+    bid: BlockId,
+    at: usize,
+    writes: Vec<TirOp>,
+) -> (BlockId, BlockId) {
     let pending = func.fresh_value();
     func.value_types.insert(pending, TirType::Bool);
     let cold = func.fresh_block();
@@ -1597,7 +1623,7 @@ fn split_poll(func: &mut TirFunction, bid: BlockId, at: usize, writes: Vec<TirOp
             terminator,
         },
     );
-    func.move_loop_terminator(bid, rest);
+    (cold, rest)
 }
 
 #[cfg(test)]
