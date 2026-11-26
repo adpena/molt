@@ -10,10 +10,9 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, fields, replace
-from enum import Enum, auto
 import math
 import operator as scalar_operator
-from typing import Final, Literal, TypeAlias, TypedDict, assert_never, cast
+from typing import Final, Literal, TypeAlias, TypedDict, assert_never, cast, get_args
 
 from molt.compiler_analysis.literal_identity import (
     literal_identity_key,
@@ -324,10 +323,6 @@ class ExpressionSequenceItem:
     expanded: bool = False
 
 
-class _ValueFactExpiry(Enum):
-    UNCHANGED = auto()
-
-
 @dataclass(frozen=True, slots=True, eq=False)
 class StaticExpressionResult:
     truth: bool | None = None
@@ -382,11 +377,6 @@ class StaticExpressionResult:
     )
     _semantic_hash: int = field(init=False, repr=False, compare=False, hash=False)
     _recursively_stable: bool = field(init=False, repr=False, compare=False, hash=False)
-    # Widening depends only on this immutable fact graph. An unchanged
-    # projection stores a marker instead of making the fact retain itself.
-    _expired_value_facts: StaticExpressionResult | _ValueFactExpiry | None = field(
-        default=None, init=False, repr=False, compare=False, hash=False
-    )
     # Canonical cached proof transported when publication erases descendant
     # shape. ``None`` means derive it from the still-visible result graph.
     _publication_release_stable: bool | None = field(
@@ -574,30 +564,63 @@ class StaticExpressionResult:
 
 UNKNOWN_EXPRESSION_RESULT = StaticExpressionResult()
 ExpressionResultLookup = Callable[[ast.expr], StaticExpressionResult | None]
-_EXPRESSION_RESULT_DEFAULTS = tuple(
+_ExpiryPreservedField: TypeAlias = Literal[
+    "identities",
+    "exposes_module_globals",
+    "source_origins",
+    "exposed_source_origins",
+    "deferred",
+    "exposed_deferred",
+    "element_result",
+]
+_EXPIRY_PRESERVED_FIELDS: Final = frozenset(get_args(_ExpiryPreservedField))
+_EXPIRY_RESET_DEFAULTS: Final = tuple(
     (member.name, getattr(UNKNOWN_EXPRESSION_RESULT, member.name))
     for member in fields(StaticExpressionResult)
-    if member.init
+    if member.init and member.name not in _EXPIRY_PRESERVED_FIELDS
+)
+_EXPIRY_RESET_VALUES: Final = tuple(value for _name, value in _EXPIRY_RESET_DEFAULTS)
+_EXPIRY_RESET_GETTER: Final[Callable[[StaticExpressionResult], tuple[object, ...]]] = (
+    scalar_operator.attrgetter(*(name for name, _value in _EXPIRY_RESET_DEFAULTS))
+)
+_EXPIRY_RESET_RESULT_REFERENCES: Final = tuple(
+    (name, value)
+    for name, value in _EXPIRY_RESET_DEFAULTS
+    if isinstance(value, StaticExpressionResult)
 )
 
 
-def _expression_result_with_default_facts(
-    current: StaticExpressionResult, **preserved: object
+def _expression_result_with_possible_provenance(
+    current: StaticExpressionResult,
+    identities: IdentityMask,
+    element_result: StaticExpressionResult | None,
 ) -> StaticExpressionResult:
     # Derive expired fields from the actual normalized defaults. New fields
     # therefore cannot silently survive this projection's reuse fast path.
-    for name, default in _EXPRESSION_RESULT_DEFAULTS:
-        actual = getattr(current, name)
-        expected = preserved.get(name, default)
-        if actual is expected:
-            continue
-        # An equal reprojected child can still have lost nonsemantic storage
-        # (for example value with value_known=False). Keep its new graph edge.
-        if isinstance(actual, StaticExpressionResult) or actual != expected:
-            return cast(Callable[..., StaticExpressionResult], StaticExpressionResult)(
-                **preserved
+    if (
+        current.identities == identities
+        # An equal reprojected child can have lost nonsemantic storage, such
+        # as value with value_known=False. Keep its new graph edge.
+        and current.element_result is element_result
+        and _EXPIRY_RESET_GETTER(current) == _EXPIRY_RESET_VALUES
+        and (
+            not _EXPIRY_RESET_RESULT_REFERENCES
+            or all(
+                getattr(current, name) is value
+                for name, value in _EXPIRY_RESET_RESULT_REFERENCES
             )
-    return current
+        )
+    ):
+        return current
+    return StaticExpressionResult(
+        identities=identities,
+        exposes_module_globals=current.exposes_module_globals,
+        source_origins=current.source_origins,
+        exposed_source_origins=current.exposed_source_origins,
+        deferred=current.deferred,
+        exposed_deferred=current.exposed_deferred,
+        element_result=element_result,
+    )
 
 
 def expression_result_without_value_facts(
@@ -612,34 +635,22 @@ def expression_result_without_value_facts(
     """
     if result is UNKNOWN_EXPRESSION_RESULT:
         return result
-    cached = result._expired_value_facts
-    if cached is _ValueFactExpiry.UNCHANGED:
-        return result
-    if cached is not None:
-        return cached
 
-    # Expiry retains at most one joined element summary per value. Walk
-    # only the uncomputed prefix, then publish its derived facts bottom up.
+    # Expiry retains at most one joined element summary per value. Follow
+    # that path, then project from the last value back to its owners.
     enclosing: list[StaticExpressionResult] = []
     current = result
     while True:
-        enclosing.append(current)
         child = current.element_result
         if child is None and current.items is not None:
             child = sequence_element_result(current.items)
         if child is None or child is UNKNOWN_EXPRESSION_RESULT:
-            projected = None
             break
-        cached = child._expired_value_facts
-        if cached is _ValueFactExpiry.UNCHANGED:
-            projected = child
-            break
-        if cached is not None:
-            projected = None if cached is UNKNOWN_EXPRESSION_RESULT else cached
-            break
+        enclosing.append(current)
         current = child
 
-    for current in reversed(enclosing):
+    projected = None
+    while True:
         symbols = current.identities & ~_NON_SYMBOL_IDENTITIES
         widened = (
             UNKNOWN_EXPRESSION_RESULT
@@ -648,24 +659,16 @@ def expression_result_without_value_facts(
             and projected is None
             and not current.exposed_source_origins
             and not current.exposed_deferred
-            else _expression_result_with_default_facts(
+            else _expression_result_with_possible_provenance(
                 current,
-                identities=OTHER_IDENTITY | symbols,
-                exposes_module_globals=current.exposes_module_globals,
-                source_origins=current.source_origins,
-                exposed_source_origins=current.exposed_source_origins,
-                deferred=current.deferred,
-                exposed_deferred=current.exposed_deferred,
-                element_result=projected,
+                OTHER_IDENTITY | symbols,
+                projected,
             )
         )
-        object.__setattr__(
-            current,
-            "_expired_value_facts",
-            _ValueFactExpiry.UNCHANGED if widened is current else widened,
-        )
+        if not enclosing:
+            return widened
         projected = None if widened is UNKNOWN_EXPRESSION_RESULT else widened
-    return widened
+        current = enclosing.pop()
 
 
 class StaticTruthKwargs(TypedDict, total=False):
