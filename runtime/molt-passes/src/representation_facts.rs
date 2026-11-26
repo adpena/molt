@@ -87,6 +87,55 @@ pub fn analyze_representations_and_checked_calls(
     (representations, checked)
 }
 
+/// Constructor dimensions remain fixed even when a buffer promotes its
+/// backing. This describes the object *if* the word passes the existing
+/// checked-buffer test. Constructor failure still produces a miss.
+pub fn packed_buffer_extents(tir_func: &TirFunction) -> HashMap<ValueId, [u64; 2]> {
+    use crate::tir::call_targets::direct_boxed_runtime;
+    use crate::tir::passes::value_identity::{
+        build_forwarding_map, forwarded_python_value_source, resolve_copy,
+    };
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+
+    let operations = || tir_func.blocks.values().flat_map(|block| &block.ops);
+    let forwarding = build_forwarding_map(tir_func, forwarded_python_value_source);
+    let constants: HashMap<_, _> = operations()
+        .filter_map(|op| {
+            if op.opcode != OpCode::ConstInt || !op.has_valid_shape() {
+                return None;
+            }
+            let AttrValue::Int(n) = op.attrs.get("value")? else {
+                return None;
+            };
+            Some((op.results[0], u64::try_from(*n).ok()?))
+        })
+        .collect();
+    let constructors: HashMap<_, _> = operations()
+        .filter_map(|op| {
+            if direct_boxed_runtime(op) != Some(RuntimeFn::Buffer2dNew) || !op.has_valid_shape() {
+                return None;
+            }
+            let ([rows, cols, _], [owner]) = (op.operands.as_slice(), op.results.as_slice()) else {
+                return None;
+            };
+            let extent = |id| constants.get(&resolve_copy(&forwarding, id)).copied();
+            Some((*owner, [extent(*rows)?, extent(*cols)?]))
+        })
+        .collect();
+    operations()
+        .filter_map(|op| {
+            if !matches!(
+                op.opcode,
+                OpCode::TryBuffer2dLoadI64 | OpCode::TryBuffer2dStoreI64
+            ) {
+                return None;
+            }
+            let owner = *op.operands.first()?;
+            Some((owner, *constructors.get(&resolve_copy(&forwarding, owner))?))
+        })
+        .collect()
+}
+
 fn representations_from(facts: &ScalarFacts<'_>) -> HashMap<ValueId, Repr> {
     let ranges = compute_with_scalar_facts(facts);
     repr_by_value_from(facts, Some(&ranges))

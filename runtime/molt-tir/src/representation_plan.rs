@@ -4,6 +4,7 @@ use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 use molt_passes::representation_facts::analyze_representations_and_checked_calls;
+use std::sync::OnceLock;
 
 pub use molt_passes::representation_facts::{
     analyze_representations, repr_by_value_for, value_range_for,
@@ -130,6 +131,7 @@ pub struct ProducerCarrierPlan {
     /// proven raw carriers.
     pub repr_by_value: HashMap<ValueId, Repr>,
     pub(crate) checked_call_results: HashSet<ValueId>,
+    packed_extents: OnceLock<HashMap<ValueId, [u64; 2]>>,
 }
 
 /// The callee and SSA value of a proved invocation in the current terminal document.
@@ -164,7 +166,21 @@ impl ProducerCarrierPlan {
         Self {
             repr_by_value,
             checked_call_results,
+            packed_extents: OnceLock::new(),
         }
+    }
+
+    /// The fixed extents of a checked packed access to a local constructor,
+    /// keyed in this plan's own immutable TIR coordinates.
+    pub fn packed_buffer_extents(
+        &self,
+        tir_func: &TirFunction,
+        owner: ValueId,
+    ) -> Option<[u64; 2]> {
+        self.packed_extents
+            .get_or_init(|| molt_passes::representation_facts::packed_buffer_extents(tir_func))
+            .get(&owner)
+            .copied()
     }
 
     /// A success-only machine result may replace the ordinary physical word only

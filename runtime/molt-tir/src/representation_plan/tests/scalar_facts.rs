@@ -6,6 +6,66 @@ use crate::tir::lower_from_simple::lower_to_tir_for_target;
 use crate::tir::ops::AttrValue;
 use crate::tir::type_refine::refine_types;
 
+#[test]
+fn packed_extents_follow_the_constructor_word_through_a_frame_home() {
+    use crate::tir::ops::{OpCode, TirOp};
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+
+    let mut tir = TirFunction::new(
+        "packed_extents".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let entry = tir.entry_block;
+    let parameter = tir.blocks[&entry].args[0].id;
+    let rows = tir.fresh_value();
+    let cols = tir.fresh_value();
+    let zero = tir.fresh_value();
+    let local = tir.fresh_value();
+    let home = tir.fresh_value();
+    let load = tir.fresh_value();
+    let loaded = tir.fresh_value();
+    let stored = tir.fresh_value();
+    let unknown = tir.fresh_value();
+    let mut constructor = TirOp::new(OpCode::Call, vec![rows, cols, zero], vec![local]);
+    constructor.runtime = Some(RuntimeFn::Buffer2dNew);
+    let mut store_home = TirOp::new(OpCode::Copy, vec![local], vec![home]);
+    store_home.origin = Some(molt_ir::OpKind::FrameHomeStore);
+    store_home.attrs.insert("value".into(), AttrValue::Int(0));
+    tir.blocks.get_mut(&entry).unwrap().ops = vec![(rows, 1), (cols, 64), (zero, 0)]
+        .into_iter()
+        .map(|(value, n)| {
+            let mut op = TirOp::new(OpCode::ConstInt, vec![], vec![value]);
+            op.attrs.insert("value".into(), AttrValue::Int(n));
+            op
+        })
+        .chain([
+            constructor,
+            store_home,
+            TirOp::new(
+                OpCode::TryBuffer2dLoadI64,
+                vec![local, zero, zero],
+                vec![load, loaded],
+            ),
+            TirOp::new(
+                OpCode::TryBuffer2dStoreI64,
+                vec![home, zero, zero, zero],
+                vec![stored],
+            ),
+            TirOp::new(
+                OpCode::TryBuffer2dStoreI64,
+                vec![parameter, zero, zero, zero],
+                vec![unknown],
+            ),
+        ])
+        .collect();
+    let plan = ProducerCarrierPlan::default();
+    assert_eq!(plan.packed_buffer_extents(&tir, local), Some([1, 64]));
+    assert_eq!(plan.packed_buffer_extents(&tir, home), Some([1, 64]));
+    assert_eq!(plan.packed_buffer_extents(&tir, parameter), None);
+}
+
 fn const_int(out: &str, value: i64) -> OpIR {
     OpIR {
         kind: molt_ir::OpKind::Const,
