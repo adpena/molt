@@ -25,12 +25,14 @@ from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.native_symbol_inspection import NativeArtifactCapture
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
-    native_link_custody_archive_path,
+    NativeLinkCustodyObservation,
+    observe_native_link_custody,
 )
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
+    NativeLinkManifestFacts,
+    capture_native_link_dependency_manifest,
     native_link_dependency_manifest_path,
-    read_native_link_dependency_manifest,
     read_native_link_dependency_manifest_payload,
     write_native_link_dependency_manifest,
 )
@@ -87,7 +89,12 @@ class NativeRuntimeGeneration:
     runtime_lib: Path
     build_identity: RuntimeBuildIdentity
     members: tuple[tuple[str, StableRegularFileIdentity], ...]
-    cargo_environment: CargoEnvironmentInputs
+    link_facts: NativeLinkManifestFacts
+    custody: NativeLinkCustodyObservation
+
+    @property
+    def cargo_environment(self) -> CargoEnvironmentInputs:
+        return self.link_facts.cargo_environment
 
     def verify(self) -> None:
         if resolve_owned_path(self.runtime_lib) != self.members[0][1].path:
@@ -133,37 +140,35 @@ def _capture_generation(
         target_triple=target_triple,
         artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
     )
-    with NativeArtifactCapture(runtime_lib, label="native runtime archive") as capture:
+    with NativeArtifactCapture(
+        runtime_lib, label="native runtime archive", derive_link_identity=True
+    ) as capture:
         archive = capture.identity
-        manifest_file = stable_regular_file_identity(
-            native_link_dependency_manifest_path(runtime_lib),
-            label="native runtime link manifest",
-        )
-        manifest = read_native_link_dependency_manifest(
+        manifest_file, manifest = capture_native_link_dependency_manifest(
             runtime_lib,
+            runtime_identity=capture.link_identity,
             cargo_profile=cargo_profile,
             target_triple=target_triple,
             runtime_build_identity=identity,
         )
+        try:
+            custody = observe_native_link_custody(runtime_lib, manifest.custody)
+        except NativeLinkCustodyError as exc:
+            raise NativeLinkDependencyManifestError(
+                f"native link custody archive is unavailable or invalid: {exc}"
+            ) from exc
         members = [
             ("runtime_archive", archive),
             ("native_link_manifest", manifest_file),
         ]
-        custody = native_link_custody_archive_path(runtime_lib, manifest.custody)
-        if custody is not None:
-            members.append(
-                (
-                    "native_link_custody_archive",
-                    stable_regular_file_identity(
-                        custody, label="native runtime link custody"
-                    ),
-                )
-            )
+        if custody.archive is not None:
+            members.append(("native_link_custody_archive", custody.archive))
         generation = NativeRuntimeGeneration(
             runtime_lib,
             identity,
             tuple(members),
-            manifest.cargo_environment,
+            manifest,
+            custody,
         )
         if expected_records is not None and generation.records() != expected_records:
             raise ValueError("native runtime generation members differ from selection")

@@ -1202,9 +1202,15 @@ tests that place their target in a temporary directory.
   is a cached check beside the receipt, so a stale one is probed again.
 - A variant's members never change. Two content-addressed derivations of the
   runtime archive are added beside its published generation: the
-  callable-symbol projection (on the first native code generation) and the
-  extraction of the native-link custody archive (on the first link). Each is
-  published exclusively, never replaces a file, and never recreates a
+  callable-symbol projection and the extraction of the native-link custody
+  archive. The callable action key binds the exact archive, target, reader and
+  runtime ABI catalog. Its first consumer reads the admitted archive and
+  publishes the compact projection before publishing the action receipt.
+  Later application builds reuse the result across application caches after
+  authenticating the current archive and the recorded projection bytes.
+  Source-native admission derives the raw and semantic link identities in one
+  archive stream and carries the observed link facts and custody into codegen.
+  Each derivation is published exclusively and never recreates a
   generation that eviction removed (`atomic_write_bytes(create_parent=False)`;
   the extraction stage is made with `parents=False`), so an entry stays whole
   or absent, and both leave with their entry. The JIT tier's runtime image

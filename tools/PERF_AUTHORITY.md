@@ -20,6 +20,21 @@ coordinate and becomes non-authoritative; its cells have no cold-budget ceiling.
 A present malformed budget or unreadable policy still refuses measurement.
 Ordinary gate runs require an approved budget for every selected coordinate.
 
+## Build timing boundaries
+
+Report toolchain production and application compilation separately. Production
+covers building, packaging and qualifying the compiler, runtime and shipped
+tool products. Application measurements use an identified installed compiler
+and runtime and report outer command wall time for a fresh application cache,
+a representative edit and an unchanged repeat. Record the workload, profile,
+backend, target, artifact state and cache state with each sample.
+
+For a source-tree command that bootstraps tool products inline, report the
+actual elapsed command time and identify any measured producer phases inside
+it. Measure the application-only path with resident products. Give internal
+phase durations and outer command wall time their own labels. An edit or
+unchanged sample names the cache tier it exercised.
+
 ## Instruction signal on main
 
 `tools/perf_instructions.py` measures main's head in instructions retired

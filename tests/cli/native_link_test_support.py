@@ -96,22 +96,24 @@ def stub_native_symbol_admission(monkeypatch, read_facts) -> None:
     """
     from molt.cli import native_symbol_inspection as symbols
 
-    @contextmanager
-    def admit(path, *, archive, identity, target_triple, requirement, capture=None):
-        assert archive
-        with symbols._open_native_symbol_artifact(path, identity, capture=capture) as (
-            opened,
-            current,
-        ):
-            facts = read_facts(
-                path,
-                identity=current,
-                target_triple=target_triple,
-                requirement=requirement,
-            )
-            yield opened, current, facts
+    def read(
+        action: symbols._NativeSymbolAction,
+        members: tuple[object, ...] | None,
+    ) -> symbols._NativeGlobalSymbolFacts:
+        assert action.archive
+        assert members == ()
+        return read_facts(
+            action.opened.path,
+            identity=action.identity,
+            target_triple=action.target_triple,
+            requirement=action.requirement,
+        )
 
-    monkeypatch.setattr(symbols, "_native_symbol_facts_admission", admit)
+    monkeypatch.setattr(
+        symbols, "_symbol_artifact_has_llvm_bitcode", lambda *_a, **_kw: False
+    )
+    monkeypatch.setattr(symbols, "_symbol_artifact_members", lambda *_a, **_kw: ())
+    monkeypatch.setattr(symbols._NativeSymbolAction, "read", read)
 
 
 RUNTIME_BUILD_IDENTITY = native_runtime_staticlib_identity(

@@ -12,7 +12,9 @@ from molt._wasm_abi_generated import (
     WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
     WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
 )
+from molt.exact_json import canonical_json_sha256
 from molt.file_publication import atomic_write_bytes
+from molt.typed_cache import typed_cache
 from molt.cli import native_symbol_inspection
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.installed_runtime_contract import InstalledNativeAdmission
@@ -33,11 +35,7 @@ from molt.cli.runtime_native_generation import (
     NativeRuntimeGeneration,
     NativeRuntimeGenerationConsumerError,
 )
-from molt.cli.native_link_manifest import (
-    _object_format_for_identity,
-    NativeLinkDependencyManifestError,
-    read_native_link_flags,
-)
+from molt.cli.native_link_manifest import NativeLinkDependencyManifestError
 from molt.toolchain_identity import (
     StableRegularFileHandle,
     StableRegularFileIdentity,
@@ -68,6 +66,94 @@ class RuntimeCallableProjection:
     semantic_digest: str
 
 
+_RUNTIME_CALLABLE_REQUIREMENT = native_symbol_inspection.NativeSymbolRequirement(
+    function_prefix="molt_",
+    excluded_functions=WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
+)
+
+
+@typed_cache(maxsize=1)
+def _runtime_callable_catalog_identity() -> str:
+    return canonical_json_sha256(
+        {
+            "abi": sorted(
+                (name, abi.context, abi.physical_symbol)
+                for name, abi in RUNTIME_EXECUTION_ABIS.items()
+            ),
+            "excluded": sorted(WASM_NON_RUNTIME_CALLABLE_INTRINSICS),
+            "public_c_api": sorted(WASM_PUBLIC_C_API_FUNCTION_SIGNATURES),
+        }
+    )
+
+
+def _runtime_callable_action_receipt(
+    runtime_lib: Path, action: native_symbol_inspection._NativeSymbolAction
+) -> Path:
+    identity = canonical_json_sha256(
+        {
+            "native_symbols": native_symbol_inspection._native_symbol_action_identity(
+                action.key
+            ),
+            "catalog": _runtime_callable_catalog_identity(),
+        }
+    )
+    return runtime_lib.with_name(f"{runtime_lib.name}.callable_action.v1.{identity}")
+
+
+def _read_runtime_callable_receipt(
+    path: Path,
+) -> tuple[StableRegularFileIdentity, str] | None:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    observed, payload = capture_stable_regular_file(
+        path, label="runtime callable action receipt", max_bytes=65
+    )
+    digest = payload.removesuffix(b"\n")
+    if (
+        len(payload) != 65
+        or len(digest) != 64
+        or any(byte not in b"0123456789abcdef" for byte in digest)
+    ):
+        raise ValueError(f"runtime callable action receipt is malformed: {path}")
+    return observed, digest.decode("ascii")
+
+
+def _derive_runtime_callable_content(
+    action: native_symbol_inspection._NativeSymbolAction,
+) -> bytes:
+    # This host-shared result must come from the admitted archive and reader.
+    # An application-local symbol cache has no authority to publish it.
+    members = native_symbol_inspection._symbol_artifact_members(
+        action.opened.path, opened=action.opened, require_archive=True
+    )
+    facts = action.read(members)
+    legacy = sorted(
+        name
+        for name, abi in RUNTIME_EXECUTION_ABIS.items()
+        if abi.context == "Attached"
+        and name in facts.defined_functions
+        and name not in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES
+    )
+    if legacy:
+        raise ValueError(
+            "legacy runtime callable definitions: " + ", ".join(legacy[:8])
+        )
+    symbols = tuple(
+        sorted(
+            name
+            for name, abi in RUNTIME_EXECUTION_ABIS.items()
+            if name.startswith("molt_")
+            and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+            and abi.physical_symbol in facts.defined_functions
+        )
+    )
+    if not symbols:
+        raise ValueError("runtime staticlib defines no molt_* callable symbols")
+    return _runtime_callable_projection_content(symbols)
+
+
 def _runtime_callable_symbols_file(
     runtime_lib: Path,
     *,
@@ -75,77 +161,73 @@ def _runtime_callable_symbols_file(
     target_triple: str | None = None,
     capture: native_symbol_inspection.NativeArtifactCapture | None = None,
 ) -> tuple[RuntimeCallableProjection | None, str | None]:
-    """Project runtime callables from the shared, generation-bound archive facts.
+    """Admit the runtime callable action's result beside the admitted archive.
 
-    The reader owns candidate selection, target decoration, typed failures and
-    artifact/reader identity. This stage owns only the callable projection and
-    its materialized input to native codegen.
+    The action key binds archive contents and the selected reader and ABI.
+    The receipt is published after the archive and reader fences close, and
+    addresses the exact projection bytes. Reuse still authenticates the archive.
     """
     try:
-        with native_symbol_inspection._native_symbol_facts_admission(
-            runtime_lib,
-            archive=True,
-            target_triple=target_triple,
-            identity=identity,
-            capture=capture,
-            requirement=native_symbol_inspection.NativeSymbolRequirement(
-                function_prefix="molt_",
-                excluded_functions=WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
-            ),
-        ) as (opened, identity, facts):
-            legacy = sorted(
-                name
-                for name, abi in RUNTIME_EXECUTION_ABIS.items()
-                if abi.context == "Attached"
-                and name in facts.defined_functions
-                and name not in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES
+        with native_symbol_inspection._open_native_symbol_artifact(
+            runtime_lib, identity, capture=capture
+        ) as (opened, admitted):
+            action = native_symbol_inspection._capture_native_symbol_action(
+                opened,
+                admitted,
+                archive=True,
+                nm_command=None,
+                target_triple=target_triple,
+                requirement=_RUNTIME_CALLABLE_REQUIREMENT,
             )
-            if legacy:
-                raise ValueError(
-                    "legacy runtime callable definitions: " + ", ".join(legacy[:8])
-                )
-            symbols = tuple(
-                sorted(
-                    name
-                    for name, abi in RUNTIME_EXECUTION_ABIS.items()
-                    if name.startswith("molt_")
-                    and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
-                    and abi.physical_symbol in facts.defined_functions
-                )
-            )
-            if not symbols:
-                return None, "runtime staticlib defines no molt_* callable symbols"
-            content = _runtime_callable_projection_content(symbols)
-            projection_digest = hashlib.sha256(content).hexdigest()
-            cache_path = runtime_lib.with_name(
+            receipt_path = _runtime_callable_action_receipt(runtime_lib, action)
+            receipt = _read_runtime_callable_receipt(receipt_path)
+            if receipt is None:
+                content = _derive_runtime_callable_content(action)
+                expected_sha256 = hashlib.sha256(content).hexdigest()
+            else:
+                content = None
+                expected_sha256 = receipt[1]
+            projection_path = runtime_lib.with_name(
                 _runtime_callable_projection_name(
                     runtime_lib.name,
-                    archive_sha256=identity.sha256,
-                    projection_sha256=projection_digest,
+                    archive_sha256=admitted.sha256,
+                    projection_sha256=expected_sha256,
                 )
             )
-            # Content-addressed projections are immutable generations. A concurrent
-            # creator may publish first; admit its bytes without replacing the file
-            # already bound by that operation. Corruption and read failures fail
-            # closed below rather than invalidating another operation's generation.
-            # The projection is added beside its archive's generation and never
-            # recreates one that eviction removed (HF-390 review v2, M1).
+            if content is not None:
+                try:
+                    atomic_write_bytes(
+                        projection_path, content, exclusive=True, create_parent=False
+                    )
+                except FileExistsError:
+                    pass
+            projection = _admit_runtime_callable_projection(
+                projection_path,
+                runtime_lib=runtime_lib,
+                archive_identity=admitted,
+                expected_sha256=expected_sha256,
+                _archive_opened=opened,
+            )
+            if receipt is not None:
+                verify_stable_regular_file_identity(
+                    receipt[0], label="runtime callable action receipt"
+                )
+            action.verify_reader()
+        if content is not None:
             try:
                 atomic_write_bytes(
-                    cache_path, content, exclusive=True, create_parent=False
+                    receipt_path,
+                    (expected_sha256 + "\n").encode("ascii"),
+                    exclusive=True,
+                    create_parent=False,
                 )
             except FileExistsError:
-                pass
-            return (
-                _admit_runtime_callable_projection(
-                    cache_path,
-                    runtime_lib=runtime_lib,
-                    archive_identity=identity,
-                    expected_sha256=projection_digest,
-                    _archive_opened=opened,
-                ),
-                None,
-            )
+                winner = _read_runtime_callable_receipt(receipt_path)
+                if winner is None or winner[1] != expected_sha256:
+                    raise ValueError(
+                        "runtime callable action produced inconsistent results"
+                    )
+        return projection, None
     except (OSError, ValueError) as exc:
         return None, f"runtime staticlib callable inspection failed: {exc}"
 
@@ -441,18 +523,8 @@ def _stage_runtime_callable_symbols_for_native_codegen(
             generation.verify()
             archive_identity = generation.members[0][1]
             manifest_identity = generation.members[1][1]
-            link_inputs = read_native_link_flags(
-                runtime_lib,
-                target_triple=target_triple,
-                object_format=_object_format_for_identity(build_identity),
-                runtime_build_identity=build_identity,
-            )
-            verify_stable_regular_file_identity(
-                manifest_identity, label="native codegen link receipt"
-            )
-            link_facts = link_inputs.facts
-            custody = link_inputs.custody
-            generation.verify()
+            link_facts = generation.link_facts
+            custody = generation.custody
     except (OSError, ValueError, NativeLinkDependencyManifestError) as exc:
         runtime_state.revoke_native_runtime_admission()
         return "", _fail(

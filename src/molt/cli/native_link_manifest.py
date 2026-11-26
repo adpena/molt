@@ -37,7 +37,8 @@ from molt.cli.static_archive_identity import (
     artifact_content_identity,
     validate_artifact_content_identity,
 )
-from molt.exact_json import loads_exact, read_exact
+from molt.exact_json import capture_exact, loads_exact, read_exact
+from molt.toolchain_identity import StableRegularFileIdentity
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 
 if TYPE_CHECKING:
@@ -845,6 +846,40 @@ def read_native_link_dependency_manifest_payload(path: Path) -> Mapping[str, obj
         )
     _source_manifest_components(payload, context=str(path))
     return payload
+
+
+def capture_native_link_dependency_manifest(
+    runtime_lib: Path,
+    *,
+    runtime_identity: Mapping[str, object],
+    target_triple: str | None,
+    cargo_profile: str,
+    runtime_build_identity: RuntimeBuildIdentity,
+) -> tuple[StableRegularFileIdentity, NativeLinkManifestFacts]:
+    """Validate the source manifest from the exact bytes the generation retains."""
+    path = native_link_dependency_manifest_path(runtime_lib)
+    try:
+        observed, manifest = capture_exact(
+            path,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="native link dependency manifest",
+        )
+    except (OSError, ValueError) as exc:
+        raise NativeLinkDependencyManifestError(
+            f"cannot read native link dependency manifest {path}: {exc}"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise NativeLinkDependencyManifestError(
+            f"native link dependency manifest must be an object: {path}"
+        )
+    return observed, validate_native_link_dependency_manifest(
+        manifest,
+        runtime_identity=runtime_identity,
+        context=str(path),
+        target_triple=target_triple,
+        cargo_profile=cargo_profile,
+        runtime_build_identity=runtime_build_identity,
+    )
 
 
 def _read_native_link_dependency_manifest(

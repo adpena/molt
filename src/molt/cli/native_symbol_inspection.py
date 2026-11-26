@@ -23,7 +23,7 @@ import sys
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Mapping
 from types import TracebackType
 from typing import Literal, Sequence, TypeVar
 
@@ -39,6 +39,7 @@ from molt.cache_eviction import refresh_cache_entry_recency
 from molt.llvm_wasi_tools import _tool_version, llvm_tool_candidates
 from molt.cli.static_archive_identity import (
     StaticArchiveMemberIdentity,
+    capture_archive_artifact_identity,
     open_static_archive_members,
     static_archive_member_identities,
 )
@@ -620,8 +621,11 @@ class NativeArtifactCapture:
         *,
         label: str,
         observed: StableRegularFileIdentity | None = None,
+        derive_link_identity: bool = False,
     ) -> None:
         self._path = path
+        self._derive_link_identity = derive_link_identity
+        self._link_identity: dict[str, object] | None = None
         self._label = label
         self._observed = observed
         self._stack = contextlib.ExitStack()
@@ -638,9 +642,14 @@ class NativeArtifactCapture:
                     self._path, label=self._label, observed=self._observed
                 )
             )
-            self._identity = stable_regular_file_handle_identity(
-                self._opened, label=self._label
-            )
+            if self._derive_link_identity:
+                self._identity, self._link_identity = capture_archive_artifact_identity(
+                    self._opened
+                )
+            else:
+                self._identity = stable_regular_file_handle_identity(
+                    self._opened, label=self._label
+                )
             if self._observed is not None:
                 verify_stable_regular_file_content(
                     self._observed,
@@ -672,6 +681,14 @@ class NativeArtifactCapture:
         ):
             raise ValueError("native artifact capture is not live")
         return self._identity
+
+    @property
+    def link_identity(self) -> Mapping[str, object]:
+        # Link facts must come from the same live capture as the raw digest.
+        _ = self.identity
+        if self._link_identity is None:
+            raise ValueError("native artifact capture did not derive a link identity")
+        return self._link_identity
 
     @contextlib.contextmanager
     def consume(
@@ -1324,6 +1341,71 @@ def _write_native_object_symbol_facts(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _NativeSymbolAction:
+    opened: StableRegularFileHandle
+    identity: StableRegularFileIdentity
+    key: _NativeSymbolFactsCacheKey
+    archive: bool
+    reader: _NativeSymbolReader | None
+    requirement: NativeSymbolRequirement
+    nm_command: Sequence[str] | None
+    target_triple: str | None
+
+    def read(
+        self, members: tuple[StaticArchiveMemberIdentity, ...] | None
+    ) -> _NativeGlobalSymbolFacts:
+        facts = _read_native_global_symbol_facts(
+            self.opened.path,
+            nm_command=self.nm_command,
+            target_triple=self.target_triple,
+            _reader=self.reader,
+            requirement=self.requirement,
+            archive_members=members,
+            _opened=self.opened,
+        )
+        return replace(facts, artifact_digest=self.identity.sha256)
+
+    def verify_reader(self) -> None:
+        if self.reader is not None:
+            _require_unchanged_symbol_reader(self.opened.path, self.reader)
+
+
+def _capture_native_symbol_action(
+    opened: StableRegularFileHandle,
+    admitted: StableRegularFileIdentity,
+    *,
+    archive: bool,
+    nm_command: Sequence[str] | None,
+    target_triple: str | None,
+    requirement: NativeSymbolRequirement,
+) -> _NativeSymbolAction:
+    # Format, not caller spelling or pathname, owns retention and reader
+    # policy. A warm content hit needs only the header and member magics.
+    archive = archive or _symbol_artifact_has_archive_header(opened)
+    reader = (
+        _native_symbol_reader(
+            nm_command=nm_command,
+            target_triple=target_triple,
+            requirement=requirement,
+        )
+        if _symbol_artifact_has_llvm_bitcode(opened, archive=archive)
+        else None
+    )
+    key = _native_symbol_facts_cache_key(
+        admitted,
+        reader_identity=(
+            _in_process_reader_identity(requirement)
+            if reader is None
+            else reader.cache_identity
+        ),
+        target_triple=target_triple,
+    )
+    return _NativeSymbolAction(
+        opened, admitted, key, archive, reader, requirement, nm_command, target_triple
+    )
+
+
 @contextlib.contextmanager
 def _native_symbol_facts_admission(
     path: Path,
@@ -1354,9 +1436,15 @@ def _native_symbol_facts_admission(
     ):
         if validate_shape is not None:
             validate_shape(opened)
-        # Format, not caller spelling or pathname, owns retention and reader
-        # policy. A warm content hit needs only the header and member magics.
-        archive = archive or _symbol_artifact_has_archive_header(opened)
+        action = _capture_native_symbol_action(
+            opened,
+            admitted,
+            archive=archive,
+            nm_command=nm_command,
+            target_triple=target_triple,
+            requirement=requirement,
+        )
+        archive = action.archive
         cache = (
             _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
             if archive
@@ -1367,26 +1455,7 @@ def _native_symbol_facts_admission(
             if archive
             else _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT
         )
-        # Only bitcode makes the facts depend on an external reader.
-        reader = (
-            _native_symbol_reader(
-                nm_command=nm_command,
-                target_triple=target_triple,
-                requirement=requirement,
-            )
-            if _symbol_artifact_has_llvm_bitcode(opened, archive=archive)
-            else None
-        )
-        reader_identity = (
-            _in_process_reader_identity(requirement)
-            if reader is None
-            else reader.cache_identity
-        )
-        cache_key = _native_symbol_facts_cache_key(
-            admitted,
-            reader_identity=reader_identity,
-            target_triple=target_triple,
-        )
+        cache_key = action.key
         facts = cache.get(cache_key)
         persistent_cache_path = (
             _native_archive_symbol_cache_path(cache_key) if archive else None
@@ -1420,23 +1489,13 @@ def _native_symbol_facts_admission(
                     path,
                     object_digest=admitted.sha256,
                     target_triple=target_triple,
-                    reader_identity=reader_identity,
+                    reader_identity=cache_key.reader_identity,
                     members=members,
                 )
             if facts is None or not requirement.accepts(facts):
-                facts = _read_native_global_symbol_facts(
-                    opened.path,
-                    nm_command=nm_command,
-                    target_triple=target_triple,
-                    _reader=reader,
-                    requirement=requirement,
-                    archive_members=members,
-                    _opened=opened,
-                )
-                facts = replace(facts, artifact_digest=admitted.sha256)
+                facts = action.read(members)
                 computed = True
-        if reader is not None:
-            _require_unchanged_symbol_reader(path, reader)
+        action.verify_reader()
         yield opened, admitted, facts
     # Facts describe bytes read during the admitted interval. They remain valid
     # under that content key if the pathname changes after custody is released;
@@ -1466,7 +1525,7 @@ def _native_symbol_facts_admission(
                 object_digest=admitted.sha256,
                 facts=facts,
                 target_triple=target_triple,
-                reader_identity=reader_identity,
+                reader_identity=cache_key.reader_identity,
             )
 
 
@@ -1650,7 +1709,7 @@ def _native_archive_global_symbol_sets(
     return facts.symbol_sets()
 
 
-def _native_archive_symbol_cache_identity(
+def _native_symbol_action_identity(
     cache_key: _NativeSymbolFactsCacheKey,
 ) -> dict[str, object]:
     # Resolve and admit the current readers before consulting this cache. Their
@@ -1669,7 +1728,7 @@ def _native_archive_symbol_cache_identity(
 def _native_archive_symbol_cache_path(
     cache_key: _NativeSymbolFactsCacheKey,
 ) -> Path:
-    identity = _native_archive_symbol_cache_identity(cache_key)
+    identity = _native_symbol_action_identity(cache_key)
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -1692,7 +1751,7 @@ def _read_native_archive_symbol_cache(
         return None
     if payload.get("schema") != TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION:
         return None
-    if payload.get("identity") != _native_archive_symbol_cache_identity(cache_key):
+    if payload.get("identity") != _native_symbol_action_identity(cache_key):
         return None
     return _decode_symbol_facts(
         payload.get("facts"),
@@ -1711,7 +1770,7 @@ def _write_native_archive_symbol_cache(
         path,
         {
             "schema": TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION,
-            "identity": _native_archive_symbol_cache_identity(cache_key),
+            "identity": _native_symbol_action_identity(cache_key),
             "facts": _symbol_facts_payload(facts),
         },
         indent=None,

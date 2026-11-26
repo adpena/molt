@@ -96,7 +96,7 @@ def test_generation_and_callable_projection_share_one_content_capture(
     assert generation is not None
     hashed = []
     handles = []
-    hash_handle = native_symbol_inspection.stable_regular_file_handle_identity
+    hash_handle = native_symbol_inspection.capture_archive_artifact_identity
 
     def count(opened, **kwargs):
         hashed.append(opened.path)
@@ -104,7 +104,7 @@ def test_generation_and_callable_projection_share_one_content_capture(
         return hash_handle(opened, **kwargs)
 
     monkeypatch.setattr(
-        native_symbol_inspection, "stable_regular_file_handle_identity", count
+        native_symbol_inspection, "capture_archive_artifact_identity", count
     )
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"

@@ -295,7 +295,11 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
         native_symbol_inspection, "stable_regular_file_handle_identity", capture
     )
     monkeypatch.setattr(native_symbol_inspection, "read_symbol_rows", read)
-    for _ in range(2):
+    for app_cache in (tmp_path / "first", tmp_path / "second"):
+        native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+        monkeypatch.setattr(
+            native_symbol_inspection, "_default_molt_cache", lambda: app_cache
+        )
         captured.clear()
         projection, failure = runtime_callable_symbols._runtime_callable_symbols_file(
             artifact, identity=identity
@@ -303,6 +307,7 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
         assert failure is None and projection is not None
         assert captured == [artifact]
         assert projection.identity.path.read_bytes() == b"molt_len\n"
+        assert not app_cache.exists()
     assert len(inspected) == 1
 
 

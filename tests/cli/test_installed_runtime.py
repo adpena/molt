@@ -1175,7 +1175,6 @@ def _forbid_readmission(monkeypatch) -> None:
                 "current_native_runtime_build_inputs",
             ),
         ),
-        (runtime_callable_symbols, ("read_native_link_flags",)),
         (
             installed_runtime,
             (

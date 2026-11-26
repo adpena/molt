@@ -355,14 +355,14 @@ def test_source_codegen_future_pins_original_generation_with_fresh_capture(
     state.runtime_lib_ready_future = ready
 
     captured_archives = []
-    hash_handle = native_symbol_inspection.stable_regular_file_handle_identity
+    hash_handle = native_symbol_inspection.capture_archive_artifact_identity
 
     def count_capture(opened, **kwargs):
         captured_archives.append(opened.path)
         return hash_handle(opened, **kwargs)
 
     monkeypatch.setattr(
-        native_symbol_inspection, "stable_regular_file_handle_identity", count_capture
+        native_symbol_inspection, "capture_archive_artifact_identity", count_capture
     )
 
     def inspect_archive(_path, **kwargs):
