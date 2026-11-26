@@ -2140,6 +2140,44 @@ def source_protocol_oracle(tmp_path, monkeypatch, source, provider, leaves):
     return observed, cold
 
 
+def test_await_and_yield_from_keep_distinct_results_of_the_same_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    awaited, delegated, dormant = (
+        "_molt_completion_awaited",
+        "_molt_completion_delegated",
+        "_molt_completion_dormant",
+    )
+    provider = (
+        f"def async_callback(): import {awaited}\n"
+        f"def sync_callback(): import {delegated}\n"
+        f"def unused(): import {dormant}\n"
+        "async def coroutine(): return async_callback\n"
+        "def generator():\n    yield 0\n    return sync_callback\n"
+        "def choose(want_async):\n"
+        "    if want_async: return coroutine()\n"
+        "    return generator()\n"
+    )
+    source = (
+        "from carrier import choose\n"
+        "async def via_await():\n    callback = await selected\n    callback()\n"
+        "def via_delegate():\n    callback = yield from selected\n    callback()\n"
+        "for mode in (True, False):\n"
+        "    selected = choose(mode)\n"
+        "    if mode:\n"
+        "        try: via_await().send(None)\n"
+        "        except StopIteration: pass\n"
+        "    else:\n"
+        "        for item in via_delegate(): pass\n"
+    )
+    observed, found = source_protocol_oracle(
+        tmp_path, monkeypatch, source, provider, {awaited, delegated, dormant}
+    )
+    assert observed == [awaited, delegated]
+    assert {awaited, delegated} <= found
+    assert dormant not in found
+
+
 @pytest.mark.parametrize("throwing_iter", [False, True])
 def test_await_drives_returned_iterator_without_reacquiring_iter(
     tmp_path, monkeypatch, throwing_iter
