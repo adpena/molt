@@ -1,6 +1,7 @@
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::dominators::executable_reachable_blocks;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::owned_alias;
 use crate::tir::type_refine::checked_result_observer;
@@ -47,12 +48,23 @@ use super::clone_body::clone_function_body_with_fresh_ids;
 ///    post-call exception target instead of joining a value-carrying continuation.
 ///    Every exit keeps the frame clear that precedes its `Return`.
 /// 8. The original `Call` op is gone (it lived between `B_pre` and `B_cont`).
+#[cfg(test)]
 pub(super) fn splice_call_site(
     caller: &mut TirFunction,
     callee: &TirFunction,
     site: &CallSite,
     activations: &mut Activations,
 ) -> Option<BlockId> {
+    splice(caller, callee, site, activations).map(|(continuation, _)| continuation)
+}
+
+/// A guarded splice retains the caller's distinct post-call service.
+pub(super) fn splice(
+    caller: &mut TirFunction,
+    callee: &TirFunction,
+    site: &CallSite,
+    activations: &mut Activations,
+) -> Option<(BlockId, bool)> {
     let block_id = site.block;
     let op_index = site.op_index;
 
@@ -89,6 +101,22 @@ pub(super) fn splice_call_site(
     // exit clears the callee frame before it leaves. From here on `callee` is
     // that prepared body.
     let mut bindings = activations.bindings(caller, callee, site, &call_args, first_parameter);
+    let observable = callee.execution_context == molt_ir::ExecutionContextPolicy::Local;
+    let hit = if observable {
+        if caller.execution_context != molt_ir::ExecutionContextPolicy::Local
+            || call_result.is_none()
+            || first_parameter != 0
+        {
+            return None;
+        }
+        let callable = captured_callable?;
+        let plan = activations.packed_read(site.callee, callee)?;
+        Some(super::packed_splice::Hit::prepare(
+            callee, plan, callable, &call_args, &bindings,
+        )?)
+    } else {
+        None
+    };
     if first_parameter != 0 {
         // The environment is a view the function object owns, and the inlined
         // body may outlive that object's last use in the caller. An owned
@@ -100,23 +128,42 @@ pub(super) fn splice_call_site(
         call_result.is_none_or(|result| activations.checked_result_is_success_only(result));
     let needs_callable_owner =
         captured_callable.is_some_and(|value| !activations.caller_keeps_alive(site, value));
-    let callee = activations.prepare(site.callee, callee, &bindings)?;
+    let callee = if let Some(hit) = &hit {
+        &hit.body
+    } else {
+        activations.prepare(site.callee, callee, &bindings)?
+    };
 
     // A value call requires one result from a reachable ordinary return.
     // An unwind requires a caller observer that can run without a result.
     let reachable = std::cell::OnceCell::new();
-    let check = callee
-        .blocks
-        .values()
-        .any(|block| matches!(block.terminator, Terminator::Unwind))
-        .then(|| {
-            checked_unwind_observer(
-                caller,
-                caller.blocks[&block_id].ops.get(op_index + 1),
-                success_only,
-            )
+    let call_observer = (observable
+        || callee
+            .blocks
+            .values()
+            .any(|block| matches!(block.terminator, Terminator::Unwind)))
+    .then(|| {
+        checked_unwind_observer(
+            caller,
+            caller.blocks[&block_id].ops.get(op_index + 1),
+            success_only,
+        )
+    })
+    .flatten();
+    // A depth refusal precedes binding the arguments and entering the virtual
+    // frame. The original caller's Origin must capture it.
+    if observable
+        && call_observer.as_ref().is_none_or(|check| {
+            check.exception_edge_kind() != Some(ExceptionEdgeKind::Origin)
+                || check.has_checked_invocation_binding()
         })
-        .flatten();
+    {
+        return None;
+    }
+    let mut check = call_observer.clone();
+    if observable && let Some(check) = &mut check {
+        check.set_exception_edge_kind(ExceptionEdgeKind::Unwind);
+    }
     for block in callee.blocks.values() {
         let incompatible = match &block.terminator {
             Terminator::Return { values } => call_result.is_some() && values.is_empty(),
@@ -167,7 +214,7 @@ pub(super) fn splice_call_site(
         binding_ops.push(load);
         call_args.insert(0, view);
     }
-    let parameter_values: Vec<ValueId> = call_args
+    let mut parameter_values: Vec<ValueId> = call_args
         .iter()
         .zip(&bindings)
         .zip(&callee_entry.args)
@@ -203,6 +250,20 @@ pub(super) fn splice_call_site(
             }
         })
         .collect();
+    let guard = hit.as_ref().map(|hit| {
+        let entered = caller.fresh_block();
+        let miss = caller.fresh_block();
+        let (first, carry) = hit.guard(caller, entered, miss, call_span);
+        parameter_values.extend(carry);
+        (first, entered, miss)
+    });
+    if observable {
+        parameter_values.push(
+            held_callable
+                .or(captured_callable)
+                .expect("a prepared observable body requires its captured function"),
+        );
+    }
 
     // Clone the prepared body into the caller (params -> bindings).
     let cloned = clone_function_body_with_fresh_ids(callee, caller, &parameter_values);
@@ -222,16 +283,13 @@ pub(super) fn splice_call_site(
     // Ops after the call become the continuation block's ops.
     let cont_ops = all_ops.split_off(op_index + 1);
     // Remove the `Call` op itself (now the last element of `all_ops`).
-    let removed_call_opcode = all_ops.pop().map(|o| o.opcode);
+    let removed_call = all_ops.pop().expect("an accepted splice has a call");
     assert_eq!(
-        removed_call_opcode,
-        Some(OpCode::Call),
+        removed_call.opcode,
+        OpCode::Call,
         "splice: expected to remove the Call op at {block_id:?}#{op_index}"
     );
     let mut pre_ops = all_ops;
-    // The parameter bindings take the call's place.
-    pre_ops.extend(binding_ops);
-
     // The continuation block takes a single argument = the original call result
     // value id (when the call produced a value). A void call -> no-arg cont.
     let cont_block_id = caller.fresh_block();
@@ -260,6 +318,11 @@ pub(super) fn splice_call_site(
             .get_mut(&cloned_bid)
             .expect("cloned activation exit");
 
+        if observable {
+            let mut release = TirOp::new(OpCode::RecursionRelease, vec![], vec![]);
+            release.source_span = call_span;
+            block.ops.push(release);
+        }
         if let Some(held) = held_callable {
             let mut release = TirOp::new(OpCode::DelBoundary, vec![held], vec![]);
             release.source_span = call_span;
@@ -283,17 +346,42 @@ pub(super) fn splice_call_site(
         }
     }
 
-    // Insert B_pre (original id, ops 0..call, branch into cloned entry).
+    let enter_body = Terminator::Branch {
+        target: cloned.entry,
+        args: Vec::new(),
+    };
+    let enter = if let Some((first, entered, _)) = guard {
+        // The admitted path owns one depth charge through the callee's
+        // normal or exceptional clear, just like a physical guarded call.
+        let mut count = TirOp::new(OpCode::RecursionCount, vec![], vec![]);
+        count.source_span = call_span;
+        binding_ops.insert(0, count);
+        caller.blocks.insert(
+            entered,
+            TirBlock {
+                id: entered,
+                args: vec![],
+                ops: binding_ops,
+                terminator: enter_body,
+            },
+        );
+        // FrameEntryAdmits includes recursion depth, code ownership and arena room.
+        Terminator::Branch {
+            target: first,
+            args: vec![],
+        }
+    } else {
+        pre_ops.extend(binding_ops);
+        enter_body
+    };
+    // The original block id remains the entry to this invocation.
     caller.blocks.insert(
         block_id,
         TirBlock {
             id: block_id,
             args: pre_args,
             ops: pre_ops,
-            terminator: Terminator::Branch {
-                target: cloned.entry,
-                args: Vec::new(),
-            },
+            terminator: enter,
         },
     );
 
@@ -310,7 +398,10 @@ pub(super) fn splice_call_site(
     );
 
     caller.move_loop_terminator(block_id, cont_block_id);
-    Some(cont_block_id)
+    if let Some((_, _, miss)) = guard {
+        super::packed_splice::ordinary_call(caller, miss, cont_block_id, removed_call);
+    }
+    Some((cont_block_id, guard.is_some()))
 }
 
 /// The type the callee returns, derived from its `Return` terminators'

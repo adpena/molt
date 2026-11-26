@@ -457,7 +457,10 @@ pub(crate) mod tests {
                 "the model has no objects for {body:?}"
             );
             Value::Word(match body {
-                SiteBody::FieldGet { .. } | SiteBody::FieldSet { .. } => NONE_WORD,
+                SiteBody::FieldGet { .. }
+                | SiteBody::FieldProbe { .. }
+                | SiteBody::FieldSet { .. } => NONE_WORD,
+                SiteBody::FrameEntryProbe { .. } => 0,
                 SiteBody::ItemGet { cold, .. } => self
                     .run_runtime(cold, &words[..2])
                     .expect("an item read's miss answers a word"),

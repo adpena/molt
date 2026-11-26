@@ -352,6 +352,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // The final lowering stage runs only for targets whose backend consumes
         // final TIR (FinalLowering::FinalTir), so its ops never reach SimpleIR.
         OpCode::TryBuffer2dLoadI64
+        | OpCode::ProbeInlineField
+        | OpCode::FrameEntryAdmits
+        | OpCode::LiteralCellReady
         | OpCode::IsInlineInt
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord

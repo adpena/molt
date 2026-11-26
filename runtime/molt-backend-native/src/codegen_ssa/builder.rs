@@ -106,6 +106,14 @@ pub(crate) enum SiteBody {
     /// `object.<field at offset>`, owned (`generate_field_slot_get`); words
     /// `[object]`; the miss is `molt_object_field_get_ptr`.
     FieldGet { offset: i32 },
+    /// A borrowed inline field or None, under the same layout contract as
+    /// `FieldGet`. Words `[object]`. The miss has no side effects.
+    FieldProbe { offset: i32 },
+    /// Read-only frame admission. Words `[thread, function, code_slot]`.
+    FrameEntryProbe {
+        homes: u32,
+        prefix: molt_codegen_abi::frame_record::VirtualFramePrefix,
+    },
     /// `object.<field at offset> = value`, answering None
     /// (`generate_field_slot_set`); words `[object, value]`; the miss is
     /// `molt_object_field_set_ptr`.

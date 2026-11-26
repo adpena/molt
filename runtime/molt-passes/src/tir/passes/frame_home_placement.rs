@@ -108,7 +108,7 @@ pub(crate) fn is_home_store(op: &TirOp) -> bool {
 /// Whether the store publishes a boxed view of a full-range raw int: the box
 /// may be a new heap int, allocated into the home. Both lowerers choose the
 /// boxed view from the same representation facts.
-fn boxes_heap_int(op: &TirOp, repr: &Representation) -> bool {
+pub(super) fn boxes_heap_int(op: &TirOp, repr: &Representation) -> bool {
     op.operands
         .first()
         .is_some_and(|&value| repr_of(repr, value).is_raw_i64_full_deopt())

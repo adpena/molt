@@ -18,7 +18,7 @@ use crate::tir::dominators::{
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::Replacements;
-use crate::tir::passes::spliced_frame::{Level, bracket_ops, finish_op};
+use crate::tir::passes::spliced_frame::{finish_op, publish_if_observed};
 use crate::tir::ssa_update::{self, Variable};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -194,44 +194,6 @@ pub(super) fn wire_fused_loop(
     }
     retire_identity(caller, candidate, clone.entry, identity);
     true
-}
-
-/// Refresh escaped frames at a suspension or return. The common unobserved
-/// path proceeds directly to the continuation.
-fn publish_if_observed(caller: &mut TirFunction, source: BlockId, frame: &Level) {
-    let Terminator::Branch { target, args } = caller.blocks[&source].terminator.clone() else {
-        unreachable!("a frame publication continues along one edge");
-    };
-    let snapshot = caller.fresh_block();
-    let (mut ops, unlink) = bracket_ops(caller, std::slice::from_ref(frame), None);
-    ops.extend(unlink);
-    caller.blocks.insert(
-        snapshot,
-        TirBlock {
-            id: snapshot,
-            args: Vec::new(),
-            ops,
-            terminator: Terminator::Branch {
-                target,
-                args: args.clone(),
-            },
-        },
-    );
-    let observed = caller.fresh_value();
-    caller.value_types.insert(observed, TirType::Bool);
-    let block = caller.blocks.get_mut(&source).unwrap();
-    block.ops.push(TirOp::new(
-        OpCode::SplicedFrameObserved,
-        vec![frame.identity],
-        vec![observed],
-    ));
-    block.terminator = Terminator::CondBranch {
-        cond: observed,
-        then_block: snapshot,
-        then_args: Vec::new(),
-        else_block: target,
-        else_args: args,
-    };
 }
 
 /// The identity word owns the observed frame throughout the fused activation,

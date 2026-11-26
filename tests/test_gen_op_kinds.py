@@ -802,6 +802,9 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         "AsyncWorkPending",
         # Reads one exact packed buffer and pending exception state.
         "TryBuffer2dLoadI64",
+        "ProbeInlineField",
+        "FrameEntryAdmits",
+        "LiteralCellReady",
         # Stores a location id in the frame record, not in a heap object.
         "FrameSetLocation",
         # Reserve an activation-local identity word and sample its current value.
@@ -1458,6 +1461,9 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
             "CheckedAdd": ["operand", "bool"],
             "CheckedMul": ["operand", "bool"],
             "TryBuffer2dLoadI64": ["i64", "bool"],
+            "ProbeInlineField": ["dynbox"],
+            "FrameEntryAdmits": ["bool"],
+            "LiteralCellReady": ["bool"],
             # A native callable's address is a machine word.
             "NativeSymbolAddr": ["i64"],
             "IterNextUnboxed": ["operand", "bool"],

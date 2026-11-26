@@ -667,6 +667,20 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     },
                 )
             }
+            (SiteBody::FieldProbe { offset }, &[object, _]) => {
+                emit_field_slot_probe(self.words.builder, sites, object, offset)
+            }
+            (SiteBody::FrameEntryProbe { homes, prefix }, &[thread, function, code, _]) => {
+                emit_frame_entry_probe(
+                    self.words.builder,
+                    sites,
+                    thread,
+                    function,
+                    code,
+                    homes,
+                    prefix,
+                )
+            }
             (SiteBody::BuiltinFieldGet { field }, &[object, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::ExceptionFieldGet);
                 emit_builtin_field_get(

@@ -686,10 +686,13 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::FrameSetLocation
         | OpCode::SplicedFrameSlot
         | OpCode::SplicedFrameObserved
+        | OpCode::LiteralCellReady
         | OpCode::FloatSqrt => (IntegerOperandObservation::Never, false),
         // The packed probe compares its owner's tag and reads exact integer
         // coordinates, without invoking Python or publishing any operand.
-        OpCode::TryBuffer2dLoadI64 => (IntegerOperandObservation::Never, false),
+        OpCode::TryBuffer2dLoadI64 | OpCode::ProbeInlineField | OpCode::FrameEntryAdmits => {
+            (IntegerOperandObservation::Never, false)
+        }
         OpCode::CheckedAdd | OpCode::CheckedMul => (binary, true),
         OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
             (binary, false)

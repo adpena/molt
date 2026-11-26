@@ -136,6 +136,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     pub(crate) fn object_op(&mut self, b: &mut B, op: &TirOp) {
         match op.opcode {
             OpCode::LoadAttr => self.load_attr(b, op),
+            OpCode::ProbeInlineField => self.probe_inline_field(b, op),
             OpCode::StoreAttr => self.store_attr(b, op),
             OpCode::DelAttr => self.del_attr(b, op),
             OpCode::Index => self.index(b, op),
@@ -237,6 +238,31 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             .operands()
             .call(b, CallTarget::Site(site), &args, false, label, label);
         self.bind_owned(b, op, b.word_value(word));
+    }
+
+    fn probe_inline_field(&mut self, b: &mut B, op: &TirOp) {
+        let offset = match op.attrs.get("value") {
+            Some(AttrValue::Int(offset)) => i32::try_from(*offset)
+                .ok()
+                .filter(|offset| *offset >= 0 && offset % 8 == 0),
+            _ => None,
+        };
+        let operands = self.operands();
+        let receiver = op.operands[0];
+        let word = if let Some(offset) = offset
+            && operands.held(receiver) == HeldCarrier::Boxed
+        {
+            let value = operands.resolve(b, receiver);
+            let unused_admission = b.constant(0);
+            b.site(
+                SiteBody::FieldProbe { offset },
+                &[value, b.word_value(unused_admission)],
+            )
+        } else {
+            let none = b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE);
+            b.word_value(none)
+        };
+        self.bind(op.results[0], word, HeldCarrier::Boxed);
     }
 
     fn load_attr(&mut self, b: &mut B, op: &TirOp) {

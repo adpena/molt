@@ -3,7 +3,9 @@
 //! compile inline, over the frame builder's control and word primitives.
 
 use super::*;
-use molt_codegen_abi::field_slot::{generate_field_slot_get, generate_field_slot_set};
+use molt_codegen_abi::field_slot::{
+    generate_field_slot_get, generate_field_slot_probe, generate_field_slot_set,
+};
 use molt_codegen_abi::list_item::ListLocking;
 
 fn field_slot_builder<'a, 'b>(
@@ -32,6 +34,20 @@ pub(crate) fn emit_field_slot_get(
     generate_field_slot_get(&mut b, object, offset, ListLocking::BUILD, |b, pointer| {
         cold(&mut *b.words.builder, pointer)
     })
+}
+
+pub(crate) fn emit_field_slot_probe(
+    builder: &mut FunctionBuilder<'_>,
+    sites: NativeFrameSites,
+    object: Value,
+    offset: i32,
+) -> Value {
+    generate_field_slot_probe(
+        &mut field_slot_builder(builder, sites),
+        object,
+        offset,
+        ListLocking::BUILD,
+    )
 }
 
 /// `object.<field at offset> = value`, whose miss calls

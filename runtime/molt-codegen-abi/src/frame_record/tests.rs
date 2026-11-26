@@ -14,6 +14,7 @@ const CHUNK: u64 = 0x2_0000;
 const CHUNK_BYTES: u64 = 0x1000;
 const FUNCTION: u64 = 0x3_0000;
 const CODE: u64 = 0x4_0000;
+const RECURSION_LIMIT: u64 = 0x5_0000;
 const SLOT: u64 = 7;
 const SLOW_BASE: u64 = 0x9_0000;
 
@@ -212,6 +213,79 @@ impl FrameBuilder for Machine {
             (0..count).for_each(|index| body(self, index));
         }
     }
+}
+
+#[test]
+fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
+    let mut machine = Machine::new();
+    machine.write(THREAD, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET, 0);
+    machine.write(THREAD, crate::THREAD_RECORD_RECURSION_DEPTH_OFFSET, 8);
+    machine.write(
+        THREAD,
+        crate::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
+        RECURSION_LIMIT,
+    );
+    machine.write(RECURSION_LIMIT, 0, 10);
+    let code_slot = machine.read(CODE, CODE_FRAME_SLOT_OFFSET) - 1;
+    let function = boxed(FUNCTION);
+    let before_top = machine.read(THREAD, THREAD_RECORD_ARENA_TOP_OFFSET);
+    let before_frame = machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET);
+    let before_handoff = machine.read(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET);
+    let root = VirtualFramePrefix::default();
+    let parent = root
+        .enter(FrameShape {
+            homes: 3,
+            descending: true,
+        })
+        .unwrap();
+    let nested = parent
+        .enter(FrameShape {
+            homes: 8,
+            descending: true,
+        })
+        .unwrap();
+    let with_space = VirtualFramePrefix {
+        arena_bytes: 0x1000,
+        ..parent
+    };
+    for (slot, homes, prefix, expected) in [
+        (code_slot, 2, root, 1),
+        (code_slot, 2, parent, 1),
+        (code_slot, 2, nested, 0),
+        (code_slot, 2, with_space, 0),
+        (code_slot + 1, 2, parent, 0),
+        (code_slot, u32::MAX, root, 0),
+    ] {
+        assert_eq!(
+            generate_frame_entry_admits(&mut machine, THREAD, function, slot, homes, prefix),
+            expected
+        );
+    }
+    machine.write(THREAD, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET, 1);
+    assert_eq!(
+        generate_frame_entry_admits(&mut machine, THREAD, function, code_slot, 2, root),
+        0
+    );
+    assert_eq!(
+        machine.read(THREAD, THREAD_RECORD_ARENA_TOP_OFFSET),
+        before_top
+    );
+    assert_eq!(
+        machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET),
+        before_frame
+    );
+    assert_eq!(
+        machine.read(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET),
+        before_handoff
+    );
+    assert_eq!(
+        machine.read(THREAD, crate::THREAD_RECORD_RECURSION_DEPTH_OFFSET),
+        8
+    );
+    assert!(
+        machine.events.is_empty(),
+        "the probe neither retains nor calls the runtime"
+    );
 }
 
 #[test]

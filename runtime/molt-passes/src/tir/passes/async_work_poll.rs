@@ -29,6 +29,69 @@ use super::exception_observation::{
     post_operation_observation,
 };
 
+/// Split one authored poll into the pending-work service arm and, when
+/// needed, a work-free exception observation. The producer stays before the
+/// pending test, so work arriving during the producer is serviced at return.
+pub(super) fn split_pending_work(
+    func: &mut TirFunction,
+    id: BlockId,
+    at: usize,
+    service_ops: Vec<TirOp>,
+    fast_ops: Vec<TirOp>,
+) {
+    use crate::tir::blocks::TirBlock;
+    use crate::tir::types::TirType;
+    let pending = func.fresh_value();
+    func.value_types.insert(pending, TirType::Bool);
+    let service = func.fresh_block();
+    let rest = func.fresh_block();
+    let fast = if fast_ops.is_empty() {
+        rest
+    } else {
+        func.fresh_block()
+    };
+    let source = func.blocks.get_mut(&id).expect("poll source");
+    let tail = source.ops.split_off(at + 1);
+    let original = source.ops.pop().expect("authored poll");
+    debug_assert!(original.is_async_work_poll());
+    let mut test = TirOp::new(OpCode::AsyncWorkPending, vec![], vec![pending]);
+    test.source_span = original.source_span;
+    source.ops.push(test);
+    let term = std::mem::replace(
+        &mut source.terminator,
+        Terminator::CondBranch {
+            cond: pending,
+            then_block: service,
+            then_args: vec![],
+            else_block: fast,
+            else_args: vec![],
+        },
+    );
+    let arm = |id, ops| TirBlock {
+        id,
+        args: vec![],
+        ops,
+        terminator: Terminator::Branch {
+            target: rest,
+            args: vec![],
+        },
+    };
+    func.blocks.insert(service, arm(service, service_ops));
+    if fast != rest {
+        func.blocks.insert(fast, arm(fast, fast_ops));
+    }
+    func.blocks.insert(
+        rest,
+        TirBlock {
+            id: rest,
+            args: vec![],
+            ops: tail,
+            terminator: term,
+        },
+    );
+    func.move_loop_terminator(id, rest);
+}
+
 pub(crate) fn is_call_return_poll(op: &TirOp) -> bool {
     if op.exception_source_kind() == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
     {
@@ -275,6 +338,7 @@ pub(crate) fn call_return_poll(
         {
             Some((check_block, check_index))
         }
+        PostOperationObservation::PolledOrigin { service, .. } => Some(service),
         _ => None,
     }
 }
@@ -395,6 +459,7 @@ fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacement
 
 fn observation_is_marked(func: &TirFunction, observation: PostOperationObservation) -> bool {
     let (block, index) = match observation {
+        PostOperationObservation::PolledOrigin { service, .. } => service,
         PostOperationObservation::Check(block, index)
         | PostOperationObservation::DeferredFinally(block, index) => (block, index),
     };
@@ -436,8 +501,11 @@ fn services_pending_before_join(
     let cold = &func.blocks[&service];
     predecessors[&service].as_slice() == [gate]
         && matches!(cold.terminator, Terminator::Branch {target, ..} if target == join)
-        && super::spliced_frame::poll_service(&cold.ops)
-            .is_some_and(|poll| check_label(poll) != func.label_id_map.get(&join.0).copied())
+        && super::spliced_frame::poll_service(
+            &cold.ops,
+            crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind,
+        )
+        .is_some_and(|(_, poll)| check_label(poll) != func.label_id_map.get(&join.0).copied())
 }
 
 /// A fused generator's fast and cold arms can share a chain of empty blocks
@@ -600,7 +668,9 @@ pub(crate) fn materialize_before_ssa(
 
     for (block, index, target) in &plan.call_sites {
         match post_operation_observation(preview, *block, *index, &plan.predecessors, &plan.raise) {
-            Some(PostOperationObservation::Check(..)) => {}
+            Some(
+                PostOperationObservation::Check(..) | PostOperationObservation::PolledOrigin { .. },
+            ) => {}
             Some(PostOperationObservation::DeferredFinally(observer_block, observer_index)) => {
                 let prepared_index = preview.blocks[&observer_block].ops[observer_index]
                     .source_op_index()
@@ -715,6 +785,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     for (block_id, index, _) in plan.call_sites {
         let observation =
             post_operation_observation(func, block_id, index, &plan.predecessors, &plan.raise);
+        if matches!(
+            observation,
+            Some(PostOperationObservation::PolledOrigin { .. })
+        ) {
+            continue;
+        }
         if let Some(PostOperationObservation::Check(existing_block, existing_index)) = observation {
             let block = func.blocks.get_mut(&existing_block).unwrap();
             stats.attrs_changed += usize::from(mark_poll(&mut block.ops[existing_index]));

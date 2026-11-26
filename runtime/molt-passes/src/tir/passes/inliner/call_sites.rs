@@ -1,6 +1,7 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::escape_analysis::{EscapeState, ParameterCapture};
+use super::super::value_identity::{build_copy_map, resolve_copy};
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::call_graph::CallGraph;
 use crate::tir::call_targets::{gpu_runtime_result_type_for_op, static_call};
@@ -73,13 +74,47 @@ impl InlineSiteUses {
             {
                 uses.fresh_objects.insert(allocation.result);
             }
-            if opcode_is_inliner_numeric_raw_lane_consumer_table(op.opcode) {
+            if opcode_is_inliner_numeric_raw_lane_consumer_table(op.opcode)
+                || super::super::checked_int_loops::is_checked(op.opcode)
+                || op.opcode == OpCode::UnboxInlineInt
+            {
                 for &operand in &op.operands {
                     uses.numeric_consumers.entry(operand).or_insert(op.opcode);
                 }
             }
         }
+        uses.follow_numeric_operands(caller);
         uses
+    }
+
+    /// Price an opportunity at its physical producer, including a result
+    /// projected on success and values forwarded into a loop through phis.
+    /// These are profitability witnesses and never establish carrier safety.
+    fn follow_numeric_operands(&mut self, caller: &TirFunction) {
+        if self.numeric_consumers.is_empty() {
+            return;
+        }
+        let copies = build_copy_map(caller);
+        let incomings: HashMap<_, _> = crate::representation_facts::block_arg_incomings_for(caller)
+            .into_iter()
+            .filter_map(|((block, position), sources)| {
+                Some((caller.blocks[&block].args.get(position)?.id, sources))
+            })
+            .collect();
+        let mut pending: Vec<_> = self.numeric_consumers.keys().copied().collect();
+        while let Some(value) = pending.pop() {
+            let consumer = self.numeric_consumers[&value];
+            let root = resolve_copy(&copies, value);
+            let incoming = incomings.get(&value).map(Vec::as_slice).unwrap_or_default();
+            for source in std::iter::once(root).chain(incoming.iter().copied()) {
+                if let std::collections::hash_map::Entry::Vacant(entry) =
+                    self.numeric_consumers.entry(source)
+                {
+                    entry.insert(consumer);
+                    pending.push(source);
+                }
+            }
+        }
     }
 
     pub(super) fn receives_split_field(&self, op: &TirOp) -> bool {

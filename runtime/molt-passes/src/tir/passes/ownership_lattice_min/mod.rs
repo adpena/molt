@@ -413,7 +413,10 @@ fn non_owning_copy_result_roots(func: &TirFunction, aliases: &AliasUnionFind) ->
 /// An operation whose result is a view of an object another owner holds
 /// (`OwnershipRootFacts::is_held_view_root`).
 fn result_is_held_view(op: &TirOp) -> bool {
-    matches!(op.opcode, OpCode::StaticCellLoad | OpCode::FunctionClosure)
+    matches!(
+        op.opcode,
+        OpCode::StaticCellLoad | OpCode::FunctionClosure | OpCode::ProbeInlineField
+    )
 }
 
 /// The held-view results that are their own alias roots.
@@ -570,7 +573,7 @@ impl OwnershipRootFacts {
 
     /// A view of an object another owner holds: nothing releases one, an
     /// operation that takes one receives a retained reference, and a `Return`
-    /// of one retains it. Two producers:
+    /// of one retains it. Producers:
     /// - an init-dominated static cell read (`StaticCellLoad`, HF-846), whose
     ///   cell is bound before the read and written by no code until module
     ///   retirement, so the view is valid for the rest of the program;
@@ -579,7 +582,10 @@ impl OwnershipRootFacts {
     ///   the direct call that also borrows that function, so the function
     ///   outlives every use of the view. An inlined closure instead retains
     ///   its function until every activation exit and captures an owned alias
-    ///   of the environment before that function can be released.
+    ///   of the environment before that function can be released;
+    /// - an inline field probe (`ProbeInlineField`). Its producer must hold
+    ///   the receiver until the last borrowed use and acquire an owner for
+    ///   the result before arbitrary writes or reentry.
     pub(crate) fn is_held_view_root(&self, root: ValueId) -> bool {
         self.held_view_roots.contains(&root)
     }

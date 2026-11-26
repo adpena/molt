@@ -51,6 +51,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
     ) {
         match op.opcode {
             OpCode::ExceptionPending => self.exception_pending_op(b, op),
+            OpCode::FrameEntryAdmits => self.frame_entry_admits(b, op),
             OpCode::SplicedFrameSlot => {
                 let slot = b.entry_slot("spliced_frame_identity");
                 let zero = b.constant(0);
@@ -174,7 +175,8 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             | OpCode::ConstNone
             | OpCode::ConstStr
             | OpCode::ConstBigInt
-            | OpCode::ConstBytes => constants::lower(self, b, op),
+            | OpCode::ConstBytes
+            | OpCode::LiteralCellReady => constants::lower(self, b, op),
             // Arithmetic, comparison, bitwise, unary, identity, membership,
             // selection, truth and the late stage's word primitives.
             OpCode::Add
@@ -254,6 +256,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                 self.refcount_op(b, op, RefcountOperation::Release)
             }
             OpCode::LoadAttr
+            | OpCode::ProbeInlineField
             | OpCode::StoreAttr
             | OpCode::DelAttr
             | OpCode::Index

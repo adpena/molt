@@ -1265,9 +1265,28 @@ pub fn lower_static_call_arguments(
     true
 }
 
+/// The same depth admission for a physical entry or an inlined activation.
+pub(super) fn recursion_admission(
+    func: &mut TirFunction,
+    span: Option<(u32, u32)>,
+    enter: BlockId,
+    refuse: BlockId,
+) -> (Vec<TirOp>, Terminator) {
+    let admitted = fresh_typed(func, TirType::Bool);
+    (
+        vec![new_op(
+            OpCode::RecursionAdmits,
+            vec![],
+            vec![admitted],
+            span,
+        )],
+        cond_branch(admitted, enter, refuse),
+    )
+}
+
 /// Follow the call's exceptional observer without publishing a successful
 /// result. The refused call never adopts its arguments.
-fn recursion_refusal(
+pub(super) fn recursion_refusal(
     func: &mut TirFunction,
     op: &TirOp,
     check: Option<&TirOp>,
@@ -1344,20 +1363,10 @@ pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::Func
             terminator,
         } = split(func, block, index);
         let span = op.source_span;
-        let admitted = fresh_typed(func, TirType::Bool);
         let enter = func.fresh_block();
         let refuse = func.fresh_block();
-        end_block(
-            func,
-            block,
-            vec![new_op(
-                OpCode::RecursionAdmits,
-                vec![],
-                vec![admitted],
-                span,
-            )],
-            cond_branch(admitted, enter, refuse),
-        );
+        let (admission, guard_branch) = recursion_admission(func, span, enter, refuse);
+        end_block(func, block, admission, guard_branch);
 
         let common_word = op
             .results
@@ -1945,20 +1954,9 @@ fn expand_guarded_call(
     direct_ops.push(call);
     if let Some((enter, refuse)) = charge {
         direct_ops.push(new_op(OpCode::RecursionRelease, vec![], vec![], span));
-        let admitted = fresh_typed(func, TirType::Bool);
-        func.blocks.insert(
-            enter,
-            new_block(
-                enter,
-                vec![new_op(
-                    OpCode::RecursionAdmits,
-                    vec![],
-                    vec![admitted],
-                    span,
-                )],
-                cond_branch(admitted, direct, refuse),
-            ),
-        );
+        let (admission, guard_branch) = recursion_admission(func, span, direct, refuse);
+        func.blocks
+            .insert(enter, new_block(enter, admission, guard_branch));
         let mut failure = recursion_refusal(func, &op, observer, refuse);
         if observer.is_none() {
             // A handler that reads the result directly still needs the physical

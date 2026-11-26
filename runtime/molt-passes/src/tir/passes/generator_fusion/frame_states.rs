@@ -9,11 +9,10 @@
 //! poll before the slot plan, so the plan sees the service block as ordinary
 //! control flow.
 
-use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 use crate::tir::ops::{OpCode, TirOp};
-use crate::tir::types::TirType;
 
 use super::clone::is_bookkeeping_op;
 
@@ -63,69 +62,16 @@ pub(super) fn prepare_poll(poll: &TirFunction, split_polls: bool) -> TirFunction
     blocks.sort_unstable();
     for bid in blocks {
         let polls = kept_polls(&poll.blocks[&bid]);
-        if polls.is_empty() {
-            continue;
-        }
-        let TirBlock {
-            id,
-            args,
-            ops,
-            terminator,
-        } = poll.blocks.remove(&bid).expect("listed block");
-        let mut current = id;
-        let mut current_args = args;
-        let mut current_ops = Vec::with_capacity(ops.len() + 1);
-        for (index, op) in ops.into_iter().enumerate() {
-            if !polls.contains(&index) {
-                current_ops.push(op);
-                continue;
-            }
-            let pending = poll.fresh_value();
-            poll.value_types.insert(pending, TirType::Bool);
-            let mut test = TirOp::new(OpCode::AsyncWorkPending, vec![], vec![pending]);
-            test.source_span = op.source_span;
-            current_ops.push(test);
-            let service = poll.fresh_block();
-            let rest = poll.fresh_block();
-            poll.blocks.insert(
-                current,
-                TirBlock {
-                    id: current,
-                    args: std::mem::take(&mut current_args),
-                    ops: std::mem::take(&mut current_ops),
-                    terminator: Terminator::CondBranch {
-                        cond: pending,
-                        then_block: service,
-                        then_args: vec![],
-                        else_block: rest,
-                        else_args: vec![],
-                    },
-                },
+        for index in polls.into_iter().rev() {
+            let check = poll.blocks[&bid].ops[index].clone();
+            super::super::async_work_poll::split_pending_work(
+                &mut poll,
+                bid,
+                index,
+                vec![check],
+                vec![],
             );
-            poll.blocks.insert(
-                service,
-                TirBlock {
-                    id: service,
-                    args: vec![],
-                    ops: vec![op],
-                    terminator: Terminator::Branch {
-                        target: rest,
-                        args: vec![],
-                    },
-                },
-            );
-            current = rest;
         }
-        poll.blocks.insert(
-            current,
-            TirBlock {
-                id: current,
-                args: current_args,
-                ops: current_ops,
-                terminator,
-            },
-        );
-        poll.move_loop_terminator(bid, current);
     }
     poll
 }

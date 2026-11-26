@@ -421,6 +421,57 @@ fn load_slow<B: super::CodegenBuilder>(b: &mut B, home: B::Word) -> B::Word {
 }
 
 impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
+    pub(crate) fn frame_entry_admits(&mut self, b: &mut B, op: &TirOp) {
+        use super::builder::SiteBody;
+        use super::value_table::HeldCarrier;
+        use molt_codegen_abi::frame_record::VirtualFramePrefix;
+
+        let shape = match op.attrs.get("value") {
+            Some(AttrValue::Int(value)) => FrameEntryKind::from_entry_value(*value)
+                .shape()
+                .filter(|shape| shape.entry_value() == *value),
+            _ => None,
+        };
+        let prefix_field = |key| match op.attrs.get(key) {
+            None => Some(0),
+            Some(AttrValue::Int(value)) => u32::try_from(*value).ok(),
+            _ => None,
+        };
+        let prefix = prefix_field("frame_prefix_bytes")
+            .zip(prefix_field("frame_prefix_depth"))
+            .map(|(arena_bytes, recursion_depth)| VirtualFramePrefix {
+                arena_bytes,
+                recursion_depth,
+            });
+        let operands = self.operands();
+        let function = op.operands[0];
+        let admitted = if let (Some(shape), Some(AttrValue::Str(owner)), Some(prefix)) =
+            (shape, op.attrs.get("s_value"), prefix)
+            && operands.held(function) == HeldCarrier::Boxed
+        {
+            let thread = b.thread_record_word();
+            let callable = operands.resolve(b, function);
+            let code = b.program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner);
+            let unused_admission = b.constant(0);
+            let result = b.site(
+                SiteBody::FrameEntryProbe {
+                    homes: shape.homes,
+                    prefix,
+                },
+                &[
+                    b.word_value(thread),
+                    callable,
+                    b.word_value(code),
+                    b.word_value(unused_admission),
+                ],
+            );
+            b.low_bit(b.expect_word(result))
+        } else {
+            b.bit_constant(false)
+        };
+        self.bind(op.results[0], b.bit_value(admitted), HeldCarrier::RawBool);
+    }
+
     pub(crate) fn frame_op(
         &mut self,
         b: &mut B,

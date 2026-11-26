@@ -37,8 +37,9 @@ use crate::tir::values::ValueId;
 /// How a level's binding keys name its bindings (the runtime's key spaces).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KeySpace {
-    /// A payload offset of a generator or coroutine binding. The runtime's
-    /// key space 0 names a synchronous frame's code slot.
+    /// A synchronous home is indexed by its code object's localsplus slot.
+    CodeSlot = 0,
+    /// A payload offset of a generator or coroutine binding.
     StatefulOffset = 1,
 }
 
@@ -64,7 +65,7 @@ pub(crate) struct Level {
     pub(crate) bindings: Vec<Binding>,
 }
 
-fn const_int(func: &mut TirFunction, value: i64, ops: &mut Vec<TirOp>) -> ValueId {
+pub(crate) fn const_int(func: &mut TirFunction, value: i64, ops: &mut Vec<TirOp>) -> ValueId {
     let result = func.fresh_value();
     func.value_types.insert(result, TirType::I64);
     let mut op = TirOp::new(OpCode::ConstInt, vec![], vec![result]);
@@ -119,28 +120,38 @@ fn link_ops(
 ) -> (Vec<TirOp>, ValueId) {
     let mut ops = Vec::new();
     for level in levels {
-        let location = const_int(func, level.location.unwrap_or(-1), &mut ops);
-        let key_space = const_int(func, level.key_space as i64, &mut ops);
-        runtime_call(
-            func,
-            RuntimeFn::SplicedFrameLink,
-            vec![level.function, location, level.identity],
-            span,
-            &mut ops,
-        );
-        for binding in &level.bindings {
-            let key = const_int(func, binding.key, &mut ops);
-            runtime_call(
-                func,
-                RuntimeFn::SplicedFrameBind,
-                vec![key_space, key, binding.value, binding.present],
-                span,
-                &mut ops,
-            );
-        }
+        link_level(func, level, span, &mut ops);
     }
     let count = const_int(func, levels.len() as i64, &mut ops);
     (ops, count)
+}
+
+/// Prepend an enclosing level to an already authored sequence of links.
+pub(crate) fn link_level(
+    func: &mut TirFunction,
+    level: &Level,
+    span: Option<(u32, u32)>,
+    ops: &mut Vec<TirOp>,
+) {
+    let location = const_int(func, level.location.unwrap_or(-1), ops);
+    let key_space = const_int(func, level.key_space as i64, ops);
+    runtime_call(
+        func,
+        RuntimeFn::SplicedFrameLink,
+        vec![level.function, location, level.identity],
+        span,
+        ops,
+    );
+    for binding in &level.bindings {
+        let key = const_int(func, binding.key, ops);
+        runtime_call(
+            func,
+            RuntimeFn::SplicedFrameBind,
+            vec![key_space, key, binding.value, binding.present],
+            span,
+            ops,
+        );
+    }
 }
 
 /// Whether `op` is one of this facility's runtime calls.
@@ -344,30 +355,65 @@ fn is_link_op(op: &TirOp) -> bool {
 /// boundary. Splicing and checked-loop versioning can put the back edge on
 /// either side of this bracket; the check still runs at its original source
 /// and exceptional successor.
-fn poll_and_unlink(ops: &[TirOp]) -> bool {
-    matches!(ops, [poll, unlink, ..] if poll.opcode == OpCode::CheckException
+fn checked_poll_and_unlink(poll: &TirOp, unlink: &TirOp) -> bool {
+    poll.opcode == OpCode::CheckException
         && poll.is_async_work_poll()
         && matches!(poll.attrs.get("value"), Some(AttrValue::Int(_)))
-        && unlink.runtime == Some(RuntimeFn::SplicedFrameUnlink))
+        && unlink.runtime == Some(RuntimeFn::SplicedFrameUnlink)
+}
+
+fn poll_and_unlink(ops: &[TirOp]) -> bool {
+    matches!(ops, [poll, unlink, ..] if checked_poll_and_unlink(poll, unlink))
 }
 
 /// The complete cold service arm built by generator frame elision. Nothing
 /// else may run between the pending-work test and the delivery of that work.
-pub(super) fn poll_service(ops: &[TirOp]) -> Option<&TirOp> {
-    let [setup @ .., poll, _unlink] = ops else {
-        return None;
+pub(super) fn poll_service(
+    ops: &[TirOp],
+    kind: crate::tir::op_kinds_generated::ExceptionEdgeKind,
+) -> Option<(usize, &TirOp)> {
+    let (setup, poll, unlink, index) = match ops {
+        [alias, setup @ .., poll, release, unlink]
+            if kind == crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin
+                && alias.opcode == OpCode::Copy
+                && alias.origin == Some(molt_ir::OpKind::BindingAlias)
+                && alias.operands.len() == 1
+                && alias.results.len() == 1
+                && matches!(release.opcode, OpCode::DelBoundary | OpCode::DecRef)
+                && release.operands == alias.results
+                && release.results.is_empty() =>
+        {
+            (setup, poll, unlink, ops.len() - 3)
+        }
+        [setup @ .., poll, unlink] => (setup, poll, unlink, ops.len() - 2),
+        _ => return None,
     };
     let mut calls = setup.iter().filter(|op| op.opcode != OpCode::ConstInt);
     let link = calls.next()?;
     (link.runtime == Some(RuntimeFn::SplicedFrameLink)
-        && calls.all(|op| op.runtime == Some(RuntimeFn::SplicedFrameBind))
-        && poll.exception_edge_kind()
-            == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
-        && poll_and_unlink(&ops[setup.len()..]))
-    .then_some(poll)
+        && calls.all(|op| {
+            matches!(
+                op.runtime,
+                Some(RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameBind)
+            )
+        })
+        && poll.exception_edge_kind() == Some(kind)
+        && checked_poll_and_unlink(poll, unlink))
+    .then_some((index, poll))
 }
 
 pub(super) fn ends_with_poll_bracket(ops: &[TirOp]) -> bool {
+    if let Some(alias) = ops
+        .iter()
+        .rposition(|op| op.origin == Some(molt_ir::OpKind::BindingAlias))
+        && poll_service(
+            &ops[alias..],
+            crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin,
+        )
+        .is_some()
+    {
+        return true;
+    }
     let Some(check) = ops.len().checked_sub(2) else {
         return false;
     };
@@ -386,6 +432,14 @@ pub(super) fn starts_with_poll_bracket(ops: &[TirOp]) -> bool {
         [close, rest @ ..] if close.runtime == Some(RuntimeFn::SplicedFrameUnlink) => rest,
         _ => ops,
     };
+    if poll_service(
+        ops,
+        crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin,
+    )
+    .is_some()
+    {
+        return true;
+    }
     let aliases = ops
         .iter()
         .take_while(|op| {
@@ -455,7 +509,13 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
                 break;
             };
             let covered = &ops[end..close];
-            let bracketed = !covered.iter().any(is_spliced_frame_call);
+            // A check inside a live bracket can branch to a cold Origin that
+            // consumes its still-linked records, even if the covered operation
+            // later proves callback-free. Removing its links alone would pop
+            // the physical caller on that edge.
+            let bracketed = !covered
+                .iter()
+                .any(|op| is_spliced_frame_call(op) || op.opcode == OpCode::CheckException);
             if bracketed && !covered.iter().any(|op| may_observe_frames(op, &exact)) {
                 dead.extend(start..end);
                 dead.push(close);
@@ -533,4 +593,89 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
             .expect("pruning splice snapshots preserves live edges");
     }
     pruned
+}
+
+/// Refresh escaped frames at a suspension or return. The common unobserved
+/// path proceeds directly to the continuation.
+pub(crate) fn publish_if_observed(caller: &mut TirFunction, source: BlockId, frame: &Level) {
+    let ops = snapshot_ops(caller, frame);
+    if_frame_observed(caller, source, frame.identity, ops);
+}
+
+/// Finish a synchronous activation's identity slot only if a Python observer
+/// populated it. Refresh a still-live frame first when an exit needs it.
+pub(crate) fn retire_if_observed(
+    caller: &mut TirFunction,
+    source: BlockId,
+    identity: ValueId,
+    frame: Option<&Level>,
+) {
+    retire_if_observed_under(caller, source, identity, frame, &[]);
+}
+
+/// Retire an observed inner frame under its virtual callers. Both the final
+/// snapshot's back chain and cleanup that can run Python use that chain.
+pub(crate) fn retire_if_observed_under(
+    caller: &mut TirFunction,
+    source: BlockId,
+    identity: ValueId,
+    frame: Option<&Level>,
+    callers: &[Level],
+) {
+    let (mut ops, unlink) = if callers.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        bracket_ops(caller, callers, None)
+    };
+    if let Some(frame) = frame {
+        ops.extend(snapshot_ops(caller, frame));
+    }
+    ops.push(finish_op(caller, identity));
+    ops.extend(unlink);
+    if_frame_observed(caller, source, identity, ops);
+}
+
+fn snapshot_ops(caller: &mut TirFunction, frame: &Level) -> Vec<TirOp> {
+    let (mut ops, unlink) = bracket_ops(caller, std::slice::from_ref(frame), None);
+    ops.extend(unlink);
+    ops
+}
+
+fn if_frame_observed(
+    caller: &mut TirFunction,
+    source: BlockId,
+    identity: ValueId,
+    ops: Vec<TirOp>,
+) {
+    let Terminator::Branch { target, args } = caller.blocks[&source].terminator.clone() else {
+        unreachable!("a frame publication continues along one edge");
+    };
+    let snapshot = caller.fresh_block();
+    caller.blocks.insert(
+        snapshot,
+        TirBlock {
+            id: snapshot,
+            args: Vec::new(),
+            ops,
+            terminator: Terminator::Branch {
+                target,
+                args: args.clone(),
+            },
+        },
+    );
+    let observed = caller.fresh_value();
+    caller.value_types.insert(observed, TirType::Bool);
+    let block = caller.blocks.get_mut(&source).unwrap();
+    block.ops.push(TirOp::new(
+        OpCode::SplicedFrameObserved,
+        vec![identity],
+        vec![observed],
+    ));
+    block.terminator = Terminator::CondBranch {
+        cond: observed,
+        then_block: snapshot,
+        then_args: Vec::new(),
+        else_block: target,
+        else_args: args,
+    };
 }

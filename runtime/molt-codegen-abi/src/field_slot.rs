@@ -153,6 +153,35 @@ fn require_not_missing<B: FrameBuilder>(b: &mut B, word: B::Word) {
     });
 }
 
+/// Dispatch a fixed-layout field access inside the held receiver's lifetime.
+/// Both read variants use the same representation and missing-value checks.
+fn with_inline_field<B: FrameBuilder>(
+    b: &mut B,
+    object: B::Word,
+    offset: i32,
+    locking: ListLocking,
+    hit: impl FnOnce(&mut B, B::Word),
+    miss: impl FnOnce(&mut B, B::Word),
+) {
+    let is_ptr = generate_has_tag(b, object, BoxTag::Ptr);
+    b.if_then(is_ptr, |b| {
+        let pointer = b.and(object, POINTER_MASK);
+        if locking == ListLocking::FreeThreaded {
+            miss(b, pointer);
+            return;
+        }
+        b.attempt(
+            |b| {
+                admit_receiver(b, pointer);
+                let value = b.load_word(pointer, offset);
+                require_not_missing(b, value);
+                hit(b, value);
+            },
+            |b| miss(b, pointer),
+        );
+    });
+}
+
 /// `object.<field at offset>` as an owned word: the inline field (retained),
 /// None for a non-pointer receiver, or what `cold(pointer)` returns, the
 /// runtime entry that owns a dictionary-backed or empty field.
@@ -171,28 +200,48 @@ pub fn generate_field_slot_get<B: FieldSlotBuilder>(
     let result = b.local();
     let none = b.constant(QNAN | TAG_NONE);
     b.set(result, none);
-    let is_ptr = generate_has_tag(b, object, BoxTag::Ptr);
-    b.if_then(is_ptr, |b| {
-        let pointer = b.and(object, POINTER_MASK);
-        if locking == ListLocking::FreeThreaded {
+    with_inline_field(
+        b,
+        object,
+        offset,
+        locking,
+        |b, value| {
+            b.retain(value);
+            b.set(result, value);
+        },
+        |b, pointer| {
             let value = cold(b, pointer);
             b.set(result, value);
-            return;
-        }
-        b.attempt(
-            |b| {
-                admit_receiver(b, pointer);
-                let value = b.load_word(pointer, offset);
-                require_not_missing(b, value);
-                b.retain(value);
-                b.set(result, value);
-            },
-            |b| {
-                let value = cold(b, pointer);
-                b.set(result, value);
-            },
-        );
-    });
+        },
+    );
+    b.get(result)
+}
+
+/// Read an inline fixed-layout field without acquiring a reference or
+/// dispatching Python. None represents a miss to readers that expect a
+/// non-None payload. The compiler must prove the original field layout and
+/// hold the receiver. Use the field only before mutation or reentry, or
+/// acquire an owning reference before such a boundary.
+pub fn generate_field_slot_probe<B: FrameBuilder>(
+    b: &mut B,
+    object: B::Word,
+    offset: i32,
+    locking: ListLocking,
+) -> B::Word {
+    let none = b.constant(QNAN | TAG_NONE);
+    if locking == ListLocking::FreeThreaded {
+        return none;
+    }
+    let result = b.local();
+    b.set(result, none);
+    with_inline_field(
+        b,
+        object,
+        offset,
+        locking,
+        |b, value| b.set(result, value),
+        |_, _| {},
+    );
     b.get(result)
 }
 

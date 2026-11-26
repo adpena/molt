@@ -2623,6 +2623,7 @@ dependencies = [
  "hashlink",
  "libc",
  "molt-artifact-publish",
+ "molt-codegen-abi",
  "molt-host-process",
  "molt-ir",
  "rmp-serde",

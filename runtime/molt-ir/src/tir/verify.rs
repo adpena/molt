@@ -406,10 +406,12 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             if op.callee.is_some() {
                 // A typed callee belongs only to a generated function reference,
                 // and replaces its spelling (HF-847 slice 1, I2).
-                // The late lowering's DirectCall and CodeIs (TIR-only opcodes)
-                // keep the guarded call's callee.
+                // Late TIR operations can name a compiled function directly.
                 let kind = op.origin.or_else(|| opcode_canonical_kind_table(op.opcode));
-                let late = matches!(op.opcode, OpCode::DirectCall | OpCode::CodeIs);
+                let late = matches!(
+                    op.opcode,
+                    OpCode::DirectCall | OpCode::CodeIs | OpCode::LiteralCellReady
+                );
                 if !late
                     && kind.is_none_or(|kind| {
                         kind.function_reference_role() == crate::FunctionReferenceRole::None
@@ -431,6 +433,12 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         format!("{:?} carries both a callee and `s_value`", op.opcode),
                     ));
                 }
+            } else if op.opcode == OpCode::LiteralCellReady {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    "LiteralCellReady requires a typed function provider",
+                ));
             } else if op
                 .origin
                 .or_else(|| opcode_canonical_kind_table(op.opcode))
