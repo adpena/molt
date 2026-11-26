@@ -108,6 +108,7 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonSourceElement,
     PythonIterationFact,
     PythonStringAlternatives,
+    PythonStringValue,
     PythonModuleMetadataProof,
     NO_MODULE_METADATA_PROOF,
     PythonNameLookup,
@@ -421,10 +422,12 @@ class PythonBindingFlowPolicy:
     # can escape into a different FunctionType activation namespace.
     opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None
     analyze_deferred_bodies: bool = True
-    # One source-owned activation may carry proven scalar arguments. The
-    # binding fixpoint owns their lifetime, branch reachability and completion;
+    # One source-owned activation may carry proven string arguments, including
+    # a joined finite domain. The binding fixpoint owns their lifetime and flow;
     # consumers must not reconstruct those facts after flow analysis.
-    activation_argument_values: tuple[tuple[PythonSourceKey, str], ...] = ()
+    activation_argument_values: tuple[
+        tuple[PythonSourceKey, PythonStringValue], ...
+    ] = ()
     # Spec 0216 admits scoped mutation and excludes unrestricted reflection,
     # exec/eval and arbitrary monkeypatching. A module's globals then change
     # outside its own statements only through named writes from other modules
@@ -462,6 +465,13 @@ class PythonBindingFlowPolicy:
     molt_runtime_linked: bool = False
 
     def __post_init__(self) -> None:
+        for _parameter, value in self.activation_argument_values:
+            if isinstance(value, PythonStringAlternatives) and (
+                not value.values or any(type(item) is not str for item in value.values)
+            ):
+                raise ValueError(
+                    "activation string alternatives require nonempty exact strings"
+                )
         if type(self.class_preparation) is not PythonClassPreparation:
             raise TypeError("class preparation requires its closed execution model")
         if self.foreign_namespace_universe is not None and (
@@ -1213,6 +1223,13 @@ class _StatePool:
         self, parents: tuple[int, ...], taint_epoch: int
     ) -> _BindingEnvironment:
         environments = tuple(self._binding_environments[parent] for parent in parents)
+        first_environment = environments[0]
+        if all(environment is first_environment for environment in environments[1:]):
+            # Only immutable raw storage is shared. The new state still owns all
+            # parent writes, namespace epochs and member invalidations; projecting
+            # that storage later applies its own current domain and deletion mask.
+            self.join_shared_subtrees_skipped += 1
+            return first_environment
         depth = max((environment.depth for environment in environments), default=1)
         roots = tuple(
             self._root_at_depth(environment, depth) for environment in environments
@@ -2224,6 +2241,7 @@ class _Scope:
     nonlocals: frozenset[str]
     slots: dict[str, int]
     activation_namespace_stable: bool
+    source_node: ast.AST | None = field(default=None, repr=False, compare=False)
     dynamic_class_namespace: bool = False
     annotation_evaluator: bool = False
     needs_annotation_namespace: bool = False
@@ -3509,6 +3527,7 @@ class _Analyzer:
         scope = _Scope(
             scope_id=len(self.scopes),
             source=self._node_key(source_node),
+            source_node=source_node,
             parent=parent,
             kind=kind,
             name=name,
@@ -9426,6 +9445,99 @@ class _Analyzer:
             self._node_key(call) in self.transfer.source_calls,
         )
 
+    def _local_literal_actuals(
+        self, job: _FunctionJob
+    ) -> dict[PythonSourceKey, PythonStringValue]:
+        """Join a closed local helper's already observed direct callers."""
+        node = job.node
+        if (
+            job.annotation_scope
+            or not isinstance(node, ast.FunctionDef)
+            or job.parent_scope.kind != "function"
+            or self._opaque_activation_sources is None
+            or self.policy.frame_locals_writer is not None
+            or node.decorator_list
+            or node.type_params
+            or node.returns is not None
+            or node.args.defaults
+            or node.args.kwonlyargs
+            or node.args.vararg is not None
+            or node.args.kwarg is not None
+        ):
+            return {}
+        parameters = (*node.args.posonlyargs, *node.args.args)
+        if not parameters or any(
+            parameter.annotation is not None for parameter in parameters
+        ):
+            return {}
+        source = self._node_key(node)
+        parent = job.parent_scope.source_node
+        if (
+            not isinstance(parent, ast.FunctionDef)
+            or len(parent.body) < 2
+            or parent.body[0] is not node
+        ):
+            return {}
+        # This deliberately small grammar closes caller coverage locally: the
+        # frame only creates this helper and invokes it. Any escape, alternate
+        # binding, nested caller or unobserved call retains generic activation.
+        assert self._dependency_authority is not None
+        dependencies = self._dependency_authority.summary(node).body
+        if node.name in dependencies.lexical | dependencies.globals:
+            return {}
+        for statement in parent.body[1:]:
+            if not isinstance(statement, ast.Expr) or not isinstance(
+                statement.value, ast.Call
+            ):
+                return {}
+            call = statement.value
+            if (
+                not isinstance(call.func, ast.Name)
+                or call.func.id != node.name
+                or call.keywords
+            ):
+                return {}
+            if len(call.args) != len(parameters) or any(
+                not isinstance(argument, ast.Constant)
+                or type(argument.value) is not str
+                for argument in call.args
+            ):
+                return {}
+        # Only an admitted caller shape adds a new observed activation premise.
+        # Refused shapes leave existing recorder/replay eligibility unchanged.
+        if self._activation_group_is_opaque(frozenset({source})):
+            return {}
+        values: list[set[str]] = [set() for _parameter in parameters]
+        for statement in parent.body[1:]:
+            assert isinstance(statement, ast.Expr) and isinstance(
+                statement.value, ast.Call
+            )
+            call = statement.value
+            key = self._node_key(call)
+            fact = self.transfer.calls.get(key)
+            actual = self.transfer.source_calls.get(key)
+            if (
+                fact is None
+                or not fact.callee_is(PythonIdentity.USER_FUNCTION)
+                or actual is None
+                or actual.callees != {source}
+                or len(actual.arguments) != len(parameters)
+                or len(actual.argument_strings) != len(parameters)
+                or any(
+                    name != index
+                    for index, (name, _origins, _exposed) in enumerate(actual.arguments)
+                )
+                or any(value is None for value in actual.argument_strings)
+            ):
+                return {}
+            for joined, value in zip(values, actual.argument_strings, strict=True):
+                assert value is not None
+                joined.add(value)
+        return {
+            self._node_key(parameter): PythonStringAlternatives(frozenset(joined))
+            for parameter, joined in zip(parameters, values, strict=True)
+        }
+
     def _analyze_function_job(self, job: _FunctionJob, outer_state: int) -> None:
         node = job.node
         arguments = node.args
@@ -9465,6 +9577,7 @@ class _Analyzer:
         # nonlocal write can still establish fresh exact facts until a callback.
         updates = self._activation_input_updates(state_id, job.lexical_base_bindings)
         parameter_defaults = dict(job.parameter_defaults)
+        local_actuals = self._local_literal_actuals(job)
         # No Python can observe a partly initialized frame. Publish its
         # captures, parameter bindings and empty local slots in one state.
         locals_at_entry: dict[int, _BindingUpdate] = {
@@ -9482,10 +9595,21 @@ class _Analyzer:
                 argument_value = (
                     None
                     if job.annotation_scope
-                    else self._activation_argument_values.get(parameter_source)
+                    else self._activation_argument_values.get(
+                        parameter_source, local_actuals.get(parameter_source)
+                    )
                 )
                 if argument_value is not None:
-                    default_result = StaticExpressionResult.scalar(argument_value)
+                    default_result = (
+                        join_static_expression_results(
+                            tuple(
+                                StaticExpressionResult.scalar(value)
+                                for value in sorted(argument_value.values)
+                            )
+                        )
+                        if isinstance(argument_value, PythonStringAlternatives)
+                        else StaticExpressionResult.scalar(argument_value)
+                    )
                     identities = int(PythonIdentity.INERT_VALUE)
                 locals_at_entry[slot] = (
                     slot,
@@ -10232,7 +10356,8 @@ def _copy_analysis_containers[T](owner: T) -> T:
 
 
 def _changed_activation_parameters(
-    previous: Mapping[PythonSourceKey, str], current: Mapping[PythonSourceKey, str]
+    previous: Mapping[PythonSourceKey, PythonStringValue],
+    current: Mapping[PythonSourceKey, PythonStringValue],
 ) -> set[PythonSourceKey]:
     # A missing fact changes the owning job just as a new literal does.
     return {

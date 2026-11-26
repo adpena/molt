@@ -3876,3 +3876,144 @@ def test_persisted_literal_classes_round_trip_or_regenerate(tmp_path, corruption
     warm = load(source)
     assert warm.cache_hit is (corruption is None)
     assert warm.scan.source_values == cold.scan.source_values
+
+
+@pytest.mark.parametrize("opaque", [False, True])
+@pytest.mark.parametrize("closed", [False, True])
+def test_joined_activation_uses_existing_finite_cache_write_projection(
+    monkeypatch: pytest.MonkeyPatch, opaque: bool, closed: bool
+) -> None:
+    from dataclasses import replace
+    from molt.compiler_analysis.python_binding_facts import PythonStringAlternatives
+    from molt.compiler_analysis.python_binding_flow import (
+        analyze_python_source_bindings,
+    )
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = (
+        "import sys\n"
+        "def install(name, create):\n"
+        "    alias = name\n"
+        "    mod = create(name)\n"
+        "    sys.modules[alias] = mod\n"
+    )
+    tree = ast.parse(source)
+    owner = tree.body[1]
+    assert isinstance(owner, ast.FunctionDef)
+    domain = PythonStringAlternatives(
+        frozenset({"asyncio.base_events", "asyncio.tasks"})
+    )
+    policy = _source_import_scan._source_binding_policy(
+        target_python=TargetPythonVersion(3, 15, 0),
+        module_name="sample",
+        namespace_premise=replace(
+            WHOLE_PROGRAM, opaque_activation_sources=() if closed else None
+        ),
+        activation_argument_values=(
+            (python_node_source_key(owner.args.args[0]), domain),
+        ),
+    )
+    if opaque:
+        policy = replace(policy, activation_argument_values=())
+    bindings = analyze_python_source_bindings(source, policy=policy)
+    # This prerequisite does not infer caller coverage. Supply the admitted
+    # binding result at the scanner boundary to exercise its real key consumer.
+    monkeypatch.setattr(
+        _source_import_scan,
+        "analyze_python_bindings",
+        lambda *_args, **_kwargs: bindings,
+    )
+    scan = _source_import_scan._collect_imports_for_graph(
+        tree,
+        "sample",
+        source_owner=python_node_source_key(owner),
+        import_scan_mode="module_init",
+        namespace_premise=replace(
+            WHOLE_PROGRAM, opaque_activation_sources=() if closed else None
+        ),
+        target_python=TargetPythonVersion(3, 15, 0),
+    )
+    if closed:
+        assert len(scan.source_values.cache_writes) == 1
+        assert scan.source_values.cache_writes[0][1] == (
+            None if opaque else tuple(sorted(domain.values))
+        )
+    else:
+        # Finite local names cannot make an escaped activation's receiver exact.
+        assert scan.source_values.cache_writes == ()
+    # The registered name still participates; the joined argument grants no
+    # exact constructor result or fresh-module substitution to either branch.
+    creation = owner.body[1].value
+    result = bindings.expression_result(creation)
+    assert result.kind == "unknown" and not result.fresh_container
+
+
+@pytest.mark.parametrize(
+    "route", ["literal", "unknown", "escape", "empty", "keyword", "starred"]
+)
+def test_closed_local_literal_callers_remove_only_the_impossible_import(
+    monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    import builtins
+    from dataclasses import replace
+    from types import ModuleType
+    from molt.compiler_analysis import python_binding_flow as flow
+    from molt.compiler_analysis.python_source_keys import (
+        _PythonAstDigestAdmission,
+        python_node_source_key,
+    )
+
+    calls = {
+        "literal": "    helper('left')\n    helper('right')\n",
+        "unknown": "    helper('left')\n    helper(value)\n",
+        "escape": "    helper('left')\n    return helper\n",
+        "empty": "    helper('left')\n    helper('')\n",
+        "keyword": "    helper(name='left')\n    helper(name='right')\n",
+        "starred": "    helper(*('left',))\n    helper('right')\n",
+    }
+    source = (
+        "def outer(value=None):\n"
+        "    def helper(name):\n"
+        "        if name:\n            import chosen_leaf\n"
+        "        else:\n            import fallback_leaf\n"
+        + calls[route]
+        + ("escaped = outer()\nescaped('')\n" if route == "escape" else "outer()\n")
+    )
+    tree = ast.parse(source)
+    owner = tree.body[0].body[0]
+    assert isinstance(owner, ast.FunctionDef)
+    # This fixture is the complete closed program, with no external callback or
+    # reflection. Both legs use the same admitted source and namespace custody.
+    premise = replace(WHOLE_PROGRAM, opaque_activation_sources=())
+    admission = _PythonAstDigestAdmission.for_tree(tree)
+
+    def scan() -> tuple[str, ...]:
+        return _source_import_scan._collect_imports_for_graph(
+            tree,
+            "entry",
+            source_owner=python_node_source_key(owner),
+            import_scan_mode="module_init",
+            namespace_premise=premise,
+            ast_digest_admission=admission,
+        ).imports
+
+    # Isolate the existing core cache so each leg executes its real source scan.
+    with monkeypatch.context() as baseline:
+        baseline.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+        baseline.setattr(flow._Analyzer, "_local_literal_actuals", lambda *_args: {})
+        before = scan()
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    after = scan()
+    assert set(before) == {"chosen_leaf", "fallback_leaf"}
+    assert set(after) == ({"chosen_leaf"} if route == "literal" else set(before))
+    observed: list[str] = []
+    with monkeypatch.context() as runtime:
+        runtime.setattr(
+            builtins,
+            "__import__",
+            lambda name, *_args, **_kwargs: (observed.append(name), ModuleType(name))[
+                1
+            ],
+        )
+        exec(compile(source, "<local-call-import-oracle>", "exec"), {})
+    assert set(observed) <= set(after)
