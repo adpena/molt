@@ -945,6 +945,8 @@ class PythonSourceDemands:
                     unbound.add(member)
                     binding_changed = True
             selected.update(members)
+            if method and candidate.kind == "namespace" and not members:
+                self.activate(candidate, "escape")
             if source_class and (
                 # The instance mapping is a writer no member store names.
                 (candidate.kind == "instance" and name == "__dict__")
@@ -1342,9 +1344,9 @@ class PythonSourceDemands:
     ) -> None:
         module_name, owner = origin.value
         if phase == "method":
-            # A source class or instance receiver is bound where its attribute
-            # is selected (`_select_attribute`); any other receiver escapes.
-            if not self._source_class_candidate(origin):
+            # Class and namespace receivers are bound by attribute selection,
+            # which knows the member and can distinguish a borrow from escape.
+            if origin.kind != "namespace" and not self._source_class_candidate(origin):
                 self.activate(origin, "escape", arguments)
             return
         if origin.kind.startswith("namespace"):
