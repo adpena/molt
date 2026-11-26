@@ -254,6 +254,7 @@ class PythonElementProtocol(StrEnum):
     PROPERTY = "property"
     SUBSCRIPT = "subscript"
     REFLECTED_BUILTINS = "reflected_builtins"
+    REFLECTED_GLOBALS = "reflected_globals"
     MAPPING_WRITE = "mapping_write"
     # Zero-argument `super()` as an attribute receiver: the origins are the
     # enclosing function's first argument. An attribute of it selects from

@@ -4077,6 +4077,43 @@ def test_namespace_update_keeps_release_and_prunes_unread_exports(
     assert provider.foreign_writes == expected_writes
 
 
+@pytest.mark.parametrize(
+    ("mapping", "operation", "expected"),
+    [
+        ("globals()", "return 7", set()),
+        ("globals()", "return table['selected']()", {"selected_leaf"}),
+        ("globals()", "return table.get('selected')()", {"selected_leaf"}),
+        ("locals()", "return table['selected']()", {"selected_leaf"}),
+        ("vars()", "return table['selected']()", {"selected_leaf"}),
+        (
+            "globals()",
+            "return table[sys.argv[-1]]()",
+            {"selected_leaf", "dormant_leaf"},
+        ),
+    ],
+)
+def test_current_module_mapping_flows_through_formal_arguments(
+    tmp_path: Path, mapping: str, operation: str, expected: set[str]
+) -> None:
+    for name in ("selected_leaf", "dormant_leaf"):
+        (tmp_path / f"{name}.py").write_text("pass\n", encoding="utf-8")
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "import sys\n"
+        "def selected(): import selected_leaf\n"
+        "def dormant(): import dormant_leaf\n"
+        f"def choose(table): {operation}\n"
+        "def relay(table): return choose(table)\n"
+        f"relay({mapping})\n",
+        encoding="utf-8",
+    )
+    for _ in range(2):
+        graph = module_graph_discovery._discover_module_graph(
+            entry, [tmp_path], [tmp_path], tmp_path, None, set()
+        )
+        assert set(graph.graph) - {"entry", "sys"} == expected
+
+
 def test_rebound_dict_update_can_call_namespace_members(tmp_path: Path) -> None:
     (tmp_path / "leaf.py").write_text("pass\n", encoding="utf-8")
     (tmp_path / "provider.py").write_text("def run(): import leaf\n", encoding="utf-8")

@@ -96,6 +96,7 @@ from molt.compiler_analysis.python_source_keys import (
 from molt.compiler_analysis.python_binding_facts import (
     MODULE_IMPORT_METADATA_NAMES,
     PythonBindingFacts,
+    PythonSourceArgument,
     PythonSourceCall,
     PythonNativeInitializerSource,
     PythonSourceClass,
@@ -4205,6 +4206,31 @@ class _Analyzer:
         selections = self.transfer.source_attributes.setdefault(site, {})
         selections[name] = selections.get(name, frozenset()) | owners
 
+    def _source_call_argument(
+        self,
+        node: ast.expr,
+        selector: int | str | None,
+        result: StaticExpressionResult,
+    ) -> PythonSourceArgument:
+        direct = result.source_origins
+        exposed = result.exposed_source_origins
+        if selector is not None and current_globals_dict_is_exact(
+            result.identities, result
+        ):
+            # Transport the capability to a reached formal. The ordinary
+            # expression transfer still accounts for evaluation and escape.
+            source = python_source_projection_key(
+                node, PythonSourceProjection.ARGUMENT_REFLECTED_GLOBALS
+            )
+            self.transfer.source_elements[source] = PythonSourceElement(
+                source,
+                PythonElementProtocol.REFLECTED_GLOBALS,
+                frozenset({self._module_source}),
+            )
+            direct |= {source}
+            exposed |= {source}
+        return selector, direct, exposed
+
     def _publish_source_call(self, call: PythonSourceCall) -> None:
         previous = self.transfer.source_calls.get(call.owner)
         self.transfer.source_calls[call.owner] = (
@@ -6180,16 +6206,14 @@ class _Analyzer:
                     len(node.args),
                 )
                 source_arguments = tuple(
-                    (
-                        index if index < first_starred else None,
-                        result.source_origins,
-                        result.exposed_source_origins,
+                    self._source_call_argument(
+                        argument, index if index < first_starred else None, result
                     )
                     for index, (argument, result) in enumerate(
                         zip(node.args, argument_results[: len(node.args)], strict=True)
                     )
                 ) + tuple(
-                    (keyword.arg, result.source_origins, result.exposed_source_origins)
+                    self._source_call_argument(keyword.value, keyword.arg, result)
                     for keyword, result in zip(
                         node.keywords, argument_results[len(node.args) :], strict=True
                     )

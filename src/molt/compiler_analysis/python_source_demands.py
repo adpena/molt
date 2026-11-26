@@ -2023,6 +2023,13 @@ class PythonSourceDemands:
                             self._record_namespace_write(
                                 module_name, element.owner, candidate, element.key
                             )
+                    elif element.protocol is PythonElementProtocol.REFLECTED_GLOBALS:
+                        candidates.add(
+                            candidate._replace(
+                                kind="namespace",
+                                namespace_ownership=PythonNamespaceOwnership.BORROWED,
+                            )
+                        )
                     elif element.protocol is PythonElementProtocol.REFLECTED_BUILTINS:
                         if (
                             candidate.identity is PythonIdentity.CURRENT_FRAME
@@ -2082,6 +2089,7 @@ class PythonSourceDemands:
                                 | PythonElementProtocol.PROPERTY
                                 | PythonElementProtocol.SUPER
                                 | PythonElementProtocol.REFLECTED_BUILTINS
+                                | PythonElementProtocol.REFLECTED_GLOBALS
                                 | PythonElementProtocol.MAPPING_WRITE
                             ):
                                 raise AssertionError(

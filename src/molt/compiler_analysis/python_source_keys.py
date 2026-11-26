@@ -58,6 +58,7 @@ class PythonSourceProjection(StrEnum):
     CALL_NATIVE_BUILTINS = "Call.native_builtins"
     DECORATOR_APPLY = "Decorator.apply"
     CALL_REFLECTED_BUILTINS = "Call.reflected_builtins"
+    ARGUMENT_REFLECTED_GLOBALS = "Argument.reflected_globals"
     MAPPING_WRITE = "Mapping.write"
 
 
