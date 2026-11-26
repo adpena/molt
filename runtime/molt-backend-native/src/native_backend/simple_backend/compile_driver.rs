@@ -328,7 +328,7 @@ impl SimpleBackend {
             eprintln!(
                 "MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} terminal ops)"
             );
-            let codegen_start = std::time::Instant::now();
+            let codegen_start = timing.then(std::time::Instant::now);
             llvm.function_table = molt_ir::FunctionTable::of(&functions.ir().functions);
             // Resolver metadata can also reference a provider outside these
             // terminal rows. Keep the original program's frozen declarations.
@@ -417,6 +417,13 @@ impl SimpleBackend {
                 write_ir_dump("llvm/before_opt.ll");
             }
 
+            if let Some(start) = codegen_start {
+                eprintln!(
+                    "MOLT_BACKEND_TIMING: LLVM lowering took {:.2?}",
+                    start.elapsed()
+                );
+            }
+            let optimization_start = timing.then(std::time::Instant::now);
             llvm.module.verify().unwrap_or_else(|msg| {
                 panic!(
                     "LLVM module verification failed before optimization:\n{}",
@@ -436,29 +443,21 @@ impl SimpleBackend {
                 write_ir_dump("llvm/after_opt.ll");
             }
 
-            if timing {
-                let codegen_elapsed = codegen_start.elapsed();
+            if let Some(start) = optimization_start {
                 eprintln!(
-                    "MOLT_BACKEND_TIMING: LLVM codegen + optimization took {codegen_elapsed:.2?}"
+                    "MOLT_BACKEND_TIMING: LLVM IR optimization and verification took {:.2?}",
+                    start.elapsed()
                 );
             }
 
-            let tmp_obj = crate::debug_artifacts::prepare_unique_debug_artifact_path(
-                "llvm/molt_llvm_output.o",
-            )
-            .expect("failed to prepare LLVM object path");
-            llvm.emit_object(&tmp_obj)
-                .expect("LLVM object emission failed");
-            let bytes = std::fs::read(&tmp_obj).unwrap_or_else(|err| {
-                panic!(
-                    "failed to read LLVM object file at {}: {}",
-                    tmp_obj.display(),
-                    err
-                )
-            });
-            let _ = std::fs::remove_file(&tmp_obj);
+            let emit_start = timing.then(std::time::Instant::now);
+            let bytes = llvm.emit_object().expect("LLVM object emission failed");
 
-            if timing {
+            if let Some(start) = emit_start {
+                eprintln!(
+                    "MOLT_BACKEND_TIMING: LLVM machine code and object emission took {:.2?}",
+                    start.elapsed()
+                );
                 let total_elapsed = compile_start.elapsed();
                 eprintln!(
                     "MOLT_BACKEND_TIMING: total LLVM backend compile: {total_elapsed:.2?}                      ({func_count} functions, {total_ops} ops, {} bytes)",

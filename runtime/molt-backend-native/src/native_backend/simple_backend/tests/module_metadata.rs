@@ -594,7 +594,10 @@ fn reused_linkage_carriers_freeze_the_computed_module_context() {
 
 #[test]
 fn compilation_diagnostics_compute_linkage_carriers_without_reuse() {
-    let _guard = acquire_backend_env_lock();
+    use molt_ir::backend_environment::{self, BackendEnv, BackendEnvironment};
+    use std::sync::Arc;
+
+    let _request = backend_environment::enter(Arc::new(BackendEnvironment::default()));
     let store = linkage_carrier_store("diagnostics");
     let function = value_function(true);
     let mut cache = crate::tir::cache::CompilationCache::open(store.clone());
@@ -602,7 +605,11 @@ fn compilation_diagnostics_compute_linkage_carriers_without_reuse() {
         &mut vec![function.clone()],
         Some(&mut cache),
     );
-    let _dump = ScopedEnvVar::set("MOLT_TIR_DUMP", Some("1"));
+    let diagnostic_settings =
+        serde_json::Map::from_iter([(BackendEnv::MOLT_TIR_DUMP.name().into(), "1".into())]);
+    let _dump = backend_environment::enter(Arc::new(
+        BackendEnvironment::from_request(&diagnostic_settings).expect("admit TIR dump option"),
+    ));
     let mut cache = crate::tir::cache::CompilationCache::open(store.clone());
     NativeBackendModuleContext::from_functions_with_carrier_cache(
         &mut vec![function],
