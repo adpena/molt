@@ -221,6 +221,8 @@ class PythonIdentity(IntFlag):
     OPERATOR_ITEMGETTER = 1 << 207
     INTRINSIC_OPERATOR_ATTRGETTER_TYPE = 1 << 208
     OPERATOR_ATTRGETTER = 1 << 209
+    TYPE_SETATTR = 1 << 210
+    TYPE_DELATTR = 1 << 211
 
 
 class PythonMember(IntFlag):

@@ -175,6 +175,7 @@ from molt.compiler_analysis.python_effects_generated import (
     EffectMask,
 )
 from molt.compiler_analysis.static_truth import (
+    ClassCallProof,
     ExpressionSequenceItem,
     StaticExpressionResult,
     StaticSubscriptionShape,
@@ -3957,28 +3958,6 @@ class _Analyzer:
         cls = self.transfer.source_classes.get(owner)
         return owner if cls is not None and cls.plain_metaclass else None
 
-    def _plain_class_base(self, base: ast.expr) -> bool:
-        """Whether subclassing the class in this binding runs no Python."""
-        owner = self._plain_class_value(base)
-        if owner is None:
-            return False
-        pending = [owner]
-        seen: set[PythonSourceKey] = set()
-        while pending:
-            owner = pending.pop()
-            if owner in seen:
-                continue
-            seen.add(owner)
-            source_class = self.transfer.source_classes.get(owner)
-            if (
-                source_class is None
-                or not source_class.plain_metaclass
-                or "__init_subclass__" in self.transfer.source_namespaces.get(owner, {})
-            ):
-                return False
-            pending.extend(self.transfer.source_bases.get(owner, frozenset()))
-        return True
-
     def _read_name_resolution(
         self,
         state_id: int,
@@ -4676,6 +4655,17 @@ class _Analyzer:
                 value |= int(PythonIdentity.CURRENT_GLOBALS)
                 if base != int(owner):
                     value |= OTHER_IDENTITY
+        elif member in {"__setattr__", "__delattr__"} and base & int(
+            PythonIdentity.BUILTIN_TYPE
+        ):
+            # The builtin metaclass's descriptors cannot be reassigned.
+            value |= int(
+                PythonIdentity.TYPE_SETATTR
+                if member == "__setattr__"
+                else PythonIdentity.TYPE_DELATTR
+            )
+            if base != int(PythonIdentity.BUILTIN_TYPE):
+                value |= OTHER_IDENTITY
         elif member in {"__setitem__", "__delitem__"}:
             if base & int(PythonIdentity.CURRENT_GLOBALS):
                 value |= int(
@@ -5390,7 +5380,7 @@ class _Analyzer:
             specialization_valid = shape.specialization_valid
             retained_argument_indices = shape.retained_argument_indices
         elif (
-            callee_value.class_instantiation_inert
+            callee_value.class_call_proofs & ClassCallProof.DEFAULT_CONSTRUCTOR
             and not prior_effects & _CALLEE_RETENTION_FORBIDDEN_EFFECTS
         ):
             # This fact comes from the completed class namespace, not the
@@ -8903,23 +8893,32 @@ class _Analyzer:
                 and not isinstance(node.bases[0], ast.Starred)
                 and base_results[0].identities == int(PythonIdentity.BUILTIN_OBJECT)
             )
-            native_preparation = (
+            # Molt rejects a replacement builder before reaching the body.
+            native_root_prepare = (
                 self.policy.class_preparation is PythonClassPreparation.MOLT_NATIVE
                 and scope.activation_namespace_stable
                 and native_root
                 and not node.keywords
             )
-            # Bases that are each a plain class statement's class keep the
-            # metaclass `type`: its `__prepare__` returns a dict, and no
-            # `__mro_entries__` runs for a class base (HF-846 class facts).
-            plain_preparation = native_preparation or (
-                not node.keywords
+            # An already evaluated class with exact metaclass type cannot
+            # change that metaclass. type.__prepare__ allocates a fresh dict.
+            # An inherited __init_subclass__ runs after the class body.
+            plain_preparation = native_root_prepare or (
+                builder == int(PythonIdentity.BUILTIN_BUILD_CLASS)
+                and not node.keywords
                 and all(
-                    not isinstance(base, ast.Starred) and self._plain_class_base(base)
-                    for base in node.bases
+                    not isinstance(base, ast.Starred)
+                    and (
+                        result.identities == int(PythonIdentity.BUILTIN_OBJECT)
+                        or self._plain_class_value(base) is not None
+                    )
+                    for base, result in zip(node.bases, base_results, strict=True)
                 )
-                and self._canonical_imports_available(state_id)
-                and self.states.get(state_id).taint_epoch == 0
+            )
+            default_init_subclass = plain_preparation and all(
+                result.identities == int(PythonIdentity.BUILTIN_OBJECT)
+                or result.class_call_proofs & ClassCallProof.DEFAULT_INIT_SUBCLASS
+                for result in argument_results
             )
             class_scope.dynamic_class_namespace |= not plain_preparation
             class_scope.escaped_deferred |= frozenset().union(
@@ -8943,7 +8942,7 @@ class _Analyzer:
                             0,
                         ),
                     )
-                    if native_preparation
+                    if plain_preparation
                     else ()
                 ),
             )
@@ -8955,9 +8954,10 @@ class _Analyzer:
                 self._record_operation_execution(
                     scope,
                     frozenset(
-                        DeferredExecution(ref.source, "escape")
+                        DeferredExecution(source, "escape")
                         for result in argument_results
-                        for ref in result.exposed_deferred
+                        for source in result.exposed_source_origins
+                        | {ref.source for ref in result.exposed_deferred}
                     ),
                 )
                 if any(result.exposes_module_globals for result in argument_results):
@@ -8983,15 +8983,14 @@ class _Analyzer:
                     )
                 # Body failure never creates or binds a class. Plain creation
                 # remains a projection of the successful namespace state.
-                plain_creation = (
-                    plain_preparation
-                    and not node.decorator_list
-                    and (
-                        not self._namespace_can_call(class_state, class_scope, "")
-                        if native_preparation
-                        else self._canonical_imports_available(class_state)
-                        and self.states.get(class_state).taint_epoch == 0
+                if not native_root:
+                    default_init_subclass &= not (
+                        class_flow.effects & _CALLEE_ELISION_FORBIDDEN_EFFECTS
                     )
+                plain_creation = (
+                    default_init_subclass
+                    and not node.decorator_list
+                    and not self._namespace_can_call(class_state, class_scope, "")
                     and all(
                         self.states.binding(class_state, slot)
                         in {
@@ -9152,6 +9151,11 @@ class _Analyzer:
                 if not plain_creation:
                     creation_effects |= EXECUTES_ARBITRARY_PYTHON
                     self._record_operation_execution(scope, descriptor_refs)
+                    if plain_preparation and not default_init_subclass:
+                        self._record_operation_execution(
+                            scope,
+                            frozenset({DeferredExecution(owner_key, "init_subclass")}),
+                        )
                     if any(result.exposes_module_globals for result in descriptors):
                         self._record_operation_execution(
                             scope,
@@ -9173,6 +9177,12 @@ class _Analyzer:
                     constructors |= frozenset(
                         {DeferredExecution(self._node_key(node), "escape")}
                     )
+                class_call_proofs = ClassCallProof.NONE
+                if plain_creation:
+                    if not constructors:
+                        class_call_proofs |= ClassCallProof.DEFAULT_CONSTRUCTOR
+                    if "__init_subclass__" not in namespace:
+                        class_call_proofs |= ClassCallProof.DEFAULT_INIT_SUBCLASS
                 class_result = StaticExpressionResult(
                     identities=possible_identity(PythonIdentity.USER_CLASS),
                     source_origins=frozenset({self._node_key(node)}),
@@ -9190,7 +9200,7 @@ class _Analyzer:
                     and all(result.deferred_complete for result in argument_results),
                     attribute_hooks=class_hooks,
                     instance_attribute_hooks=instance_hooks,
-                    class_instantiation_inert=plain_creation and not constructors,
+                    class_call_proofs=class_call_proofs,
                 )
                 for expression, decorator in reversed(decorators):
                     class_result = self._apply_source_decorator(

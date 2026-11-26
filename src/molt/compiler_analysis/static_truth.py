@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, fields, replace
+from enum import IntFlag
 import math
 import operator as scalar_operator
 from typing import Final, Literal, TypeAlias, TypedDict, assert_never, cast, get_args
@@ -63,6 +64,7 @@ SourceDemandPhase = Literal[
     "protocol",
     "truth",
     "class_subscription",
+    "init_subclass",
     "descriptor",
     "mutate",
     # A method call through an attribute of the value: the attribute
@@ -267,6 +269,14 @@ _PUBLICATION_RELEASE_STABLE_LEAF_KINDS: frozenset[ExpressionKind] = frozenset(
 )
 
 
+class ClassCallProof(IntFlag):
+    """Mutable class-call behavior proved for the current value."""
+
+    NONE = 0
+    DEFAULT_CONSTRUCTOR = 1
+    DEFAULT_INIT_SUBCLASS = 2
+
+
 def _expression_result_semantic_key(
     truth: bool | None,
     value: ScalarValue,
@@ -289,7 +299,7 @@ def _expression_result_semantic_key(
     deferred_complete: bool,
     attribute_hooks: frozenset[DeferredExecution] | None,
     instance_attribute_hooks: frozenset[DeferredExecution] | None,
-    class_instantiation_inert: bool,
+    class_call_proofs: ClassCallProof,
 ) -> tuple[object, ...]:
     """Scalar portion of the one result identity; graph edges compare separately."""
     return (
@@ -314,7 +324,7 @@ def _expression_result_semantic_key(
         deferred_complete,
         attribute_hooks,
         instance_attribute_hooks,
-        class_instantiation_inert,
+        class_call_proofs,
     )
 
 
@@ -366,9 +376,8 @@ class StaticExpressionResult:
     # Class creation transports instance hooks separately from metaclass hooks.
     attribute_hooks: frozenset[DeferredExecution] | None = None
     instance_attribute_hooks: frozenset[DeferredExecution] | None = None
-    # Sealed class namespace with the default type call and object constructor.
-    # Callback invalidation drops this independently of candidate provenance.
-    class_instantiation_inert: bool = False
+    # Class dispatch proofs expire at writes and callback boundaries.
+    class_call_proofs: ClassCallProof = ClassCallProof.NONE
     # Finite exact-builtin alternatives extend the singleton kind proof at
     # joins and value-dependent operations. Empty means an unknown/non-scalar
     # alternative is possible. __post_init__ keeps singleton kind canonical.
@@ -475,7 +484,7 @@ class StaticExpressionResult:
             self.deferred_complete,
             self.attribute_hooks,
             self.instance_attribute_hooks,
-            self.class_instantiation_inert,
+            self.class_call_proofs,
         )
         object.__setattr__(self, "_semantic_key", key)
         edges = (
@@ -1508,6 +1517,8 @@ def _publish_expression_result_dag(
                 if retain_outer
                 else _expression_result_for_publication_shallow(current)
             )
+            if expire_mutable_elements and published.class_call_proofs:
+                published = replace(published, class_call_proofs=ClassCallProof.NONE)
             # Keep normalized item edges alive and identical across revisits.
             published_results[identity] = published
         if published._recursively_stable:
@@ -1651,7 +1662,7 @@ def join_static_expression_results(
         deferred_union = set(first.deferred)
         exposed_deferred_union = set(first.exposed_deferred)
         deferred_complete = first.deferred_complete
-        class_instantiation_inert = first.class_instantiation_inert
+        class_call_proofs = first.class_call_proofs
         publication_release_stable = bool(first._publication_release_stable)
         for alternative in current[1:]:
             if kind != alternative.kind:
@@ -1684,7 +1695,7 @@ def join_static_expression_results(
             deferred_union.update(alternative.deferred)
             exposed_deferred_union.update(alternative.exposed_deferred)
             deferred_complete &= alternative.deferred_complete
-            class_instantiation_inert &= alternative.class_instantiation_inert
+            class_call_proofs &= alternative.class_call_proofs
             publication_release_stable &= bool(alternative._publication_release_stable)
 
         value = first.value if exact else None
@@ -1721,7 +1732,7 @@ def join_static_expression_results(
             deferred_complete,
             attribute_hooks,
             instance_attribute_hooks,
-            class_instantiation_inert,
+            class_call_proofs,
         )
         for candidate in current:
             if (
@@ -1754,7 +1765,7 @@ def join_static_expression_results(
                 deferred_complete=deferred_complete,
                 attribute_hooks=attribute_hooks,
                 instance_attribute_hooks=instance_attribute_hooks,
-                class_instantiation_inert=class_instantiation_inert,
+                class_call_proofs=class_call_proofs,
             )
     return completed[tuple(id(result) for result in results)]
 

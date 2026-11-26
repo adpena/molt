@@ -17,7 +17,7 @@ from molt.compiler_analysis.python_binding_facts import (
 
 from collections import deque
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntFlag, StrEnum
 from collections.abc import Callable, Collection, Iterable, Mapping
 from typing import Literal, NamedTuple, assert_never, cast
 
@@ -58,6 +58,19 @@ from molt.compiler_analysis.static_truth import (
     IMPLICIT_INSTANCE_SPECIAL_METHODS,
     context_execution_protocol,
 )
+
+
+class ClassLifecycleWrite(IntFlag):
+    NONE = 0
+    INIT_SUBCLASS = 1
+    MRO = 2
+
+
+_CLASS_LIFECYCLE_WRITES = {
+    "__init_subclass__": ClassLifecycleWrite.INIT_SUBCLASS,
+    "__bases__": ClassLifecycleWrite.MRO,
+    "__class__": ClassLifecycleWrite.MRO,
+}
 
 
 class PythonNamespaceOwnership(StrEnum):
@@ -183,6 +196,11 @@ class SourceAwait:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceSubclassInvocation:
+    owner: SourceCandidate
+
+
+@dataclass(frozen=True, slots=True)
 class SourceGeneratorCompletion:
     value: SourceValue
 
@@ -197,6 +215,7 @@ SourceValue = tuple[
     | SourceIteratorItems
     | SourceAwait
     | SourceGeneratorCompletion
+    | SourceSubclassInvocation
     | None,
 ]
 
@@ -330,6 +349,7 @@ class PythonSourceDemands:
             SourceValue, set[tuple[SourceValue, SourceCandidate]]
         ] = {}
         self.classes: dict[SourceValue, PythonSourceClass] = {}
+        self.class_lifecycle_writes: dict[SourceValue, ClassLifecycleWrite] = {}
         self.pending_modules: dict[str, set[SourceValue]] = {}
         # Per attribute value: the functions it selected through an instance
         # (the receiver fills their first parameter) and through anything else.
@@ -712,12 +732,29 @@ class PythonSourceDemands:
         receivers: Iterable[SourceCandidate],
     ) -> None:
         for value in receivers:
-            if (
-                value.source is not None
-                or value.identity is not None
-                or value.contained
-                or value.kind != "value"
-            ):
+            if value.identity is not None or value.contained:
+                continue
+            if self._source_class_candidate(value):
+                prior = self.class_lifecycle_writes.get(
+                    value.value, ClassLifecycleWrite.NONE
+                )
+                reached = prior
+                for write in writes:
+                    names = (
+                        _CLASS_LIFECYCLE_WRITES if write.names is None else write.names
+                    )
+                    for name in names:
+                        if value.kind == "value" or name == "__class__":
+                            reached |= _CLASS_LIFECYCLE_WRITES.get(
+                                name, ClassLifecycleWrite.NONE
+                            )
+                if reached != prior:
+                    self.class_lifecycle_writes[value.value] = reached
+                    for user in self.value_users.get(value.value, ()):
+                        if isinstance(user[1], SourceSubclassInvocation):
+                            self.queue_value(user)
+                continue
+            if value.source is not None or value.kind != "value":
                 continue
             for write in writes:
                 incidence = (writer, value.module, write)
@@ -1652,6 +1689,10 @@ class PythonSourceDemands:
                 self.demand(member, "call")
                 self.demand((module_name, SourceReturn(member)), "next")
             return
+        if phase == "init_subclass":
+            if origin.kind == "value" and self._source_class_candidate(origin):
+                self.demand((module_name, SourceSubclassInvocation(origin)), "read")
+            return
         if phase == "class_subscription":
             if origin.kind == "value" and self._source_class_candidate(origin):
                 # Class subscription uses type.__getitem__ or the class's
@@ -1968,6 +2009,8 @@ class PythonSourceDemands:
         elif isinstance(source, SourceGeneratorCompletion):
             for generator in tuple(self.watch(source.value, value)):
                 candidates.update(self._generator_completion_values(generator, value))
+        elif isinstance(source, SourceSubclassInvocation):
+            self._call_init_subclass(source.owner, value)
         elif isinstance(source, SourceMember):
             candidates.update(self.select_member(source.owner, source.name, value))
             if source.owner.kind == "instance":
@@ -2719,6 +2762,55 @@ class PythonSourceDemands:
             return result
         contents = {item._replace(contained=True) for item in result}
         return result | contents if expanded else contents
+
+    def _subclass_selection_written(
+        self, owner: SourceValue, user: SourceValue
+    ) -> bool:
+        mask = ClassLifecycleWrite.INIT_SUBCLASS | ClassLifecycleWrite.MRO
+        if (
+            self.class_lifecycle_writes.get(owner, ClassLifecycleWrite.NONE)
+            & ClassLifecycleWrite.MRO
+        ):
+            return True
+        for base in self._strict_ancestors(owner, user):
+            self.watch(base.value, user)
+            if (
+                self.class_lifecycle_writes.get(base.value, ClassLifecycleWrite.NONE)
+                & mask
+            ):
+                return True
+        return False
+
+    def _call_init_subclass(self, owner: SourceCandidate, user: SourceValue) -> None:
+        # Type selection starts above the new class. Namespace construction
+        # has already run __set_name__, so reached writes can change this edge.
+        self.watch(owner.value, user)
+        for origin in self.bases.get(owner.value, ()):
+            for base in self.watch((owner.module, origin), user):
+                if not self._source_class_candidate(base) or base.kind != "value":
+                    continue
+                for callback in self.select_member(
+                    base,
+                    "__init_subclass__",
+                    user,
+                    binding_owner=owner,
+                ):
+                    if callback.kind == "value":
+                        self._bind_actuals(
+                            (0,),
+                            lambda _, packed: {owner._replace(contained=packed)},
+                            callback.value,
+                            user,
+                            False,
+                        )
+                    self.demand(
+                        (callback.module, SourceReturn(callback.value)), "release"
+                    )
+                    self.activate(
+                        callback, "call", argument_count=0, consumer=owner.module
+                    )
+        if self._subclass_selection_written(owner.value, user):
+            self.activate(owner, "escape", consumer=owner.module)
 
     def _returned_values(
         self, callee: SourceCandidate, user: SourceValue
