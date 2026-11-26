@@ -192,10 +192,7 @@ impl<B: CodegenBuilder> Edges<'_, B> {
                 else_args,
             } => {
                 let condition = match self.values.value(*cond) {
-                    Some(value) => {
-                        let held = self.values.repr(*cond).unwrap_or(HeldCarrier::Boxed);
-                        scalar::truth(b, value, held)
-                    }
+                    Some(value) => scalar::value_truth(b, self.values, *cond, value),
                     None => {
                         diagnostics.push(format!(
                             "ValueId %{} was used before being defined during lowering",

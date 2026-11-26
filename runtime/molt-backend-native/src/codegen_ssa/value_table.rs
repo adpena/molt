@@ -67,6 +67,7 @@ struct Slot<V> {
     value: Option<V>,
     repr: Option<HeldCarrier>,
     plain_field_words: Option<u16>,
+    boxed_bool_or_none: bool,
 }
 
 impl<V> Default for Slot<V> {
@@ -75,6 +76,7 @@ impl<V> Default for Slot<V> {
             value: None,
             repr: None,
             plain_field_words: None,
+            boxed_bool_or_none: false,
         }
     }
 }
@@ -106,7 +108,24 @@ impl<V: Copy> ValueTable<V> {
 
     /// Record the lowered value of `id`.
     pub(crate) fn set_value(&mut self, id: ValueId, value: V) {
-        self.slot_mut(id).value = Some(value);
+        let slot = self.slot_mut(id);
+        slot.value = Some(value);
+        slot.boxed_bool_or_none = false;
+    }
+
+    /// The iterator ABI returns its completion status as a boxed bool or None
+    /// on failure. Retain that exact word for transport and exception observers.
+    pub(crate) fn bind_iterator_completion(&mut self, id: ValueId, value: V) {
+        self.set_value(id, value);
+        let slot = self.slot_mut(id);
+        slot.repr = Some(HeldCarrier::Boxed);
+        slot.boxed_bool_or_none = true;
+    }
+
+    pub(crate) fn is_boxed_bool_or_none(&self, id: ValueId) -> bool {
+        self.slots
+            .get(id.0 as usize)
+            .is_some_and(|slot| slot.boxed_bool_or_none && slot.repr == Some(HeldCarrier::Boxed))
     }
 
     /// Record how the lowered value of `id` is held.

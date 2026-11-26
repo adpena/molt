@@ -318,7 +318,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         }
         let done_value = b.word_value(done);
         match op.results.get(words as usize) {
-            Some(&id) => self.bind(id, done_value, HeldCarrier::of(&TirType::DynBox)),
+            Some(&id) => self.values.bind_iterator_completion(id, done_value),
             None => b.refcount(release, done),
         }
         true
@@ -549,6 +549,9 @@ mod tests {
                         RuntimeFn::IterNextUnpack2
                     };
                     assert!(cx.iterator_out_words(b, op, function, words, "iter"));
+                    for (position, &id) in op.results.iter().enumerate() {
+                        assert_eq!(cx.values.is_boxed_bool_or_none(id), position == words as usize);
+                    }
                 }
             }
             assert!(diagnostics.borrow().is_empty(), "{:?}", diagnostics.borrow());
