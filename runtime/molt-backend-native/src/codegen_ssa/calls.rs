@@ -654,8 +654,27 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         operands: &[ValueId],
         first_operand: usize,
     ) {
-        let callee = b.function_callee(target, abi);
         let return_type = abi.return_type.clone().unwrap_or(TirType::DynBox);
+        let checked = if abi.checked_raw_return() {
+            match self.plan.checked_direct_result(op, &return_type) {
+                Ok(edge) if self.functions.defines(edge.callee) => Some(edge),
+                Ok(_) => {
+                    self.fatal(format!(
+                        "checked entry for `{target}` has no definition in this object"
+                    ));
+                    return;
+                }
+                Err(reason) => {
+                    self.fatal(format!(
+                        "checked entry for `{target}` lacks terminal call evidence: {reason:?}"
+                    ));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let callee = b.function_callee(target, abi);
         let view = self.operands();
         let param_types: Vec<TirType> = (0..operands.len())
             .map(|index| {
@@ -706,13 +725,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             b.set_name(value, "direct_call");
         }
         release_call_inputs(b, None, &extracted);
-        if abi.checked_raw_return() {
-            let [result] = op.results.as_slice() else {
-                self.fatal(format!(
-                    "checked return from `{target}` has no result binding"
-                ));
-                return;
-            };
+        if let Some(edge) = checked {
             let Some(value) = returned else {
                 self.fatal(format!(
                     "checked return from `{target}` has no machine result"
@@ -722,7 +735,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             let value = view.finish_value(b, custody, value, "direct_call_result", |b| {
                 super::returns::absent_return(b, abi).expect("a checked slot has a carrier")
             });
-            self.bind(*result, value, HeldCarrier::of(&return_type));
+            self.bind(edge.value, value, HeldCarrier::of(&return_type));
             return;
         }
         let none = b.constant(NONE_WORD);
@@ -1585,6 +1598,27 @@ mod tests {
             return_availability: Default::default(),
         };
         BTreeMap::from([(symbol.to_owned(), abi)])
+    }
+
+    #[test]
+    fn a_linkage_row_and_scalar_carrier_do_not_authorize_a_checked_call() {
+        let symbol = "walker_compiled_boxed";
+        let mut program = linked(symbol, vec![], Some(TirType::DynBox));
+        program
+            .get_mut(symbol)
+            .unwrap()
+            .set_checked_raw_return(TirType::Bool);
+        let call = direct_call(symbol, 0, 0);
+        let run = lower_linked(Family::Call, call, &[], program, Some(Repr::Bool), false);
+        assert!(
+            run.fact
+                .iter()
+                .any(|error| error.contains("lacks terminal call evidence")),
+            "{:?}",
+            run.fact
+        );
+        assert!(run.results.is_empty());
+        assert!(run.runtime_calls.is_empty());
     }
 
     #[test]

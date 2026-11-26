@@ -190,7 +190,7 @@ fn user_definitions_and_extern_declarations_never_claim_termination() {
     backend
         .function_linkage_abis
         .insert(external.name.clone(), test_native_linkage_abi(vec![], None));
-    let external_fn = declare_extern_tir_function(&external, &backend);
+    let external_fn = declare_extern_function(&external.name, external.param_types.len(), &backend);
 
     for function in [local_fn, external_fn] {
         assert!(has_fn_attr(function, "nounwind"));
@@ -313,8 +313,16 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
         consumer_backend
             .function_linkage_abis
             .insert("void_provider".to_string(), void_abi);
-        let typed_declaration = declare_extern_tir_function(&typed_provider_tir, &consumer_backend);
-        let void_declaration = declare_extern_tir_function(&void_provider_tir, &consumer_backend);
+        let typed_declaration = declare_extern_function(
+            &typed_provider_tir.name,
+            typed_provider_tir.param_types.len(),
+            &consumer_backend,
+        );
+        let void_declaration = declare_extern_function(
+            &void_provider_tir.name,
+            void_provider_tir.param_types.len(),
+            &consumer_backend,
+        );
 
         assert_eq!(
             typed_definition.get_type().print_to_string(),

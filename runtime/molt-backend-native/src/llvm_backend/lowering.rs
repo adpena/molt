@@ -285,26 +285,35 @@ fn has_attr(op: &TirOp, key: &str) -> bool {
     matches!(op.attrs.get(key), Some(AttrValue::Bool(true)))
 }
 
-/// Holds state during lowering of a single TIR function.
-/// Lower a TIR function to LLVM IR.
-///
-/// Returns the LLVM function value. The function is added to `backend.module`.
-#[cfg(feature = "llvm")]
-pub fn lower_tir_to_llvm<'ctx>(
+/// Standalone lowering fixtures supply carrier overrides for deliberately
+/// partial test bodies. Production receives the plan with its terminal body.
+#[cfg(test)]
+pub(super) fn lower_tir_to_llvm<'ctx>(
     func: &TirFunction,
     backend: &LlvmBackend<'ctx>,
 ) -> FunctionValue<'ctx> {
     try_lower_tir_to_llvm(func, backend).unwrap_or_else(|err| panic!("{err}"))
 }
 
-/// Checked lowering entry point used by production compile paths.
-#[cfg(feature = "llvm")]
-pub fn try_lower_tir_to_llvm<'ctx>(
+#[cfg(test)]
+fn try_lower_tir_to_llvm<'ctx>(
     func: &TirFunction,
     backend: &LlvmBackend<'ctx>,
 ) -> Result<FunctionValue<'ctx>, LlvmLoweringError> {
+    let default_plan = crate::representation_plan::ProducerCarrierPlan::default();
+    let plan = backend
+        .function_repr_facts
+        .get(&func.name)
+        .unwrap_or(&default_plan);
+    lower_prepared_tir_to_llvm(func, plan, backend)
+}
+
+pub(crate) fn lower_prepared_tir_to_llvm<'ctx>(
+    func: &TirFunction,
+    plan: &crate::representation_plan::ProducerCarrierPlan,
+    backend: &LlvmBackend<'ctx>,
+) -> Result<FunctionValue<'ctx>, LlvmLoweringError> {
     use crate::codegen_ssa::walk::{FunctionInput, PreparedFunction, lower_function};
-    use crate::representation_plan::ProducerCarrierPlan;
 
     let body = PreparedFunction::new(func).map_err(LlvmLoweringError::new)?;
     let abi = require_function_linkage_abi(func, backend);
@@ -316,15 +325,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
     {
         backend.define_stateful_frame_size(&func.name, *frame_size);
     }
-    let plan = backend.function_repr_facts.get(&func.name);
-    let default_plan;
-    let plan = match plan {
-        Some(plan) => plan,
-        None => {
-            default_plan = ProducerCarrierPlan::default();
-            &default_plan
-        }
-    };
     let physical_entry = backend.context.append_basic_block(llvm_fn, "entry");
     backend.builder.position_at_end(physical_entry);
     let parameters: Vec<_> = llvm_fn.get_param_iter().skip(1).collect();
@@ -533,51 +533,26 @@ pub(crate) fn linked_compiled_function<'ctx>(
 }
 
 #[cfg(feature = "llvm")]
-pub fn declare_extern_tir_function<'ctx>(
-    func: &TirFunction,
+pub(crate) fn declare_extern_function<'ctx>(
+    name: &str,
+    arity: usize,
     backend: &LlvmBackend<'ctx>,
 ) -> FunctionValue<'ctx> {
-    let linkage_abi = backend
+    let abi = backend
         .function_linkage_abis
-        .get(&func.name)
-        .unwrap_or_else(|| panic!("LLVM extern `{}` lost its exact linkage ABI", func.name));
+        .get(name)
+        .unwrap_or_else(|| panic!("LLVM extern `{name}` lost its exact linkage ABI"));
     assert_eq!(
-        func.param_types.len(),
-        linkage_abi.param_types.len(),
-        "LLVM extern `{}` TIR parameter count disagrees with its exact linkage ABI",
-        func.name
+        arity,
+        abi.param_types.len(),
+        "LLVM extern `{name}` parameter count disagrees with its exact linkage ABI"
     );
-    let param_llvm_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = linkage_abi
-        .param_types
-        .iter()
-        .map(|ty| lower_type(backend.context, ty).into())
-        .collect();
-    let logical_fn_ty = match linkage_abi.return_type.as_ref() {
-        Some(return_type) => {
-            lower_type(backend.context, return_type).fn_type(&param_llvm_types, false)
-        }
-        None => backend
-            .context
-            .void_type()
-            .fn_type(&param_llvm_types, false),
-    };
-    let fn_ty = prepend_execution_context(logical_fn_ty);
-    let llvm_fn = if let Some(existing) = backend.module.get_compiled_function(&func.name) {
-        let existing = require_llvm_function_type(&func.name, existing, fn_ty);
-        assert_eq!(
-            existing.count_basic_blocks(),
-            0,
-            "LLVM extern `{}` must remain declaration-only",
-            func.name
-        );
-        existing
-    } else {
-        backend.module.add_compiled_function(
-            &func.name,
-            logical_fn_ty,
-            Some(inkwell::module::Linkage::External),
-        )
-    };
+    let llvm_fn = linked_compiled_function(backend, name);
+    assert_eq!(
+        llvm_fn.count_basic_blocks(),
+        0,
+        "LLVM extern `{name}` must remain declaration-only"
+    );
     add_molt_nounwind_attribute(backend, llvm_fn);
     llvm_fn
 }

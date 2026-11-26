@@ -800,6 +800,8 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         "ExceptionPending",
         # Reads the thread's pending-work word; writes nothing.
         "AsyncWorkPending",
+        # Reads one exact packed buffer and pending exception state.
+        "TryBuffer2dLoadI64",
         # Stores a location id in the frame record, not in a heap object.
         "FrameSetLocation",
         # Reserve an activation-local identity word and sample its current value.
@@ -1455,6 +1457,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         {
             "CheckedAdd": ["operand", "bool"],
             "CheckedMul": ["operand", "bool"],
+            "TryBuffer2dLoadI64": ["i64", "bool"],
             # A native callable's address is a machine word.
             "NativeSymbolAddr": ["i64"],
             "IterNextUnboxed": ["operand", "bool"],
@@ -4093,12 +4096,11 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "match op.opcode" not in body
     assert "OpCode::" not in body
 
-    transparent_body = _rust_fn_body(alias, "fn is_transparent_alias_op(")
-    assert "no_heap_alias_source" in transparent_body
-    assert "opcode_alias_transparent_alias_role_table" not in transparent_body
-    assert "copy_kind_is_explicit_no_heap_move" not in transparent_body
-    assert "match op.opcode" not in transparent_body
-    assert "OpCode::" not in transparent_body
+    slot_observation = _rust_fn_body(alias, "fn aliasing_op_may_observe_slot(")
+    assert "AliasSlotObservation::TransparentAlias => no_heap_alias_source(op)" in (
+        slot_observation
+    )
+    assert "match op.opcode" not in slot_observation
 
     identity = tir_path("passes/value_identity.rs").read_text(encoding="utf-8")
     identity_body = _rust_fn_body(identity, "fn no_heap_alias_source(")

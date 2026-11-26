@@ -132,6 +132,20 @@ pub struct ProducerCarrierPlan {
     pub(crate) checked_call_results: HashSet<ValueId>,
 }
 
+/// The callee and SSA value of a proved invocation in the current terminal document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckedDirectResult {
+    pub callee: molt_ir::FunctionId,
+    pub value: ValueId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckedResultRefusal {
+    NonDirectReference,
+    CarrierMismatch,
+    UnobservedUnwind,
+}
+
 impl ProducerCarrierPlan {
     pub fn carrier_refcount_is_noop(&self, value: ValueId) -> bool {
         self.repr_by_value
@@ -153,8 +167,34 @@ impl ProducerCarrierPlan {
         }
     }
 
-    pub fn is_checked_call_result(&self, value: ValueId) -> bool {
-        self.checked_call_results.contains(&value)
+    /// A success-only machine result may replace the ordinary physical word only
+    /// at the direct invocation whose normal continuation dominates every use.
+    pub fn checked_direct_result(
+        &self,
+        op: &molt_ir::tir::ops::TirOp,
+        expected: &TirType,
+    ) -> Result<CheckedDirectResult, CheckedResultRefusal> {
+        use molt_ir::ir::CompiledCallArguments::{Direct, Parameters};
+        use molt_ir::tir::call_targets::final_call_arguments;
+
+        let Some((callee, Parameters(_) | Direct(_))) = final_call_arguments(op) else {
+            return Err(CheckedResultRefusal::NonDirectReference);
+        };
+        let [value] = op.results.as_slice() else {
+            return Err(CheckedResultRefusal::CarrierMismatch);
+        };
+        if !expected.is_numeric()
+            || self.effective_value_type(*value, &TirType::DynBox) != *expected
+        {
+            return Err(CheckedResultRefusal::CarrierMismatch);
+        }
+        if !self.checked_call_results.contains(value) {
+            return Err(CheckedResultRefusal::UnobservedUnwind);
+        }
+        Ok(CheckedDirectResult {
+            callee,
+            value: *value,
+        })
     }
 
     /// Whether the value `id` is an inline-int47-safe raw i64 carrier: the
