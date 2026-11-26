@@ -401,6 +401,69 @@ fn observation_is_marked(func: &TirFunction, observation: PostOperationObservati
     func.blocks[&block].ops[index].is_async_work_poll()
 }
 
+/// The cold arm executes the published generator's marked check on pending
+/// work. Every other incoming edge to the join must test that work is absent.
+fn services_pending_before_join(
+    func: &TirFunction,
+    gate: BlockId,
+    service: BlockId,
+    join: BlockId,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+) -> bool {
+    let gate_block = &func.blocks[&gate];
+    let Terminator::CondBranch {
+        cond,
+        then_block,
+        else_block,
+        ..
+    } = &gate_block.terminator
+    else {
+        return false;
+    };
+    let Some((test, before_test)) = gate_block.ops.split_last() else {
+        return false;
+    };
+    if *then_block != service
+        || *else_block != join
+        || test.opcode != OpCode::AsyncWorkPending
+        || test.results.as_slice() != [*cond]
+        || before_test
+            .iter()
+            .any(|op| crate::tir::dominators::is_exception_transfer_edge(op.opcode))
+    {
+        return false;
+    }
+    let cold = &func.blocks[&service];
+    predecessors[&service].as_slice() == [gate]
+        && matches!(cold.terminator, Terminator::Branch {target, ..} if target == join)
+        && super::spliced_frame::poll_service(&cold.ops)
+            .is_some_and(|poll| check_label(poll) != func.label_id_map.get(&join.0).copied())
+}
+
+/// A fused generator's fast and cold arms can share a chain of empty blocks
+/// before the backedge. A third predecessor could have bypassed both arms.
+fn has_conditional_latch_poll(
+    func: &TirFunction,
+    mut join: BlockId,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+) -> bool {
+    let mut seen = BTreeSet::new();
+    while func.blocks[&join].ops.is_empty() && seen.insert(join) {
+        match predecessors[&join].as_slice() {
+            [only] if matches!(func.blocks[only].terminator, Terminator::Branch { target, .. } if target == join) =>
+            {
+                join = *only;
+            }
+            &[left, right] => {
+                return services_pending_before_join(func, left, right, join, predecessors)
+                    || services_pending_before_join(func, right, left, join, predecessors);
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Whether every target-required call and loop boundary already owns its final
 /// marked observation. Module transforms consume only this post-pipeline form;
 /// refusing unprepared input before mutation keeps SSA payload construction in
@@ -417,6 +480,7 @@ pub(crate) fn is_materialized(func: &TirFunction) -> bool {
             latch_check_site(func, *latch, &plan.predecessors, &plan.raise)
                 .is_some_and(|(block, index)| func.blocks[&block].ops[index].is_async_work_poll())
                 || super::spliced_frame::ends_with_poll_bracket(&func.blocks[latch].ops)
+                || has_conditional_latch_poll(func, *latch, &plan.predecessors)
                 || headers.iter().all(|header| {
                     super::spliced_frame::starts_with_poll_bracket(&func.blocks[header].ops)
                 })
@@ -445,6 +509,57 @@ fn latch_insertion_index(ir: &FunctionIR, cfg: &CFG, latch: BlockId) -> usize {
     }
 }
 
+/// A resume dispatch can enter the middle of a Python loop. Its header need
+/// not dominate the continue until fusion linearizes the resume. Preserve the
+/// authored observation on the executable backedge, including its exception
+/// target and payload. Lexical loop ends can survive as unreachable markers.
+fn preserve_resumed_latch_checks(
+    ir: &mut FunctionIR,
+    preview: &mut TirFunction,
+    cfg: &CFG,
+    plan: &PollPlacementPlan,
+) -> usize {
+    let reachable = crate::tir::dominators::executable_reachable_blocks(preview);
+    let mut marked = 0;
+    for block in &cfg.blocks {
+        let latch = BlockId(u32::try_from(block.id).expect("SimpleIR block exceeds BlockId"));
+        if !reachable.contains(&latch) {
+            continue;
+        }
+        let Terminator::Branch { target, .. } = &preview.blocks[&latch].terminator else {
+            continue;
+        };
+        let Some(end) = preview.loop_pairs.get(target) else {
+            continue;
+        };
+        let ops = &ir.ops[block.start_op..block.end_op];
+        let is_continue = ops
+            .last()
+            .is_some_and(|op| op.kind == molt_ir::OpKind::LoopContinue);
+        let is_end = *end == latch
+            && ops
+                .first()
+                .is_some_and(|op| op.kind == molt_ir::OpKind::LoopEnd);
+        if !(is_continue || is_end) {
+            continue;
+        }
+        if let Some((owner, index)) =
+            latch_check_site(preview, latch, &plan.predecessors, &plan.raise)
+        {
+            let check = &mut preview.blocks.get_mut(&owner).unwrap().ops[index];
+            if check.exception_edge_kind()
+                == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
+                && check.mark_async_work_poll()
+            {
+                let origin = check.source_op_index().expect("prepared latch observation");
+                ir.ops[origin].kind = molt_ir::OpKind::AsyncWorkPoll;
+                marked += 1;
+            }
+        }
+    }
+    marked
+}
+
 /// Materialize every missing asynchronous-work observation in SimpleIR before
 /// SSA conversion. This is the sole insertion authority: SSA already owns the
 /// handler environment and therefore authors payload operands exactly once.
@@ -460,6 +575,7 @@ fn latch_insertion_index(ir: &FunctionIR, cfg: &CFG, latch: BlockId) -> usize {
 pub(crate) fn materialize_before_ssa(
     ir: &mut FunctionIR,
     preview: &mut TirFunction,
+    stateful: bool,
 ) -> PreSsaMaterialization {
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
     enum Target {
@@ -522,6 +638,10 @@ pub(crate) fn materialize_before_ssa(
                 target.map_or(Target::FunctionExit, Target::Handler),
             );
         }
+    }
+
+    if stateful {
+        markers_changed += preserve_resumed_latch_checks(ir, preview, &simple_cfg, &plan);
     }
 
     if insertions.is_empty() {
@@ -850,7 +970,7 @@ mod tests {
 
         let mut preview = crate::tir::lower_from_simple::lower_to_tir(&ir);
         assert_valid(&preview);
-        let materialized = materialize_before_ssa(&mut ir, &mut preview);
+        let materialized = materialize_before_ssa(&mut ir, &mut preview, false);
         assert_valid(&preview);
         assert_eq!(materialized.markers_changed, 1);
         assert_eq!(
@@ -1085,7 +1205,7 @@ mod tests {
 
         let mut preview = crate::tir::lower_from_simple::lower_to_tir(&ir);
         assert_valid(&preview);
-        let materialized = materialize_before_ssa(&mut ir, &mut preview);
+        let materialized = materialize_before_ssa(&mut ir, &mut preview, false);
         assert_valid(&preview);
         assert_eq!(materialized.markers_changed, 0);
         assert_eq!(materialized.transfers_inserted, 1);

@@ -143,10 +143,9 @@ fn a_poll_keeps_its_record() {
 }
 
 #[test]
-fn a_home_of_an_unproven_value_keeps_its_record() {
-    // Releasing the home's binding at the frame clear may run a finalizer.
-    // `def f(a, b): return a + a` with only `a` proven: `b`'s home holds an
-    // object of any class.
+fn an_unknown_formal_needs_its_home_only_if_the_call_can_own_its_last_reference() {
+    // `def f(a, b): return a + a` with only `a` proven. A borrowed `b` stays
+    // alive through the clear, even when its class or destructor is unknown.
     let mut f = framed_add("f__tf_id", true);
     f.exact_param_types[1] = TirType::DynBox;
     let entry = f.entry_block;
@@ -158,6 +157,11 @@ fn a_home_of_an_unproven_value_keeps_its_record() {
         .find(|op| op.opcode == OpCode::Add)
         .unwrap();
     sum.operands = vec![home_a, home_a];
+    let mut borrowed = f.clone();
+    assert!(run(&mut borrowed));
+    assert!(!has_frame_op(&borrowed));
+    f.set_parameter_custody(&[ParameterCustody::Borrowed, ParameterCustody::Transferred]);
+    // An owned last reference may run a finalizer at the frame clear.
     assert!(!run(&mut f));
     // Proving `b` too removes the last observer.
     f.exact_param_types[1] = TirType::I64;

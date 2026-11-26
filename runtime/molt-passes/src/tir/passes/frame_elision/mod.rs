@@ -20,10 +20,11 @@
 //! deleted with it. The recursion charge stays with the call site, as the
 //! native backend already omits it for a callee that makes no call.
 //!
-//! A home holds a reference to its binding until the frame clears. A body
-//! whose homes hold only exact scalars releases nothing a finalizer could
-//! observe, so dropping the homes moves no Python-visible release; any other
-//! home keeps the record.
+//! A home holds a reference to its binding until the frame clears. Exact
+//! scalars and borrowed formals whose caller retains a reference cannot run
+//! a finalizer at that clear. A home of any other value keeps the record.
+
+use std::cell::OnceCell;
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{CfgEdgePolicy, reachable_blocks_with};
@@ -35,7 +36,7 @@ use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
-use molt_ir::{ExecutionContextPolicy, OpKind};
+use molt_ir::{ExecutionContextPolicy, OpKind, ParameterCustody};
 
 /// What one frame operation becomes when the record goes.
 enum FrameOp {
@@ -80,15 +81,32 @@ fn observer(
     }
     let mut blocks: Vec<BlockId> = reachable.iter().copied().collect();
     blocks.sort_unstable();
+    let borrowed = OnceCell::new();
     for block in blocks {
         let body = &func.blocks[&block];
         for op in &body.ops {
             match frame_op(op) {
                 Some(FrameOp::Drop) => continue,
                 Some(FrameOp::Home) => {
-                    if op.operands.len() != 1
-                        || op.results.len() != 1
-                        || !exact.contains_key(&op.operands[0])
+                    let ([value], [_]) = (op.operands.as_slice(), op.results.as_slice()) else {
+                        return Some("a malformed frame home");
+                    };
+                    if !exact.contains_key(value)
+                        && !borrowed
+                            .get_or_init(|| {
+                                func.blocks[&func.entry_block]
+                                    .args
+                                    .iter()
+                                    .take(func.param_types.len())
+                                    .enumerate()
+                                    .filter_map(|(position, arg)| {
+                                        (func.parameter_custody(position)
+                                            == ParameterCustody::Borrowed)
+                                            .then_some(arg.id)
+                                    })
+                                    .collect::<HashSet<_>>()
+                            })
+                            .contains(value)
                     {
                         return Some("a home holds a value a finalizer could observe");
                     }

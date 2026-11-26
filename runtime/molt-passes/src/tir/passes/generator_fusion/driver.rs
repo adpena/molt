@@ -69,6 +69,9 @@ pub fn run_generator_fusion(
         // Collect candidates over the current caller body, then splice them one
         // at a time (re-collecting after each splice — a successful splice
         // rewrites the caller's blocks, invalidating prior coordinates).
+        // A failed transaction restores its input; a committed splice verifies
+        // its output. Check the original caller only on its first candidate.
+        let mut check_original = tti.supports_pending_call_eval_breaker_poll();
         let mut declined = HashSet::default();
         loop {
             let candidate = {
@@ -76,7 +79,7 @@ pub fn run_generator_fusion(
                 next_fusion_candidate(caller, &poll_bodies, &declined)
             };
             let Some(candidate) = candidate else { break };
-            if tti.supports_pending_call_eval_breaker_poll() {
+            if std::mem::take(&mut check_original) {
                 assert!(
                     super::super::async_work_poll::is_materialized(&module.functions[caller_idx]),
                     "generator fusion requires post-pipeline async-work observations in caller {:?}",
@@ -114,14 +117,21 @@ pub fn run_generator_fusion(
                 // An observer may write through the locals proxy (3.13+) or
                 // clear the escaped frame to close its suspended generator
                 // (before 3.13). Both need the ordinary activation (5.1).
-                if poll_owned.frame_locals_exposed()
+                let refusal = if poll_owned.frame_locals_exposed()
                     && super::super::spliced_frame::has_observer_bracket(caller, unfused.next_value)
                 {
+                    Some(PollRefusal::MutableFrame)
+                } else if tti.supports_pending_call_eval_breaker_poll()
+                    && !super::super::async_work_poll::is_materialized(caller)
+                {
+                    Some(PollRefusal::MissingObservation)
+                } else {
+                    None
+                };
+                if let Some(refusal) = refusal {
                     *caller = unfused;
                     stats = unfused_stats;
-                    stats
-                        .refused_polls
-                        .push((poll_owned.name.clone(), PollRefusal::MutableFrame));
+                    stats.refused_polls.push((poll_owned.name.clone(), refusal));
                     declined.insert(candidate.alloc_val);
                     continue;
                 }

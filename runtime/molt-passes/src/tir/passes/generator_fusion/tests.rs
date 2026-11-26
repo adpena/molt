@@ -810,27 +810,160 @@ fn callback_free_poll_is_fused_by_module_driver() {
     crate::tir::verify::verify_function(caller).expect("module-driver fused caller must verify");
 }
 
+fn two_counter_consumers() -> (TirFunction, crate::tir::blocks::BlockId) {
+    let mut caller = TirFunction::new(
+        "two_consumers".into(),
+        vec![TirType::Bool],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let left = caller.fresh_block();
+    let right = caller.fresh_block();
+    let entry = caller.blocks.get_mut(&caller.entry_block).unwrap();
+    entry.terminator = Terminator::CondBranch {
+        cond: entry.args[0].id,
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    let header = append_counter_consumer(&mut caller, left, 0);
+    append_counter_consumer(&mut caller, right, 1000);
+    (caller, header)
+}
+
+#[test]
+fn resumed_generator_backedge_preserves_poll_across_two_fusions() {
+    use crate::tir::op_kinds_generated::ExceptionEdgeKind;
+    use crate::tir::passes::async_work_poll::is_materialized;
+    let ir: crate::ir::FunctionIR = serde_json::from_value(serde_json::json!({
+        "name":"counter_poll", "return_abi":"value", "params":["self"],
+        "param_types":["i64"], "execution_context":"local",
+        "ops":[
+            {"kind":"state_switch","value":64},
+            {"kind":"loop_start"},
+            {"kind":"closure_load","args":["self"],"value":48,"out":"item"},
+            {"kind":"check_exception","exception_edge":"origin","value":90},
+            {"kind":"loop_break_if_false","args":["item"]},
+            {"kind":"call_func","args":["item"],"out":"emit"},
+            {"kind":"check_exception","exception_edge":"origin","value":90},
+            {"kind":"if","args":["emit"]},
+            {"kind":"state_yield","args":["item"],"value":7,"out":"none"},
+            {"kind":"state_label","value":7},
+            {"kind":"end_if"},
+            {"kind":"check_exception","exception_edge":"unwind","value":90,"source_op_idx":106},
+            {"kind":"loop_continue"},
+            {"kind":"loop_end"},
+            {"kind":"const_none","out":"ret"},
+            {"kind":"state_set","value":i64::MIN},
+            {"kind":"ret","args":["ret"]},
+            {"kind":"label","value":90,"exception_source":"unwind"},
+            {"kind":"ret_void","unwind":true}
+        ]
+    }))
+    .unwrap();
+    for target in [
+        TargetInfo::native_release_fast(),
+        TargetInfo::llvm_release_fast(),
+    ] {
+        let mut poll = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);
+        super::super::run_pipeline(&mut poll, &target);
+        let observed = poll
+            .blocks
+            .values()
+            .flat_map(|b| &b.ops)
+            .find(|op| op.source_op_index() == Some(106) && op.opcode == OpCode::CheckException)
+            .expect("the resumed backedge must retain the frontend observation");
+        assert!(observed.is_async_work_poll());
+        assert_eq!(
+            observed.exception_edge_kind(),
+            Some(ExceptionEdgeKind::Unwind)
+        );
+        assert_eq!(attr_value_int(observed), Some(90));
+
+        assert_eq!(
+            poll.blocks
+                .values()
+                .flat_map(|b| &b.ops)
+                .filter(|op| op.is_async_work_poll()
+                    && op.exception_edge_kind() == Some(ExceptionEdgeKind::Unwind))
+                .count(),
+            1,
+            "only the resumed continue owns an Unwind poll"
+        );
+
+        let mut unobserved = poll.clone();
+        unobserved
+            .blocks
+            .values_mut()
+            .flat_map(|b| &mut b.ops)
+            .find(|op| op.source_op_index() == Some(106) && op.opcode == OpCode::CheckException)
+            .unwrap()
+            .clear_async_work_poll();
+        let mut rejected = TirModule::decode_spelled("m", vec![unobserved, consumer()]);
+        let graph = crate::tir::call_graph::named::NamedCallGraph::build(&rejected);
+        let original = canonical_function_bytes(&rejected.functions[1]);
+        let refusal = run_generator_fusion(&mut rejected, &graph, &target);
+        assert_eq!(refusal.frames_elided, 0);
+        assert_eq!(
+            refusal.refused_polls,
+            vec![("counter_poll".into(), PollRefusal::MissingObservation)]
+        );
+        assert_eq!(canonical_function_bytes(&rejected.functions[1]), original);
+
+        let (caller, _) = two_counter_consumers();
+        let mut module = TirModule::decode_spelled("m", vec![poll, caller]);
+        let graph = crate::tir::call_graph::named::NamedCallGraph::build(&module);
+        let stats = run_generator_fusion(&mut module, &graph, &target);
+        assert_eq!(stats.frames_elided, 2, "{stats:?}");
+        let caller = &module.functions[1];
+        assert!(is_materialized(caller));
+        assert!(
+            !caller
+                .blocks
+                .values()
+                .flat_map(|b| &b.ops)
+                .any(|op| op.opcode == OpCode::AllocTask)
+        );
+        crate::tir::verify::verify_function(caller).unwrap();
+
+        // A branch into the join can execute the backedge without testing
+        // pending work. The valid predicate and service still exist elsewhere.
+        let mut bypass = caller.clone();
+        let (gate, join) = bypass
+            .blocks
+            .iter()
+            .find_map(|(&id, block)| {
+                let Terminator::CondBranch { else_block, .. } = block.terminator else {
+                    return None;
+                };
+                block
+                    .ops
+                    .last()
+                    .is_some_and(|op| op.opcode == OpCode::AsyncWorkPending)
+                    .then_some((id, else_block))
+            })
+            .expect("fusion must condition the original poll on pending work");
+        let condition = bypass.blocks[&bypass.entry_block].args[0].id;
+        let source = bypass.blocks.values_mut().find(|block|
+            matches!(block.terminator, Terminator::Branch { target, .. } if target == gate)
+        ).unwrap();
+        source.terminator = Terminator::CondBranch {
+            cond: condition,
+            then_block: gate,
+            then_args: vec![],
+            else_block: join,
+            else_args: vec![],
+        };
+        crate::tir::verify::verify_function(&bypass).unwrap();
+        assert!(!is_materialized(&bypass));
+    }
+}
+
 #[test]
 fn branch_exclusive_instances_of_one_poll_fuse_independently() {
     for first_refuses in [false, true] {
-        let mut caller = TirFunction::new(
-            "two_consumers".into(),
-            vec![TirType::Bool],
-            TirType::None,
-            molt_ir::FunctionReturnAbi::Void,
-        );
-        let left = caller.fresh_block();
-        let right = caller.fresh_block();
-        let entry = caller.blocks.get_mut(&caller.entry_block).unwrap();
-        entry.terminator = Terminator::CondBranch {
-            cond: entry.args[0].id,
-            then_block: left,
-            then_args: vec![],
-            else_block: right,
-            else_args: vec![],
-        };
-        let header = append_counter_consumer(&mut caller, left, 0);
-        append_counter_consumer(&mut caller, right, 1000);
+        let (mut caller, header) = two_counter_consumers();
         if first_refuses {
             // A nonempty structured header cannot be retired. Recognition of
             // its single-use value still succeeds before splice preflight.

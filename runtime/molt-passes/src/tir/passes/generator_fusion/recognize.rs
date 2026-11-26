@@ -87,6 +87,8 @@ pub enum PollRefusal {
     /// A callback or signal poll can expose a frame whose observer may
     /// rebind its locals or close the suspended generator.
     MutableFrame,
+    /// A new backedge in the merged body lacks a certified async-work observation.
+    MissingObservation,
     /// The body already holds a spliced frame state (an inlined observable
     /// callee); fusing it would nest frame states.
     NestedSplice,
@@ -114,6 +116,9 @@ impl std::fmt::Display for PollRefusal {
             Self::ResumeShape => f.write_str("a yield or the state dispatch has no linear resume"),
             Self::MutableFrame => {
                 f.write_str("an observer can rebind frame locals or close the suspended generator")
+            }
+            Self::MissingObservation => {
+                f.write_str("a fused boundary lacks an async-work observation")
             }
             Self::NestedSplice => f.write_str("the body holds a spliced frame state"),
         }

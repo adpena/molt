@@ -159,7 +159,7 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     };
     let mut tir_func =
         if target_info.is_some_and(TargetInfo::supports_pending_call_eval_breaker_poll) {
-            lower_prepared_with_async_work_materialization(&mut tmp_ir)
+            lower_prepared_with_async_work_materialization(&mut tmp_ir, stateful_frame.is_some())
         } else {
             lower_prepared_function(&tmp_ir)
         };
@@ -206,7 +206,10 @@ fn lower_prepared_function(ir: &FunctionIR) -> TirFunction {
 /// durable source provenance on the returned TIR. `OpIR::source_op_idx` is an
 /// origin/inline-cache identity and must never be dereferenced as a current
 /// array position after a TIR round trip.
-fn lower_prepared_with_async_work_materialization(ir: &mut FunctionIR) -> TirFunction {
+fn lower_prepared_with_async_work_materialization(
+    ir: &mut FunctionIR,
+    stateful: bool,
+) -> TirFunction {
     let transported_source_indices: Vec<_> = ir
         .ops
         .iter_mut()
@@ -217,7 +220,8 @@ fn lower_prepared_with_async_work_materialization(ir: &mut FunctionIR) -> TirFun
         op.source_op_idx = source_op_idx;
     }
 
-    let materialized = super::passes::async_work_poll::materialize_before_ssa(ir, &mut preview);
+    let materialized =
+        super::passes::async_work_poll::materialize_before_ssa(ir, &mut preview, stateful);
     if materialized.transfers_inserted != 0 {
         return lower_prepared_function(ir);
     }

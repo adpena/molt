@@ -351,6 +351,22 @@ fn poll_and_unlink(ops: &[TirOp]) -> bool {
         && unlink.runtime == Some(RuntimeFn::SplicedFrameUnlink))
 }
 
+/// The complete cold service arm built by generator frame elision. Nothing
+/// else may run between the pending-work test and the delivery of that work.
+pub(super) fn poll_service(ops: &[TirOp]) -> Option<&TirOp> {
+    let [setup @ .., poll, _unlink] = ops else {
+        return None;
+    };
+    let mut calls = setup.iter().filter(|op| op.opcode != OpCode::ConstInt);
+    let link = calls.next()?;
+    (link.runtime == Some(RuntimeFn::SplicedFrameLink)
+        && calls.all(|op| op.runtime == Some(RuntimeFn::SplicedFrameBind))
+        && poll.exception_edge_kind()
+            == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
+        && poll_and_unlink(&ops[setup.len()..]))
+    .then_some(poll)
+}
+
 pub(super) fn ends_with_poll_bracket(ops: &[TirOp]) -> bool {
     let Some(check) = ops.len().checked_sub(2) else {
         return false;
