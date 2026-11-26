@@ -28,6 +28,7 @@ struct LivenessProblem<'a> {
     aliases: &'a AliasUnionFind,
     raw: &'a HashSet<ValueId>,
     labels: HashMap<i64, BlockId>,
+    rewritten_reads: Option<&'a HashSet<(BlockId, usize)>>,
 }
 
 impl<'a> LivenessProblem<'a> {
@@ -37,6 +38,7 @@ impl<'a> LivenessProblem<'a> {
             aliases,
             raw,
             labels: dominators::exception_label_to_block(func),
+            rewritten_reads: None,
         }
     }
 
@@ -72,7 +74,12 @@ impl<'a> LivenessProblem<'a> {
                 kill(result, index + 1);
                 live.remove(&result);
             }
-            live.extend(op.operands.iter().filter_map(|&value| self.root(value)));
+            if self
+                .rewritten_reads
+                .is_none_or(|sites| !sites.contains(&(block.id, index)))
+            {
+                live.extend(op.operands.iter().filter_map(|&value| self.root(value)));
+            }
         }
         for arg in &block.args {
             if let Some(root) = self.root(arg.id) {
@@ -219,6 +226,22 @@ pub(crate) fn compute_liveness_in_domain(
     raw: &HashSet<ValueId>,
 ) -> TirLivenessResult {
     LivenessProblem::new(func, aliases, raw).solve().live
+}
+
+/// An under-approximation that excludes operand reads a planned rewrite may
+/// erase. Definitions and exceptional/normal CFG transfers keep their usual
+/// meaning. Only uses that survive the rewrite may witness an owner.
+pub(crate) fn surviving_read_liveness(
+    func: &TirFunction,
+    aliases: &AliasUnionFind,
+    raw: &HashSet<ValueId>,
+    rewritten_reads: &HashSet<(BlockId, usize)>,
+) -> TirLivenessResult {
+    let mut problem = LivenessProblem::new(func, aliases, raw);
+    if !rewritten_reads.is_empty() {
+        problem.rewritten_reads = Some(rewritten_reads);
+    }
+    problem.solve().live
 }
 
 /// Replay only blocks containing exceptional observations. Each handler's

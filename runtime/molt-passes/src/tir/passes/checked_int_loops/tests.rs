@@ -413,6 +413,88 @@ fn packed_buffer_load_enters_before_the_original_call_on_miss() {
 }
 
 #[test]
+fn packed_numeric_demand_crosses_only_transparent_normal_continuations() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    for observer in [None, Some(OpKind::BindingAlias), Some(OpKind::StoreVar)] {
+        for payload in [false, true] {
+            let Fixture { mut func, .. } = branching_loop(false);
+            let owner = func.blocks[&func.entry_block].args[0].id;
+            let body_id = func
+                .blocks
+                .values()
+                .find(|b| b.ops.iter().any(|op| op.opcode == OpCode::InplaceAdd))
+                .unwrap()
+                .id;
+            let continuation = func.fresh_block();
+            let failure = func.fresh_block();
+            let result = int(&mut func);
+            let copied = int(&mut func);
+            let merged = int(&mut func);
+            func.label_id_map.insert(failure.0, 171);
+            let handler_args = if payload {
+                let id = func.fresh_value();
+                func.value_types.insert(id, TirType::DynBox);
+                vec![TirValue {
+                    id,
+                    ty: TirType::DynBox,
+                }]
+            } else {
+                vec![]
+            };
+            func.blocks.insert(
+                failure,
+                block(failure, handler_args, vec![], Terminator::Unreachable),
+            );
+            let body = func.blocks.get_mut(&body_id).unwrap();
+            let index = body.ops[0].operands[1];
+            let mut rest = std::mem::take(&mut body.ops);
+            rest[0].operands[1] = merged;
+            let terminator = std::mem::replace(
+                &mut body.terminator,
+                Terminator::Branch {
+                    target: continuation,
+                    args: vec![copied],
+                },
+            );
+            let mut call = op(OpCode::Call, vec![owner, index, index], vec![result]);
+            call.runtime = Some(RuntimeFn::Buffer2dGet);
+            call.origin = Some(OpKind::Call);
+            call.attrs.insert(
+                "s_value".into(),
+                AttrValue::Str(RuntimeFn::Buffer2dGet.symbol().into()),
+            );
+            let mut check = op(
+                OpCode::CheckException,
+                if payload { vec![result] } else { vec![] },
+                vec![],
+            );
+            check.attrs.insert("value".into(), AttrValue::Int(171));
+            check
+                .set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+            let mut copy = op(OpCode::Copy, vec![result], vec![copied]);
+            copy.origin = observer;
+            if observer == Some(OpKind::StoreVar) {
+                copy.attrs
+                    .insert("_var".into(), AttrValue::Str("published".into()));
+            }
+            body.ops = vec![call, check, copy];
+            func.blocks.insert(
+                continuation,
+                block(continuation, vec![arg(merged)], rest, terminator),
+            );
+            verify_function(&func).unwrap();
+            run(&mut func, &mut AnalysisManager::new(), true);
+            verify_function(&func).unwrap();
+            assert_eq!(
+                count(&func, OpCode::TryBuffer2dLoadI64),
+                usize::from(observer.is_none() && !payload),
+                "owned aliases, homes and exception payloads retain their boxed result",
+            );
+        }
+    }
+}
+
+#[test]
 fn the_overflow_path_reads_the_exact_result() {
     let Fixture { mut func, .. } = branching_loop(false);
     run(&mut func, &mut AnalysisManager::new(), false);

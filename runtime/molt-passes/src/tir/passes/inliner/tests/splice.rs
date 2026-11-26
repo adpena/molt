@@ -634,14 +634,10 @@ fn a_closure_callee_inlines_at_a_proven_call_with_its_own_environment() {
         .iter()
         .find(|op| op.opcode == OpCode::FunctionClosure)
         .expect("the environment comes from the callee's function object");
-    let held = load.operands[0];
-    assert!(
-        ops.iter().any(|op| {
-            op.origin == Some(molt_ir::OpKind::BindingAlias)
-                && op.operands == [function]
-                && op.results == [held]
-        }),
-        "the activation holds the function that owns its environment"
+    assert_eq!(
+        load.operands,
+        [function],
+        "the caller's parameter keeps the function alive through the activation"
     );
     let view = load.results[0];
     assert!(
@@ -922,6 +918,111 @@ fn an_inlined_closure_keeps_its_temporary_callable_until_each_activation_exit() 
     assert_eq!(
         exits, 2,
         "normal and implicit exceptional exits release the function"
+    );
+}
+
+#[test]
+fn a_nonclosure_splice_keeps_its_captured_callable_through_both_exits() {
+    let callee = observation_callee_with_type("target", 7, TirType::DynBox);
+    let mut caller =
+        caller_calling_obs_with_label_and_type("caller", "target", 90, TirType::DynBox);
+    let entry = caller.entry_block;
+    let function = caller.fresh_value();
+    caller.value_types.insert(function, TirType::DynBox);
+    let block = caller.blocks.get_mut(&entry).unwrap();
+    let mut producer = TirOp::new(OpCode::Call, vec![], vec![function]);
+    producer.attrs.insert(
+        "s_value".into(),
+        AttrValue::Str("fixture_make_function".into()),
+    );
+    block.ops.insert(0, producer);
+    let call = &mut block.ops[2];
+    call.origin = Some(molt_ir::OpKind::CallGuarded);
+    call.set_proven_target(true);
+    call.operands.insert(0, function);
+    let (mut caller, sites) = sites_in(caller, &["target"]);
+    assert_eq!(sites.len(), 1);
+    splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default()).unwrap();
+
+    let owner = caller.blocks[&entry]
+        .ops
+        .iter()
+        .find(|op| op.origin == Some(molt_ir::OpKind::BindingAlias) && op.operands == [function])
+        .expect("the captured function has its own activation owner")
+        .results[0];
+    crate::tir::passes::drop_insertion::run(
+        &mut caller,
+        &mut crate::tir::analysis::AnalysisManager::new(),
+    );
+    crate::tir::verify::verify_function(&caller).unwrap();
+    let releases: Vec<_> = caller
+        .blocks
+        .values()
+        .filter(|block| {
+            block
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::DecRef && op.operands == [owner])
+        })
+        .map(|block| block.id)
+        .collect();
+    assert_eq!(releases.len(), 2);
+    assert!(!releases.contains(&entry));
+}
+
+#[test]
+fn a_spliced_call_operand_cannot_witness_an_earlier_borrow() {
+    use super::super::activation::Binding;
+
+    let callee = observation_callee_with_type("target", 7, TirType::DynBox);
+    let mut caller =
+        caller_calling_obs_with_label_and_type("caller", "target", 90, TirType::DynBox);
+    let entry = caller.entry_block;
+    let later = caller.fresh_block();
+    let later_result = caller.fresh_value();
+    caller.value_types.insert(later_result, TirType::DynBox);
+    let prefix = caller.blocks.get_mut(&entry).unwrap();
+    let object = prefix.ops[0].results[0];
+    let mut producer = TirOp::new(OpCode::Call, vec![], vec![object]);
+    producer.attrs.insert(
+        "s_value".into(),
+        AttrValue::Str("fixture_make_object".into()),
+    );
+    prefix.ops[0] = producer;
+    let mut later_call = prefix.ops[1].clone();
+    later_call.results[0] = later_result;
+    prefix.terminator = Terminator::Branch {
+        target: later,
+        args: vec![],
+    };
+    caller.blocks.insert(
+        later,
+        TirBlock {
+            id: later,
+            args: vec![],
+            ops: vec![later_call],
+            terminator: Terminator::Return {
+                values: vec![later_result],
+            },
+        },
+    );
+    let (caller, sites) = sites_in(caller, &["target"]);
+    assert_eq!(sites.len(), 2);
+    let first = sites.iter().find(|site| site.block == entry).unwrap();
+
+    let mut activations = Activations::default();
+    activations.enter_caller(&sites);
+    assert_eq!(
+        activations.bindings(&caller, &callee, first, &[object], 0),
+        vec![Binding::Owned],
+        "the later splice may remove the only cross-block witness"
+    );
+
+    activations.enter_caller([first]);
+    assert_eq!(
+        activations.bindings(&caller, &callee, first, &[object], 0),
+        vec![Binding::Direct],
+        "a call that stays provides the cross-block witness"
     );
 }
 

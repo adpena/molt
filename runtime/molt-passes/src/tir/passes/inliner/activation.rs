@@ -30,6 +30,7 @@
 //! site whose raw argument binds a `Transferred` parameter that the callee
 //! releases so is not spliced.
 
+use molt_ir::FunctionId;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::ParameterCustody;
@@ -42,7 +43,7 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::alias_analysis::{AliasUnionFind, build_alias_union_find};
 use crate::tir::passes::drop_insertion::{DROP_INSERTED_ATTR, frame_clear};
 use crate::tir::passes::escape_analysis::{ParameterCapture, op_result_defines_del};
-use crate::tir::passes::liveness::{TirLivenessResult, compute_liveness_in_domain};
+use crate::tir::passes::liveness::{TirLivenessResult, surviving_read_liveness};
 use crate::tir::passes::ownership_lattice_min::{OwnershipRootFacts, owned_alias};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -68,8 +69,9 @@ pub(super) enum Binding {
 #[derive(Default)]
 pub(super) struct Activations {
     caller: Option<CallerFacts>,
+    rewritten_reads: HashSet<(BlockId, usize)>,
     pub(super) capture: ParameterCapture,
-    prepared: HashMap<(String, Vec<Binding>), Option<TirFunction>>,
+    prepared: HashMap<(FunctionId, Vec<Binding>), Option<TirFunction>>,
 }
 
 /// What a caller, read before its first splice, guarantees about the values
@@ -78,6 +80,7 @@ struct CallerFacts {
     aliases: AliasUnionFind,
     raw: HashSet<ValueId>,
     liveness: TirLivenessResult,
+    last_read: HashMap<(BlockId, ValueId), usize>,
     parameters: HashSet<ValueId>,
     checked_results: HashSet<ValueId>,
     single_use_sequences: HashSet<ValueId>,
@@ -85,8 +88,11 @@ struct CallerFacts {
 
 impl Activations {
     /// Begins a caller's sites: its facts are read before its first splice.
-    pub(super) fn enter_caller(&mut self) {
+    pub(super) fn enter_caller<'a>(&mut self, sites: impl IntoIterator<Item = &'a CallSite>) {
         self.caller = None;
+        self.rewritten_reads.clear();
+        self.rewritten_reads
+            .extend(sites.into_iter().map(|site| (site.block, site.op_index)));
     }
 
     /// How each argument of the call at `site` binds its parameter of `callee`,
@@ -101,7 +107,7 @@ impl Activations {
     ) -> Vec<Binding> {
         let facts = self
             .caller
-            .get_or_insert_with(|| CallerFacts::compute(caller));
+            .get_or_insert_with(|| CallerFacts::compute(caller, &self.rewritten_reads));
         arguments
             .iter()
             .enumerate()
@@ -110,13 +116,10 @@ impl Activations {
                 if facts.raw.contains(&argument) {
                     return Binding::Direct;
                 }
-                let root = facts.aliases.root(argument);
-                let outlives_the_call =
-                    facts.parameters.contains(&root) || facts.read_after(caller, site, root);
                 if callee.parameter_custody(position) == ParameterCustody::Transferred {
                     return Binding::Owned;
                 }
-                if outlives_the_call {
+                if facts.kept_alive_at(site, argument) {
                     return Binding::Direct;
                 }
                 if facts.single_use_sequences.contains(&argument) {
@@ -136,10 +139,19 @@ impl Activations {
             .collect()
     }
 
+    /// Whether a stable owner independently keeps this value alive until
+    /// the rewritten invocation exits. `bindings` records the original body.
+    pub(super) fn caller_keeps_alive(&self, site: &CallSite, value: ValueId) -> bool {
+        self.caller
+            .as_ref()
+            .is_some_and(|facts| facts.kept_alive_at(site, value))
+    }
+
     /// The body to splice for `callee` under `bindings`, or `None` when no
     /// activation keeps the call's reference contract.
     pub(super) fn prepare(
         &mut self,
+        callee_id: FunctionId,
         callee: &TirFunction,
         bindings: &[Binding],
     ) -> Option<&TirFunction> {
@@ -156,7 +168,7 @@ impl Activations {
             })
             .collect();
         self.prepared
-            .entry((callee.name.clone(), frame))
+            .entry((callee_id, frame))
             .or_insert_with_key(|(_, frame)| prepare_activation(callee, frame))
             .as_ref()
     }
@@ -173,7 +185,7 @@ impl Activations {
 }
 
 impl CallerFacts {
-    fn compute(caller: &TirFunction) -> Self {
+    fn compute(caller: &TirFunction, rewritten_reads: &HashSet<(BlockId, usize)>) -> Self {
         let aliases = build_alias_union_find(caller);
         let (carriers, checked_results) =
             crate::representation_facts::analyze_representations_and_checked_calls(caller);
@@ -202,7 +214,20 @@ impl CallerFacts {
             .into_iter()
             .filter_map(|(id, carrier)| carrier.carrier_refcount_is_noop().then_some(id))
             .collect();
-        let liveness = compute_liveness_in_domain(caller, &aliases, &raw);
+        let liveness = surviving_read_liveness(caller, &aliases, &raw, rewritten_reads);
+        let mut last_read = HashMap::default();
+        for (&id, block) in &caller.blocks {
+            for (index, op) in block.ops.iter().enumerate() {
+                if !rewritten_reads.contains(&(id, index)) {
+                    for &operand in &op.operands {
+                        last_read.insert((id, aliases.root(operand)), index);
+                    }
+                }
+            }
+            block.terminator.for_each_value(|value| {
+                last_read.insert((id, aliases.root(value)), block.ops.len());
+            });
+        }
         let parameters = caller.blocks[&caller.entry_block]
             .args
             .iter()
@@ -212,23 +237,23 @@ impl CallerFacts {
             aliases,
             raw,
             liveness,
+            last_read,
             parameters,
             checked_results,
             single_use_sequences,
         }
     }
 
-    /// Whether the caller reads `root` after the call at `site`.
-    fn read_after(&self, caller: &TirFunction, site: &CallSite, root: ValueId) -> bool {
-        let block = &caller.blocks[&site.block];
-        let names = |value: ValueId| self.aliases.root(value) == root;
-        let mut read = block.ops[site.op_index + 1..]
-            .iter()
-            .any(|op| op.operands.iter().any(|&operand| names(operand)));
-        block
-            .terminator
-            .for_each_value(|value| read |= names(value));
-        read || self.liveness.is_live_out(site.block, root)
+    /// A later read must survive every admitted splice. Original coordinates
+    /// remain usable even when a prior splice moves the read to a continuation.
+    fn kept_alive_at(&self, site: &CallSite, value: ValueId) -> bool {
+        let root = self.aliases.root(value);
+        self.parameters.contains(&root)
+            || self
+                .last_read
+                .get(&(site.block, root))
+                .is_some_and(|&last| last > site.op_index)
+            || self.liveness.is_live_out(site.block, root)
     }
 }
 

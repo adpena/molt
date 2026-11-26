@@ -56,15 +56,16 @@ pub(super) fn splice_call_site(
     let block_id = site.block;
     let op_index = site.op_index;
 
-    let (mut call_args, call_result, call_span, closure_callable, first_parameter) = {
+    let (mut call_args, call_result, call_span, captured_callable, first_parameter) = {
         let block = &caller.blocks[&block_id];
         let op = &block.ops[op_index];
         if op.opcode != OpCode::Call || op.results.len() > 1 {
             return None;
         }
-        // Bind the same typed ABI positions the call analysis sees. Only a
-        // closure callee reads the guarded call's captured function object.
-        let arguments = crate::tir::call_targets::static_call(op)?.bind(callee)?;
+        // The invocation's function is an owner even when it supplies no
+        // closure environment to the callee.
+        let call = crate::tir::call_targets::static_call(op)?;
+        let arguments = call.bind(callee)?;
         let first = arguments.first_positional();
         if callee.blocks[&callee.entry_block].args.len() != first + arguments.positional.len() {
             return None;
@@ -73,7 +74,7 @@ pub(super) fn splice_call_site(
             arguments.positional.to_vec(),
             op.results.first().copied(),
             op.source_span,
-            arguments.closure_callable,
+            call.callable,
             first,
         )
     };
@@ -88,7 +89,7 @@ pub(super) fn splice_call_site(
     // exit clears the callee frame before it leaves. From here on `callee` is
     // that prepared body.
     let mut bindings = activations.bindings(caller, callee, site, &call_args, first_parameter);
-    if closure_callable.is_some() {
+    if first_parameter != 0 {
         // The environment is a view the function object owns, and the inlined
         // body may outlive that object's last use in the caller. An owned
         // binding retains the tuple for the activation and releases it at the
@@ -97,7 +98,9 @@ pub(super) fn splice_call_site(
     }
     let success_only =
         call_result.is_none_or(|result| activations.checked_result_is_success_only(result));
-    let callee = activations.prepare(callee, &bindings)?;
+    let needs_callable_owner =
+        captured_callable.is_some_and(|value| !activations.caller_keeps_alive(site, value));
+    let callee = activations.prepare(site.callee, callee, &bindings)?;
 
     // A value call requires one result from a reachable ordinary return.
     // An unwind requires a caller observer that can run without a result.
@@ -142,25 +145,24 @@ pub(super) fn splice_call_site(
     // facts its clone was compiled under.
     let callee_entry = &callee.blocks[&callee.entry_block];
     let mut binding_ops = Vec::new();
-    let mut held_callable = None;
-    if let Some(callable) = closure_callable {
-        // Every refusal has been checked. Allocate the environment view only
-        // now, so a refused splice preserves all caller state, including its
-        // value allocator and type facts. CallerFacts sees only original
-        // arguments; the splice owns the environment binding explicitly.
-        // Keep the function itself alive until the activation exits, as the
-        // original call did. Retaining only the environment after its load
-        // permits a last-use function release between that load and retain,
-        // and can run function weakref callbacks before the inlined body.
-        // The existing explicit lifetime boundaries below pin this owner;
-        // no new borrowing or drop-placement rule is needed.
-        let held = caller.fresh_value();
-        caller.value_types.insert(held, TirType::DynBox);
-        binding_ops.push(owned_alias(callable, held, call_span));
-        held_callable = Some(held);
+    let held_callable = captured_callable
+        .filter(|_| needs_callable_owner)
+        .map(|callable| {
+            // A temporary callable must survive the invocation, including callee
+            // cleanup. Its last release can run weakref callbacks or destroy an
+            // object owned by the function. Keep this use even for frameless bodies.
+            let held = caller.fresh_value();
+            caller.value_types.insert(held, TirType::DynBox);
+            binding_ops.push(owned_alias(callable, held, call_span));
+            held
+        });
+    if first_parameter != 0 {
+        let callable = held_callable
+            .or(captured_callable)
+            .expect("bound closure arguments require their function");
         let view = caller.fresh_value();
         caller.value_types.insert(view, TirType::DynBox);
-        let mut load = TirOp::new(OpCode::FunctionClosure, vec![held], vec![view]);
+        let mut load = TirOp::new(OpCode::FunctionClosure, vec![callable], vec![view]);
         load.source_span = call_span;
         binding_ops.push(load);
         call_args.insert(0, view);

@@ -263,7 +263,9 @@ pub fn run_inliner(
                 })
                 .collect();
             let mut changed_this_fn = false;
-            activations.enter_caller();
+            activations.enter_caller(sites.iter().zip(&admitted).filter_map(
+                |(site, &admitted)| (admitted && site.callee != caller_id).then_some(site),
+            ));
             let mut inlined_call_polls = Vec::new();
             for ((site, poll), admitted) in sites.into_iter().zip(site_polls).zip(admitted).rev() {
                 if !admitted || site.callee == caller_id {

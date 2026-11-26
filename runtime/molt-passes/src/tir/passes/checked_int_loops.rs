@@ -748,8 +748,15 @@ fn select(
     // Project only call results reaching selected numerical work. Copies and
     // phis may forward the same value through more than one block.
     if !call_results.is_empty() {
-        let direct_numeric: HashSet<_> = numeric_inputs.iter().copied().collect();
-        let uses = std::cell::OnceCell::new();
+        let numeric_only = if !numeric_inputs.is_empty()
+            && call_results
+                .values()
+                .any(|&(block, index)| is_packed_buffer_read(&func.blocks[&block].ops[index]))
+        {
+            packed_numeric_demand(func, body, &capable, &numeric_inputs)
+        } else {
+            HashSet::default()
+        };
         let labels = std::cell::OnceCell::new();
         let mut sources: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
         for (result, source) in copies {
@@ -770,16 +777,10 @@ fn select(
                 let ops = &func.blocks[&block].ops;
                 let call = &ops[index];
                 // An escaped Python reference or a handler payload can observe
-                // the physical boxed result. Only a sole numeric use may
+                // the physical boxed result. Only proven numeric uses may
                 // consume the packed word without constructing that object.
-                if crate::tir::call_targets::direct_boxed_runtime(call)
-                    == Some(molt_ir::runtime_fn_generated::RuntimeFn::Buffer2dGet)
-                    && call.argument_custody().is_none()
-                    && direct_numeric.contains(&value)
-                    && uses
-                        .get_or_init(|| super::dce::build_use_counts(func))
-                        .get(&value)
-                        == Some(&1)
+                if is_packed_buffer_read(call)
+                    && numeric_only.contains(&value)
                     && ops.get(index + 1).is_some_and(|check| {
                         !check.has_checked_invocation_binding()
                             && check.exception_edge_kind()
@@ -810,6 +811,95 @@ fn select(
         .unchecked
         .sort_by_key(|&(block, index)| (block.0, index));
     Ok(selection)
+}
+
+fn is_packed_buffer_read(op: &TirOp) -> bool {
+    crate::tir::call_targets::direct_boxed_runtime(op)
+        == Some(molt_ir::runtime_fn_generated::RuntimeFn::Buffer2dGet)
+        && op.argument_custody().is_none()
+}
+
+/// Discharge every actual use, backwards from selected numeric operands.
+/// A forwarding edge is admitted only after all uses of its destination have
+/// been discharged. Cycles without an independently discharged exit remain
+/// boxed. Unknown uses (including handler payloads) stay in the use census.
+fn packed_numeric_demand(
+    func: &TirFunction,
+    body: &HashSet<BlockId>,
+    capable: &HashSet<ValueId>,
+    numeric_inputs: &[ValueId],
+) -> HashSet<ValueId> {
+    let mut remaining = super::dce::build_use_counts(func);
+    let mut ready = Vec::new();
+    let discharge = |value, remaining: &mut HashMap<ValueId, usize>, ready: &mut Vec<ValueId>| {
+        if let Some(count) = remaining.get_mut(&value) {
+            debug_assert!(*count > 0, "each use is discharged once");
+            *count -= 1;
+            if *count == 0 {
+                ready.push(value);
+            }
+        }
+    };
+    for &value in numeric_inputs {
+        discharge(value, &mut remaining, &mut ready);
+    }
+    if ready.is_empty() || func.frame_locals_exposed() || func.has_state_machine() {
+        return ready.into_iter().collect();
+    }
+    let labels = exception_label_to_block(func);
+    let exceptional: HashSet<_> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter_map(|op| exception_transfer_target(op, &labels))
+        .collect();
+    let mut predecessors: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
+    for bid in body {
+        let block = &func.blocks[bid];
+        for op in &block.ops {
+            // Value forwarding alone does not remove Python custody or a
+            // frame home. Restrict to structural copies, using their shared
+            // shape authority (including repeated identical operands).
+            if matches!(op.origin, None | Some(molt_ir::OpKind::Copy))
+                && copy_value_source(op).is_some()
+                && capable.contains(&op.results[0])
+            {
+                predecessors
+                    .entry(op.results[0])
+                    .or_default()
+                    .extend(op.operands.iter().copied());
+            }
+        }
+        if matches!(block.terminator, Terminator::StateDispatch { .. }) {
+            continue;
+        }
+        block.terminator.for_each_edge(|target, inputs| {
+            if !body.contains(&target) || exceptional.contains(&target) {
+                return;
+            }
+            let args = &func.blocks[&target].args;
+            if args.len() != inputs.len() {
+                return;
+            }
+            for (arg, &input) in args.iter().zip(inputs) {
+                if capable.contains(&arg.id) {
+                    predecessors.entry(arg.id).or_default().push(input);
+                }
+            }
+        });
+    }
+    let mut proven = HashSet::default();
+    while let Some(value) = ready.pop() {
+        if !proven.insert(value) {
+            continue;
+        }
+        if let Some(inputs) = predecessors.get(&value) {
+            for &input in inputs {
+                discharge(input, &mut remaining, &mut ready);
+            }
+        }
+    }
+    proven
 }
 
 /// The selected arithmetic ops, as (block, op index), in deterministic order.

@@ -54,4 +54,6 @@ mod tests;
 pub use api::{TirLiveness, TirLivenessResult};
 pub(crate) use raw::compute_raw_scalars;
 pub use solver::compute_liveness;
-pub(crate) use solver::{compute_liveness_in_domain, visit_exception_liveness};
+pub(crate) use solver::{
+    compute_liveness_in_domain, surviving_read_liveness, visit_exception_liveness,
+};
