@@ -540,7 +540,6 @@ mod tests {
             BUFFER2D_STORAGE_PACKED, HEADER_SIZE_BYTES, TYPE_ID_BUFFER2D, box_ptr_bits,
         };
         let mut cells = [7i64];
-        let data = [cells.as_mut_ptr() as u64, 1, 1];
         let header_words = HEADER_SIZE_BYTES as usize / size_of::<u64>();
         let mut object = [0u64; HEADER_SIZE_BYTES as usize / size_of::<u64>() + 4];
         object[0] = u64::from(TYPE_ID_BUFFER2D);
@@ -548,7 +547,7 @@ mod tests {
             1,
             1,
             BUFFER2D_STORAGE_PACKED,
-            data.as_ptr() as u64,
+            cells.as_mut_ptr() as u64,
         ]);
         let owner = box_ptr_bits(object[header_words..].as_ptr() as u64) as u64;
         let none = molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE;
@@ -590,7 +589,6 @@ mod tests {
             BUFFER2D_STORAGE_PACKED, HEADER_SIZE_BYTES, TYPE_ID_BUFFER2D, box_ptr_bits,
         };
         let cells = [i64::MIN, i64::MAX];
-        let data = [cells.as_ptr() as u64, 2, 2];
         let header_words = HEADER_SIZE_BYTES as usize / size_of::<u64>();
         let mut object = [0u64; HEADER_SIZE_BYTES as usize / size_of::<u64>() + 4];
         object[0] = u64::from(TYPE_ID_BUFFER2D);
@@ -598,7 +596,7 @@ mod tests {
             1,
             2,
             BUFFER2D_STORAGE_PACKED,
-            data.as_ptr() as u64,
+            cells.as_ptr() as u64,
         ]);
         let owner = box_ptr_bits(object[header_words..].as_ptr() as u64) as u64;
         let run = |owner, row, col, expected: Option<i64>| {

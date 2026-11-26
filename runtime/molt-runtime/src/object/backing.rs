@@ -322,6 +322,70 @@ pub(crate) fn release_grow(bytes: usize) {
     crate::resource::release_growth(bytes);
 }
 
+/// A pre-sized buffer whose owner can live inside an object. Unlike a tracked
+/// Vec box, it needs no separate header allocation, export state, or lock.
+/// Pushes initialize reserved cells and can never grow the allocation.
+#[repr(transparent)]
+pub(crate) struct FixedBacking<T>(MoltVec<T>);
+
+impl<T> FixedBacking<T> {
+    pub(crate) fn with_capacity(capacity: usize) -> Option<Self> {
+        let layout = Layout::array::<T>(capacity).ok()?;
+        if layout.size() == 0 {
+            return Some(Self(MoltVec::from_vec(Vec::new())));
+        }
+        if !charge_alloc(layout.size()) {
+            return None;
+        }
+        // Allocate this exact array so its retained charge is recoverable from
+        // the capacity alone. The vector owns only the initialized prefix.
+        let pointer = unsafe { alloc(layout).cast::<T>() };
+        if pointer.is_null() {
+            release_alloc(layout.size());
+            return None;
+        }
+        let values = unsafe { Vec::from_raw_parts(pointer, 0, capacity) };
+        Some(Self(MoltVec::from_vec(values)))
+    }
+
+    pub(crate) fn push(&mut self, value: T) {
+        assert!(self.len() < self.capacity());
+        self.0.push(value);
+    }
+
+    pub(crate) fn resize(&mut self, len: usize, value: T)
+    where
+        T: Clone,
+    {
+        assert!(len <= self.capacity());
+        self.0.resize(len, value);
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+}
+
+impl<T> Deref for FixedBacking<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        self.0.as_slice()
+    }
+}
+
+impl<T> DerefMut for FixedBacking<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.0.as_mut_slice()
+    }
+}
+
+impl<T> Drop for FixedBacking<T> {
+    fn drop(&mut self) {
+        release_alloc(self.0.capacity() * size_of::<T>());
+    }
+}
+
 /// Allocate an object-owned Vec with resource accounting for both the owning
 /// allocation and its backing buffer capacity.
 pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut MoltVec<T>> {

@@ -539,8 +539,9 @@ pub const fn refcount_word_with_owners(word: u32, owners: u32) -> u32 {
 pub const BUFFER2D_ROWS_OFFSET: i32 = 0;
 pub const BUFFER2D_COLS_OFFSET: i32 = 8;
 pub const BUFFER2D_STORAGE_TAG_OFFSET: i32 = 16;
-pub const BUFFER2D_STORAGE_PTR_OFFSET: i32 = 24;
-pub const BUFFER2D_STORAGE_PACKED: u64 = 0;
+pub const BUFFER2D_STORAGE_DATA_OFFSET: i32 = 24;
+/// Packed now points at cells directly. The old packed tag pointed to a vector.
+pub const BUFFER2D_STORAGE_PACKED: u64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GeneratedObjectAbiFacts {
@@ -622,7 +623,7 @@ pub struct GeneratedObjectAbiFacts {
     pub buffer2d_rows_offset: i32,
     pub buffer2d_cols_offset: i32,
     pub buffer2d_storage_tag_offset: i32,
-    pub buffer2d_storage_ptr_offset: i32,
+    pub buffer2d_storage_data_offset: i32,
     pub buffer2d_storage_packed: u64,
 }
 
@@ -707,7 +708,7 @@ impl GeneratedObjectAbiFacts {
             self.buffer2d_rows_offset as u64,
             self.buffer2d_cols_offset as u64,
             self.buffer2d_storage_tag_offset as u64,
-            self.buffer2d_storage_ptr_offset as u64,
+            self.buffer2d_storage_data_offset as u64,
             self.buffer2d_storage_packed,
         ]
     }
@@ -811,7 +812,7 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     buffer2d_rows_offset: BUFFER2D_ROWS_OFFSET,
     buffer2d_cols_offset: BUFFER2D_COLS_OFFSET,
     buffer2d_storage_tag_offset: BUFFER2D_STORAGE_TAG_OFFSET,
-    buffer2d_storage_ptr_offset: BUFFER2D_STORAGE_PTR_OFFSET,
+    buffer2d_storage_data_offset: BUFFER2D_STORAGE_DATA_OFFSET,
     buffer2d_storage_packed: BUFFER2D_STORAGE_PACKED,
 };
 
@@ -860,16 +861,17 @@ pub const RUNTIME_CALLABLE_KEY_SCHEME: u64 = runtime_callable_key("molt_func_new
 /// address as identity, or three constructor arguments, cannot link.
 /// Revision 16 binds the packed Buffer2D header and storage words.
 /// Revision 17 retires Wasm's eager intrinsic manifest from the shared ABI.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V17: u64 = 0x275b_941f_2385_a883;
+/// Revision 18 binds Buffer2D's direct cell pointer and its distinct packed tag.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V18: u64 = 0xe966_060d_0da7_1441;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V17,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V18,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 /// Link witnesses use this spelling in both the emitter and runtime producer.
 #[macro_export]
 macro_rules! generated_object_abi_link_symbol {
     ($mode:literal) => {
-        concat!("molt_generated_object_abi_275b941f2385a883_", $mode, "_v17")
+        concat!("molt_generated_object_abi_e966060d0da71441_", $mode, "_v18")
     };
 }
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str = generated_object_abi_link_symbol!("gil");
@@ -1910,14 +1912,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V17
+            GENERATED_OBJECT_ABI_FINGERPRINT_V18
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V17,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V18,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1925,13 +1927,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V17);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V18);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v17"), "{symbol}");
+            assert!(symbol.ends_with("_v18"), "{symbol}");
         }
     }
 
