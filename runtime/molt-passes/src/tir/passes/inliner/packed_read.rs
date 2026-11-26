@@ -352,7 +352,10 @@ mod tests {
         let mut annotated = func.clone();
         annotated.param_types[1] = TirType::Class(class);
         annotated.exact_param_types.clear();
-        assert!(extract(&annotated).is_none(), "an annotation is not layout proof");
+        assert!(
+            extract(&annotated).is_none(),
+            "an annotation is not layout proof"
+        );
 
         let mut changed = func.clone();
         let call = &mut changed.blocks.get_mut(&plan.buffer_read.block).unwrap().ops
