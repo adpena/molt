@@ -308,14 +308,12 @@ pub(super) fn seed_projection_ranges(
     let mut projections = Vec::new();
     for block in func.blocks.values() {
         for (index, op) in block.ops.iter().enumerate() {
-            match (op.opcode, op.operands.as_slice(), op.results.as_slice()) {
-                (OpCode::IterNextUnboxed, [iter], [item, _]) => {
-                    steps.insert(*item, (block.id, index, *iter));
-                }
-                (OpCode::UnboxInlineInt, [item], [raw]) => {
-                    projections.push((block.id, index, *item, *raw));
-                }
-                _ => {}
+            let operands = op.operands.as_slice();
+            let results = op.results.as_slice();
+            if let (OpCode::IterNextUnboxed, [iter], [item, _]) = (op.opcode, operands, results) {
+                steps.insert(*item, (block.id, index, *iter));
+            } else if let (OpCode::UnboxInlineInt, [item], [raw]) = (op.opcode, operands, results) {
+                projections.push((block.id, index, *item, *raw));
             }
         }
     }
