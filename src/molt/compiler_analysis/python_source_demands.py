@@ -400,7 +400,17 @@ class PythonSourceDemands:
             self._publish(self.classes, value, info)
         for owner, bases in scan.source_values.bases:
             value = (module_name, owner)
-            self._publish(self.bases, value, self.bases.get(value, frozenset()) | bases)
+            previous_bases = self.bases.get(value, frozenset())
+            if self._publish(self.bases, value, previous_bases | bases):
+                for incidence in tuple(self.value_phases.get(value, ())):
+                    if incidence.phase in {"descriptor", "escape", "expose"}:
+                        for base in bases - previous_bases:
+                            self.demand(
+                                (module_name, base),
+                                incidence.phase,
+                                incidence.arguments,
+                                consumer=incidence.consumer,
+                            )
         for owner, name, origins in scan.source_values.attributes:
             value = (module_name, owner)
             previous = self.attributes.get(value)
@@ -1379,7 +1389,14 @@ class PythonSourceDemands:
         ):
             self.demand(origin.receiver, "expose")
         if origin.contained:
-            if phase in {"escape", "release", "expose", "protocol", "descriptor"}:
+            if phase in {
+                "escape",
+                "release",
+                "expose",
+                "protocol",
+                "truth",
+                "descriptor",
+            }:
                 self.activate(origin._replace(contained=False), phase, arguments)
             return
         if origin.identity is not None:
@@ -1499,31 +1516,35 @@ class PythonSourceDemands:
                 namespace, _exposure = self.namespaces.get(
                     origin.value, ({}, frozenset())
                 )
-                for source in _exposure.union(*namespace.values()):
+                for source in _exposure.union(
+                    self.bases.get(origin.value, ()), *namespace.values()
+                ):
                     self.demand((module_name, source), phase, arguments)
             return
-        if (
-            phase == "protocol"
-            and origin.kind == "instance"
-            and owner is not None
-            and owner[-1] == "ClassDef"
-        ):
-            # A protocol finds its special method through `type(x)` and calls
-            # it; attribute hooks and data descriptors may run too. Ordinary
-            # methods, `__init__` and the class object stay unexposed, so an
-            # operator on a value that may be an instance leaves the class
-            # statement provable (HF-847).
-            self.activate(origin, "descriptor", arguments)
-            for method in sorted(IMPLICIT_INSTANCE_SPECIAL_METHODS):
-                self.demand((module_name, SourceMember(origin, method)), "escape")
-            # A value the class body exposed under no known name may sit under
-            # a special name; named members are selected above.
-            namespace, exposure = self.namespaces.get(origin.value, ({}, frozenset()))
-            for value in sorted(exposure - frozenset().union(*namespace.values())):
-                self.demand((module_name, value), "escape")
-            return
-        if phase == "protocol" and origin.kind != "instance":
-            return
+        if phase in {"protocol", "truth"}:
+            if origin.kind != "instance":
+                return
+            if owner is not None and owner[-1] == "ClassDef":
+                # Use the receiver's inherited slots and preserve descriptor
+                # effects. A class body can also publish an unnamed slot.
+                self.activate(origin, "descriptor", arguments)
+                methods = (
+                    ("__bool__", "__len__")
+                    if phase == "truth"
+                    else sorted(IMPLICIT_INSTANCE_SPECIAL_METHODS)
+                )
+                for method in methods:
+                    # Without a proof of slot presence at the use, either
+                    # truth slot may run. Escape also retains effects on the
+                    # result, such as length conversion through __index__.
+                    self.demand((module_name, SourceMember(origin, method)), "escape")
+                namespace, exposure = self.namespaces.get(
+                    origin.value, ({}, frozenset())
+                )
+                for value in sorted(exposure - frozenset().union(*namespace.values())):
+                    self.demand((module_name, value), "escape")
+                return
+            phase = "protocol"
         if phase == "release":
             if origin.kind == "instance":
                 self.demand((module_name, SourceMember(origin, "__del__")), "call")
@@ -1555,17 +1576,10 @@ class PythonSourceDemands:
                 "escape" if phase in {"escape", "protocol"} else "expose"
             )
             self.demand(origin.value, namespace_phase, arguments)
-            for values in namespace.values():
-                for value in values:
-                    self.demand(
-                        (module_name, value),
-                        namespace_phase,
-                    )
-            for value in exposure:
-                self.demand(
-                    (module_name, value),
-                    namespace_phase,
-                )
+            for value in exposure.union(
+                self.bases.get(origin.value, ()), *namespace.values()
+            ):
+                self.demand((module_name, value), namespace_phase)
             if owner is None:
                 # An escaped namespace exposes its star-bound names as well.
                 self.escaped_modules.setdefault(module_name, set()).add(

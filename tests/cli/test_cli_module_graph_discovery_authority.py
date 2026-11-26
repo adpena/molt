@@ -3264,6 +3264,78 @@ def test_instance_attribute_access_keeps_its_class_definition_closed(
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    "use",
+    [
+        "if Subject(): pass",
+        "assert Subject() and True",
+        "assert not not Subject()",
+        "test = bool; assert test(Subject())",
+    ],
+)
+@pytest.mark.parametrize(
+    "implementation",
+    [
+        "    def __bool__(self):\n        import live_leaf\n        return True\n",
+        "    def __len__(self):\n        return Count()\n",
+        "    @property\n    def __bool__(self):\n        import live_leaf\n"
+        "        return lambda: True\n",
+    ],
+)
+def test_truth_demands_only_reachable_special_methods(
+    tmp_path: Path, implementation: str, use: str
+) -> None:
+    import json
+    import sys
+
+    main = (
+        "class Count:\n"
+        "    def __index__(self):\n"
+        "        import live_leaf\n"
+        "        return 1\n"
+        "class Base:\n"
+        "    def __str__(self):\n"
+        "        import unrelated_leaf\n"
+        "        return 'unused'\n"
+        f"{implementation}"
+        "class Subject(Base):\n"
+        "    pass\n"
+        f"{use}\n"
+    )
+    entry = tmp_path / "entry.py"
+    entry.write_text(main, encoding="utf-8")
+    leaves = {"live_leaf", "unrelated_leaf"}
+    for module in leaves:
+        (tmp_path / f"{module}.py").write_text("pass\n", encoding="utf-8")
+    oracle = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\n"
+            "print(json.dumps(sorted(set(sys.modules) & {'live_leaf','unrelated_leaf'})))",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    executed_leaves = set(json.loads(oracle.stdout))
+    assert executed_leaves == {"live_leaf"}
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=False,
+    )
+    assert result.graph.keys() & leaves == executed_leaves
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
 def test_superseded_scan_outputs_leave_the_graph(tmp_path: Path) -> None:
     """HF-926: the graph is the union of each scan unit's current output.
 

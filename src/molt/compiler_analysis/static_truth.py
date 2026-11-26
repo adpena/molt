@@ -61,6 +61,7 @@ SourceDemandPhase = Literal[
     "release",
     "release_contents",
     "protocol",
+    "truth",
     "class_subscription",
     "descriptor",
     "mutate",

@@ -2437,6 +2437,7 @@ def _operand_dispatch_deferred(
     effects: EffectMask,
     *operands: StaticExpressionResult,
     reaches_contents: bool = False,
+    protocol: Literal["protocol", "truth"] = "protocol",
 ) -> frozenset[DeferredExecution]:
     """Attach operands to their own dispatch boundary, never inherited effects.
 
@@ -2462,7 +2463,7 @@ def _operand_dispatch_deferred(
         else "descriptor"
         if effects & INVOKES_DESCRIPTOR
         and not effects & _NON_DESCRIPTOR_CALLBACK_EFFECTS
-        else "protocol"
+        else protocol
     )
     phases: tuple[SourceDemandPhase, ...] = (
         (phase, "release")
@@ -5620,7 +5621,9 @@ class _Analyzer:
         )
         key = self._node_key(node)
         fact = self.transfer.expressions[key]
-        deferred_execution = _operand_dispatch_deferred(truth_effects, result.result)
+        deferred_execution = _operand_dispatch_deferred(
+            truth_effects, result.result, protocol="truth"
+        )
         scope.deferred_execution |= deferred_execution
         self.transfer.expressions[key] = replace(
             fact,
@@ -6164,7 +6167,14 @@ class _Analyzer:
                 # The existing call/formal graph owns uses of these arguments.
                 # Recreated/escaped code and opaque callees retain generic exposure.
                 protocol_indices = frozenset()
-            executes_protocol = bool(invocation_effects & INVOKES_ITERATION_CALLBACK)
+            truth_test = (
+                callee_result.identities == int(PythonIdentity.BUILTIN_BOOL)
+                and call_semantics.specialization_valid
+                and len(argument_results) == 1
+            )
+            executes_protocol = not truth_test and bool(
+                invocation_effects & INVOKES_ITERATION_CALLBACK
+            )
             fallback_operand = import_call_fallback_operand(
                 node, IMPORT_CALLABLES.get(callee_result.identities)
             )
@@ -6218,7 +6228,10 @@ class _Analyzer:
                     builtin or protocol_indices is not None
                 ):
                     deferred_execution |= _operand_dispatch_deferred(
-                        invocation_effects, argument, reaches_contents=True
+                        invocation_effects,
+                        argument,
+                        reaches_contents=not truth_test,
+                        protocol="truth" if truth_test else "protocol",
                     )
                     if executes_protocol:
                         deferred_execution |= frozenset(
@@ -8842,12 +8855,18 @@ class _Analyzer:
                         source_namespace.get(name, frozenset())
                         | result.exposed_source_origins
                     )
-                self.transfer.source_namespace_exposure[owner_key] = (
-                    self.transfer.source_namespace_exposure.get(owner_key, frozenset())
-                    | class_scope.escaped_source_origins
-                    | frozenset().union(
+                exposure = class_scope.escaped_source_origins
+                if not plain_preparation or builder != int(
+                    PythonIdentity.BUILTIN_BUILD_CLASS
+                ):
+                    # Arbitrary class construction may publish its inputs
+                    # under unknown names. Plain bases have a separate edge.
+                    exposure |= frozenset().union(
                         *(value.exposed_source_origins for value in argument_results)
                     )
+                self.transfer.source_namespace_exposure[owner_key] = (
+                    self.transfer.source_namespace_exposure.get(owner_key, frozenset())
+                    | exposure
                 )
                 namespace_values = tuple(namespace.values())
                 namespace_refs = frozenset().union(
@@ -9712,6 +9731,7 @@ class _Analyzer:
                     "escape",
                     "release",
                     "protocol",
+                    "truth",
                     "descriptor",
                     "mutate",
                     "method",
