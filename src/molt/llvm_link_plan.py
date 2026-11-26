@@ -243,7 +243,7 @@ def select_native_llvm_link_plan(
     shared_capability: tuple[Mapping[str, object], frozenset[str]] | None = None,
 ) -> LlvmNativeLinkPlan:
     from molt.llvm_toolchain import llvm_host_architecture, llvm_sdk_probe_environment
-    from molt.toolchain_identity import stable_executable_probe
+    from molt.toolchain_facts import capture_probe_tool
 
     target_os = {"darwin": "macos", "win32": "windows"}.get(sys.platform, sys.platform)
     if target_os not in {"linux", "macos", "windows", "freebsd", "openbsd"}:
@@ -263,10 +263,10 @@ def select_native_llvm_link_plan(
         raise ValueError("native LLVM link plan needs one admitted clang++ driver")
     driver = verification.prefix / driver_facts[0].path
     environment = llvm_sdk_probe_environment(environ)
-    with stable_executable_probe(driver, label="LLVM dependency selection") as (
-        _,
-        identity,
-    ):
+    label = "LLVM dependency selection"
+    tool = capture_probe_tool(driver, label=label)
+    identity = tool.identity
+    with tool.fenced(label=label) as entrypoint:
         if (identity.sha256, identity.size) != (
             driver_facts[0].sha256,
             driver_facts[0].size,
@@ -274,7 +274,7 @@ def select_native_llvm_link_plan(
             raise ValueError("LLVM dependency driver changed after SDK verification")
         try:
             directories = _driver_library_directories(
-                verification.prefix, driver, environment, target_os
+                verification.prefix, entrypoint, environment, target_os
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(f"LLVM dependency search query failed: {exc}") from exc
