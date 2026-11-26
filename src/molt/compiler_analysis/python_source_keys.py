@@ -56,10 +56,11 @@ class PythonSourceProjection(StrEnum):
     CALL_NATIVE_INITIALIZER = "Call.native_initializer"
     CALL_MAPPING_VALUE = "Call.mapping_value"
     CALL_NATIVE_BUILTINS = "Call.native_builtins"
+    DECORATOR_APPLY = "Decorator.apply"
 
 
 def python_source_projection_key(
-    node: ast.YieldFrom | ast.Call, projection: PythonSourceProjection
+    node: ast.expr, projection: PythonSourceProjection
 ) -> PythonSourceKey:
     """Keep a projected value distinct from its expression's completion."""
     source = python_node_source_key(node)

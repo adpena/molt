@@ -497,24 +497,7 @@ class PythonSourceDemands:
             value = (module_name, call.owner)
             previous = self.calls.get(value)
             if previous is not None:
-                call = call._replace(
-                    callees=call.callees | previous.callees,
-                    intrinsic_result=call.intrinsic_result | previous.intrinsic_result,
-                    arguments=tuple(
-                        (name, origins | prior[1], exposed | prior[2])
-                        for (name, origins, exposed), prior in zip(
-                            call.arguments, previous.arguments, strict=True
-                        )
-                    ),
-                    argument_strings=tuple(
-                        name if name == prior else None
-                        for name, prior in zip(
-                            call.argument_strings,
-                            previous.argument_strings,
-                            strict=True,
-                        )
-                    ),
-                )
+                call = call.join(previous)
             if self._publish(self.calls, value, call) and (
                 previous is None
                 or call.callees != previous.callees

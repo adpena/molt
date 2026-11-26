@@ -267,7 +267,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 74
+_ANALYSIS_SCHEMA: Final = 75
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -4160,6 +4160,39 @@ class _Analyzer:
             self._observed_stack[-1].deferred_execution |= refs
             self._observed_stack[-1].module_metadata_effects |= module_metadata_effects
 
+    def _publish_source_call(self, call: PythonSourceCall) -> None:
+        previous = self.transfer.source_calls.get(call.owner)
+        self.transfer.source_calls[call.owner] = (
+            call if previous is None else call.join(previous)
+        )
+
+    def _apply_source_decorator(
+        self,
+        expression: ast.expr,
+        decorator: StaticExpressionResult,
+        subject: StaticExpressionResult,
+        scope: _Scope,
+    ) -> StaticExpressionResult:
+        if not decorator.source_origins:
+            return subject
+        site = python_source_projection_key(
+            expression, PythonSourceProjection.DECORATOR_APPLY
+        )
+        self._publish_source_call(
+            PythonSourceCall(
+                site,
+                decorator.source_origins,
+                NO_IDENTITIES,
+                ((0, subject.source_origins, subject.exposed_source_origins),),
+                (None,),
+            )
+        )
+        # An unused result still executes the decorator with its actual.
+        self._record_operation_execution(
+            scope, frozenset({DeferredExecution(site, "read")})
+        )
+        return replace(subject, source_origins=subject.source_origins | {site})
+
     def _deferred_function_result(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
     ) -> StaticExpressionResult:
@@ -6056,7 +6089,6 @@ class _Analyzer:
                 # A call's value is not its callee. Retain the source relation
                 # while deferred jobs publish their actual return origins.
                 call_source = self._node_key(node)
-                previous_call = self.transfer.source_calls.get(call_source)
                 first_starred = next(
                     (
                         index
@@ -6080,47 +6112,19 @@ class _Analyzer:
                         node.keywords, argument_results[len(node.args) :], strict=True
                     )
                 )
-                if previous_call is not None:
-                    source_arguments = tuple(
-                        (name, origins | previous[1], exposed | previous[2])
-                        for (name, origins, exposed), previous in zip(
-                            source_arguments, previous_call.arguments, strict=True
-                        )
+                self._publish_source_call(
+                    PythonSourceCall(
+                        call_source,
+                        callee_result.result.source_origins,
+                        intrinsic_result,
+                        source_arguments,
+                        tuple(
+                            result.value
+                            if result.value_known and type(result.value) is str
+                            else None
+                            for result in argument_results
+                        ),
                     )
-                self.transfer.source_calls[call_source] = PythonSourceCall(
-                    call_source,
-                    callee_result.result.source_origins
-                    | (
-                        previous_call.callees
-                        if previous_call is not None
-                        else frozenset()
-                    ),
-                    intrinsic_result
-                    | (
-                        previous_call.intrinsic_result
-                        if previous_call is not None
-                        else NO_IDENTITIES
-                    ),
-                    source_arguments,
-                    tuple(
-                        result.value
-                        if result.value_known and type(result.value) is str
-                        else None
-                        for result in argument_results
-                    )
-                    if previous_call is None
-                    else tuple(
-                        result.value
-                        if result.value_known
-                        and type(result.value) is str
-                        and result.value == prior
-                        else None
-                        for result, prior in zip(
-                            argument_results,
-                            previous_call.argument_strings,
-                            strict=True,
-                        )
-                    ),
                 )
                 result_override = replace(
                     result_override,
@@ -8662,7 +8666,9 @@ class _Analyzer:
                     )
                     state_id = self._apply_effects(state_id, decorator_effects)
                     function_result = replace(
-                        function_result,
+                        self._apply_source_decorator(
+                            expression, constructor, function_result, scope
+                        ),
                         identities=function_result.identities | OTHER_IDENTITY,
                         deferred_complete=False,
                         attribute_hooks=None,
@@ -8677,10 +8683,12 @@ class _Analyzer:
             effects |= bind_effects
             self._queue_function(node, definition_scope, state_id, defaults)
         elif isinstance(node, ast.ClassDef):
+            decorators = []
             for expression in node.decorator_list:
                 result = self.eval_expr(expression, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
+                decorators.append((expression, result.result))
             # LOAD_BUILD_CLASS is after decorator evaluation and before bases
             # and keywords. It bypasses globals and the class-local mapping.
             builder = self._guarded_member_identity(
@@ -9023,31 +9031,35 @@ class _Analyzer:
                     constructors |= frozenset(
                         {DeferredExecution(self._node_key(node), "escape")}
                     )
+                class_result = StaticExpressionResult(
+                    identities=possible_identity(PythonIdentity.USER_CLASS),
+                    source_origins=frozenset({self._node_key(node)}),
+                    deferred=constructors
+                    | frozenset({DeferredExecution(self._node_key(node), "class")}),
+                    exposed_deferred=namespace_refs
+                    | frozenset().union(
+                        *(result.exposed_deferred for result in argument_results)
+                    ),
+                    exposes_module_globals=any(
+                        result.exposes_module_globals
+                        for result in (*namespace_values, *argument_results)
+                    ),
+                    deferred_complete=not node.decorator_list
+                    and all(result.deferred_complete for result in argument_results),
+                    attribute_hooks=class_hooks,
+                    instance_attribute_hooks=instance_hooks,
+                    class_instantiation_inert=plain_creation and not constructors,
+                )
+                for expression, decorator in reversed(decorators):
+                    class_result = self._apply_source_decorator(
+                        expression, decorator, class_result, scope
+                    )
                 class_state, bind_effects = self._write_name(
                     class_state,
                     scope,
                     node.name,
-                    possible_identity(PythonIdentity.USER_CLASS),
-                    result=StaticExpressionResult(
-                        source_origins=frozenset({self._node_key(node)}),
-                        deferred=constructors
-                        | frozenset({DeferredExecution(self._node_key(node), "class")}),
-                        exposed_deferred=namespace_refs
-                        | frozenset().union(
-                            *(result.exposed_deferred for result in argument_results)
-                        ),
-                        exposes_module_globals=any(
-                            result.exposes_module_globals
-                            for result in (*namespace_values, *argument_results)
-                        ),
-                        deferred_complete=not node.decorator_list
-                        and all(
-                            result.deferred_complete for result in argument_results
-                        ),
-                        attribute_hooks=class_hooks,
-                        instance_attribute_hooks=instance_hooks,
-                        class_instantiation_inert=plain_creation and not constructors,
-                    ),
+                    class_result.identities,
+                    result=class_result,
                 )
                 flow = self._merge_flows(
                     flow,
