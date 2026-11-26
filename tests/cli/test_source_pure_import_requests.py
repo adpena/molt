@@ -2140,6 +2140,55 @@ def source_protocol_oracle(tmp_path, monkeypatch, source, provider, leaves):
     return observed, cold
 
 
+@pytest.mark.parametrize("shadowed", [False, True])
+def test_iter_acquisition_uses_only_the_receiver_protocol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shadowed: bool
+) -> None:
+    live, dormant = "_molt_iter_protocol_live", "_molt_iter_protocol_dormant"
+    provider = (
+        "class Cursor:\n"
+        f"    def __iter__(self):\n        import {live}\n        return iter(())\n"
+        f"    def ordinary(self): import {dormant}\n"
+    )
+    source = "from carrier import Cursor\n"
+    if shadowed:
+        source += (
+            "import builtins\n"
+            "def iter(value):\n"
+            "    value.ordinary()\n"
+            "    return builtins.iter(value)\n"
+        )
+    source += "iter(Cursor())\n"
+    observed, found = source_protocol_oracle(
+        tmp_path, monkeypatch, source, provider, {live, dormant}
+    )
+    assert observed == ([dormant, live] if shadowed else [live])
+    assert live in found
+    assert (dormant in found) is shadowed
+
+
+def test_iter_returns_the_user_iterators_other_methods(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live, dormant = "_molt_iter_result_live", "_molt_iter_result_dormant"
+    provider = (
+        "class Iterator:\n"
+        "    def __iter__(self): return self\n"
+        "    def __next__(self): raise StopIteration\n"
+        f"    def consume(self): import {live}\n"
+        f"    def unrelated(self): import {dormant}\n"
+        "class Iterable:\n"
+        "    def __iter__(self): return Iterator()\n"
+    )
+    source = "from carrier import Iterable\niter(Iterable()).consume()\n"
+    observed, found = source_protocol_oracle(
+        tmp_path, monkeypatch, source, provider, {live, dormant}
+    )
+    assert observed == [live]
+    assert live in found
+    assert dormant not in found
+
+
 def test_await_and_yield_from_keep_distinct_results_of_the_same_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
