@@ -191,9 +191,7 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
                 let position = formal(&sources, *value)?;
                 sources.insert(*view, Source::Formal(position));
             } else if op.opcode == OpCode::Copy && op.origin == Some(OpKind::TraceExit) {
-                if read.is_none() {
-                    return None;
-                }
+                read?;
                 retirement = Some((site, snapshot(&frame, site, &sources)?));
             } else if (op.opcode == OpCode::FrameSetLocation
                 || (op.opcode == OpCode::Copy && op.origin == Some(OpKind::Line)))

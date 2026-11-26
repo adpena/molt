@@ -91,6 +91,13 @@ struct Poll {
     release: ValueId,
 }
 
+#[derive(Clone, Copy)]
+struct WrapperScope {
+    identity: ValueId,
+    present: ValueId,
+    method: ValueId,
+}
+
 impl Resume<'_, '_> {
     fn present(&mut self, ops: &mut Vec<TirOp>) -> ValueId {
         if let Some(location) = self.caller_location {
@@ -162,13 +169,16 @@ impl Resume<'_, '_> {
     fn wrapper_service(
         &mut self,
         ops: Vec<TirOp>,
-        identity: ValueId,
-        present: ValueId,
-        method: ValueId,
+        scope: WrapperScope,
         ready: BlockId,
         outward: BlockId,
-        raised: bool,
+        origin: ExceptionEdgeKind,
     ) -> (BlockId, BlockId) {
+        let WrapperScope {
+            identity,
+            present,
+            method,
+        } = scope;
         let frame = self
             .state
             .wrapper
@@ -178,7 +188,7 @@ impl Resume<'_, '_> {
             .wrapper
             .level(self.state.wrapper_retire, identity, present);
         let failed = self.retire(identity, None, &[], outward);
-        let next = if raised {
+        let next = if origin == ExceptionEdgeKind::Unwind {
             failed
         } else {
             self.retire(identity, Some(&final_frame), &[], ready)
@@ -189,11 +199,7 @@ impl Resume<'_, '_> {
             Poll {
                 next,
                 failed,
-                origin: if raised {
-                    ExceptionEdgeKind::Unwind
-                } else {
-                    ExceptionEdgeKind::Origin
-                },
+                origin,
                 release: method,
             },
         );
@@ -216,8 +222,13 @@ impl Resume<'_, '_> {
         let wrapper_id = push(self.func, &mut ops);
         let present = self.present(&mut ops);
         let method = self.hold(&mut ops, self.state.leaf.function);
+        let scope = WrapperScope {
+            identity: wrapper_id,
+            present,
+            method,
+        };
         let (wrapper_service, _) =
-            self.wrapper_service(ops, wrapper_id, present, method, ready, outward, false);
+            self.wrapper_service(ops, scope, ready, outward, ExceptionEdgeKind::Origin);
         let without_leaf = service_if_pending(self.func, wrapper_service, ready);
 
         let mut ops = Vec::new();
@@ -228,6 +239,11 @@ impl Resume<'_, '_> {
         // wrapper's return poll. The linked homes hold the receivers.
         let method = self.hold(&mut ops, self.state.leaf.function);
         let field = self.hold(&mut ops, field);
+        let scope = WrapperScope {
+            identity: wrapper_id,
+            present,
+            method,
+        };
         let wrapper = self
             .state
             .wrapper
@@ -242,11 +258,11 @@ impl Resume<'_, '_> {
             .level(self.state.leaf_retire, leaf_id, present);
 
         let (service, next) =
-            self.wrapper_service(vec![], wrapper_id, present, method, ready, outward, false);
+            self.wrapper_service(vec![], scope, ready, outward, ExceptionEdgeKind::Origin);
         let release = insert(self.func, vec![Self::release(method)], jump(next));
         let normal = service_if_pending(self.func, service, release);
         let (service, next) =
-            self.wrapper_service(vec![], wrapper_id, present, method, ready, outward, true);
+            self.wrapper_service(vec![], scope, ready, outward, ExceptionEdgeKind::Unwind);
         let release = insert(self.func, vec![Self::release(method)], jump(next));
         let failed = service_if_pending(self.func, service, release);
         let normal = self.retire(
