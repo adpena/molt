@@ -439,10 +439,6 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// the next diagnostic and never executes.
     fn placeholder(&mut self, kind: MachineKind) -> Self::Value;
 
-    /// The active record's homes slot, also used for cold traceback capture.
-    fn frame_homes(&self) -> Option<Self::Slot>;
-    fn set_frame_homes(&mut self, slot: Option<Self::Slot>);
-
     /// Append a parameter of machine kind `kind` to `block`, before the first
     /// branch to it. The result is the parameter's value inside the block;
     /// every branch to `block` passes one argument per parameter, in order.

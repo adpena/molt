@@ -13,6 +13,32 @@ use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 
+/// The physical activation an operation observes. A lent record is addressable
+/// by the body, while only an owned record can be installed or retired.
+#[derive(Clone, Copy)]
+pub(crate) enum ActiveFrame<S> {
+    Absent,
+    Lent(S),
+    Owned(super::returns::OwnedFrame<S>),
+}
+
+impl<S: Copy> ActiveFrame<S> {
+    pub(crate) fn record(self) -> Option<S> {
+        match self {
+            Self::Absent => None,
+            Self::Lent(slot) => Some(slot),
+            Self::Owned(frame) => Some(frame.slot),
+        }
+    }
+
+    pub(crate) fn owned(&self) -> Option<&super::returns::OwnedFrame<S>> {
+        match self {
+            Self::Owned(frame) => Some(frame),
+            Self::Absent | Self::Lent(_) => None,
+        }
+    }
+}
+
 pub(crate) type HomeInitializations = HashSet<(BlockId, usize)>;
 
 fn frame_dispatch_kind(op: &TirOp) -> Option<OpKind> {
@@ -222,23 +248,36 @@ pub(crate) fn store_location<B: super::CodegenBuilder>(b: &mut B, slot: B::Slot,
     b.store_word(address, molt_codegen_abi::FRAME_LOCATION_OFFSET, value);
 }
 
-/// Each local invocation starts with no linked frame. Initialize custody in
-/// the physical entry, which executes once even when the TIR entry is a loop.
-pub(crate) fn initialize_owned_execution_frame<B: super::CodegenBuilder>(
-    b: &mut B,
-    policy: molt_ir::ir::ExecutionContextPolicy,
-    entry_kind: impl FnOnce() -> Option<FrameEntryKind>,
-) -> Option<super::returns::OwnedFrame<B::Slot>> {
-    if policy != molt_ir::ir::ExecutionContextPolicy::Local {
-        return None;
+impl FrameLayout {
+    /// Resolve the physical activation in the machine entry, which executes
+    /// once even when the TIR entry is a loop. Only a declared entry can
+    /// acquire a record to retire. Its base also identifies a zero-home frame
+    /// to a cold traceback capture.
+    pub(crate) fn activate<B: super::CodegenBuilder>(
+        &self,
+        b: &mut B,
+        policy: ExecutionContextPolicy,
+        on_lend_failure: impl FnOnce(&mut B),
+    ) -> ActiveFrame<B::Slot> {
+        if self.entry == FrameEntry::Absent {
+            if self.homes.is_some() {
+                let slot = b.entry_slot("borrowed_frame_homes");
+                lend_homes(b, slot, on_lend_failure);
+                return ActiveFrame::Lent(slot);
+            }
+            return ActiveFrame::Absent;
+        }
+        if policy != ExecutionContextPolicy::Local {
+            return ActiveFrame::Absent;
+        }
+        let slot = b.entry_slot("owned_frame_base");
+        let zero = b.constant(0);
+        b.store_slot(slot, zero);
+        ActiveFrame::Owned(super::returns::OwnedFrame {
+            slot,
+            kind: self.entry.kind(),
+        })
     }
-    let slot = b.entry_slot("owned_frame_base");
-    let zero = b.constant(0);
-    b.store_slot(slot, zero);
-    Some(super::returns::OwnedFrame {
-        slot,
-        kind: entry_kind(),
-    })
 }
 
 /// An inline frame helper's three logical words. An entry returns the new
@@ -459,7 +498,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
         &mut self,
         b: &mut B,
         op: &TirOp,
-        owned: Option<super::returns::OwnedFrame<B::Slot>>,
+        frame: ActiveFrame<B::Slot>,
         poll_frame: Option<B::Word>,
         initializes_home: bool,
     ) -> bool {
@@ -476,7 +515,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
         match kind {
             OpKind::TraceExit => return true,
             OpKind::TraceEnterSlot => {
-                let Some(owned) = owned else {
+                let Some(owned) = frame.owned() else {
                     self.fatal("trace_enter_slot requires local execution-context ownership");
                     return true;
                 };
@@ -507,7 +546,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
             | OpKind::FrameHomeTake => {}
             _ => return false,
         }
-        let (Some(slot), Some(index)) = (b.frame_homes(), integer()) else {
+        let (Some(slot), Some(index)) = (frame.record(), integer()) else {
             self.fatal(format!("{kind} needs its frame homes and index"));
             return true;
         };

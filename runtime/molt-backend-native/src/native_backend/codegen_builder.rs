@@ -927,12 +927,6 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             self.jump(target, args);
         }
     }
-    fn frame_homes(&self) -> Option<Self::Slot> {
-        self.imports.frame_homes
-    }
-    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
-        self.imports.frame_homes = slot;
-    }
 
     fn pop_frame(&mut self, base: Value, kind: Option<molt_ir::frame_entry::FrameEntryKind>) {
         let sites = self.frame_sites();
