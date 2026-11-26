@@ -4832,7 +4832,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_PYTEST_CURRENT_TEST_FILE",
-      "output_neutral": false,
+      "output_neutral": true,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
       "summary": "Path of the JSON file that records the currently running pytest test under memory-guard custody; the guard bootstrap sets it for the re-executed pytest child and the proof queue runner sets it for test commands, and the bootstrap canonicalizes it and requires it when it verifies proof queue custody.",
       "values": []

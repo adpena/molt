@@ -1070,6 +1070,7 @@ def test_the_request_key_binds_arguments_environment_cwd_and_host() -> None:
         "MOLT_X": "1",
         "MOLT_MEMORY_GUARD_TOKEN": "a" * 32,
         "MOLT_GUARD_SCRATCH_ROOT": "/s/pt-aaaaaaaa",
+        "MOLT_PYTEST_CURRENT_TEST_FILE": "/s/pt-aaaaaaaa/current-test.json",
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB": "32.35",
         "MOLT_BUILD_TIMEOUT_SEC": "600",
     }
@@ -1079,6 +1080,7 @@ def test_the_request_key_binds_arguments_environment_cwd_and_host() -> None:
             **guarded,
             "MOLT_MEMORY_GUARD_TOKEN": "b" * 32,
             "MOLT_GUARD_SCRATCH_ROOT": "/s/pt-bbbbbbbb",
+            "MOLT_PYTEST_CURRENT_TEST_FILE": "/s/pt-bbbbbbbb/current-test.json",
             "MOLT_BACKEND_MEMORY_AVAILABLE_GB": "31.07",
         }
     )
