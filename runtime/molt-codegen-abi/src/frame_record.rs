@@ -21,6 +21,7 @@
 //! test, the release order and the arena discipline live here.
 
 use crate::boxed_word::{BoxTag, generate_has_tag};
+use crate::inline_refcount::RefcountOperation;
 use crate::thread_record::RecordWordBuilder;
 use crate::word::{WordBuilder, WordComparison};
 use crate::{
@@ -69,6 +70,23 @@ impl FrameReservation {
     }
 }
 
+/// Immutable identities in a synchronous record. The pending invocation lends
+/// its function and that function owns its code. A linked record owns both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FrameOwner {
+    Function,
+    Code,
+}
+
+impl FrameOwner {
+    pub(crate) fn type_id(self) -> u32 {
+        match self {
+            Self::Function => crate::TYPE_ID_FUNCTION,
+            Self::Code => crate::TYPE_ID_CODE,
+        }
+    }
+}
+
 /// Backend instruction spelling for frame transitions, extending the
 /// backend's one `RecordWordBuilder`. Control flow and layout are owned by
 /// the generators below.
@@ -88,6 +106,18 @@ pub trait FrameBuilder: RecordWordBuilder {
     /// `generate_refcount` site.
     fn retain(&mut self, bits: Self::Word);
     fn release(&mut self, bits: Self::Word);
+
+    fn frame_owner_refcount(
+        &mut self,
+        bits: Self::Word,
+        operation: RefcountOperation,
+        _owner: FrameOwner,
+    ) {
+        match operation {
+            RefcountOperation::Retain => self.retain(bits),
+            RefcountOperation::Release => self.release(bits),
+        }
+    }
 
     /// `molt_frame_record_enter(code_slot)`: the linked record's base, or 0.
     fn enter_slow(&mut self, code_slot: Self::Word) -> Self::Word;
@@ -247,8 +277,8 @@ pub fn generate_frame_push<B: FrameBuilder>(
             b.store_word(base, FRAME_LOCATION_OFFSET, absent);
             generate_unbound_homes(b, base, homes);
             b.store_word(thread, THREAD_RECORD_PENDING_INVOCATION_OFFSET, zero);
-            b.retain(function);
-            b.retain(code);
+            b.frame_owner_refcount(function, RefcountOperation::Retain, FrameOwner::Function);
+            b.frame_owner_refcount(code, RefcountOperation::Retain, FrameOwner::Code);
             b.store_word(thread, THREAD_RECORD_FRAME_TOP_OFFSET, base);
             b.set(result, base);
         },
@@ -345,9 +375,9 @@ pub fn generate_frame_pop<B: FrameBuilder>(
                     }
                 }
                 let function = b.load_word(base, FRAME_RECORD_FUNCTION_OFFSET);
-                b.release(function);
+                b.frame_owner_refcount(function, RefcountOperation::Release, FrameOwner::Function);
                 let code = b.load_word(base, FRAME_RECORD_CODE_OFFSET);
-                b.release(code);
+                b.frame_owner_refcount(code, RefcountOperation::Release, FrameOwner::Code);
                 let start = b.add_immediate(base, -FRAME_RECORD_HEADER_BYTES);
                 b.store_word(thread, THREAD_RECORD_ARENA_TOP_OFFSET, start);
             },

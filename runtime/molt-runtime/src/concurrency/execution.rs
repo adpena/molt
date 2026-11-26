@@ -154,7 +154,7 @@ pub(crate) fn current_thread_has_runtime_execution_custody() -> bool {
 /// depth, so its logical execution depth stands in for GIL custody.
 #[cfg(target_arch = "wasm32")]
 #[inline(always)]
-fn runtime_execution_custody_in(tls: &crate::state::ExecutionTls) -> bool {
+pub(crate) fn runtime_execution_custody_in(tls: &crate::state::ExecutionTls) -> bool {
     // Shutdown owns a distinct lifetime capability, not an ordinary admitted
     // execution frame. Its callbacks must remain attached without fabricating
     // a runtime lease or WASM execution depth during finalization.
@@ -167,7 +167,7 @@ fn runtime_execution_custody_in(tls: &crate::state::ExecutionTls) -> bool {
 /// custody. A nested entry under them owns nothing.
 #[cfg(not(target_arch = "wasm32"))]
 #[inline(always)]
-fn runtime_execution_custody_in(tls: &crate::state::ExecutionTls) -> bool {
+pub(crate) fn runtime_execution_custody_in(tls: &crate::state::ExecutionTls) -> bool {
     (tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0) && tls.gil_depth.get() != 0
 }
 
@@ -340,9 +340,9 @@ impl RuntimeExecutionCustody {
         #[cfg(target_arch = "wasm32")]
         {
             let was_outer = {
-                let depth = &crate::state::execution_tls().wasm_execution_depth;
-                let previous = depth.get();
-                depth.set(
+                let tls = crate::state::execution_tls();
+                let previous = tls.wasm_execution_depth.get();
+                tls.set_wasm_execution_depth(
                     previous
                         .checked_add(1)
                         .expect("wasm runtime execution depth overflow"),
@@ -454,10 +454,10 @@ impl RuntimeExecutionCustody {
                     || {
                         if self.established_cext_context {
                             {
-                                let depth = &crate::state::execution_tls().wasm_execution_depth;
-                                let previous = depth.get();
+                                let tls = crate::state::execution_tls();
+                                let previous = tls.wasm_execution_depth.get();
                                 assert_ne!(previous, 0, "wasm runtime execution depth underflow");
-                                depth.set(previous - 1);
+                                tls.set_wasm_execution_depth(previous - 1);
                             }
                         }
                     },
@@ -1257,8 +1257,13 @@ mod tests {
                 !crate::object::rc_transition_trace_enabled(),
                 "this plain transition cell requires RC diagnostics disabled"
             );
-            let expected = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
+            let expected = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC
+                || crate::object::rc_transition_trace_enabled()
+                || (cfg!(debug_assertions) && molt_obj_model::trace_ptr_registry())
+            {
                 runtime
+            } else if cfg!(debug_assertions) {
+                CompiledRefcountAdmission::AttachedFrameOwners as u64
             } else {
                 CompiledRefcountAdmission::AttachedPlain as u64
             };
@@ -2075,6 +2080,10 @@ mod tests {
     #[test]
     fn wasm_logical_gil_and_execution_nesting_are_distinct() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
+        use molt_codegen_abi::inline_refcount::CompiledRefcountAdmission;
+        let admission = || crate::state::execution_tls().refcount_admission.get();
+        let runtime = CompiledRefcountAdmission::Runtime as u64;
+        assert_eq!(admission(), runtime);
         assert!(gil_held(), "single-threaded wasm owns the logical GIL");
         assert!(
             !execution_is_nested(),
@@ -2087,6 +2096,16 @@ mod tests {
         assert!(!record.is_null());
         assert!(execution_is_nested());
         assert!(current_thread_has_runtime_execution_custody());
+        let attached = if crate::object::rc_transition_trace_enabled()
+            || (cfg!(debug_assertions) && molt_obj_model::trace_ptr_registry())
+        {
+            runtime
+        } else if cfg!(debug_assertions) {
+            CompiledRefcountAdmission::AttachedFrameOwners as u64
+        } else {
+            CompiledRefcountAdmission::AttachedPlain as u64
+        };
+        assert_eq!(admission(), attached);
         let inner_token = RuntimeExecutionGuard::enter().into_encoded_lane();
         let inner = unsafe { RuntimeExecutionGuard::from_encoded_lane(inner_token) };
         assert_eq!(
@@ -2098,7 +2117,9 @@ mod tests {
             execution_is_nested(),
             "nested exit must preserve the outer wasm execution frame"
         );
+        assert_eq!(admission(), attached);
         drop(outer);
+        assert_eq!(admission(), runtime);
         assert!(!execution_is_nested());
         assert!(!current_thread_has_runtime_execution_custody());
         assert!(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());

@@ -25,6 +25,7 @@ from molt.compiler_analysis.python_imports import (
     StaticMetadataValue,
     UnresolvedStaticImportError,
     static_import_discovery,
+    project_static_import_request,
 )
 from molt.compiler_analysis import python_binding_flow
 from molt.target_python import TargetPythonVersion
@@ -901,3 +902,46 @@ def test_deferred_import_mutation_requires_matching_runtime_catalog(
             ),
         )
         assert analysis.unresolved_dynamic_imports
+
+
+@pytest.mark.parametrize(
+    "written_name",
+    ["__name__", "__spec__", "__path__", "__package__"],
+)
+def test_relative_import_preserves_unwritten_package_anchor(written_name: str) -> None:
+    tree = ast.parse("callback()\nfrom . import child\n")
+    premise = PythonNamespacePremise(
+        foreign_writes=(written_name,),
+        member_writes=0,
+        entry_member_writes=0,
+        noncanonical_imports=(),
+    )
+    projection = _source_import_scan._collect_imports_for_graph(
+        tree, "pkg.entry", namespace_premise=premise
+    )
+    assert projection.requires_runtime_package_anchor is (written_name == "__package__")
+    site = next(site for site in projection.source_sites if site.request is not None)
+    if written_name == "__package__":
+        assert "pkg.child" not in projection.imports
+        assert site.plan.errors == ("unknown_package",)
+    else:
+        assert "pkg.child" in projection.imports
+        assert site.plan.requires_runtime_execution is (written_name == "__spec__")
+
+
+def test_unknown_path_presence_keeps_the_fallback_anchor_unresolved() -> None:
+    context = ModuleImportContext(
+        "pkg.owner",
+        False,
+        state=ModuleImportState(
+            StaticMetadataValue("absent"),
+            StaticMetadataValue("absent"),
+            StaticMetadataValue.known("pkg.owner"),
+            None,
+        ),
+    )
+    request = StaticImportRequest.statement("child", level=1)
+    projection = project_static_import_request(request, context)
+    assert projection.error == "unknown_path"
+    assert projection.requires_runtime
+    assert projection.modules == ()

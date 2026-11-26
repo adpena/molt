@@ -11,6 +11,8 @@ const OBJECT: u64 = crate::QNAN | crate::TAG_PTR | ADDRESS;
 struct Model {
     count: u32,
     reads: usize,
+    kind: u32,
+    kind_reads: usize,
     writes: usize,
     slow: Option<RefcountOperation>,
     width: PointerWidth,
@@ -22,6 +24,8 @@ impl Model {
         Self {
             count,
             reads: 0,
+            kind: crate::TYPE_ID_FUNCTION,
+            kind_reads: 0,
             writes: 0,
             slow: None,
             width: PointerWidth::Bits64,
@@ -76,6 +80,11 @@ impl RefcountBuilder for Model {
             self.slow.is_none(),
             "the runtime owns the remainder of a slow transition"
         );
+        if offset == crate::HEADER_TYPE_ID_OFFSET {
+            assert_eq!(self.reads, 0, "kind is validated before the count");
+            self.kind_reads += 1;
+            return u64::from(self.kind);
+        }
         self.reads += 1;
         assert_eq!(
             offset, HEADER_REFCOUNT_OFFSET,
@@ -311,4 +320,103 @@ fn wasm_rejects_wide_payloads_before_truncating_an_address() {
         (model.reads, model.writes, model.slow),
         (0, 0, Some(RefcountOperation::Retain))
     );
+}
+
+#[test]
+fn hardened_frame_owners_validate_kind_and_release_only_a_nonterminal_edge() {
+    use crate::frame_record::FrameOwner;
+    use CompiledRefcountAdmission::{AttachedFrameOwners, AttachedPlain, Runtime};
+    use RefcountOperation::{Release, Retain};
+    for owner in [FrameOwner::Function, FrameOwner::Code] {
+        let kind = owner.type_id();
+        for (operation, count, after) in [(Retain, 2, 3), (Release, 2, 1)] {
+            let mut model = Model::new(count);
+            model.kind = kind;
+            generate_for_owner(
+                &mut model,
+                OBJECT,
+                AttachedFrameOwners as u64,
+                operation,
+                RefcountStorage::HardenedPlain,
+                Some(owner),
+            );
+            assert_eq!(
+                (
+                    model.kind_reads,
+                    model.reads,
+                    model.writes,
+                    model.count,
+                    model.slow
+                ),
+                (1, 1, 1, after, None)
+            );
+            for (admission, source, storage) in [
+                (Runtime, Some(owner), RefcountStorage::HardenedPlain),
+                (AttachedPlain, Some(owner), RefcountStorage::HardenedPlain),
+                (AttachedFrameOwners, None, RefcountStorage::HardenedPlain),
+                (AttachedFrameOwners, Some(owner), RefcountStorage::Atomic),
+            ] {
+                let mut model = Model::new(count);
+                model.kind = kind;
+                generate_for_owner(
+                    &mut model,
+                    OBJECT,
+                    admission as u64,
+                    operation,
+                    storage,
+                    source,
+                );
+                assert_eq!(
+                    (model.kind_reads, model.reads, model.writes, model.slow),
+                    (0, 0, 0, Some(operation))
+                );
+            }
+            let mut wrong = Model::new(count);
+            wrong.kind = crate::TYPE_ID_LIST;
+            generate_for_owner(
+                &mut wrong,
+                OBJECT,
+                AttachedFrameOwners as u64,
+                operation,
+                RefcountStorage::HardenedPlain,
+                Some(owner),
+            );
+            assert_eq!(
+                (wrong.kind_reads, wrong.reads, wrong.writes, wrong.slow),
+                (1, 0, 0, Some(operation))
+            );
+        }
+        for count in [1, 2 | REFCOUNT_RUNTIME_CUSTODY] {
+            let mut model = Model::new(count);
+            model.kind = kind;
+            generate_for_owner(
+                &mut model,
+                OBJECT,
+                AttachedFrameOwners as u64,
+                Release,
+                RefcountStorage::HardenedPlain,
+                Some(owner),
+            );
+            assert_eq!(
+                (model.reads, model.writes, model.count, model.slow),
+                (1, 0, count, Some(Release))
+            );
+        }
+        let mut model = Model::new(2);
+        model.width = PointerWidth::Bits32;
+        let bits = OBJECT | (1_u64 << 32);
+        model.expected_bits = bits;
+        generate_for_owner(
+            &mut model,
+            bits,
+            AttachedFrameOwners as u64,
+            Retain,
+            RefcountStorage::HardenedPlain,
+            Some(owner),
+        );
+        assert_eq!(
+            (model.kind_reads, model.reads, model.slow),
+            (0, 0, Some(Retain))
+        );
+    }
 }

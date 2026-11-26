@@ -1408,6 +1408,23 @@ extern "C" fn codec_opener(__context: u64, _path: u64, _flags: u64) -> u64 {
 #[test]
 fn append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pipe() {
     use std::os::fd::{AsRawFd, IntoRawFd};
+
+    // Parallel libtest cases can reopen a just-closed descriptor number.
+    // Compare the file it names so we never mistake that reuse for a leak
+    // or close another case's descriptor during cleanup.
+    let file_identity = |descriptor| {
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(descriptor, stat.as_mut_ptr()) } != 0 {
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EBADF)
+            );
+            return None;
+        }
+        let stat = unsafe { stat.assume_init() };
+        Some((stat.st_dev, stat.st_ino))
+    };
+
     crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("fs.write", |py| {
         let path = temp_path("append_admission");
         std::fs::write(&path, b"prefix").unwrap();
@@ -1418,6 +1435,7 @@ fn append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pip
         for (closefd, custom_opener) in [(true, false), (false, false), (true, true)] {
             let descriptor = unsafe { libc::open(path_c.as_ptr(), libc::O_PATH) };
             assert!(descriptor >= 0);
+            let original = file_identity(descriptor).unwrap();
             CODEC_OPENER_FD.store(i64::from(descriptor), Ordering::Relaxed);
             let opener = if custom_opener {
                 test_callable(py, codec_opener as *const (), 2)
@@ -1441,7 +1459,7 @@ fn append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pip
                 "OSError",
                 "EBADF is not a nonseekable stream"
             );
-            let live = unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0;
+            let live = file_identity(descriptor) == Some(original);
             assert_eq!(
                 live, !custom_opener,
                 "failed FileIO never owns the caller's descriptor"
@@ -1458,6 +1476,7 @@ fn append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pip
         for custom_opener in [false, true] {
             let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
             let descriptor = file.into_raw_fd();
+            let original = file_identity(descriptor).unwrap();
             CODEC_OPENER_FD.store(i64::from(descriptor), Ordering::Relaxed);
             let opener = if custom_opener {
                 test_callable(py, codec_opener as *const (), 2)
@@ -1483,7 +1502,7 @@ fn append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pip
             for bits in [handle, position, opener] {
                 dec_ref_bits(py, bits);
             }
-            assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } < 0);
+            assert_ne!(file_identity(descriptor), Some(original));
         }
         let (mut reader, writer) = std::io::pipe().unwrap();
         let descriptor = unsafe { libc::dup(writer.as_raw_fd()) };

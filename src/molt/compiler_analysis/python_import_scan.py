@@ -22,6 +22,7 @@ from molt.compiler_analysis.python_lexical_scope import (
     module_annotation_execution,
 )
 from molt.compiler_analysis.python_imports import (
+    DYNAMIC_RELATIVE_ANCHOR_ERRORS,
     ImportScanMode,
     is_compiler_intrinsics_module,
     SourceImportSite,
@@ -305,11 +306,6 @@ def _module_import_scan_mode(module_name: str, *, full_scan: bool) -> ImportScan
     return "full" if full_scan else "module_init"
 
 
-_DYNAMIC_RELATIVE_ANCHOR_ERRORS = frozenset(
-    {"unknown_package", "unknown_spec", "unknown_name"}
-)
-
-
 @dataclass(slots=True)
 class _DynamicRelativeImportDiscovery:
     """Graph candidates for imports whose runtime argument/anchor is dynamic."""
@@ -393,7 +389,7 @@ def _sealed_import_modules(
     module_name = contexts[0].module_name if contexts else None
     plan = plan_static_import_request(request, contexts)
     unclassified_errors = tuple(
-        error for error in plan.errors if error not in _DYNAMIC_RELATIVE_ANCHOR_ERRORS
+        error for error in plan.errors if error not in DYNAMIC_RELATIVE_ANCHOR_ERRORS
     )
     # Calls and the runtime's two relative-statement ImportErrors remain
     # catchable under exact custody. Other statement errors stay build-fatal.
@@ -401,7 +397,7 @@ def _sealed_import_modules(
         request.kind != "statement"
         or request.level > 0
         and all(
-            error in _DYNAMIC_RELATIVE_ANCHOR_ERRORS
+            error in DYNAMIC_RELATIVE_ANCHOR_ERRORS
             or error in {"no_parent", "beyond_top"}
             for error in plan.errors
         )

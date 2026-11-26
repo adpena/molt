@@ -110,6 +110,18 @@ impl FrameBuilder for NativeFrameBuilder<'_, '_> {
     fn release(&mut self, bits: Value) {
         emit_refcount(self.words.builder, bits, self.sites.release);
     }
+    fn frame_owner_refcount(
+        &mut self,
+        bits: Value,
+        operation: RefcountOperation,
+        owner: molt_codegen_abi::frame_record::FrameOwner,
+    ) {
+        let site = match operation {
+            RefcountOperation::Retain => self.sites.retain,
+            RefcountOperation::Release => self.sites.release,
+        };
+        super::refcount::emit_refcount_for_owner(self.words.builder, bits, site, Some(owner));
+    }
     fn enter_slow(&mut self, code_slot: Value) -> Value {
         let call = self
             .words

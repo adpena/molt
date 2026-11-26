@@ -143,6 +143,11 @@ through result emission. Root identity binds the physical directory and resolved
 coordinate, not its changing mtime. Product generations renew through the existing
 `record_use` path, including uses whose renewal is throttled; a hit performs no
 product retention sweep. The result cannot infer custody from an archive parent.
+When a managed Cargo target starts vacant, the build records the claim in
+acquisition order and captures the final directory identity under the same
+lifetime lease. Only this output placement can materialize during recording.
+Existing directories retain their original identities, and a change to the
+resolved coordinate refuses reuse.
 
 A reused result reports `cache.hit_tier = "build-record"` and `link.skipped = true`.
 It retains `emission_origin` unchanged as the original archive's provenance and

@@ -34,6 +34,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     IMPORT_CALLABLES_BY_TARGET,
 )
 from molt.compiler_analysis.python_imports import (
+    DYNAMIC_RELATIVE_ANCHOR_ERRORS,
     ModuleImportContext,
     StaticImportRequest,
     StaticImportProjection,
@@ -541,6 +542,8 @@ def _require_import_projection(
         raise ValueError(f"relative import globals are missing __name__ in {path}")
     if projection.error in {"invalid_name", "unknown_name"}:
         raise ValueError(f"relative import has invalid or dynamic __name__ in {path}")
+    if projection.error == "unknown_path":
+        raise ValueError(f"relative import has dynamic __path__ presence in {path}")
     return projection.modules
 
 
@@ -685,7 +688,7 @@ def _relative_source_obligation(
 ) -> LocalPythonRelativeImportObligation | None:
     """Classify only canonical unknown anchors, never invalid or dynamic names."""
 
-    if projection.error not in {"unknown_package", "unknown_spec", "unknown_name"}:
+    if projection.error not in DYNAMIC_RELATIVE_ANCHOR_ERRORS:
         return None
     name = request.name
     level = request.level
@@ -842,9 +845,7 @@ def analyze_local_imports(
                     )
             except ValueError as exc:
                 if projection.error not in {
-                    "unknown_package",
-                    "unknown_spec",
-                    "unknown_name",
+                    *DYNAMIC_RELATIVE_ANCHOR_ERRORS,
                     "no_parent",
                     "beyond_top",
                 }:

@@ -89,7 +89,7 @@ pub(crate) struct ExecutionTls {
     pub(crate) cext_execution_depth: AdmissionInput<u32>,
     pub(crate) compiled_depth: Cell<usize>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) wasm_execution_depth: Cell<usize>,
+    pub(crate) wasm_execution_depth: AdmissionInput<usize>,
     pub(crate) execution_identity: Cell<u64>,
     pub(crate) compiled_scope_top: Cell<u64>,
     pub(crate) compiled_public_dependencies: Cell<usize>,
@@ -201,6 +201,13 @@ impl ExecutionTls {
         self.refresh_refcount_admission();
     }
 
+    #[cfg(target_arch = "wasm32")]
+    #[inline]
+    pub(crate) fn set_wasm_execution_depth(&self, depth: usize) {
+        self.wasm_execution_depth.0.set(depth);
+        self.refresh_refcount_admission();
+    }
+
     #[inline]
     pub(crate) fn set_cext_execution_depth(&self, depth: u32) {
         self.cext_execution_depth.0.set(depth);
@@ -213,12 +220,14 @@ impl ExecutionTls {
     fn refresh_refcount_admission(&self) {
         use molt_codegen_abi::inline_refcount::CompiledRefcountAdmission;
         let admission = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC
-            || self.gil_depth.get() == 0
+            || !crate::concurrency::execution::runtime_execution_custody_in(self)
             || self.cext_execution_depth.get() == 0
-            || (self.lease_depth.get() == 0 && self.shutdown_drain_depth.get() == 0)
             || crate::object::rc_transition_trace_enabled()
+            || (cfg!(debug_assertions) && molt_obj_model::trace_ptr_registry())
         {
             CompiledRefcountAdmission::Runtime
+        } else if cfg!(debug_assertions) {
+            CompiledRefcountAdmission::AttachedFrameOwners
         } else {
             CompiledRefcountAdmission::AttachedPlain
         };
@@ -257,7 +266,7 @@ thread_local! {
             cext_execution_depth: AdmissionInput::new(0),
             compiled_depth: Cell::new(0),
             #[cfg(target_arch = "wasm32")]
-            wasm_execution_depth: Cell::new(0),
+            wasm_execution_depth: AdmissionInput::new(0),
             execution_identity: Cell::new(0),
             compiled_scope_top: Cell::new(0),
             compiled_public_dependencies: Cell::new(0),

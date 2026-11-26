@@ -88,6 +88,7 @@ impl<'ctx> LlvmBackend<'ctx> {
         // helpers retain and release nothing.
         let (thread, subject, admission) = (param(1), param(2), param(3));
         let mut frames = LlvmFrameBuilder {
+            backend: self,
             words: LlvmWords {
                 context,
                 builder: &builder,
@@ -169,6 +170,7 @@ impl<'ctx> FramePlacement for LlvmCodegen<'_, 'ctx> {
 /// always-inlined helper body. The method site generators reuse it
 /// (`method_site.rs`).
 pub(super) struct LlvmFrameBuilder<'a, 'ctx> {
+    pub(super) backend: &'a LlvmBackend<'ctx>,
     pub(super) words: LlvmWords<'a, 'ctx>,
     pub(super) function: FunctionValue<'ctx>,
     /// Holds only the helper's local slots; it branches to the body last.
@@ -320,6 +322,20 @@ impl<'ctx> FrameBuilder for LlvmFrameBuilder<'_, 'ctx> {
         self.words
             .builder
             .build_execution_call(self.release, &[bits.into(), self.admission.into()], "")
+            .unwrap();
+    }
+    fn frame_owner_refcount(
+        &mut self,
+        bits: Self::Word,
+        operation: RefcountOperation,
+        owner: molt_codegen_abi::frame_record::FrameOwner,
+    ) {
+        let callee = self
+            .backend
+            .ensure_owner_refcount_helper(operation, Some(owner));
+        self.words
+            .builder
+            .build_execution_call(callee, &[bits.into(), self.admission.into()], "")
             .unwrap();
     }
     fn enter_slow(&mut self, code_slot: Self::Word) -> Self::Word {

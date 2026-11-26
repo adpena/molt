@@ -623,34 +623,20 @@ def test_runtime_catalog_requires_source_and_survives_graph_unchanged(
         custody.validate_graph(dict(custody.catalog))
 
 
-def test_real_importlib_machinery_keeps_strict_finalizer_boundary() -> None:
+def test_file_loader_owns_its_lazy_importlib_util_dependency() -> None:
     stdlib = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
     owner = stdlib / "importlib" / "machinery.py"
-    catalog = (
-        ("importlib", stdlib / "importlib" / "__init__.py"),
-        ("importlib.machinery", owner),
-        ("importlib.util", stdlib / "importlib" / "util.py"),
-    )
     tree = ast.parse(owner.read_text(encoding="utf-8"))
-    custody = _RuntimeImportScanCustody(
-        owners=(("importlib.machinery", owner),),
-        catalog=catalog,
-        owner_ast_digests=(("importlib.machinery", canonical_module_digest(tree)),),
-    )
-    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        _collect_imports(tree, "importlib.machinery")
-    assert set(custody.modules).issubset(
-        scan_as_runtime_owner(
-            tree, "importlib.machinery", source_path=owner, custody=custody
-        ).imports
-    )
 
-    projection = _collect_imports_for_graph(
+    available = _collect_imports_for_graph(
         tree, "importlib.machinery", purpose=SourceImportPurpose.INVENTORY
     )
-    assert projection.requires_runtime_package_anchor
-    assert "importlib.util" in projection.dynamic_relative_import_candidates
-    assert "importlib.util" not in projection.imports
+    initialization = _collect_imports_for_graph(
+        tree, "importlib.machinery", import_scan_mode="module_init"
+    )
+    assert "importlib.util" in available.imports
+    assert "importlib.util" not in initialization.imports
+    assert not available.requires_runtime_package_anchor
 
 
 def test_real_asyncio_graph_projection_retains_static_and_relative_discovery() -> None:
@@ -959,10 +945,10 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
     assert "demo" in analysis.module_order
     if custody is not None:
         assert "importlib.machinery" in analysis.module_order
-        assert (
-            set(custody.modules) - {"importlib.machinery"}
-            <= analysis.module_deps["importlib.machinery"]
-        )
+        # Registry availability and this initializer's dependency edges
+        # have independent witnesses. Only the program imports math.
+        assert "sys" in analysis.module_deps["importlib.machinery"]
+        assert "math" not in analysis.module_deps["importlib.machinery"]
     else:
         assert "importlib.machinery" not in analysis.module_order
 

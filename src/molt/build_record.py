@@ -956,6 +956,27 @@ class InputLedger:
                     return
             self.claims.append(claim)
 
+    def complete_cargo_target_claim(self, initial: RecordedBuildClaim) -> None:
+        """Bind a previously vacant output root under its retained scope lease."""
+        try:
+            if (
+                initial.kind is not BuildClaimKind.CHECKOUT
+                or initial.cargo_target is not None
+                or initial.directory_identity is not None
+            ):
+                raise ValueError(
+                    "only an initially vacant Cargo target can materialize"
+                )
+            completed = RecordedBuildClaim.capture(initial.kind, initial.root)
+            if completed.resolved_root != initial.resolved_root:
+                raise ValueError(f"checkout target was retargeted: {initial.root}")
+            # Replay acquires owners in the original order, including when
+            # the first build populated this mutable output directory.
+            with self._lock:
+                self.claims[self.claims.index(initial)] = completed
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.refuse(f"checkout claim cannot be recorded: {exc}")
+
     def build_result(self, value: object) -> None:
         try:
             result = _result_from_payload(value)

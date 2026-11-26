@@ -320,7 +320,10 @@ def _with_early_cutoff(
         if cutoff is None:
             return build_function(request)
         key, record = cutoff
-        from molt.cli.build_output_layout import _replay_build_claim
+        from molt.cli.build_output_layout import (
+            _record_completed_cargo_target_claims,
+            _replay_build_claim,
+        )
 
         change = _build_record.check(
             record,
@@ -364,6 +367,8 @@ def _with_early_cutoff(
             capture_result=request.json_output,
         ) as ledger:
             result = build_function(request)
+            if result == 0:
+                _record_completed_cargo_target_claims(ledger)
         if result == 0:
             reason = _record_build(record, key, ledger, request)
             if reason is not None and verbose:

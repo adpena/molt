@@ -192,6 +192,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             .collect();
         let admission = *words.last().expect("a site helper takes the RC admission");
         let mut sites = LlvmFrameBuilder {
+            backend: self,
             words: LlvmWords {
                 context,
                 builder: &builder,
