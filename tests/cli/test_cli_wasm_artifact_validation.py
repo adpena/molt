@@ -805,6 +805,9 @@ def validation_specs(
     state_root = tmp_path / "state with spaces"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
     # runtime_cargo_plan owns the fixture's provisioned SDK generation.
+    # Explicit SDK selection belongs to the separate toolchain controls.
+    monkeypatch.delenv("WASI_SDK_PATH", raising=False)
+    monkeypatch.delenv("WASI_SDK_PREFIX", raising=False)
     monkeypatch.delenv("MOLT_WASI_SYSROOT", raising=False)
     monkeypatch.delenv("WASI_SYSROOT", raising=False)
     monkeypatch.setattr(
