@@ -755,15 +755,21 @@ def stdlib_module_intrinsic_facts(
         module_name, path, target_python=target_python, source=source
     )
     use = _intrinsic_use_from_tree(tree)
+    admission = _PythonAstDigestAdmission(tree)
     evidence = _stdlib_module_import_evidence_from_tree(
         module_name,
         path,
         tree,
         target_python=target_python,
         namespace_premise=namespace_premise,
+        admission=admission,
     )
-    namespace_summary = evidence.source_scan.namespace_summary
-    assert namespace_summary is not None, "full-module scan requires namespace syntax"
+    namespace_summary = python_namespace_summary(
+        tree,
+        package=python_package_name(module_name, is_package=path.name == "__init__.py"),
+        target_python=target_python.feature_version,
+        ast_digest_admission=admission,
+    )
     return StdlibModuleIntrinsicFacts(
         _stdlib_module_intrinsic_status_from_tree(tree, path.name, use),
         evidence,
@@ -779,8 +785,8 @@ def _stdlib_module_import_evidence_from_tree(
     *,
     target_python: TargetPythonVersion,
     namespace_premise: PythonNamespacePremise | None = None,
+    admission: _PythonAstDigestAdmission,
 ) -> StdlibModuleImportEvidence:
-    admission = _PythonAstDigestAdmission(tree)
     projection = _collect_imports_for_graph(
         tree,
         module_name,

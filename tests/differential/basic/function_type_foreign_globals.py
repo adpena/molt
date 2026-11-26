@@ -16,6 +16,11 @@ def read_global():
     return scale + len("ab")
 
 
+def code_of(function):
+    attribute = "_".join(("", "", "code", "", ""))
+    return getattr(function, attribute)
+
+
 class Counter:
     step = 3
 
@@ -24,7 +29,7 @@ class Counter:
 
 
 foreign = {"scale": 10, "Counter": Counter, "__builtins__": __builtins__}
-rebound = types.FunctionType(read_global.__code__, foreign)
+rebound = types.FunctionType(code_of(read_global), foreign)
 print("own globals", read_global())
 print("foreign globals", rebound())
 
@@ -34,7 +39,7 @@ print("foreign builtin shadow", rebound())
 scale = 2
 print("own update", read_global(), "foreign unchanged", rebound())
 
-method = types.FunctionType(Counter.advance.__code__, foreign)
+method = types.FunctionType(code_of(Counter.advance), foreign)
 print("method code over foreign globals", method(Counter(), 5), Counter().advance(5))
 
 del foreign["scale"]
@@ -43,5 +48,5 @@ try:
 except NameError as error:
     print("foreign NameError", error)
 
-print("code identity kept", rebound.__code__ is read_global.__code__)
+print("code identity kept", code_of(rebound) is code_of(read_global))
 print("globals identity", rebound.__globals__ is foreign)

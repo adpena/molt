@@ -255,32 +255,44 @@ def test_code_row_makes_every_premise_code_rebinding() -> None:
     assert UNKNOWN_GRAPH_NAMESPACE_WRITES.premise(first, frozenset()).code_rebinding
 
 
-def test_lowering_sees_exposed_definitions_only_with_a_code_rebinder() -> None:
-    exposed = ((1, 0, 2, 4, "FunctionDef"),)
-    policy = PythonBindingPolicy()
-    quiet = PythonNamespacePremise((), 0, 0, (), opaque_activation_sources=exposed)
-    # Lowering: without a rebinder an exposed function reads its own globals.
-    lowered = python_namespace_binding_policy(policy, quiet, lowering=True)
-    assert lowered.opaque_activation_sources == ()
-    rebinding = replace(quiet, code_rebinding=True)
-    assert (
-        python_namespace_binding_policy(
-            policy, rebinding, lowering=True
-        ).opaque_activation_sources
-        == exposed
+def test_function_exposure_and_foreign_globals_are_independent() -> None:
+    import ast
+
+    from molt.compiler_analysis.python_binding_flow import analyze_python_bindings
+    from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
+    from molt.compiler_analysis.python_source_keys import (
+        python_ast_digest,
+        python_node_source_key,
     )
-    # Discovery keeps the exposed set whatever the fact says.
-    assert python_namespace_binding_policy(policy, quiet).opaque_activation_sources == (
-        exposed
+
+    source = ast.parse(
+        "from _intrinsics import require_intrinsic as require\n"
+        "read = require('molt_namespace_entry_get')\n"
+        "def reader(owner):\n"
+        "    return read(owner, 'member', None)\n"
     )
-    # An owner with no proven exposure stays wholly opaque.
-    unknown = replace(quiet, opaque_activation_sources=None)
-    assert (
-        python_namespace_binding_policy(
-            policy, unknown, lowering=True
-        ).opaque_activation_sources
-        is None
-    )
+    function = source.body[-1]
+    assert isinstance(function, ast.FunctionDef)
+    returned = function.body[0]
+    assert isinstance(returned, ast.Return) and isinstance(returned.value, ast.Call)
+    exposed = (python_node_source_key(function),)
+    for rebinding in [False, True]:
+        premise = PythonNamespacePremise(
+            (), 0, 0, (), opaque_activation_sources=exposed, code_rebinding=rebinding
+        )
+        policy = python_namespace_binding_policy(
+            PythonBindingPolicy(), premise.scan_view()
+        )
+        assert policy.opaque_activation_sources == exposed
+        index = analyze_python_bindings(
+            source, source_digest=python_ast_digest(source), policy=policy
+        )
+        fact = index.call_fact(returned.value)
+        assert fact is not None
+        assert (
+            fact.callee_is(PythonIdentity.INTRINSIC_NAMESPACE_ENTRY_GET)
+            is not rebinding
+        )
 
 
 def test_reflection_marks_only_its_target_and_writes_no_member() -> None:
@@ -630,7 +642,8 @@ def test_scan_view_drops_lowering_facts_and_unnamed_foreign_writes() -> None:
     universe = frozenset({"Any", "value"})
     view = premise.scan_view(universe)
     assert (view.foreign_writes, view.foreign_universe) == (("Any", "value"), universe)
-    assert (view.namespace_reflected, view.code_rebinding) == (False, False)
+    assert not view.namespace_reflected
+    assert view.code_rebinding
     assert (view.escape_writes, view.instance_class_writer) == ((), None)
     # The analysis learns the universe, so a computed key outside it stays
     # foreign-written.
@@ -719,7 +732,6 @@ def test_scan_view_yields_the_same_scan_as_the_whole_premise(
         foreign_writes=view.foreign_writes,
         foreign_universe=universe,
         namespace_reflected=False,
-        code_rebinding=False,
         escape_writes=(),
         instance_class_writer=None,
         exact_receivers=(),

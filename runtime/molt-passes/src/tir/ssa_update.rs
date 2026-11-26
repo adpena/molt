@@ -68,7 +68,7 @@ pub struct RepairStats {
     pub renamed_uses: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DefPos {
     Arg,
     Op(usize),
@@ -176,187 +176,253 @@ pub fn repair(
     func: &mut TirFunction,
     variables: &[Variable],
 ) -> Result<RepairStats, RepairRefusal> {
+    if variables.is_empty() {
+        return Ok(RepairStats::default());
+    }
     let cfg = Cfg::build(func);
-    let mut seen: HashSet<ValueId> = HashSet::default();
-    for variable in variables {
+    let mut plan = RenamePlan::default();
+    for (index, variable) in variables.iter().enumerate() {
         for &name in &variable.names {
-            if !seen.insert(name) || !cfg.defs.contains_key(&name) {
+            if plan.name_variables.insert(name, index).is_some() || !cfg.defs.contains_key(&name) {
                 return Err(RepairRefusal::MalformedName);
             }
         }
     }
     let mut stats = RepairStats::default();
-    for variable in variables {
-        repair_one(func, &cfg, variable, &mut stats)?;
+    for (index, variable) in variables.iter().enumerate() {
+        plan.place_joins(func, &cfg, variable, index, &mut stats)?;
     }
+    plan.rename(func, &cfg, variables.len(), &mut stats)?;
     Ok(stats)
 }
 
-fn repair_one(
-    func: &mut TirFunction,
-    cfg: &Cfg,
-    variable: &Variable,
-    stats: &mut RepairStats,
-) -> Result<(), RepairRefusal> {
-    let names: HashSet<ValueId> = variable.names.iter().copied().collect();
-    // Definitions per reachable block. A name defined in an unreachable block
-    // has no path to any use.
-    let mut defs_in: HashMap<BlockId, Vec<DefPos>> = HashMap::default();
-    let mut arg_def_blocks: HashSet<BlockId> = HashSet::default();
-    for name in &variable.names {
-        let (block, pos) = cfg.defs[name];
-        if !cfg.reachable.contains(&block) {
-            continue;
-        }
-        defs_in.entry(block).or_default().push(pos);
-        if matches!(pos, DefPos::Arg) {
-            arg_def_blocks.insert(block);
-        }
-    }
-    let first_def_before = |block: BlockId, index: usize| {
-        defs_in
-            .get(&block)
-            .is_some_and(|positions| positions.iter().any(|pos| pos.precedes_op(index)))
-    };
+#[derive(Default)]
+struct RenamePlan {
+    name_variables: HashMap<ValueId, usize>,
+    /// Join args are appended in input variable order on both sides of an edge.
+    joins: HashMap<BlockId, Vec<usize>>,
+    handler_live_ins: HashMap<BlockId, Vec<usize>>,
+}
 
-    // Liveness: a block is live in when a path from its entry reaches a use
-    // before any definition. An exception edge leaves at its operation, so a
-    // definition later in the source block does not cover it.
-    let mut live_in: HashSet<BlockId> = HashSet::default();
-    let mut work: Vec<BlockId> = Vec::new();
-    for name in &variable.names {
-        for &(block, site) in cfg.uses.get(name).into_iter().flatten() {
-            let exposed = match site {
-                UseSite::Op(index) => !first_def_before(block, index),
-                UseSite::Terminator => !defs_in.contains_key(&block),
-            };
-            if exposed && live_in.insert(block) {
-                work.push(block);
+impl RenamePlan {
+    fn place_joins(
+        &mut self,
+        func: &mut TirFunction,
+        cfg: &Cfg,
+        variable: &Variable,
+        variable_index: usize,
+        stats: &mut RepairStats,
+    ) -> Result<(), RepairRefusal> {
+        // Only the first definition can kill a live-in requirement. Arg
+        // positions sort before operation results, which sort by index.
+        let mut first_defs: HashMap<BlockId, DefPos> = HashMap::default();
+        for name in &variable.names {
+            let (block, pos) = cfg.defs[name];
+            if cfg.reachable.contains(&block) {
+                first_defs
+                    .entry(block)
+                    .and_modify(|first| *first = (*first).min(pos))
+                    .or_insert(pos);
             }
         }
-    }
-    while let Some(block) = work.pop() {
-        for &pred in cfg.terminator_preds.get(&block).into_iter().flatten() {
-            if cfg.reachable.contains(&pred) && !defs_in.contains_key(&pred) && live_in.insert(pred)
-            {
-                work.push(pred);
-            }
-        }
-        for &(pred, index) in cfg.exception_preds.get(&block).into_iter().flatten() {
-            if !first_def_before(pred, index) && live_in.insert(pred) {
-                work.push(pred);
-            }
-        }
-    }
-    if live_in.contains(&cfg.entry) {
-        return Err(RepairRefusal::UndefinedUse);
-    }
-
-    // Joins: the pruned iterated dominance frontier. A block whose argument
-    // is itself a name already merges the variable.
-    let def_blocks: HashSet<BlockId> = defs_in.keys().copied().collect();
-    let joins: BTreeSet<BlockId> = iterated_dominance_frontier(&def_blocks, &cfg.frontiers)
-        .into_iter()
-        .filter(|block| live_in.contains(block) && !arg_def_blocks.contains(block))
-        .collect();
-    let mut join_arg: HashMap<BlockId, ValueId> = HashMap::default();
-    for &block in &joins {
-        if cfg.exception_preds.contains_key(&block) {
-            return Err(RepairRefusal::JoinAtExceptionTarget);
-        }
-        let arg = func.fresh_value();
-        func.blocks
-            .get_mut(&block)
-            .expect("join block exists")
-            .args
-            .push(TirValue {
-                id: arg,
-                ty: variable.ty.clone(),
-            });
-        func.value_types.insert(arg, variable.ty.clone());
-        join_arg.insert(block, arg);
-        stats.joins += 1;
-    }
-
-    // Rename in dominator-tree preorder: a block starts from its join
-    // argument, else from its immediate dominator's exit.
-    let mut entry_state: HashMap<BlockId, Option<ValueId>> = HashMap::default();
-    let mut exit_state: HashMap<BlockId, Option<ValueId>> = HashMap::default();
-    let mut exception_edges: Vec<(BlockId, Option<ValueId>)> = Vec::new();
-    for &bid in &cfg.preorder {
-        let mut state = match join_arg.get(&bid) {
-            Some(&arg) => Some(arg),
-            None => cfg
-                .tree
-                .idom(bid)
-                .and_then(|parent| exit_state.get(&parent).copied().flatten()),
+        let first_def_before = |block: BlockId, index: usize| {
+            first_defs
+                .get(&block)
+                .is_some_and(|pos| pos.precedes_op(index))
         };
-        entry_state.insert(bid, state);
-        let block = func
-            .blocks
-            .get_mut(&bid)
-            .expect("dominator tree block exists");
-        for arg in &block.args {
-            if names.contains(&arg.id) {
-                state = Some(arg.id);
-            }
-        }
-        let block_exception_succs = cfg.exception_succs.get(&bid);
-        for (index, op) in block.ops.iter_mut().enumerate() {
-            for operand in &mut op.operands {
-                if names.contains(operand) {
-                    let reaching = state.ok_or(RepairRefusal::UndefinedUse)?;
-                    if *operand != reaching {
-                        *operand = reaching;
-                        stats.renamed_uses += 1;
-                    }
-                }
-            }
-            for &(at, target) in block_exception_succs.into_iter().flatten() {
-                if at == index {
-                    exception_edges.push((target, state));
-                }
-            }
-            for result in &op.results {
-                if names.contains(result) {
-                    state = Some(*result);
+
+        let mut live_in: HashSet<BlockId> = HashSet::default();
+        let mut work: Vec<BlockId> = Vec::new();
+        for name in &variable.names {
+            for &(block, site) in cfg.uses.get(name).into_iter().flatten() {
+                let exposed = match site {
+                    UseSite::Op(index) => !first_def_before(block, index),
+                    UseSite::Terminator => !first_defs.contains_key(&block),
+                };
+                if exposed && live_in.insert(block) {
+                    work.push(block);
                 }
             }
         }
-        let mut undefined = false;
-        let mut renamed = 0;
-        block.terminator.for_each_value_mut(|value| {
-            if names.contains(value) {
-                match state {
-                    Some(reaching) if *value != reaching => {
-                        *value = reaching;
-                        renamed += 1;
-                    }
-                    Some(_) => {}
-                    None => undefined = true,
+        while let Some(block) = work.pop() {
+            for &pred in cfg.terminator_preds.get(&block).into_iter().flatten() {
+                if cfg.reachable.contains(&pred)
+                    && !first_defs.contains_key(&pred)
+                    && live_in.insert(pred)
+                {
+                    work.push(pred);
                 }
             }
-        });
-        block.terminator.for_each_edge_mut(|target, args| {
-            if join_arg.contains_key(target) {
-                match state {
-                    Some(reaching) => args.push(reaching),
-                    None => undefined = true,
+            for &(pred, index) in cfg.exception_preds.get(&block).into_iter().flatten() {
+                if !first_def_before(pred, index) && live_in.insert(pred) {
+                    work.push(pred);
                 }
             }
-        });
-        if undefined {
+        }
+        if live_in.contains(&cfg.entry) {
             return Err(RepairRefusal::UndefinedUse);
         }
-        stats.renamed_uses += renamed;
-        exit_state.insert(bid, state);
+
+        let def_blocks = first_defs.keys().copied().collect();
+        let joins: BTreeSet<BlockId> = iterated_dominance_frontier(&def_blocks, &cfg.frontiers)
+            .into_iter()
+            .filter(|block| {
+                live_in.contains(block) && !matches!(first_defs.get(block), Some(DefPos::Arg))
+            })
+            .collect();
+        for block in joins {
+            if cfg.exception_preds.contains_key(&block) {
+                return Err(RepairRefusal::JoinAtExceptionTarget);
+            }
+            let arg = func.fresh_value();
+            func.blocks
+                .get_mut(&block)
+                .expect("join block exists")
+                .args
+                .push(TirValue {
+                    id: arg,
+                    ty: variable.ty.clone(),
+                });
+            func.value_types.insert(arg, variable.ty.clone());
+            self.name_variables.insert(arg, variable_index);
+            self.joins.entry(block).or_default().push(variable_index);
+            stats.joins += 1;
+        }
+        for block in live_in {
+            if cfg.exception_preds.contains_key(&block) {
+                self.handler_live_ins
+                    .entry(block)
+                    .or_default()
+                    .push(variable_index);
+            }
+        }
+        Ok(())
     }
 
-    // An unreachable block can still branch into a join: the lift keeps the
-    // vestigial loop-else edge into a loop header. No execution takes that
-    // edge, so it passes a `None` placeholder, as the lift's own vestigial
-    // edges do, and the block keeps its arity.
-    if !join_arg.is_empty() {
+    fn rename(
+        &self,
+        func: &mut TirFunction,
+        cfg: &Cfg,
+        variables: usize,
+        stats: &mut RepairStats,
+    ) -> Result<(), RepairRefusal> {
+        // The walk visits each operand and definition once. Restoring only
+        // assignments made within a subtree avoids copying the reaching table
+        // at a branch or for every variable at the next block.
+        let mut reaching = vec![None; variables];
+        let mut undo: Vec<(usize, Option<ValueId>)> = Vec::new();
+        let mut ancestors = Vec::new();
+        let mut exception_carried = HashMap::default();
+        let mut exception_expected = HashMap::default();
+        for &bid in &cfg.preorder {
+            let parent = cfg.tree.idom(bid);
+            while ancestors.last().map(|&(block, _)| block) != parent {
+                let (_, cursor) = ancestors.pop().expect("ancestor precedes its child");
+                while undo.len() > cursor {
+                    let (variable, previous) = undo.pop().unwrap();
+                    reaching[variable] = previous;
+                }
+            }
+            ancestors.push((bid, undo.len()));
+            for &variable in self.handler_live_ins.get(&bid).into_iter().flatten() {
+                exception_expected.insert((bid, variable), reaching[variable]);
+            }
+            let block = func
+                .blocks
+                .get_mut(&bid)
+                .expect("dominator tree block exists");
+            for arg in &block.args {
+                self.define(arg.id, &mut reaching, &mut undo);
+            }
+            let mut exception_edges = cfg
+                .exception_succs
+                .get(&bid)
+                .into_iter()
+                .flatten()
+                .peekable();
+            for (index, op) in block.ops.iter_mut().enumerate() {
+                for operand in &mut op.operands {
+                    self.rename_use(operand, &reaching, stats)?;
+                }
+                while let Some(&&(at, target)) = exception_edges.peek() {
+                    if at != index {
+                        break;
+                    }
+                    exception_edges.next();
+                    for &variable in self.handler_live_ins.get(&target).into_iter().flatten() {
+                        let carried = reaching[variable];
+                        if exception_carried
+                            .insert((target, variable), carried)
+                            .is_some_and(|previous| previous != carried)
+                        {
+                            return Err(RepairRefusal::ExceptionEdgeMismatch);
+                        }
+                    }
+                }
+                for &result in &op.results {
+                    self.define(result, &mut reaching, &mut undo);
+                }
+            }
+            let mut undefined = false;
+            block.terminator.for_each_value_mut(|value| {
+                undefined |= self.rename_use(value, &reaching, stats).is_err();
+            });
+            block.terminator.for_each_edge_mut(|target, args| {
+                for &variable in self.joins.get(target).into_iter().flatten() {
+                    if let Some(value) = reaching[variable] {
+                        args.push(value);
+                    } else {
+                        undefined = true;
+                    }
+                }
+            });
+            if undefined {
+                return Err(RepairRefusal::UndefinedUse);
+            }
+        }
+        if exception_carried
+            .into_iter()
+            .any(|(key, carried)| exception_expected.get(&key).copied().flatten() != carried)
+        {
+            return Err(RepairRefusal::ExceptionEdgeMismatch);
+        }
+        self.complete_unreachable_edges(func, cfg);
+        Ok(())
+    }
+
+    fn define(
+        &self,
+        value: ValueId,
+        reaching: &mut [Option<ValueId>],
+        undo: &mut Vec<(usize, Option<ValueId>)>,
+    ) {
+        if let Some(&variable) = self.name_variables.get(&value) {
+            undo.push((variable, reaching[variable].replace(value)));
+        }
+    }
+
+    fn rename_use(
+        &self,
+        value: &mut ValueId,
+        reaching: &[Option<ValueId>],
+        stats: &mut RepairStats,
+    ) -> Result<(), RepairRefusal> {
+        if let Some(&variable) = self.name_variables.get(value) {
+            let replacement = reaching[variable].ok_or(RepairRefusal::UndefinedUse)?;
+            if replacement != *value {
+                *value = replacement;
+                stats.renamed_uses += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn complete_unreachable_edges(&self, func: &mut TirFunction, cfg: &Cfg) {
+        if self.joins.is_empty() {
+            return;
+        }
+        // Unreachable predecessors (for example a vestigial loop-else)
+        // need a placeholder to keep the block argument arity consistent.
         let unreachable: Vec<_> = func
             .blocks
             .keys()
@@ -364,38 +430,38 @@ fn repair_one(
             .filter(|bid| !cfg.reachable.contains(bid))
             .collect();
         for bid in unreachable {
-            let targets_join = func.blocks[&bid]
+            let variables: BTreeSet<_> = func.blocks[&bid]
                 .terminator
                 .successors()
                 .iter()
-                .any(|target| join_arg.contains_key(target));
-            if !targets_join {
+                .flat_map(|target| self.joins.get(target).into_iter().flatten().copied())
+                .collect();
+            if variables.is_empty() {
                 continue;
             }
-            let placeholder = func.fresh_value();
-            func.value_types.insert(placeholder, TirType::None);
+            let placeholders: HashMap<_, _> = variables
+                .into_iter()
+                .map(|variable| {
+                    let value = func.fresh_value();
+                    func.value_types.insert(value, TirType::None);
+                    (variable, value)
+                })
+                .collect();
             let block = func.blocks.get_mut(&bid).expect("block exists");
-            block.ops.push(crate::tir::ops::TirOp::new(
-                crate::tir::ops::OpCode::ConstNone,
-                vec![],
-                vec![placeholder],
-            ));
+            block.ops.extend(placeholders.values().map(|&value| {
+                crate::tir::ops::TirOp::new(crate::tir::ops::OpCode::ConstNone, vec![], vec![value])
+            }));
             block.terminator.for_each_edge_mut(|target, args| {
-                if join_arg.contains_key(target) {
-                    args.push(placeholder);
-                }
+                args.extend(
+                    self.joins
+                        .get(target)
+                        .into_iter()
+                        .flatten()
+                        .map(|v| placeholders[v]),
+                );
             });
         }
     }
-
-    // An exception edge into a live block must carry the definition the
-    // block reads, because the edge cannot pass a new argument.
-    for (target, carried) in exception_edges {
-        if live_in.contains(&target) && entry_state.get(&target).copied().flatten() != carried {
-            return Err(RepairRefusal::ExceptionEdgeMismatch);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

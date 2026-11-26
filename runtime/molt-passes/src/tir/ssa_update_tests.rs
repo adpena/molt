@@ -143,6 +143,58 @@ fn two_definitions_merge_at_their_join() {
 }
 
 #[test]
+fn independent_variables_merge_in_the_same_argument_order_on_each_edge() {
+    let Diamond {
+        mut func,
+        then_block,
+        else_block,
+        join,
+        v1,
+        v2,
+    } = diamond(true);
+    let left = int_value(&mut func);
+    let right = int_value(&mut func);
+    let result = int_value(&mut func);
+    for (block, value) in [(then_block, left), (else_block, right)] {
+        func.blocks
+            .get_mut(&block)
+            .unwrap()
+            .ops
+            .push(const_int(3, value));
+    }
+    let join_body = func.blocks.get_mut(&join).unwrap();
+    join_body
+        .ops
+        .push(TirOp::new(OpCode::Add, vec![v1, right], vec![result]));
+    join_body.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let stats = repair(
+        &mut func,
+        &[
+            Variable {
+                names: vec![left, right],
+                ty: TirType::I64,
+            },
+            Variable {
+                names: vec![v1, v2],
+                ty: TirType::I64,
+            },
+        ],
+    )
+    .expect("repair succeeds");
+    assert_eq!(stats.joins, 2);
+    assert_eq!(edge_args(&func, then_block), vec![left, v1]);
+    assert_eq!(edge_args(&func, else_block), vec![right, v2]);
+    let join_body = &func.blocks[&join];
+    assert_eq!(
+        join_body.ops[0].operands,
+        vec![join_body.args[1].id, join_body.args[0].id]
+    );
+    verify_function(&func).expect("repaired function verifies");
+}
+
+#[test]
 fn an_unreachable_predecessor_of_a_join_keeps_its_arity() {
     // The lift keeps a vestigial loop-else block that no path reaches but
     // that still branches into the loop header.
