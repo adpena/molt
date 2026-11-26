@@ -15,10 +15,11 @@ from typing import Any
 import pytest
 
 from molt.cli.closed_world_bindings import (
-    summarize_program_initializers,
+    summarize_module_initializer,
     ModuleNamespaceFacts,
     bind_closed_world_calls,
 )
+from molt.cli.static_module_cells import plan_module_cells
 from molt.compiler_analysis.python_import_redirects import (
     NO_IMPORT_REDIRECTS,
     ImportRedirects,
@@ -134,13 +135,12 @@ def _run(
     }
     snapshot = copy.deepcopy(functions)
     admitted = list(functions)
-    diagnostics = bind_closed_world_calls(
+    diagnostics, _ = bind_closed_world_calls(
         functions,
         module_functions,
         facts,
         closures,
         redirects,
-        summarize_program_initializers(module_functions),
     )
     # Copy-on-write: the admitted bodies never change.
     assert admitted == snapshot
@@ -214,9 +214,9 @@ def test_conditional_intrinsic_lookup_suggests_a_target_on_the_live_call(
     }
     funcs = [_init("user", chunk), chunk, consumer]
     modules = {"user": funcs.copy()}
-    initializers = summarize_program_initializers(modules)
-    assert not initializers["user"].stores["access"][0].unconditional
-    bind_closed_world_calls(funcs, modules, {}, {}, NO_IMPORT_REDIRECTS, initializers)
+    initializer = summarize_module_initializer("user", modules["user"])
+    assert not initializer.unconditional(initializer.stores["access"][0])
+    bind_closed_world_calls(funcs, modules, {}, {}, NO_IMPORT_REDIRECTS)
     assert funcs[1]["ops"] == producer
     assert funcs[2]["ops"][:-1] == consumer["ops"][:-1]
     assert funcs[2]["ops"][-1] == (
@@ -351,8 +351,7 @@ def test_global_slot_stamps_see_the_rebound_bodies() -> None:
             facts,
             closures,
             NO_IMPORT_REDIRECTS,
-            summarize_program_initializers(module_functions),
-        )
+        )[0]
         == []
     )
     assert module_functions["user"][1] is functions[3]
@@ -448,13 +447,12 @@ def test_a_publication_chunk_must_run_exactly_once(
         "user": ModuleNamespaceFacts(frozenset(), _premise()),
     }
     closures = {"math": frozenset({"math"}), "user": frozenset({"user", "math"})}
-    (line,) = bind_closed_world_calls(
+    (line,), _ = bind_closed_world_calls(
         functions,
         module_functions,
         facts,
         closures,
         NO_IMPORT_REDIRECTS,
-        summarize_program_initializers(module_functions),
     )
     assert reason in line, line
 
@@ -479,8 +477,7 @@ def test_a_publication_chunk_called_once_unconditionally_binds() -> None:
             facts,
             closures,
             NO_IMPORT_REDIRECTS,
-            summarize_program_initializers(module_functions),
-        )
+        )[0]
         == []
     )
 
@@ -552,3 +549,60 @@ def test_an_unproven_foreign_read_records_nothing_and_names_its_reason(
     assert line.startswith("user:"), line
     assert " math.helper: by-name read: " in line, line
     assert reason in line, line
+
+
+def test_conditional_maker_cannot_supply_an_unconditional_method_cell() -> None:
+    math, user = _math_body(), _user()
+    read, call = user["ops"][-2:]
+    user["ops"] += [
+        {**read, "out": "second_callee"},
+        {**call, "args": ["second_callee", "a0"], "out": "second_result"},
+        {"kind": "if", "args": ["condition"]},
+        {"kind": "func_new", "s_value": "user__method", "out": "method"},
+        {"kind": "end_if"},
+        {
+            "kind": "load_method",
+            "args": ["recv"],
+            "s_value": "method",
+            "var": "callable",
+            "out": "pair",
+            "proven_target": True,
+        },
+        {
+            "kind": "call_guarded",
+            "s_value": "user__method",
+            "args": ["callable", "recv"],
+            "out": "result",
+            "proven_target": True,
+        },
+    ]
+    user_init = _init("user", user)
+    user_init["ops"].insert(0, {"kind": "module_new", "out": "module"})
+    functions = [_init("math", math), math, user_init, user]
+    modules = {"math": functions[:2], "user": functions[2:]}
+    facts = {
+        module: ModuleNamespaceFacts(frozenset(), _premise(), own_namespace_line=0)
+        for module in modules
+    }
+    diagnostics, initializers = bind_closed_world_calls(
+        functions,
+        modules,
+        facts,
+        {"math": {"math"}, "user": {"user", "math"}},
+        NO_IMPORT_REDIRECTS,
+    )
+    assert diagnostics == []
+    assert len(functions[-1]["ops"]) == len(user["ops"]) - 2
+    plan, cells = plan_module_cells(
+        modules,
+        facts,
+        {"user": ("math",)},
+        {"user"},
+        NO_IMPORT_REDIRECTS,
+        program_functions=functions,
+        initializers=initializers,
+    )
+    assert plan.modules == {"user"}
+    assert cells.counts() == {}
+    assert len(cells.diagnostics) == 1
+    assert "may run before user__method's func_new" in cells.diagnostics[0]

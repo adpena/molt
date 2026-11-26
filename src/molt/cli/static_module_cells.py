@@ -255,16 +255,12 @@ def _module_reason(
 
 def _init_once_facts(
     module: str,
-    funcs: Sequence[Mapping[str, Any]],
     facts: ModuleNamespaceFacts,
     layout: Sequence[str],
     initializer: ModuleInitializerFacts,
     escape_dropped: list[str] | None = None,
 ) -> dict[str, InitOnce]:
     stores, deletes = initializer.stores, initializer.deletes
-    indices: dict[int, int] = {}
-    for func in _module_body_functions(module, funcs):
-        indices.update((id(op), index) for index, op in enumerate(func.get("ops", ())))
     found: dict[str, InitOnce] = {}
     for name in layout:
         if name in deletes:
@@ -280,7 +276,7 @@ def _init_once_facts(
                     )
             continue
         rows = stores.get(name, [])
-        if len(rows) != 1 or not rows[0].unconditional:
+        if len(rows) != 1 or not initializer.unconditional(rows[0]):
             continue
         store = rows[0]
         producer = initializer.producers.get((store.function, store.value or ""))
@@ -297,11 +293,11 @@ def _init_once_facts(
         found[name] = InitOnce(
             value_kind,
             store.function,
-            indices[id(store.operation)],
+            store.index,
             store.line,
             store.value,
             producer,
-            store.class_definition if value_kind == "class" else None,
+            initializer.class_definition(store) if value_kind == "class" else None,
             intrinsic_abi,
         )
     return found
@@ -351,7 +347,12 @@ def plan_module_cells(
 
     @typed_cache(maxsize=None)
     def references() -> dict[str, list[_Reference]]:
-        return _symbol_references(program_functions)
+        symbols = {
+            func.get("name", "")
+            for funcs in module_functions.values()
+            for func in funcs
+        }
+        return _symbol_references(program_functions, symbols)
 
     ineligible: dict[str, str] = {}
     # module -> the modules whose import runs its body first.
@@ -391,22 +392,18 @@ def plan_module_cells(
         assert module_facts is not None
         eligible.add(module)
         guard_masks[module] = _written_guard_mask(module_facts, global_layouts[module])
+        initializer = initializers[module]
         rows = _init_once_facts(
-            module,
-            funcs,
-            module_facts,
-            global_layouts[module],
-            initializers[module],
-            escape_written,
+            module, module_facts, global_layouts[module], initializer, escape_written
         )
-        execution = _ModuleExecution(module, funcs, references)
+        execution = _ModuleExecution(module, funcs, references, initializer)
         if rows:
             init_once[module] = rows
             dominance = init_dominance(execution, rows)
             guarded_reads, intrinsic_abis = _guarded_cell_reads(
                 execution,
                 rows,
-                initializers[module],
+                initializer,
                 module_facts,
                 global_layouts[module],
                 dominance.reads,
@@ -418,7 +415,7 @@ def plan_module_cells(
                 init_dominated[module] = reads
             checked.extend(dominance.diagnostics)
         for name, callable_var, symbol, maker in _proven_method_loads(
-            execution, initializers[module], method_diagnostics
+            execution, initializer, method_diagnostics
         ):
             cells = cell_indices.setdefault(module, {})
             if symbol not in cells:
@@ -428,14 +425,13 @@ def plan_module_cells(
                     symbol,
                 )
             cell_reads.setdefault(name, {})[callable_var] = (module, symbol)
-        initializer = initializers[module]
         for symbol, makers in initializer.callable_publications.items():
             if len(makers) != 1 or symbol in cell_indices.get(module, {}):
                 continue
             (maker,) = makers
             owner = maker.point[0]
             op = initializer.producers[(owner, maker.value)]
-            if maker.runs_once and op.get("exact_method"):
+            if op.get("exact_method") and initializer.chain.runs_once(maker.point):
                 late_makers.setdefault(owner, {})[maker.value] = module
     return StaticCellPlan(
         frozenset(eligible),
@@ -493,8 +489,9 @@ _RECEIVER_STORES = frozenset({"set_attr_generic_obj"})
 
 def _symbol_references(
     program_functions: Sequence[Mapping[str, Any]],
+    symbols: Collection[str],
 ) -> dict[str, list[_Reference]]:
-    """Every op of the program that names a symbol in ``s_value``, by symbol:
+    """Every op that names one of the queried function symbols in ``s_value``:
     the ``func_new`` that creates a function's object, a direct call, and any
     other op that names it. A function runs only through such a reference."""
     found: dict[str, list[_Reference]] = {}
@@ -502,44 +499,52 @@ def _symbol_references(
         name = func.get("name", "")
         for index, op in enumerate(func.get("ops", ())):
             symbol = op.get("s_value")
-            if isinstance(symbol, str):
+            if isinstance(symbol, str) and symbol in symbols:
                 found.setdefault(symbol, []).append(
                     (name, index, op.get("source_line"), str(op.get("kind")))
                 )
     return found
 
 
-def _object_entries(
-    ops: Sequence[Mapping[str, Any]], function: str, index: int
-) -> list[_Entry]:
-    """Where the function object that ``ops[index]`` creates may first run:
-    after each store that publishes it, or during any other use. The
-    metadata call that completes the object and a store into the object
-    itself run nothing."""
-    out = ops[index].get("out")
-    entries: list[_Entry] = []
-    for at in range(index + 1, len(ops)):
-        op = ops[at]
+def _maker_entries(
+    ops: Sequence[Mapping[str, Any]], function: str, makers: set[int]
+) -> dict[int, tuple[_Entry, ...]]:
+    """Index where any of this initializer's function objects can first run."""
+    uses: dict[str, list[_Entry]] = {
+        out: [] for index in makers if isinstance(out := ops[index].get("out"), str)
+    }
+    for index, op in enumerate(ops):
         args = op.get("args") or ()
-        if out not in args:
+        kind = op.get("kind")
+        if kind == "call" and op.get("s_value") == _FUNCTION_METADATA:
             continue
-        if op.get("kind") == "call" and op.get("s_value") == _FUNCTION_METADATA:
-            continue
-        if (
-            op.get("kind") in _RECEIVER_STORES
-            and len(args) == 2
-            and args[0] == out
-            and args[1] != out
-        ):
-            continue
-        publication = (
-            op.get("kind") in _PUBLICATIONS
-            and len(args) == 3
-            and args[2] == out
-            and out not in args[:2]
+        for arg in args:
+            if not isinstance(arg, str) or (entries := uses.get(arg)) is None:
+                continue
+            if (
+                kind in _RECEIVER_STORES
+                and len(args) == 2
+                and args[0] == arg
+                and args[1] != arg
+            ):
+                continue
+            publication = (
+                kind in _PUBLICATIONS
+                and len(args) == 3
+                and args[2] == arg
+                and arg not in args[:2]
+            )
+            entry = ((function, index), publication)
+            if not entries or entries[-1] != entry:
+                entries.append(entry)
+    return {
+        maker: tuple(
+            entry
+            for entry in uses.get(ops[maker].get("out"), ())
+            if entry[0][1] > maker
         )
-        entries.append(((function, at), publication))
-    return entries
+        for maker in makers
+    }
 
 
 def _function_entries(
@@ -576,14 +581,18 @@ def _function_entries(
         )
         for name in candidates
     }
-    # Functions whose object a func_new in the init chain creates.
-    created_in_chain = {
-        name
-        for name in candidates
-        for user, index, _line, _kind in references.get(name, ())
-        if user in chain.functions
-        and chain.functions[user].ops[index].get("kind")
-        in {"func_new", "func_new_closure"}
+    # One operand index serves every maker in an initializer and every
+    # iteration of the entry fixed point.
+    created_in_chain: set[str] = set()
+    makers: dict[str, set[int]] = {}
+    for name in candidates:
+        for user, index, _line, kind in references.get(name, ()):
+            if user in chain.functions and kind in FUNCTION_MAKERS:
+                created_in_chain.add(name)
+                makers.setdefault(user, set()).add(index)
+    maker_entries = {
+        user: _maker_entries(chain.functions[user].ops, user, sites)
+        for user, sites in makers.items()
     }
     changed = True
     while changed:
@@ -598,11 +607,10 @@ def _function_entries(
                 if user == name:
                     continue
                 if user in chain.functions:
-                    ops = chain.functions[user].ops
-                    if ops[index].get("kind") in _INERT_REFERENCES:
+                    if kind in _INERT_REFERENCES:
                         continue
-                    if ops[index].get("kind") in {"func_new", "func_new_closure"}:
-                        found.update(_object_entries(ops, user, index))
+                    if kind in FUNCTION_MAKERS:
+                        found.update(maker_entries[user][index])
                     else:
                         found.add(((user, index), False))
                 elif name in created_in_chain and (kind in _OBJECT_MEDIATED):
@@ -631,16 +639,18 @@ class _ModuleExecution:
     module: str
     functions: Sequence[Mapping[str, Any]]
     references: Callable[[], Mapping[str, Sequence[_Reference]]]
+    initializer: ModuleInitializerFacts
 
-    @cached_property
+    @property
     def chain(self) -> InitChain:
-        return InitChain(self.module, self.functions)
+        return self.initializer.chain
 
     @cached_property
     def body(self) -> frozenset[str]:
         return frozenset(
-            func.get("name", "")
-            for func in _module_body_functions(self.module, self.functions)
+            name
+            for func in self.initializer.body
+            if isinstance(name := func.get("name", ""), str)
         )
 
     @cached_property
@@ -678,12 +688,10 @@ def init_dominance(
     diagnostics: list[str] = []
     for func in execution.functions:
         name = func.get("name", "")
-        index_of = {id(op): index for index, op in enumerate(func.get("ops", ()))}
-        for op, global_name in _global_name_sites([func]):
+        for index, op, global_name in _global_name_sites(func):
             fact = init_once.get(global_name)
             if fact is None or op.get("kind") != "module_get_global":
                 continue
-            index = index_of[id(op)]
             store = (fact.function, fact.index)
             if name in body:
                 if chain.dominates(store, (name, index)):
@@ -798,16 +806,11 @@ def _guarded_cell_reads(
 
     conditioned: dict[tuple[str, int, int], InitChain] = {}
     stores: dict[str, tuple[str, tuple[str, int], InitChain]] = {}
-    indices_by_body: dict[str, dict[int, int]] = {}
     for name, write in possible.items():
         body = chain.functions.get(write.function)
         if body is None or write.function not in branches:
             continue
-        if write.function not in indices_by_body:
-            indices_by_body[write.function] = {
-                id(op): index for index, op in enumerate(body.ops)
-            }
-        store = (write.function, indices_by_body[write.function][id(write.operation)])
+        store = (write.function, write.index)
         if not chain.runs_once(store):
             continue
         for at, end, guard in branches.get(write.function, ()):
@@ -823,7 +826,7 @@ def _guarded_cell_reads(
                         {**func, "ops": true_arm}
                         if func.get("name") == write.function
                         else func
-                        for func in execution.functions
+                        for func in execution.initializer.body
                     ],
                 )
             stores[name] = (guard, store, conditioned[key])
@@ -840,10 +843,9 @@ def _guarded_cell_reads(
             op.get("kind") in _UNMODELED_CONTROL for op in ops
         ):
             continue
-        indices = {id(op): i for i, op in enumerate(ops)}
         reads = {
-            op["out"]: (name, indices[id(op)])
-            for op, name in _global_name_sites([func])
+            op["out"]: (name, index)
+            for index, op, name in _global_name_sites(func)
             if op.get("kind") == "module_get_global" and "out" in op
         }
         candidates = [(name, index) for name, index in reads.values() if name in stores]
@@ -1245,6 +1247,8 @@ def prove_init_once_calls(
     an ``InitOnce(intrinsic)`` cell with a proven call ABI becomes a direct
     intrinsic call. Return a diagnostic for each such call that keeps
     its guards or stays generic."""
+    if not plan.init_once and not plan.guarded_intrinsics:
+        return []
     position, views = _init_once_views(functions, module_functions)
     from molt.cli.frontend_integration import on_demand_initialized_modules
 
@@ -1401,6 +1405,8 @@ def propagate_init_once_values(
     Immediate values can replace the read. A class keeps its real object
     identity and carries the definition as a value fact. Returns the number
     of reads updated."""
+    if not plan.init_once:
+        return 0
     position, views = _init_once_views(functions, module_functions)
     rewritten: dict[str, dict[str, Any]] = {}
     propagated = 0
@@ -1542,7 +1548,7 @@ def _proven_method_loads(
                 reason = f"{len(makers)} function makers make {symbol}"
             else:
                 (maker,) = makers
-                if not maker.runs_once:
+                if not execution.chain.runs_once(maker.point):
                     reason = f"{symbol}'s func_new does not run once in {module}'s init"
             if reason is None and maker is not None:
                 store = maker.point

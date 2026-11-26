@@ -65,10 +65,7 @@ from molt.cli.module_graph_cache import _namespace_premise_cache_identity
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_body_materialization import BodyMaterializationMode
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
-from molt.cli.closed_world_bindings import (
-    bind_closed_world_calls,
-    summarize_program_initializers,
-)
+from molt.cli.closed_world_bindings import bind_closed_world_calls
 from molt.cli.static_module_cells import (
     FunctionCells,
     StaticCellPlan,
@@ -2722,14 +2719,12 @@ def _prepare_backend_ir(
     # Closed-world bindings (call_anatomy.md 4.5): proven module attribute
     # calls become direct intrinsic calls; every frontend module guess is
     # consumed here, on every lane.
-    initializers = summarize_program_initializers(integration_state.module_functions)
-    binding_diagnostics = bind_closed_world_calls(
+    binding_diagnostics, initializers = bind_closed_world_calls(
         functions,
         integration_state.module_functions,
         integration_state.module_namespace_facts,
         integration_state.module_dep_closures,
         integration_state.import_redirects,
-        initializers,
     )
     # Class calls the frontend could not allocate inline name their refused
     # fact here, beside the other closed-world fallbacks.
