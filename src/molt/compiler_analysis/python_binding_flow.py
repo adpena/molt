@@ -1291,7 +1291,19 @@ class _StatePool:
                     remaining ^= slot_bit
                     self.join_two_way_slots += 1
                     if (
-                        left_epoch == right_epoch == taint_epoch
+                        (
+                            left_epoch == right_epoch == taint_epoch
+                            and left.clean_epochs[chunk_offset]
+                            == right.clean_epochs[chunk_offset]
+                            == taint_epoch
+                            or left.clean_epochs[chunk_offset]
+                            == right.clean_epochs[chunk_offset]
+                            == -1
+                            and (
+                                bool(clean_mask & slot_bit)
+                                or left.owner_tokens[chunk_offset] == 0
+                            )
+                        )
                         and bool(left_present & slot_bit)
                         == bool(right_present & slot_bit)
                         and bool(left.clean_mask & slot_bit)
@@ -1303,12 +1315,11 @@ class _StatePool:
                         and left.results[chunk_offset] is right.results[chunk_offset]
                         and left.owner_tokens[chunk_offset]
                         == right.owner_tokens[chunk_offset]
-                        and left.clean_epochs[chunk_offset]
-                        == right.clean_epochs[chunk_offset]
-                        == taint_epoch
                     ):
                         # Keep the left raw payload/custody. The state join itself
                         # is still interned: equal storage never erases path writes.
+                        # Epoch -1 is already dirty in every namespace epoch;
+                        # joining it cannot recover in-domain cleanliness.
                         self.join_custody_identity_skips += 1
                         active_mask |= left.active_mask & slot_bit
                         continue

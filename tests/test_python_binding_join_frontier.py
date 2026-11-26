@@ -744,6 +744,35 @@ def test_two_way_join_reuses_exact_payloads_without_skipping_custody() -> None:
     assert not pool._binding_resolution(epoch_join, 0).clean
 
 
+@pytest.mark.parametrize("local_taint", [False, True])
+def test_two_way_join_reuses_permanently_dirty_custody_across_epochs(
+    local_taint: bool,
+) -> None:
+    pool = flow._StatePool()
+    result = StaticExpressionResult.scalar(8)
+    base = pool.set_binding(0, 0, INERT, 8, result, 13)
+    if local_taint:
+        base = pool.taint_slots(base, 1)
+    first = pool.set_binding(base, 1, INERT, 1)
+    later = pool.set_binding(pool.taint_exposed_bindings(base), 1, INERT, 2)
+    dirty = pool.join(first, later)
+    left = pool.set_binding(dirty, 1, INERT, 3)
+    right = pool.set_binding(pool.taint_exposed_bindings(dirty), 1, INERT, 4)
+    parents = (left, right)
+    before = pool.join_custody_identity_skips
+    joined = pool.join(*parents)
+    assert pool.join_custody_identity_skips > before
+    _assert_dense_join(pool, parents, joined, (0, 1, 2))
+    assert pool.get(joined).parents == parents
+    assert pool.slot_updated_between(dirty, joined, 1)
+    pool.set_taint_domain(1)
+    pool.add_callback_deletions(1)
+    _assert_dense_join(pool, parents, joined, (0, 1, 2))
+    assert not pool._binding_resolution(joined, 0).clean
+    assert pool.owner_token(joined, 0) == 0
+    assert pool.binding(joined, 0) & UNBOUND_IDENTITY
+
+
 def test_empty_module_needs_no_module_exit_join_and_telemetry_has_one_schema() -> None:
     analyzer = flow._Analyzer(flow.PythonBindingFlowPolicy(), "empty")
     index = analyzer.analyze(ast.parse("")).facts
