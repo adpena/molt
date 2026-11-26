@@ -81,7 +81,7 @@ class SourceCandidate(NamedTuple):
         "namespace_get",
         "namespace_remove",
         "namespace_popitem",
-        "namespace_clear",
+        "namespace_overwrite",
         "namespace_copy_method",
         "namespace_values_method",
         "namespace_items_method",
@@ -1091,8 +1091,17 @@ class PythonSourceDemands:
                 return {owner._replace(kind="namespace_remove")}
             if name == "popitem":
                 return {owner._replace(kind="namespace_popitem")}
-            if name in {"clear", "__delitem__"}:
-                return {owner._replace(kind="namespace_clear")}
+            if name in {"clear", "__delitem__"} or (
+                name == "update"
+                and (
+                    owner.source is None
+                    or owner.namespace_ownership is PythonNamespaceOwnership.OWNED
+                )
+            ):
+                # A module's native dictionary or an owned copy can replace
+                # entries without publishing the mapping. A class's borrowed
+                # mapping proxy has no update method.
+                return {owner._replace(kind="namespace_overwrite")}
             if name == "copy":
                 return {owner._replace(kind="namespace_copy_method")}
             if name == "values":
@@ -1402,7 +1411,7 @@ class PythonSourceDemands:
                 if origin.value == _INTERPRETER_BUILTINS.value:
                     self.activate(_INTERPRETER_IMPORT, phase)
             elif phase == "call" and origin.kind in {
-                "namespace_clear",
+                "namespace_overwrite",
                 "namespace_remove",
                 "namespace_popitem",
             }:
@@ -2420,6 +2429,7 @@ class PythonSourceDemands:
             "resumable",
             "class_descriptor",
             "property_descriptor",
+            "namespace_overwrite",
         }:
             return set()
         if self._function_kind(callee) != FunctionKind.SYNC:

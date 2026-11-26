@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import _SourceImportCacheWrite
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 23
+SUMMARY_SCHEMA: Final = 24
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -749,6 +749,28 @@ def _star_local_names(
     return local_names
 
 
+def _literal_update_keys(call: ast.Call) -> frozenset[str] | None:
+    """Names written by dict.update with literal dictionaries and keywords."""
+    if len(call.args) > 1:
+        return None
+    names: set[str] = set()
+    mappings = list(call.args)
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            mappings.append(keyword.value)
+        else:
+            names.add(keyword.arg)
+    for mapping in mappings:
+        if not isinstance(mapping, ast.Dict):
+            return None
+        for key in mapping.keys:
+            name = _literal_string(key)
+            if name is None:
+                return None
+            names.add(name)
+    return frozenset(names)
+
+
 _MappingSlot: TypeAlias = tuple[ast.AST, str]
 
 
@@ -1009,6 +1031,14 @@ class _MappingFlow:
         local whose every write names a literal key, else ``None``."""
         if not self._use_writes(value, parent):
             return frozenset()
+        if (
+            isinstance(parent, ast.Attribute)
+            and parent.value is value
+            and parent.attr == "update"
+            and isinstance(call := self.parents.get(parent), ast.Call)
+            and call.func is parent
+        ):
+            return _literal_update_keys(call)
         if not (
             isinstance(parent, ast.Assign)
             and parent.value is value
@@ -1059,6 +1089,11 @@ class _MappingFlow:
                         key = _literal_string(call.args[0])
                         if key is not None:
                             keys.add(key)
+                            continue
+                    if parent.attr == "update":
+                        update = _literal_update_keys(call)
+                        if update is not None:
+                            keys.update(update)
                             continue
                 return None
             if self._use_writes(node, parent):

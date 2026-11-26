@@ -4038,6 +4038,40 @@ def test_finite_member_read_of_cache_value_reaches_only_selected_bodies(
     )
 
 
+@pytest.mark.parametrize(
+    "update",
+    [
+        "provider.__dict__.update({'old': 7})\n",
+        "def install():\n"
+        "    table = provider.__dict__\n"
+        "    table.update(old=7)\n"
+        "install()\n",
+    ],
+)
+def test_namespace_update_keeps_release_and_prunes_unread_exports(
+    tmp_path: Path, update: str
+) -> None:
+    for leaf in ("finalizer_leaf", "dormant_leaf"):
+        (tmp_path / f"{leaf}.py").write_text("pass\n", encoding="utf-8")
+    (tmp_path / "provider.py").write_text(
+        "def dormant(): import dormant_leaf\n"
+        "class Before:\n"
+        "    def __del__(self): import finalizer_leaf\n"
+        "old = Before()\n",
+        encoding="utf-8",
+    )
+    entry = tmp_path / "entry.py"
+    entry.write_text("import provider\n" + update, encoding="utf-8")
+    graph = module_graph_discovery._discover_module_graph(
+        entry, [tmp_path], [tmp_path], tmp_path, None, set()
+    )
+    assert "finalizer_leaf" in graph.graph
+    assert "dormant_leaf" not in graph.graph
+    provider = graph.scan_authority.by_module["provider"].namespace_premise
+    assert provider is not None
+    assert provider.foreign_writes == ("old",)
+
+
 def test_resolved_mutators_invalidate_only_their_reached_module(
     tmp_path: Path,
 ) -> None:
