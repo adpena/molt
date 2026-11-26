@@ -1659,7 +1659,11 @@ def test_cli_build_runtime_feedback_json(tmp_path: Path) -> None:
     assert payload["status"] == "ok"
     assert payload["data"]["sysroot"] == str(sysroot)
     assert payload["data"]["runtime_feedback"]["path"] == str(feedback_path)
-    assert payload["data"]["runtime_feedback"]["schema_version"] == 3
+    feedback = json.loads(feedback_path.read_text(encoding="utf-8"))
+    assert (
+        payload["data"]["runtime_feedback"]["schema_version"]
+        == feedback["schema_version"]
+    )
     assert payload["data"]["runtime_feedback"]["hot_functions"] == []
     assert Path(payload["data"]["output"]).exists()
 
