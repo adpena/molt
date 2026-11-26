@@ -259,7 +259,7 @@ impl SimpleBackend {
             profile: None,
         };
         let final_functions =
-            super::module_metadata::NativeFinalFunctions::from_jit_artifact(ir, bodies)
+            super::module_metadata::NativeFinalFunctions::from_terminal_wire(ir, bodies)
                 .map_err(JitCompileError::Finalize)?;
         final_functions
             .validate_extern_calls()

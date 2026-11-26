@@ -2,29 +2,55 @@ use molt_backend::FunctionIR;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+pub(crate) trait NativeBatchRow {
+    fn declaration(&self) -> &FunctionIR;
+    fn operation_count(&self) -> usize;
+}
+
+impl NativeBatchRow for FunctionIR {
+    fn declaration(&self) -> &FunctionIR {
+        self
+    }
+    fn operation_count(&self) -> usize {
+        self.ops.len()
+    }
+}
+
+impl NativeBatchRow for molt_backend::TerminalObjectRow {
+    fn declaration(&self) -> &FunctionIR {
+        &self.declaration
+    }
+    fn operation_count(&self) -> usize {
+        self.operations
+    }
+}
+
 /// Existing source-file identity separates compilation units before symbol radix
 /// splitting. An unrelated source cannot repack existing units. Missing source
 /// metadata forms one legitimate group; bounds and traversal ordering remain
 /// owned by the same radix splitter within every group.
-pub(crate) fn stable_native_batches(
-    functions: Vec<FunctionIR>,
+pub(crate) fn stable_native_batches<T: NativeBatchRow>(
+    functions: Vec<T>,
     max_functions: usize,
     max_ops: usize,
-) -> Vec<Vec<FunctionIR>> {
+) -> Vec<Vec<T>> {
     let mut sources: BTreeMap<Option<String>, Vec<_>> = BTreeMap::new();
     for function in functions {
         let mut digest = Sha256::new();
         digest.update(b"native-stdlib-symbol-bucket-v1\0");
-        digest.update(function.name.as_bytes());
+        digest.update(function.declaration().name.as_bytes());
         let digest: [u8; 32] = digest.finalize().into();
         sources
-            .entry(function.source_file.clone())
+            .entry(function.declaration().source_file.clone())
             .or_default()
             .push((digest, function));
     }
     let mut batches = Vec::new();
     for mut ordered in sources.into_values() {
-        ordered.sort_by(|(a, left), (b, right)| a.cmp(b).then(left.name.cmp(&right.name)));
+        ordered.sort_by(|(a, left), (b, right)| {
+            a.cmp(b)
+                .then(left.declaration().name.cmp(&right.declaration().name))
+        });
         split_bucket(
             ordered,
             0,
@@ -41,18 +67,20 @@ pub(crate) fn stable_native_batches(
     batches
 }
 
-fn split_bucket(
-    mut functions: Vec<([u8; 32], FunctionIR)>,
+fn split_bucket<T: NativeBatchRow>(
+    mut functions: Vec<([u8; 32], T)>,
     bit: usize,
     max_functions: usize,
     max_ops: usize,
-    out: &mut Vec<Vec<FunctionIR>>,
+    out: &mut Vec<Vec<T>>,
 ) {
-    let ops = functions
-        .iter()
-        .fold(0usize, |sum, (_, f)| sum.saturating_add(f.ops.len()));
+    let ops = functions.iter().fold(0usize, |sum, (_, f)| {
+        sum.saturating_add(f.operation_count())
+    });
     if functions.len() <= 1 || (functions.len() <= max_functions && ops <= max_ops) {
-        functions.sort_by(|(_, left), (_, right)| left.name.cmp(&right.name));
+        functions.sort_by(|(_, left), (_, right)| {
+            left.declaration().name.cmp(&right.declaration().name)
+        });
         out.push(
             functions
                 .into_iter()
@@ -182,7 +210,7 @@ mod tests {
                 vec!["named".to_owned()],
             ]
         );
-        let empty = stable_native_batches(Vec::new(), 128, 8000);
+        let empty = stable_native_batches(Vec::<FunctionIR>::new(), 128, 8000);
         assert_eq!(empty.len(), 1);
         assert!(empty[0].is_empty());
     }

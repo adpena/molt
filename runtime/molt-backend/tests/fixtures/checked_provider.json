@@ -1,0 +1,27 @@
+{
+  "functions": [
+    {"name": "molt_main", "params": ["flag"], "return_abi": "value", "source_file": "molt_main.py",
+     "ops": [
+       {"kind": "const_float", "f_value": 1.5, "out": "n"},
+       {"kind": "call_internal", "s_value": "square", "args": ["n", "flag"], "out": "result"},
+       {"kind": "check_exception", "value": 90, "exception_edge": "origin"},
+       {"kind": "ret", "args": ["result"]},
+       {"kind": "label", "value": 90, "exception_source": "unwind"},
+       {"kind": "ret_void", "unwind": true}
+     ]},
+    {"name": "square", "params": ["n", "flag"], "return_abi": "value", "source_file": "square.py",
+     "ops": [
+       {"kind": "if", "args": ["flag"]},
+       {"kind": "const_none", "out": "bad"},
+       {"kind": "raise", "args": ["bad"], "out": "none"},
+       {"kind": "check_exception", "value": 90, "exception_edge": "unwind"},
+       {"kind": "jump", "value": 90},
+       {"kind": "end_if"},
+       {"kind": "mul", "args": ["n", "n"], "out": "product"},
+       {"kind": "check_exception", "value": 90, "exception_edge": "origin"},
+       {"kind": "ret", "args": ["product"]},
+       {"kind": "label", "value": 90, "exception_source": "unwind"},
+       {"kind": "ret_void", "unwind": true}
+     ]}
+  ]
+}

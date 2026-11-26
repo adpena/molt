@@ -51,7 +51,7 @@ pub(super) fn plan_batched_stdlib_cache_archive(
         );
         let external_function_names = batch_external_function_names(&ir.functions);
         let job = NativeBatchObjectJob {
-            ir,
+            ir: ir.into(),
             code_slots: None,
             module_context: NativeBackendModuleContext::default(),
             codegen_environment: codegen_environment.clone(),

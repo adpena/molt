@@ -488,7 +488,11 @@ fn declare_tir_function_with_abi<'ctx>(
             .module
             .add_compiled_function(&func.name, logical_fn_ty, None)
     };
-    if linkage_abi.checked_raw_return() {
+    if linkage_abi.certified_program_entry() {
+        llvm_fn
+            .as_global_value()
+            .set_visibility(inkwell::GlobalVisibility::Hidden);
+    } else if linkage_abi.checked_raw_return() {
         llvm_fn.set_linkage(inkwell::module::Linkage::Internal);
     }
     add_molt_nounwind_attribute(backend, llvm_fn);

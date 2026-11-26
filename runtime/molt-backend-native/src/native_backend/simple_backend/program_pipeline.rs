@@ -113,7 +113,7 @@ impl SimpleBackend {
                 module_name,
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "final TIR preparation",
-                mode: if self.skip_ir_passes {
+                mode: if self.program_scope == NativeProgramScope::ObjectConstituent {
                     TirOwnedModulePipelineMode::TerminalDropsOnly
                 } else {
                     TirOwnedModulePipelineMode::ModulePhase
@@ -172,7 +172,7 @@ impl SimpleBackend {
         if let Some(manifest) = &self.app_callable_manifest {
             module_registry_roots.extend(manifest.compiled_bodies.iter().cloned());
         }
-        if !self.skip_ir_passes {
+        if self.program_scope == NativeProgramScope::WholeProgram {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
         mark("dead-function elimination", ir.functions.len());
@@ -206,7 +206,7 @@ impl SimpleBackend {
         // LLVM consumes the shared image's external declarations before its
         // target-specific module phase. Cranelift retains those bodies for
         // type flow until its terminal rows have been assembled.
-        if use_llvm && !self.skip_ir_passes {
+        if use_llvm && self.program_scope == NativeProgramScope::WholeProgram {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
         let emit_resolver_here = self.emit_app_callable_resolver;
@@ -216,13 +216,16 @@ impl SimpleBackend {
             externalize_shared_stdlib_partition(ir, &module_registry_roots);
         }
         let mut final_functions = self.prepare_final_tir(ir, backend, owns_cell_layout, &mut mark);
-        if !use_llvm && !self.skip_ir_passes {
+        if !use_llvm && self.program_scope == NativeProgramScope::WholeProgram {
             final_functions.retain_reachable(&module_registry_roots);
         }
         mark("final functions", final_functions.ir().functions.len());
         dump_rewritten_tir_if_requested(final_functions.bodies());
         if !use_llvm && !self.skip_shared_stdlib_partition {
-            final_functions.externalize_partition(self.skip_ir_passes, &module_registry_roots);
+            final_functions.externalize_partition(
+                self.program_scope != NativeProgramScope::WholeProgram,
+                &module_registry_roots,
+            );
         }
         mark("manifest and partition", 0);
         if timing {

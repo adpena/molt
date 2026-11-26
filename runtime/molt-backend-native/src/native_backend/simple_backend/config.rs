@@ -240,7 +240,7 @@ impl SimpleBackend {
         Self {
             module,
             import_ids: RuntimeImportIds::default(),
-            skip_ir_passes: false,
+            program_scope: NativeProgramScope::WholeProgram,
             skip_shared_stdlib_partition: false,
             tir_cache: crate::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
             emit_app_callable_resolver: true,
@@ -270,7 +270,7 @@ impl SimpleBackend {
         Self::new_jit(std::sync::Arc::new(|_| None)).codegen_identity()
     }
 
-    fn codegen_identity(&self) -> serde_json::Value {
+    pub(super) fn codegen_identity(&self) -> serde_json::Value {
         let backend = self;
         let isa = backend.module.isa();
         let flags: BTreeMap<String, String> = isa

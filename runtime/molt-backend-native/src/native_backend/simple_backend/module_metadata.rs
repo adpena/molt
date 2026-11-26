@@ -132,6 +132,8 @@ pub(in crate::native_backend::simple_backend) struct NativeFinalFunctions {
 struct NativeFinalRow {
     body: Option<NativeFinalFunction>,
     local_linkage: Option<NativeFunctionLinkageAbi>,
+    /// Set exclusively by the optimizer's typed specialization result.
+    private_origin: Option<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -148,13 +150,21 @@ impl NativeFinalFunctions {
     ) {
         let checked =
             checked_private_returns(self.body_carriers(), clones.iter().map(|clone| clone.id));
-        for (id, ty) in checked {
+        for clone in clones {
+            let id = clone.id;
+            let Some(ty) = checked.get(&id) else { continue };
+            self.rows[id.index()].private_origin =
+                Some(self.ir.functions[clone.origin.index()].name.clone());
             let abi = self.rows[id.index()]
                 .local_linkage
                 .as_mut()
                 .expect("checked clone linkage");
-            abi.set_checked_raw_return(ty);
+            abi.set_checked_raw_return(ty.clone());
         }
+    }
+
+    pub(super) fn private_origin(&self, id: molt_ir::FunctionId) -> Option<&str> {
+        self.rows[id.index()].private_origin.as_deref()
     }
 
     fn body_carriers(
@@ -268,6 +278,7 @@ impl NativeFinalFunctions {
                 if external {
                     return NativeFinalRow {
                         body: None,
+                        private_origin: None,
                         local_linkage: None,
                     };
                 }
@@ -287,6 +298,7 @@ impl NativeFinalFunctions {
                         tir: body,
                         carriers,
                     }),
+                    private_origin: None,
                     local_linkage: Some(local_linkage),
                 }
             })
@@ -305,6 +317,58 @@ impl NativeFinalFunctions {
                 molt_ir::function_table::remap_callee(&mut op.callee, map, &body.tir.name);
             }
         }
+    }
+
+    /// Resolve the private physical entry only after the worker proves its
+    /// role against the completely rebound terminal graph.
+    pub(super) fn bind_checked_providers(
+        &mut self,
+        bindings: &BTreeMap<molt_ir::FunctionId, (String, NativeFunctionLinkageAbi)>,
+    ) -> Result<(), String> {
+        if bindings.is_empty() {
+            return Ok(());
+        }
+        let mut seen = BTreeSet::new();
+        for body in self.rows.iter().filter_map(|row| row.body.as_ref()) {
+            for op in body.tir.blocks.values().flat_map(|block| &block.ops) {
+                let Some(id) = op.callee else { continue };
+                let Some((_, abi)) = bindings.get(&id) else {
+                    continue;
+                };
+                let carrier = abi
+                    .return_type
+                    .as_ref()
+                    .ok_or("checked entry has no carrier")?;
+                body.carriers
+                    .checked_direct_result(op, carrier)
+                    .map_err(|why| {
+                        format!("unchecked terminal reference in {}: {why:?}", body.tir.name)
+                    })?;
+                seen.insert(id);
+            }
+        }
+        for (&id, (symbol, abi)) in bindings {
+            let row = &mut self.rows[id.index()];
+            if let Some(body) = &mut row.body {
+                let ty = body
+                    .carriers
+                    .checked_return_type(&body.tir)
+                    .ok_or("private provider has no proven scalar success carrier")?;
+                let mut local = row
+                    .local_linkage
+                    .clone()
+                    .ok_or("missing private definition")?;
+                local.set_checked_raw_return(ty);
+                if &local != abi {
+                    return Err("private provider ABI differs from its terminal definition".into());
+                }
+                body.tir.name.clone_from(symbol);
+            } else if !seen.contains(&id) {
+                return Err("private import has no checked caller".into());
+            }
+            self.ir.functions[id.index()].name.clone_from(symbol);
+        }
+        Ok(())
     }
 
     pub(super) fn validate_extern_calls(&self) -> Result<(), String> {
@@ -465,13 +529,22 @@ impl NativeFinalFunctions {
         })
     }
 
-    #[cfg(feature = "jit")]
-    pub(super) fn from_jit_artifact(
+    pub(super) fn from_terminal_wire(
         ir: SimpleIR,
         wires: Vec<Option<Vec<u8>>>,
     ) -> Result<Self, String> {
+        let mut symbols = BTreeSet::new();
+        if ir
+            .functions
+            .iter()
+            .any(|header| !header.ops.is_empty() || !symbols.insert(&header.name))
+        {
+            return Err("terminal declarations have source operations or duplicate symbols".into());
+        }
         if ir.functions.len() != wires.len() {
-            return Err("native JIT body row count differs from the declaration table".to_string());
+            return Err(
+                "native terminal body row count differs from the declaration table".to_string(),
+            );
         }
         let table = molt_ir::FunctionTable::of(&ir.functions);
         let by_symbol: BTreeMap<_, _> = table.ids().map(|id| (table.symbol(id), id)).collect();
@@ -488,13 +561,11 @@ impl NativeFinalFunctions {
                             && body.return_abi == declaration.return_abi
                             && body.param_names == declaration.params
                     })
-                    .ok_or_else(|| {
-                        format!("invalid terminal JIT body for `{}`", declaration.name)
-                    })?
+                    .ok_or_else(|| format!("invalid terminal body for `{}`", declaration.name))?
                 }
                 _ => {
                     return Err(format!(
-                        "native JIT body ownership differs for `{}`",
+                        "native terminal body ownership differs for `{}`",
                         declaration.name
                     ));
                 }
@@ -616,7 +687,7 @@ impl NativeBackendModuleContext {
                 ));
             }
             if linkage_abi.checked_raw_return()
-                && (function.is_extern
+                && ((function.is_extern && !linkage_abi.certified_program_entry())
                     || !linkage_abi
                         .return_type
                         .as_ref()

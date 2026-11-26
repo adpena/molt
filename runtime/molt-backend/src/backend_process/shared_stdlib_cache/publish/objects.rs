@@ -227,8 +227,8 @@ impl NativeObjectCache {
             .map_err(io::Error::other)?;
         // Bind the existing FunctionIR contract's explicit version as well as
         // its entire ordered payload, never a hand-maintained field subset.
-        let table = molt_ir::FunctionTable::of(&job.ir.functions);
-        for function in &job.ir.functions {
+        let table = molt_ir::FunctionTable::of(job.ir.declarations());
+        for function in job.ir.declarations() {
             let mut function_digest = Sha256::new();
             molt_backend::ir::write_function_ir_contract(
                 function,

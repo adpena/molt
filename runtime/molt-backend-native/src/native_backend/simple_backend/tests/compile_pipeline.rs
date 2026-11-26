@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeProgramScope;
 use crate::runtime_import_abi::NATIVE_RUNTIME_HELPER_IMPORTS;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::InstructionData;
@@ -60,7 +61,7 @@ fn closed_refcount_cfg_emits_identical_object_bytes() {
         let mut backend = SimpleBackend::new();
         // Reusable stdlib workers consume an already-owned body through this
         // path. Fresh backend/fact maps must not change its object identity.
-        backend.skip_ir_passes = true;
+        backend.program_scope = NativeProgramScope::ObjectConstituent;
         let bytes = backend
             .compile(SimpleIR {
                 functions: vec![function.clone()],

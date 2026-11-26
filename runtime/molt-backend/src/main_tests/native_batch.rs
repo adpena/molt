@@ -138,7 +138,8 @@ fn native_batch_failure_artifact_retains_closed_context_for_replay() {
         ir: SimpleIR {
             functions: vec![],
             profile: None,
-        },
+        }
+        .into(),
         module_context: molt_backend::NativeBackendModuleContext::default(),
         codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::capture()
             .unwrap(),

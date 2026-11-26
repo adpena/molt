@@ -64,7 +64,7 @@ fn compile_native_batch_object_job(
     }
     job.codegen_environment.validate_current()?;
     let mut backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
-    backend.skip_ir_passes = true;
+    backend.program_scope = molt_backend::NativeProgramScope::ObjectConstituent;
     backend.skip_shared_stdlib_partition = true;
     backend.emit_app_callable_resolver = job.emit_app_callable_resolver;
     backend.app_callable_manifest = job.app_callable_manifest;
@@ -72,7 +72,12 @@ fn compile_native_batch_object_job(
     backend.module_registry = job.module_registry;
     backend.code_slots = job.code_slots;
     backend.set_module_context(job.module_context);
-    let output = backend.compile(job.ir);
+    let output = match job.ir {
+        super::super::batching::NativeBatchInput::Source(ir) => backend.compile(ir),
+        super::super::batching::NativeBatchInput::Terminal { terminal } => backend
+            .compile_terminal_object(terminal)
+            .map_err(io::Error::other)?,
+    };
     write_output_path(output_path, &output.bytes)?;
     Ok(ContentIdentity::of_bytes(&output.bytes))
 }

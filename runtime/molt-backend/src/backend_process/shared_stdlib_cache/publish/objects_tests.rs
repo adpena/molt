@@ -42,6 +42,13 @@ fn a_backend_replaced_after_its_key_was_bound_publishes_nothing() {
     std::fs::remove_dir_all(cache.cache_root).unwrap();
 }
 
+fn source_mut(job: &mut NativeBatchObjectJob) -> &mut SimpleIR {
+    match &mut job.ir {
+        crate::backend_process::native_batch::NativeBatchInput::Source(ir) => ir,
+        _ => panic!("expected a source stdlib constituent"),
+    }
+}
+
 fn job() -> NativeBatchObjectJob {
     let mut job = NativeBatchObjectJob {
         code_slots: None,
@@ -64,7 +71,8 @@ fn job() -> NativeBatchObjectJob {
                 },
             ],
             profile: None,
-        },
+        }
+        .into(),
         module_context: NativeBackendModuleContext::default(),
         codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::from_lookup(
             |_| Ok(None),
@@ -77,7 +85,7 @@ fn job() -> NativeBatchObjectJob {
         module_registry: None,
     };
     // A job carries a decoded document (HF-847 slice 1).
-    job.ir.resolve_function_references().unwrap();
+    source_mut(&mut job).resolve_function_references().unwrap();
     job
 }
 
@@ -117,13 +125,13 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
         "entry custody must invalidate same-body objects"
     );
     let mut changed = roundtrip(&original);
-    changed.ir.functions[0].ops[0].value = Some(1);
+    source_mut(&mut changed).functions[0].ops[0].value = Some(1);
     assert_ne!(original_key, cache.input_key(&changed).unwrap());
     changed = roundtrip(&original);
     changed.target_triple = Some("aarch64-unknown-linux-gnu".into());
     assert_ne!(original_key, cache.input_key(&changed).unwrap());
     changed = roundtrip(&original);
-    changed.ir.profile = Some(molt_backend::PgoProfileIR {
+    source_mut(&mut changed).profile = Some(molt_backend::PgoProfileIR {
         hot_functions: vec!["reader".into()],
         ..Default::default()
     });
@@ -354,22 +362,26 @@ fn archive_key_binds_every_ordered_constituent_input() {
 fn constituent_key_preserves_float_bits_and_function_order() {
     let cache = cache();
     let mut first = job();
-    first.ir.functions[0].ops.push(OpIR {
+    source_mut(&mut first).functions[0].ops.push(OpIR {
         f_value: Some(0.0),
         ..OpIR::new(molt_ir::OpKind::ConstFloat)
     });
     let mut second = roundtrip(&first);
-    second.ir.functions[0].ops.last_mut().unwrap().f_value = Some(-0.0);
+    source_mut(&mut second).functions[0]
+        .ops
+        .last_mut()
+        .unwrap()
+        .f_value = Some(-0.0);
     assert_ne!(
         cache.input_key(&first).unwrap(),
         cache.input_key(&second).unwrap()
     );
-    first.ir.functions.push(FunctionIR {
+    source_mut(&mut first).functions.push(FunctionIR {
         name: "second".into(),
         ..Default::default()
     });
     second = roundtrip(&first);
-    second.ir.functions.reverse();
+    source_mut(&mut second).functions.reverse();
     assert_ne!(
         cache.input_key(&first).unwrap(),
         cache.input_key(&second).unwrap()

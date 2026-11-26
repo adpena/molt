@@ -7,6 +7,22 @@ constituent objects compile, and both admitted and newly emitted ordinary
 objects pass through the existing native archive validator/assembler and
 archive publisher.
 
+## Checked results across application objects
+
+The application archive planner specializes its target-specific terminal TIR
+before assigning definitions to workers. A private clone can return a scalar
+on success when every incoming reference is a direct call whose normal
+continuation dominates every use of that scalar. The original Python entry
+keeps its published machine ABI.
+
+Each participating worker receives the clone's origin and a commitment to its
+terminal body, target and linkage. The defining worker checks its body bytes
+and derives the successful return carrier again. A consuming worker checks
+each incoming call against its own terminal control flow. Both bind the same
+hidden, content-addressed symbol. A stale provider or a missing exception
+observation fails worker admission. Shared-stdlib constituents continue to
+use the independently closed source inputs below.
+
 ## Closed native object inputs
 
 `NativeBatchObjectJob` carries its module context inline. `close_dependencies`

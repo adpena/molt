@@ -657,7 +657,11 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let return_type = abi.return_type.clone().unwrap_or(TirType::DynBox);
         let checked = if abi.checked_raw_return() {
             match self.plan.checked_direct_result(op, &return_type) {
-                Ok(edge) if self.functions.defines(edge.callee) => Some(edge),
+                Ok(edge)
+                    if self.functions.defines(edge.callee) || abi.certified_program_entry() =>
+                {
+                    Some(edge)
+                }
                 Ok(_) => {
                     self.fatal(format!(
                         "checked entry for `{target}` has no definition in this object"

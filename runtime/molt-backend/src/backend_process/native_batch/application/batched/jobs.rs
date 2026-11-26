@@ -1,17 +1,17 @@
 use std::io;
 use std::path::Path;
 
-use molt_backend::{NativeBackendModuleContext, SimpleIR};
+use molt_backend::NativeBackendModuleContext;
 
 use super::super::super::{
-    NativeApplicationArtifactOptions, NativeBatchJobSpec, NativeBatchObjectJob,
-    append_referenced_external_declarations, batch_external_function_names,
+    NativeApplicationArtifactOptions, NativeBatchInput, NativeBatchJobSpec, NativeBatchObjectJob,
+    batch_external_function_names,
 };
 use super::plan::NativeApplicationBatchPlan;
 
 pub(super) fn materialize_native_application_batch_jobs(
     tmp_dir: &Path,
-    plan: NativeApplicationBatchPlan,
+    mut plan: NativeApplicationBatchPlan,
     options: &mut NativeApplicationArtifactOptions<'_>,
     batch_ops_budget: usize,
 ) -> io::Result<Vec<NativeBatchJobSpec>> {
@@ -26,18 +26,14 @@ pub(super) fn materialize_native_application_batch_jobs(
             &batch_funcs,
             batch_ops_budget,
         );
-        let mut batch_ir = SimpleIR {
-            functions: batch_funcs,
-            profile: plan.profile.clone(),
-        };
-        append_referenced_external_declarations(
-            &mut batch_ir.functions,
-            &plan.external_function_declarations,
-        );
-        let external_function_names = batch_external_function_names(&batch_ir.functions);
+        let terminal = plan
+            .archive
+            .project(batch_funcs)
+            .map_err(io::Error::other)?;
+        let external_function_names = batch_external_function_names(&terminal.declarations);
         let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
         let job = NativeBatchObjectJob {
-            ir: batch_ir,
+            ir: NativeBatchInput::Terminal { terminal },
             code_slots: (batch_idx == 0).then(|| std::mem::take(&mut options.code_slots)),
             module_context: NativeBackendModuleContext::default(),
             codegen_environment: codegen_environment.clone(),
@@ -58,7 +54,7 @@ pub(super) fn materialize_native_application_batch_jobs(
                 None
             },
         }
-        .close_dependencies(&plan.module_context);
+        .close_dependencies(&plan.archive.linkage);
         let input_key = options
             .object_cache
             .as_ref()
@@ -78,12 +74,12 @@ fn log_native_application_batch(
     log_prefix: &str,
     batch_idx: usize,
     total_batches: usize,
-    batch_funcs: &[molt_backend::FunctionIR],
+    batch_funcs: &[molt_backend::TerminalObjectRow],
     batch_ops_budget: usize,
 ) {
     let batch_ops = batch_funcs
         .iter()
-        .fold(0usize, |ops, func| ops.saturating_add(func.ops.len()));
+        .fold(0usize, |ops, func| ops.saturating_add(func.operations));
     eprintln!(
         "{log_prefix}: batch {}/{} ({} functions, {} ops / budget {})",
         batch_idx + 1,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeProgramScope;
 use molt_ir::OpKind;
 
 #[test]
@@ -526,7 +527,11 @@ fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
                     profile: None,
                 };
                 let mut backend = SimpleBackend::new();
-                backend.skip_ir_passes = skip_ir_passes;
+                backend.program_scope = if skip_ir_passes {
+                    NativeProgramScope::ObjectConstituent
+                } else {
+                    NativeProgramScope::WholeProgram
+                };
                 backend.skip_shared_stdlib_partition = true;
                 backend.emit_app_callable_resolver = false;
                 let prepared = backend.prepare_program_for_codegen(

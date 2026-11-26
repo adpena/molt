@@ -18,15 +18,25 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
     batch_size: usize,
     batch_ops_budget: usize,
 ) -> io::Result<NativeApplicationArtifactResult> {
+    let mut backend = molt_backend::SimpleBackend::new_with_target(options.target_triple);
+    backend.code_slots = Some(std::mem::take(&mut options.code_slots));
+    backend.module_registry = options.module_registry.take();
     let mut plan = NativeApplicationBatchPlan::from_ir(
         ir,
         batch_size,
         batch_ops_budget,
         options.module_context.take(),
         options.app_callable_manifest.take(),
-    );
+        &mut backend,
+    )?;
+    options.code_slots = backend
+        .code_slots
+        .take()
+        .expect("application code slot bindings");
+    options.module_registry = backend.module_registry.take();
+    drop(backend);
     let total_batches = plan.total_batches();
-    options.app_callable_manifest = Some(std::mem::take(&mut plan.app_callable_manifest));
+    options.app_callable_manifest = Some(std::mem::take(&mut plan.archive.callables));
 
     let tmp_dir = super::super::create_native_batch_temp_dir()?;
     let compile_result = (|| -> io::Result<(crate::backend_process::input::ContentIdentity, Vec<super::super::NativeWorkerOrigin>)> {

@@ -81,7 +81,8 @@ mod tests {
                     ir: molt_backend::SimpleIR {
                         functions: Vec::new(),
                         profile: None,
-                    },
+                    }
+                    .into(),
                     // A reusable object cannot own the application's slots.
                     code_slots: Some(Default::default()),
                     module_context: Default::default(),
