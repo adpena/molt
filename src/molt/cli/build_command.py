@@ -81,17 +81,8 @@ def _cpu_model() -> str:
 
 
 def _wasm_cutoff_request(request: BuildRequest) -> bool:
-    """Whether a WASM request publishes only the family its record verifies.
-
-    The default ``wasm`` target qualifies, including split deployments whose
-    full publication plan is recorded. JSON replay and precompiled images
-    remain outside the verified request family.
-    """
-    return (
-        request.target is TargetKind.WASM
-        and not request.json_output
-        and not request.precompile
-    )
+    """The default Wasm target publishes one recorded final-link family."""
+    return request.target is TargetKind.WASM and not request.precompile
 
 
 def _admit_import_graph_reuse(request: BuildRequest) -> bool:
@@ -277,7 +268,7 @@ def _record_build(
             return (
                 ledger.refusals[0]
                 if ledger.refusals
-                else "native JSON result was not reported"
+                else "JSON result was not reported"
             )
         if output.output != request.output:
             return "output selection differs from the build request"
@@ -335,15 +326,28 @@ def _with_early_cutoff(
             record,
             key,
             claim=_replay_build_claim,
-            require_result=request.json_output,
+            result_kind=(
+                ("native" if request.target is TargetKind.NATIVE else "wasm")
+                if request.json_output
+                else None
+            ),
             linked_output=request.linked_output,
         )
         if isinstance(change, _build_record.BuildRecordHit):
             if request.json_output:
-                from molt.cli.build_results import _emit_reused_native_build_result
+                from molt.cli.build_results import (
+                    _emit_reused_native_build_result,
+                    _emit_reused_wasm_build_result,
+                )
 
-                assert change.result is not None
-                return _emit_reused_native_build_result(change.result)
+                result = change.result
+                assert result is not None
+                if isinstance(result, _build_record.NativeBuildResult):
+                    return _emit_reused_native_build_result(result)
+                assert change.consumer is not None
+                return _emit_reused_wasm_build_result(
+                    result, change.consumer, dict(change.products)
+                )
             _success(
                 f"Successfully built {change.consumer or change.output} "
                 "(inputs unchanged)",

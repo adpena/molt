@@ -78,7 +78,7 @@ schema = "molt-perf-methodology-v1"
 # branches directly, changing admitted dependencies and emitted instructions.
 # One synchronous source-outcome dependency observation can reduce compile time.
 # Tool source closure keys use the selected per-file content digests.
-version = 96
+version = 97
 content_sha256 = "e9b5fa50feb9443d54048a66573c0c18c828793ca987d38275168f54d8266ce8"
 
 [[methodology]]

@@ -19,7 +19,7 @@ from molt.cli.link_fingerprints import FinalLinkReceiptRequest, publish_link_out
 from molt.cli.models import _PreparedNonNativeResult
 from molt.file_deletion import delete_path
 from molt.file_publication import clone_file, namespace_move_exclusive, staged_file_path
-from molt.link_outputs import validate_link_output_paths
+from molt.link_outputs import validate_link_output_paths, wasm_artifact_paths
 from molt.toolchain_identity import (
     StableRegularFileVersion,
     stable_regular_file_version,
@@ -129,23 +129,7 @@ class WasmDeploymentPlan:
         )
 
     def artifacts(self) -> dict[str, str]:
-        roles = {
-            "linked": "linked_wasm",
-            "optimizer": "wasm_optimizer_attestation",
-            "app": "app_wasm",
-            "runtime": "runtime_wasm",
-            "manifest": "manifest",
-            "worker_js": "worker_js",
-            "wrangler_config": "wrangler_config",
-            "bundle_tar": "bundle_tar",
-            "cwasm": "cwasm",
-            "runtime_cwasm": "runtime_cwasm",
-        }
-        return {
-            roles[role]: str(path)
-            for role, path in self.outputs.items()
-            if role in roles
-        }
+        return wasm_artifact_paths(self.outputs)
 
     def build_products(self, module: Path, receipt: Path) -> dict[str, Path]:
         """Return the full published file family for build-record reuse."""

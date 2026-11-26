@@ -3,6 +3,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import stat
+from enum import StrEnum
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +21,32 @@ from molt.cli.runtime_paths import _cargo_target_root
 
 
 _LOCK_CHECK_CACHE_VERSION = 3
+
+
+class LockCheckNotice(StrEnum):
+    """Explicit lock-check options whose notices are tied to a build request."""
+
+    UV_SKIP = "Skipping uv.lock check because UV_NO_SYNC=1."
+    CARGO_SKIP = "Skipping Cargo.lock check because MOLT_SKIP_CARGO_LOCK=1."
+
+
+def replayable_lock_notices(
+    warnings: Sequence[str],
+) -> tuple[LockCheckNotice, ...] | None:
+    notices = tuple(item for item in warnings if isinstance(item, LockCheckNotice))
+    return notices if len(notices) == len(warnings) else None
+
+
+def _lock_selection_present(path: Path, *, regular_file: bool = False) -> bool:
+    if _input_report.active():
+        selection = _input_report.report_probe(path)
+        if selection is None:
+            return False
+        if selection[0]:
+            return not regular_file or selection[1] == stat.S_IFREG
+        # Preserve the caller's filesystem diagnostic for a failed lookup.
+        _input_report.refuse(f"unresolved lockfile selection: {path}")
+    return path.is_file() if regular_file else path.exists()
 
 
 def _check_lockfiles(
@@ -42,15 +71,17 @@ def _check_lockfiles(
             command=command,
         )
     pyproject = project_root / "pyproject.toml"
-    if not pyproject.exists():
+    if not _lock_selection_present(pyproject):
         return None
     lock_path = project_root / "uv.lock"
     cargo_lock = project_root / "Cargo.lock"
-    has_cargo_project = (project_root / "Cargo.toml").is_file()
+    has_cargo_project = _lock_selection_present(
+        project_root / "Cargo.toml", regular_file=True
+    )
     missing = []
-    if not lock_path.exists():
+    if not _lock_selection_present(lock_path):
         missing.append("uv.lock")
-    if has_cargo_project and not cargo_lock.exists():
+    if has_cargo_project and not _lock_selection_present(cargo_lock):
         missing.append("Cargo.lock")
     if missing and deterministic:
         missing_text = ", ".join(missing)
@@ -68,7 +99,7 @@ def _check_lockfiles(
     if deterministic:
         skip_uv_lock = os.environ.get("UV_NO_SYNC") == "1"
         if skip_uv_lock:
-            warnings.append("Skipping uv.lock check because UV_NO_SYNC=1.")
+            warnings.append(LockCheckNotice.UV_SKIP)
         else:
             uv_error = _verify_uv_lock(project_root)
             if uv_error is not None:
@@ -78,7 +109,7 @@ def _check_lockfiles(
                     return _fail(uv_error, json_output, command=command)
         skip_cargo_lock = os.environ.get("MOLT_SKIP_CARGO_LOCK") == "1"
         if has_cargo_project and skip_cargo_lock:
-            warnings.append("Skipping Cargo.lock check because MOLT_SKIP_CARGO_LOCK=1.")
+            warnings.append(LockCheckNotice.CARGO_SKIP)
         elif has_cargo_project:
             cargo_error = _verify_cargo_lock(project_root)
             if cargo_error is not None:

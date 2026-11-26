@@ -2306,7 +2306,7 @@ def _native_result_fixture(tmp_path: Path):
     }
     for name, path in paths.items():
         path.write_text(f"original {name}", encoding="utf-8")
-    facts = build_record.NativeBuildFacts(
+    facts = build_record.BuildResultFacts(
         None,
         str(tmp_path / "app.py"),
         False,
@@ -2357,7 +2357,7 @@ def test_native_record_without_valid_runtime_variant_rebuilds(
         payload["result"]["runtime_features"] = features
     record.write_text(json.dumps(payload), encoding="utf-8")
     assert not isinstance(
-        build_record.check(record, KEY, claim=lambda _: None, require_result=True),
+        build_record.check(record, KEY, claim=lambda _: None, result_kind="native"),
         build_record.BuildRecordHit,
     )
 
@@ -2369,7 +2369,7 @@ def test_native_json_checks_every_promised_generation(
 ) -> None:
     paths, _ledger, record, result, claim = _native_result_fixture(tmp_path)
     acquired = []
-    hit = build_record.check(record, KEY, claim=acquired.append, require_result=True)
+    hit = build_record.check(record, KEY, claim=acquired.append, result_kind="native")
     assert isinstance(hit, build_record.BuildRecordHit) and hit.result == result
     assert acquired == [claim]
     path = paths[role]
@@ -2382,7 +2382,8 @@ def test_native_json_checks_every_promised_generation(
         path.write_bytes(b"x" * metadata.st_size)
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     assert isinstance(
-        build_record.check(record, KEY, claim=acquired.append, require_result=True), str
+        build_record.check(record, KEY, claim=acquired.append, result_kind="native"),
+        str,
     )
 
 
@@ -2414,12 +2415,12 @@ def test_native_shared_image_replay_requires_its_generation_claim(
     record, refusal = _write(tmp_path, ledger, paths["binary"])
     assert refusal is None
     claims = []
-    hit = build_record.check(record, KEY, claim=claims.append, require_result=True)
+    hit = build_record.check(record, KEY, claim=claims.append, result_kind="native")
     assert isinstance(hit, build_record.BuildRecordHit) and hit.result == result
     assert claims == [artifacts_claim, product_claim]
     image.write_bytes(b"changed runtime image!")
     assert isinstance(
-        build_record.check(record, KEY, claim=claims.append, require_result=True), str
+        build_record.check(record, KEY, claim=claims.append, result_kind="native"), str
     )
 
 
@@ -2452,7 +2453,7 @@ def test_native_result_claim_rechecks_root_after_acquisition(tmp_path: Path) -> 
         claim.root.rename(tmp_path / "original")
         claim.root.mkdir()
 
-    refused = build_record.check(record, KEY, claim=replace_root, require_result=True)
+    refused = build_record.check(record, KEY, claim=replace_root, result_kind="native")
     assert isinstance(refused, str) and "claim root changed" in refused
     assert (tmp_path / "original" / paths["binary"].name).exists()
 
@@ -2461,7 +2462,7 @@ def test_native_result_claim_ignores_unrelated_directory_churn(tmp_path: Path) -
     _paths, _ledger, record, _result, claim = _native_result_fixture(tmp_path)
     (claim.root / "unrelated.log").write_text("new log", encoding="utf-8")
     assert isinstance(
-        build_record.check(record, KEY, claim=lambda value: None, require_result=True),
+        build_record.check(record, KEY, claim=lambda value: None, result_kind="native"),
         build_record.BuildRecordHit,
     )
 
@@ -2475,7 +2476,7 @@ def test_malformed_native_results_refuse_reuse(tmp_path: Path, field: str) -> No
     payload["result"][field] = ["not this field's contract"]
     record.write_text(json.dumps(payload), encoding="utf-8")
     assert isinstance(
-        build_record.check(record, KEY, claim=lambda value: None, require_result=True),
+        build_record.check(record, KEY, claim=lambda value: None, result_kind="native"),
         str,
     )
 
@@ -2489,7 +2490,7 @@ def test_native_result_rejects_noncanonical_policy_digest(
     payload["result"]["facts"]["capability_policy_digest"] = digest
     record.write_text(json.dumps(payload), encoding="utf-8")
     assert isinstance(
-        build_record.check(record, KEY, claim=lambda value: None, require_result=True),
+        build_record.check(record, KEY, claim=lambda value: None, result_kind="native"),
         str,
     )
 
@@ -2518,7 +2519,7 @@ def test_native_claim_refuses_symlink_retarget_during_acquisition(
         alias.unlink()
         alias.symlink_to(replacement, target_is_directory=True)
 
-    result = build_record.check(record, KEY, claim=retarget, require_result=True)
+    result = build_record.check(record, KEY, claim=retarget, result_kind="native")
     assert isinstance(result, str) and "root changed" in result
     assert paths["binary"].read_text(encoding="utf-8") == "original binary"
 
@@ -2560,7 +2561,7 @@ def test_native_result_rejects_changed_bytes_despite_equal_public_token(
         record,
         KEY,
         claim=lambda value: None,
-        require_result=True,
+        result_kind="native",
     )
     assert isinstance(rejected, str) and "content changed" in rejected
     assert (

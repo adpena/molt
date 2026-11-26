@@ -368,8 +368,8 @@ record. Its first unchanged successor can then reuse that record.
 Diagnostic requests still execute the pipeline because they require fresh
 measurements; unsupported additional result families also retain that path.
 
-**WASM product families.** A plain request for the default `wasm` target,
-including split deployment, records through the same output selector. The
+**WASM product families.** Text and JSON requests for the default `wasm` target,
+including split deployment, record through the same output selector. The
 deployment plan supplies every published role, including loader assets, target
 features, optional bundle and optimizer evidence, and the final-link receipt.
 The result owner reports this family as one typed `BuildProducts` fact with
@@ -379,14 +379,22 @@ decision and resolved destination and requires the selected file among the
 published products. An older plain record needs no named selector. Publication
 and verified link reuse capture the installed
 tokens under the existing output locks. A record is refused if any of those
-files changes before the record is written. Record schema v10 keeps each
-product's token and requires every member unchanged on reuse. Each product's publication custody is a
+files changes before the record is written. The record keeps each product's
+token and requires every member unchanged on reuse. Each product's publication custody is a
 product, resolved transitively by the staging-name authority: a stage issued
 for one of its own stages (the LLVM wasm32 object is staged beside the module
 and a copy is staged for that stage) and every path inside a staged directory
 (the deployment generation is staged in one directory beside the manifest).
-JSON WASM requests and precompiled images still run the pipeline. Deployment source files, tooling closure and admitted link inputs
-are reported on final-link reuse as well as fresh links. The compiler's
+The structured result preserves the compiler identity and original emission
+provenance of the raw module. When a required link selected the linked binary
+as primary, the result also retains that binary's identity. Artifact labels,
+consumer paths and split-bundle roots come from the verified publication.
+The same artifact projection serves fresh results and replay. Replay preserves
+the lock-check skip notices requested by the environment after validating the
+lockfile selections that produced them. Precompile, diagnostics and explicit
+link-input capture still execute their pipelines. Deployment source files,
+tooling closure and admitted link inputs are reported on final-link reuse as
+well as fresh links. The compiler's
 stdlib archive is a derived link product, like the application object. Its
 content keys and fences the final link, while the build record binds the inputs
 that produce it. Fresh backend output, a restored cache artifact and a
