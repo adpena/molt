@@ -33,6 +33,7 @@ from molt import compiled_symbols
 from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
@@ -99,15 +100,20 @@ class ModuleNamespaceFacts:
         return python_namespace_stability_reason(self.own_names, self.premise, name)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class _ClassStamp:
+    definition: str
+    maker: int
+    stamp: int
+
+
+@dataclass(frozen=True, slots=True)
 class _BodyStore:
-    unconditional: bool
     value: str | None
     function: str
     line: int | None
-    # Lowering rewrites can shift the store's index while keeping its identity.
-    operation: Mapping[str, Any]
-    class_definition: str | None = None
+    index: int
+    class_stamps: tuple[_ClassStamp, ...] = ()
 
 
 def _module_body_functions(
@@ -234,12 +240,10 @@ class InitChain:
     chunk. An exception that leaves a chunk takes its caller's exception edge,
     so code after the call's normal continuation never runs on that path."""
 
-    def __init__(self, module: str, funcs: Sequence[Mapping[str, Any]]) -> None:
+    def __init__(self, module: str, initializers: Sequence[Mapping[str, Any]]) -> None:
         from molt.frontend.cfg_analysis import build_cfg
 
-        body = {
-            func.get("name", ""): func for func in _module_body_functions(module, funcs)
-        }
+        body = {func.get("name", ""): func for func in initializers}
         self.init = compiled_symbols.module_init_symbol(module)
         sites: dict[str, list[tuple[str, int]]] = {}
         for name, func in body.items():
@@ -384,7 +388,6 @@ FUNCTION_MAKERS = frozenset({"func_new", "func_new_closure"})
 class CallablePublication:
     point: tuple[str, int]
     value: str
-    runs_once: bool
 
 
 @dataclass(frozen=True)
@@ -397,9 +400,30 @@ class ModuleInitializerFacts:
     import_results: dict[tuple[str, str], str]
     producers: dict[tuple[str, str], Mapping[str, Any]]
     callable_publications: dict[str, list[CallablePublication]]
+    module: str
+    body: tuple[Mapping[str, object], ...]
+
+    @cached_property
+    def chain(self) -> InitChain:
+        return InitChain(self.module, self.body)
+
+    def unconditional(self, store: _BodyStore) -> bool:
+        return self.chain.unconditional((store.function, store.index))
+
+    def class_definition(self, store: _BodyStore) -> str | None:
+        # A later stamp supersedes an earlier one only if its maker and
+        # the stamp itself are proven to precede the store.
+        for candidate in reversed(store.class_stamps):
+            maker = (store.function, candidate.maker)
+            stamp = (store.function, candidate.stamp)
+            if self.chain.runs_once(maker) and self.chain.dominates(maker, stamp):
+                if self.chain.dominates(stamp, (store.function, store.index)):
+                    return candidate.definition
+                break
+        return None
 
 
-_EMPTY_INITIALIZER = ModuleInitializerFacts({}, set(), False, {}, {}, {}, {})
+_EMPTY_INITIALIZER = ModuleInitializerFacts({}, set(), False, {}, {}, {}, {}, "", ())
 
 
 def _intrinsic_result_candidates(
@@ -448,12 +472,11 @@ def summarize_module_initializer(
     imports: dict[tuple[str, str], str] = {}
     producers: dict[tuple[str, str], Mapping[str, Any]] = {}
     callable_publications: dict[str, list[CallablePublication]] = {}
-    body = _module_body_functions(module, funcs)
-    chain = InitChain(module, funcs)
+    body = tuple(_module_body_functions(module, funcs))
     for func in body:
         constants: dict[str, str] = {}
         class_makers: dict[str, int] = {}
-        class_stamps: dict[str, tuple[str, int]] = {}
+        class_stamps: dict[str, list[_ClassStamp]] = {}
         own_modules = {
             param
             for param in func.get("params") or ()
@@ -475,7 +498,7 @@ def summarize_module_initializer(
                 if kind in FUNCTION_MAKERS and isinstance(symbol, str):
                     point = (name_of_function, index)
                     callable_publications.setdefault(symbol, []).append(
-                        CallablePublication(point, out, chain.runs_once(point))
+                        CallablePublication(point, out)
                     )
             if kind == "const_str" and isinstance(out, str):
                 constants[out] = op.get("s_value")
@@ -489,16 +512,10 @@ def summarize_module_initializer(
             elif kind == "class_set_definition" and len(args) == 1:
                 definition = op.get("class_definition")
                 maker = class_makers.get(args[0])
-                if (
-                    isinstance(definition, str)
-                    and definition
-                    and maker is not None
-                    and chain.runs_once((name_of_function, maker))
-                    and chain.dominates(
-                        (name_of_function, maker), (name_of_function, index)
+                if isinstance(definition, str) and definition and maker is not None:
+                    class_stamps.setdefault(args[0], []).append(
+                        _ClassStamp(definition, maker, index)
                     )
-                ):
-                    class_stamps[args[0]] = (definition, index)
             elif kind is not None and "import_star" in kind:
                 star = True
             if len(args) < 2 or args[1] not in constants:
@@ -508,39 +525,28 @@ def summarize_module_initializer(
                 kind == "dict_set" and args[0] in globals_dicts
             )
             if kind in _GLOBAL_STORES and own and len(args) == 3:
-                point = (name_of_function, index)
-                stamp = class_stamps.get(args[2])
-                # Require the real class object, not a decorator's result.
-                definition = (
-                    stamp[0]
-                    if stamp is not None
-                    and chain.dominates((name_of_function, stamp[1]), point)
-                    else None
-                )
                 stores.setdefault(name, []).append(
                     _BodyStore(
-                        chain.unconditional(point),
                         args[2],
                         name_of_function,
                         op.get("source_line"),
-                        op,
-                        definition,
+                        index,
+                        tuple(class_stamps.get(args[2], ())),
                     )
                 )
             elif kind in _GLOBAL_DELETES:
                 deletes.add(name)
     return ModuleInitializerFacts(
-        stores, deletes, star, builtins, imports, producers, callable_publications
+        stores,
+        deletes,
+        star,
+        builtins,
+        imports,
+        producers,
+        callable_publications,
+        module,
+        body,
     )
-
-
-def summarize_program_initializers(
-    module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> dict[str, ModuleInitializerFacts]:
-    return {
-        module: summarize_module_initializer(module, funcs)
-        for module, funcs in module_functions.items()
-    }
 
 
 class ClosedWorldBinder:
@@ -579,7 +585,7 @@ class ClosedWorldBinder:
         if len(rows) != 1:
             return f"{module}'s body binds {name} {len(rows)} times, not once"
         (row,) = rows
-        if not row.unconditional:
+        if not body.unconditional(row):
             return f"{module}'s binding of {name} (line {row.line}) is conditional"
         if body.builtins.get((row.function, row.value or "")) != intrinsic:
             return f"{module}'s binding of {name} is not the publication of {intrinsic}"
@@ -713,7 +719,7 @@ class ClosedWorldBinder:
 
         reads = {
             op["out"]: candidates[name]
-            for op, name in _global_name_sites([func])
+            for _, op, name in _global_name_sites(func)
             if op.get("kind") == "module_get_global"
             and isinstance(op.get("out"), str)
             and name in candidates
@@ -810,12 +816,17 @@ def bind_closed_world_calls(
     facts: Mapping[str, ModuleNamespaceFacts],
     dep_closures: Mapping[str, Collection[str]],
     import_redirects: ImportRedirects,
-    initializers: Mapping[str, ModuleInitializerFacts],
-) -> list[str]:
-    """Rewrite every proven site in ``functions`` (copy-on-write, as the
-    global slot stamps are) and drop every module guess; return the
-    diagnostics of qualifying sites that keep the generic call.
-    ``import_redirects`` is the program's one redirect fact (F3)."""
+) -> tuple[list[str], dict[str, ModuleInitializerFacts]]:
+    """Bind calls against the admitted bodies and publish the resulting init facts.
+
+    The binder reads the original publications for the whole program. Later
+    passes need coordinates in the rewritten bodies, which may have lost an
+    attribute-read op. Reanalyze only modules whose initializer was rewritten.
+    """
+    initializers = {
+        module: summarize_module_initializer(module, funcs)
+        for module, funcs in module_functions.items()
+    }
     binder = ClosedWorldBinder(initializers, facts, dep_closures, import_redirects)
     position = {id(function): index for index, function in enumerate(functions)}
     rebound: dict[str, dict[int, dict[str, Any]]] = {}
@@ -829,6 +840,16 @@ def bind_closed_world_calls(
     # bodies by identity in `functions`: they see the rewritten ones.
     for module, rows in rebound.items():
         funcs = module_functions[module]
+        body_ids = {id(original) for original in initializers[module].body}
+        # Same-length binding only annotates call and attribute sites. Its
+        # operands, op kinds and initializer coordinates stay the same.
+        changed_body = any(
+            id(funcs[index]) in body_ids
+            and len(bound["ops"]) != len(funcs[index].get("ops", ()))
+            for index, bound in rows.items()
+        )
         for index, bound in rows.items():
             funcs[index] = bound
-    return binder.diagnostics
+        if changed_body:
+            initializers[module] = summarize_module_initializer(module, funcs)
+    return binder.diagnostics, initializers
