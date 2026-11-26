@@ -197,14 +197,17 @@ def host_file_digest_cache(*, operation_local: bool = False) -> FileDigestCache:
     return file_digest_cache(store, max_age_ns=max_age_ns)
 
 
-def capture_probe_tool(path: Path, *, label: str) -> ProbeTool:
+def capture_probe_tool(
+    path: Path, *, label: str, operation_local: bool = False
+) -> ProbeTool:
     """Identify an executable through the host digest cache.
 
     On POSIX an unchanged stat token answers from the cache without reading
     the file; a new generation is hashed once and recorded.
+    Parallel probes use operation-local readers of the same host store.
     """
     entrypoint, content = _executable_paths(path, label=label)
-    digests = host_file_digest_cache()
+    digests = host_file_digest_cache(operation_local=operation_local)
     identity = digests.identity(content, label=label)
     digests.flush()
     return ProbeTool.from_identity(entrypoint, identity)
