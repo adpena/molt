@@ -1012,7 +1012,12 @@ def test_widening_expires_shared_owner_and_preserves_child_provenance() -> None:
     )
     assert expired.element_result is leaf
     assert expression_result_without_value_facts(expired) is expired
+    assert expression_result_without_value_facts(owner) is expired
     assert owner.items is not None and owner.items[0].result is owner.items[1].result
+    changed = replace(owner, source_origins=frozenset({child_source}))
+    changed_expiry = expression_result_without_value_facts(changed)
+    assert changed_expiry.source_origins == frozenset({child_source})
+    assert changed_expiry.element_result is leaf
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, fields, replace
+from enum import Enum, auto
 import math
 import operator as scalar_operator
 from typing import Final, Literal, TypeAlias, TypedDict, assert_never, cast
@@ -323,6 +324,10 @@ class ExpressionSequenceItem:
     expanded: bool = False
 
 
+class _ValueFactExpiry(Enum):
+    UNCHANGED = auto()
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class StaticExpressionResult:
     truth: bool | None = None
@@ -377,6 +382,11 @@ class StaticExpressionResult:
     )
     _semantic_hash: int = field(init=False, repr=False, compare=False, hash=False)
     _recursively_stable: bool = field(init=False, repr=False, compare=False, hash=False)
+    # Widening depends only on this immutable fact graph. An unchanged
+    # projection stores a marker instead of making the fact retain itself.
+    _expired_value_facts: StaticExpressionResult | _ValueFactExpiry | None = field(
+        default=None, init=False, repr=False, compare=False, hash=False
+    )
     # Canonical cached proof transported when publication erases descendant
     # shape. ``None`` means derive it from the still-visible result graph.
     _publication_release_stable: bool | None = field(
@@ -602,22 +612,34 @@ def expression_result_without_value_facts(
     """
     if result is UNKNOWN_EXPRESSION_RESULT:
         return result
+    cached = result._expired_value_facts
+    if cached is _ValueFactExpiry.UNCHANGED:
+        return result
+    if cached is not None:
+        return cached
 
-    # Expiry retains at most one joined element summary per value. Follow
-    # that path, then project from the last value back to its owners.
+    # Expiry retains at most one joined element summary per value. Walk
+    # only the uncomputed prefix, then publish its derived facts bottom up.
     enclosing: list[StaticExpressionResult] = []
     current = result
     while True:
+        enclosing.append(current)
         child = current.element_result
         if child is None and current.items is not None:
             child = sequence_element_result(current.items)
         if child is None or child is UNKNOWN_EXPRESSION_RESULT:
+            projected = None
             break
-        enclosing.append(current)
+        cached = child._expired_value_facts
+        if cached is _ValueFactExpiry.UNCHANGED:
+            projected = child
+            break
+        if cached is not None:
+            projected = None if cached is UNKNOWN_EXPRESSION_RESULT else cached
+            break
         current = child
 
-    projected = None
-    while True:
+    for current in reversed(enclosing):
         symbols = current.identities & ~_NON_SYMBOL_IDENTITIES
         widened = (
             UNKNOWN_EXPRESSION_RESULT
@@ -637,10 +659,13 @@ def expression_result_without_value_facts(
                 element_result=projected,
             )
         )
-        if not enclosing:
-            return widened
+        object.__setattr__(
+            current,
+            "_expired_value_facts",
+            _ValueFactExpiry.UNCHANGED if widened is current else widened,
+        )
         projected = None if widened is UNKNOWN_EXPRESSION_RESULT else widened
-        current = enclosing.pop()
+    return widened
 
 
 class StaticTruthKwargs(TypedDict, total=False):
