@@ -403,6 +403,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             OpCode::Pow => self.binary_arith_op(b, op, OpKind::Pow),
             OpCode::CheckedAdd | OpCode::CheckedMul => self.checked_arith_op(b, op),
             OpCode::TryBuffer2dLoadI64 => self.try_buffer_load(b, op),
+            OpCode::TryBuffer2dStoreI64 => self.try_buffer_store(b, op),
             OpCode::Neg => self.unary_op(b, op, OpKind::Neg),
             OpCode::Pos => self.unary_op(b, op, OpKind::Pos),
             OpCode::Not => self.unary_op(b, op, OpKind::Not),
@@ -532,6 +533,56 @@ mod tests {
     }
 
     const BOXED: HeldCarrier = HeldCarrier::Boxed;
+
+    #[test]
+    fn packed_store_commits_only_after_all_operand_checks() {
+        use molt_codegen_abi::{
+            BUFFER2D_STORAGE_PACKED, HEADER_SIZE_BYTES, TYPE_ID_BUFFER2D, box_ptr_bits,
+        };
+        let mut cells = [7i64];
+        let data = [cells.as_mut_ptr() as u64, 1, 1];
+        let header_words = HEADER_SIZE_BYTES as usize / size_of::<u64>();
+        let mut object = [0u64; HEADER_SIZE_BYTES as usize / size_of::<u64>() + 4];
+        object[0] = u64::from(TYPE_ID_BUFFER2D);
+        object[header_words..].copy_from_slice(&[
+            1,
+            1,
+            BUFFER2D_STORAGE_PACKED,
+            data.as_ptr() as u64,
+        ]);
+        let owner = box_ptr_bits(object[header_words..].as_ptr() as u64) as u64;
+        let none = molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE;
+        let run_store = |col, word, held| {
+            operator(
+                OpCode::TryBuffer2dStoreI64,
+                &[BOXED, HeldCarrier::RawI64, HeldCarrier::RawI64, held],
+                &[
+                    Value::Word(owner),
+                    Value::Word(0),
+                    Value::Word(col),
+                    Value::Word(word),
+                ],
+                1,
+                &[],
+                true,
+            )
+        };
+
+        let success = !molt_codegen_abi::MOLT_REFCOUNT_ATOMIC;
+        let committed = if success { i64::MAX } else { 7 };
+        let hot = run_store(0, i64::MAX as u64, HeldCarrier::RawI64);
+        assert_eq!(hot.results, [Value::Bit(success)]);
+        assert_eq!(cells, [committed]);
+        for miss in [
+            run_store(1, 0, HeldCarrier::RawI64),
+            run_store(0, none, BOXED),
+        ] {
+            assert_eq!(miss.results, [Value::Bit(false)]);
+            assert!(miss.runtime_calls.is_empty() && miss.refcounts.is_empty());
+            assert_eq!(cells, [committed]);
+        }
+        assert!(hot.runtime_calls.is_empty() && hot.refcounts.is_empty());
+    }
 
     #[test]
     fn packed_buffer_load_preserves_i64_and_misses_without_a_runtime_call() {

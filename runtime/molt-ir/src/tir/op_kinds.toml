@@ -1537,6 +1537,7 @@ gvn_numberable_attr_key_opcodes = [
 # wire under their own kind and carry no frontend facts.
 final_tir_opcodes = [
     "TryBuffer2dLoadI64",
+    "TryBuffer2dStoreI64",
     "ProbeInlineField",
     "FrameEntryAdmits",
     "StringLiteralCellReady",
@@ -3382,6 +3383,21 @@ side_effecting = true
 purity = "impure"
 may_access_arbitrary_heap = false
 result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# The only mutation is the packed word written after every guard succeeds.
+# A miss leaves the physical invocation available on the false continuation.
+[[opcode]]
+name = "TryBuffer2dStoreI64"
+may_call_python = false
+operand_arity = 4
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
