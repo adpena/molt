@@ -3,18 +3,25 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-
-from molt.source_root import compiler_source_root
-from molt.dx import DX_ENV_KEYS, DxProject, dx_env_payload, render_env
+from typing import TYPE_CHECKING
 from molt.cli.output import emit_json as _emit_json
 
 
+if TYPE_CHECKING:
+    from molt.dx import DxProject
+
+
 def _dx_project_from_cwd() -> DxProject:
+    from molt.dx import DxProject
+    from molt.source_root import compiler_source_root
+
     root = compiler_source_root()
     return DxProject(root)
 
 
 def _handle_env(args: argparse.Namespace) -> int:
+    from molt.dx import DX_ENV_KEYS, dx_env_payload, render_env
+
     project = _dx_project_from_cwd()
     env = project.dx_env(os.environ, create_dirs=args.create_dirs)
     keys = tuple(key for key in DX_ENV_KEYS if key in env)

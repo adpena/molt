@@ -129,7 +129,8 @@ def proven_gates(
     tests, the receipt explicitly records a canonical presubmit run, and
     each target is a file that run covered. Custom pytest arguments and
     older receipts cannot prove a whole file. A test that needs landing-built artifacts is never a receipt
-    importer, so its cohort is never proven.
+    importer, so its cohort is never proven. A failure attributed to main
+    or cleared in isolation still leaves the original cohort unproven.
 
     ``exact`` accepts only a receipt whose run saw exactly the tree's files
     (no other tracked edit and no untracked file in the checkout): the
@@ -147,7 +148,11 @@ def proven_gates(
     statics = frozenset(payload["static_gates"])
     commits = frozenset(payload.get("commit_gates", ()))
     importers = frozenset(payload["importers"])
-    canonical_presubmit: bool = payload.get("canonical_presubmit") is True
+    clean_presubmit = (
+        payload.get("canonical_presubmit") is True
+        and not payload.get("preexisting_failures")
+        and not payload.get("flaky_reruns")
+    )
     import shlex
 
     from tools.molt_dev_gates import display
@@ -160,7 +165,7 @@ def proven_gates(
         if gate.commit:
             # The same command over the same tree, as for a static gate.
             return display(gate.command) in commits
-        if not gate.pytest or not canonical_presubmit:
+        if not gate.pytest or not clean_presubmit:
             return False
         argv = (
             shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
@@ -339,8 +344,8 @@ def _importer_demand(argv: Sequence[str], files: int, *, root: Path) -> HostWork
     """The host share an importer run asks for (``molt.host_capacity``): one
     worker per test file, and never less than half the host, since one file
     can hold thousands of tests (tests/test_molt_dev.py holds about 2,700).
-    Two gates of up to half the host's files run together; a larger one asks
-    for more, up to the whole class."""
+    Run with the available share while other admitted work holds capacity.
+    A full request remains the target when the host has room."""
     from molt import host_capacity
     from tools.proof_command_argv import pytest_allocation_request
 
@@ -349,7 +354,9 @@ def _importer_demand(argv: Sequence[str], files: int, *, root: Path) -> HostWork
     )
     half = (host_capacity.cpu_count() + 1) // 2
     return host_capacity.HostWorkDemand(
-        workers=max(half, files), bytes_per_worker=bytes_per_worker
+        workers=max(half, files),
+        bytes_per_worker=bytes_per_worker,
+        minimum_workers=1,
     )
 
 

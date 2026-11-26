@@ -411,10 +411,6 @@ def _in_build_scope(
 @_in_build_scope
 @_with_early_cutoff
 def build(request: BuildRequest) -> int:
-    from molt.cli import build_inputs as _build_inputs
-    from molt.cli import build_pipeline as _build_pipeline
-    from molt.cli import frontend_pipeline as _frontend_pipeline
-    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
     from molt.cli.config_resolution import (
         _resolve_build_config,
         resolve_stdlib_profile,
@@ -475,13 +471,17 @@ def build(request: BuildRequest) -> int:
             else None
         ),
     )
+    if request.file_path and request.module:
+        return _fail(
+            "Use a file path or --module, not both.",
+            request.json_output,
+            command="build",
+        )
+
+    from molt.cli import build_inputs as _build_inputs
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+
     with _source_tree_fingerprint_transaction():
-        if request.file_path and request.module:
-            return _fail(
-                "Use a file path or --module, not both.",
-                request.json_output,
-                command="build",
-            )
         prepared_build_inputs, prepared_build_inputs_error = (
             _build_inputs._prepare_build_inputs(
                 file_path=request.file_path,
@@ -523,6 +523,8 @@ def build(request: BuildRequest) -> int:
             prepared_build_config,
             resolved_build_entry,
         ) = prepared_build_inputs
+        from molt.cli import frontend_pipeline as _frontend_pipeline
+
         prepared_frontend_pipeline_bundle, prepared_frontend_pipeline_error = (
             _frontend_pipeline._prepare_frontend_pipeline(
                 prepared_build_preamble=prepared_build_preamble,
@@ -552,6 +554,8 @@ def build(request: BuildRequest) -> int:
         if prepared_frontend_pipeline_error is not None:
             return prepared_frontend_pipeline_error
         assert prepared_frontend_pipeline_bundle is not None
+        from molt.cli import build_pipeline as _build_pipeline
+
         return _build_pipeline._run_build_pipeline(
             prepared_build_preamble=prepared_build_preamble,
             prepared_build_roots=prepared_build_roots,

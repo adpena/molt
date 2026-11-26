@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,82 @@ from molt.cli import entrypoint_dispatch
 from molt.cli import entrypoint_parser
 from molt.cli.build_request import BuildRequest
 from molt.cli.config_resolution import _select_capability_input
+
+from tests.cli.process_guard import run_cli_test_process
+
+
+@pytest.mark.parametrize(
+    ("args", "status", "diagnostic", "unloaded"),
+    [
+        (
+            ["--version"],
+            0,
+            "",
+            ["molt.dx", "molt.artifact_publication", "molt.cli.build_command"],
+        ),
+        (
+            ["build", "absent.py", "--target", "wasm", "--bolt"],
+            2,
+            "BOLT requires a native Linux ELF target",
+            [
+                "molt.cli.build_inputs",
+                "molt.cli.frontend_pipeline",
+                "molt.cli.build_pipeline",
+            ],
+        ),
+        (
+            ["build", "absent.py", "--no-deterministic"],
+            2,
+            "File not found:",
+            ["molt.cli.frontend_pipeline", "molt.cli.build_pipeline"],
+        ),
+    ],
+)
+def test_cli_loads_only_the_phases_an_admitted_request_reaches(
+    tmp_path: Path,
+    args: list[str],
+    status: int,
+    diagnostic: str,
+    unloaded: list[str],
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    env = dict(
+        os.environ,
+        PYTHONPATH=str(root / "src"),
+        MOLT_SOURCE_ROOT=str(root),
+        MOLT_PROJECT_ROOT=str(tmp_path),
+        MOLT_CACHE=str(tmp_path / "cache"),
+    )
+    result = run_cli_test_process(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            """import json
+import sys
+from molt.cli import main
+
+unloaded = json.loads(sys.argv.pop(1))
+try:
+    status = main()
+except SystemExit as exc:
+    status = exc.code
+assert not (unexpected := set(unloaded).intersection(sys.modules)), unexpected
+raise SystemExit(status)
+""",
+            json.dumps(unloaded),
+            *args,
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == status, result.stderr
+    if diagnostic:
+        assert diagnostic in result.stderr
+    else:
+        assert result.stdout.startswith("molt ")
 
 
 def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> None:
