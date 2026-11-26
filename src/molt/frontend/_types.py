@@ -356,14 +356,14 @@ class CodeSlotDeclaration:
     def frame_entry_value(self, target_python: tuple[int, int]) -> int:
         """The ``trace_enter_slot`` value of a synchronous frame of this code:
         its home count in bits 0..32 and, in bit 32, whether it clears its
-        slots last to first (molt-codegen-abi ``FrameShape``)."""
+        slots last to first (molt-ir frame_entry ``FrameShape``)."""
         descending = self.release_order(target_python).step < 0
         return len(self._slots) | (1 << 32 if descending else 0)
 
 
 # The ``trace_enter_slot`` value of a stateful activation's entry (a generator,
 # coroutine or async-generator poll), which links its task's persistent frame
-# record (molt-codegen-abi ``FRAME_ENTRY_STATEFUL``).
+# record (molt-ir frame_entry ``FRAME_ENTRY_STATEFUL``).
 FRAME_ENTRY_STATEFUL = 1 << 33
 
 

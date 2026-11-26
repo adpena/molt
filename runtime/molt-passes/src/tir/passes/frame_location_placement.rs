@@ -340,9 +340,9 @@ pub(super) fn held_call_arguments(
     aliases: &super::alias_analysis::AliasUnionFind,
     carriers: &HashMap<ValueId, crate::repr::Repr>,
 ) -> molt_ir::deterministic_hash::HashSet<(BlockId, usize, ValueId)> {
-    use molt_codegen_abi::frame_record::FrameEntryKind;
     use molt_ir::OpKind;
     use molt_ir::deterministic_hash::HashSet;
+    use molt_ir::frame_entry::FrameEntryKind;
 
     let mut held = HashSet::default();
     if sites.is_empty()

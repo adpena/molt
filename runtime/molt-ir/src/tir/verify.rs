@@ -14,7 +14,7 @@ use super::function::TirFunction;
 use super::op_kinds_generated::{
     TirVerifyAttrRule, opcode_accepts_operand_count, opcode_accepts_result_count,
     opcode_canonical_kind_table, opcode_fixed_result_count_table,
-    opcode_tir_verify_attr_rule_table,
+    opcode_is_late_compiled_function_reference_table, opcode_tir_verify_attr_rule_table,
 };
 use super::ops::{AttrValue, OpCode, TirOp};
 use super::types::TirType;
@@ -408,11 +408,7 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 // and replaces its spelling (HF-847 slice 1, I2).
                 // Late TIR operations can name a compiled function directly.
                 let kind = op.origin.or_else(|| opcode_canonical_kind_table(op.opcode));
-                let late = matches!(
-                    op.opcode,
-                    OpCode::DirectCall | OpCode::CodeIs | OpCode::LiteralCellReady
-                );
-                if !late
+                if !opcode_is_late_compiled_function_reference_table(op.opcode)
                     && kind.is_none_or(|kind| {
                         kind.function_reference_role() == crate::FunctionReferenceRole::None
                     })
@@ -433,11 +429,11 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         format!("{:?} carries both a callee and `s_value`", op.opcode),
                     ));
                 }
-            } else if op.opcode == OpCode::LiteralCellReady {
+            } else if op.opcode == OpCode::StringLiteralCellReady {
                 errors.push(VerifyError::op(
                     *bid,
                     op_idx,
-                    "LiteralCellReady requires a typed function provider",
+                    "StringLiteralCellReady requires a typed function provider",
                 ));
             } else if op
                 .origin
@@ -453,6 +449,15 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     *bid,
                     op_idx,
                     format!("{:?} names no function to reference", op.opcode),
+                ));
+            }
+            if op.opcode == OpCode::StringLiteralCellReady
+                && !matches!(op.attrs.get("bytes"), Some(AttrValue::Bytes(_)))
+            {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    "StringLiteralCellReady requires the source literal bytes",
                 ));
             }
             if op.opcode == OpCode::CheckException && op.exception_edge_kind().is_none() {

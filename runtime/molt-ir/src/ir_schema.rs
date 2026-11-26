@@ -186,7 +186,7 @@ impl std::error::Error for OpShapeDiagnostic {}
 /// Both SimpleIR and preserved TIR operations project into this same checker.
 /// Check one operation's operand count and `value` against its kind's shape.
 /// A frame entry's `value`, when present, is a synchronous frame's home count
-/// and clear order (`molt_codegen_abi::frame_record::FrameShape`), which sizes
+/// and clear order (`crate::frame_entry::FrameShape`), which sizes
 /// its inline record push; it is never a code identity: the symbol is.
 pub fn validate_op_shape(
     kind: crate::OpKind,

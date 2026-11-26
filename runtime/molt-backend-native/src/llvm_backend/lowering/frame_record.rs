@@ -10,10 +10,11 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::values::{BasicValue, IntValue, PointerValue};
-use molt_codegen_abi::frame_record::{FrameBuilder, FrameEntryKind, VirtualFramePrefix};
+use molt_codegen_abi::frame_record::{FrameBuilder, VirtualFramePrefix};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
+use molt_ir::frame_entry::FrameEntryKind;
 
 impl<'ctx> LlvmBackend<'ctx> {
     pub(super) fn frame_entry_probe_helper(

@@ -453,7 +453,7 @@ pub enum OpCode {
     /// A captured function and synchronous frame shape can use the current arena.
     FrameEntryAdmits,
     /// An owned literal's cell in this output object has already been filled.
-    LiteralCellReady,
+    StringLiteralCellReady,
 }
 
 /// Attribute value for operation metadata.

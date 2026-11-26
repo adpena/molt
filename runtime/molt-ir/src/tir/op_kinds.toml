@@ -1539,7 +1539,7 @@ final_tir_opcodes = [
     "TryBuffer2dLoadI64",
     "ProbeInlineField",
     "FrameEntryAdmits",
-    "LiteralCellReady",
+    "StringLiteralCellReady",
     "IsInlineInt",
     "UnboxInlineInt",
     "IsFloatWord",
@@ -1560,6 +1560,15 @@ final_tir_opcodes = [
     "CallNative",
     "GlobalSlotBase",
 ]
+
+# Immediate constants used while reconstructing a cold frame capture.
+spliced_frame_capture_constant_opcodes = ["ConstInt", "ConstNone", "ConstBool"]
+
+# A value rooted in another owner, with no independent reference credit.
+ownership_held_view_opcodes = ["StaticCellLoad", "FunctionClosure", "ProbeInlineField"]
+
+# TIR-only operands that can name a compiled function without a wire kind.
+late_compiled_function_reference_opcodes = ["DirectCall", "CodeIs", "StringLiteralCellReady"]
 
 # proven_result_type_seed_opcodes: constants whose intrinsic result type is
 # useful as a proven-map seed. This is intentionally separate from
@@ -3408,7 +3417,7 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
-name = "LiteralCellReady"
+name = "StringLiteralCellReady"
 may_call_python = false
 operand_arity = 0
 operand_independent_result_types = ["bool"]

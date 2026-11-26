@@ -11,7 +11,9 @@ use crate::tir::dominators::{
     exception_label_to_block, exception_transfer_target, terminator_successors,
 };
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::ExceptionEdgeKind;
+use crate::tir::op_kinds_generated::{
+    ExceptionEdgeKind, opcode_is_spliced_frame_capture_constant_table,
+};
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
 
@@ -217,10 +219,7 @@ fn starts_capture(func: &TirFunction, mut id: BlockId, already_linked: bool) -> 
                 Some(RuntimeFn::SplicedFrameLink) => linked = true,
                 Some(RuntimeFn::SplicedFrameBind) if linked => {}
                 Some(RuntimeFn::SplicedFrameOrigin) => return linked,
-                None if matches!(
-                    op.opcode,
-                    OpCode::ConstInt | OpCode::ConstNone | OpCode::ConstBool
-                ) => {}
+                None if opcode_is_spliced_frame_capture_constant_table(op.opcode) => {}
                 _ => return false,
             }
         }

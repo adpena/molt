@@ -38,16 +38,6 @@ use crate::{
 /// (molt-runtime `LocationId::ABSENT`, which asserts the value).
 pub const FRAME_LOCATION_ABSENT: u64 = u64::MAX;
 
-/// Bits 0..32 of a `trace_enter_slot` value: the frame's home count.
-pub const FRAME_ENTRY_HOMES_MASK: i64 = 0xffff_ffff;
-/// Set in a `trace_enter_slot` value when the frame clears its slots last to
-/// first (CPython 3.14 and later; molt-runtime `FramePolicy::descending`).
-pub const FRAME_ENTRY_DESCENDING: i64 = 1 << 32;
-/// The `trace_enter_slot` value of a stateful activation's entry (a
-/// generator, coroutine or async-generator poll): it links its task's
-/// persistent record, whose bindings live in the task payload.
-pub const FRAME_ENTRY_STATEFUL: i64 = 1 << 33;
-
 /// Above this many homes a pop releases them in one counted loop instead of
 /// one inline release per home.
 pub const FRAME_POP_INLINE_HOMES: u32 = 8;
@@ -60,39 +50,7 @@ pub enum HomeCount<W> {
     Dynamic(W),
 }
 
-/// What a synchronous frame entry declares: the `trace_enter_slot` value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FrameShape {
-    pub homes: u32,
-    pub descending: bool,
-}
-
-impl FrameShape {
-    /// Decode a `trace_enter_slot` value.
-    pub const fn from_entry_value(value: i64) -> Self {
-        Self {
-            homes: (value & FRAME_ENTRY_HOMES_MASK) as u32,
-            descending: value & FRAME_ENTRY_DESCENDING != 0,
-        }
-    }
-
-    pub const fn entry_value(self) -> i64 {
-        self.homes as i64
-            | if self.descending {
-                FRAME_ENTRY_DESCENDING
-            } else {
-                0
-            }
-    }
-
-    /// Bytes the physical entry would occupy in the current arena chunk.
-    pub const fn arena_bytes(self) -> u64 {
-        FRAME_RECORD_HEADER_BYTES as u64 + self.homes as u64 * FRAME_HOME_BYTES as u64
-    }
-}
-
-/// Occupancy of the composed activation before a particular logical entry.
-/// Physical parents are already reflected in the thread record.
+/// Occupancy of virtual ancestors in the physical frame arena.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VirtualFramePrefix {
     pub arena_bytes: u32,
@@ -100,41 +58,14 @@ pub struct VirtualFramePrefix {
 }
 
 impl VirtualFramePrefix {
-    pub fn enter(self, shape: FrameShape) -> Option<Self> {
+    /// Reserve one record header per ancestor and one home word pair per slot.
+    pub fn from_counts(homes: u32, depth: u32) -> Option<Self> {
+        let bytes =
+            i64::from(depth) * FRAME_RECORD_HEADER_BYTES + i64::from(homes) * FRAME_HOME_BYTES;
         Some(Self {
-            arena_bytes: self
-                .arena_bytes
-                .checked_add(u32::try_from(shape.arena_bytes()).ok()?)?,
-            recursion_depth: self.recursion_depth.checked_add(1)?,
+            arena_bytes: u32::try_from(bytes).ok()?,
+            recursion_depth: depth,
         })
-    }
-}
-
-/// How a compiled frame entry links its record: the decoded
-/// `trace_enter_slot` value. An entry with no value is runtime-linked.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrameEntryKind {
-    /// A synchronous function pushes and pops an arena record inline.
-    Synchronous(FrameShape),
-    /// A stateful activation links and unlinks its task's persistent record.
-    Stateful,
-}
-
-impl FrameEntryKind {
-    pub const fn from_entry_value(value: i64) -> Self {
-        if value & FRAME_ENTRY_STATEFUL != 0 {
-            Self::Stateful
-        } else {
-            Self::Synchronous(FrameShape::from_entry_value(value))
-        }
-    }
-
-    /// The synchronous shape, or `None` for a stateful entry.
-    pub const fn shape(self) -> Option<FrameShape> {
-        match self {
-            Self::Synchronous(shape) => Some(shape),
-            Self::Stateful => None,
-        }
     }
 }
 

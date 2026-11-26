@@ -2,7 +2,6 @@
 //! read commits, every operation borrows its inputs and can abandon the attempt
 //! for the original invocation without releasing a credit or servicing work.
 
-use molt_codegen_abi::literal_cell::LiteralKind;
 use molt_ir::ir::GlobalSlotRef;
 
 use super::packed_splice::test_block;
@@ -21,7 +20,7 @@ pub(super) struct Prefix<'p> {
     arguments: [ValueId; 3],
     helper_cell: &'p GlobalSlotRef,
     leaf_cell: &'p GlobalSlotRef,
-    literal: (LiteralKind, &'p [u8]),
+    literal: &'p [u8],
     observations: Observations<'p>,
     span: Option<(u32, u32)>,
 }
@@ -137,7 +136,6 @@ impl<'p> Prefix<'p> {
             },
             Literal {
                 site: literal,
-                kind,
                 bytes,
             },
             Invoke(helper_call),
@@ -265,7 +263,7 @@ impl<'p> Prefix<'p> {
             arguments,
             helper_cell,
             leaf_cell,
-            literal: (*kind, bytes),
+            literal: bytes,
             observations,
             span: op.source_span,
         })
@@ -321,7 +319,7 @@ impl<'p> Prefix<'p> {
         let mut test = |opcode, inputs, attrs: Vec<(&str, AttrValue)>, ops, yes, no| {
             let mut op = TirOp::new(opcode, inputs, vec![caller.fresh_value()]);
             op.source_span = self.span;
-            if opcode == OpCode::LiteralCellReady {
+            if opcode == OpCode::StringLiteralCellReady {
                 op.callee = Some(p.wrapper.entry.function);
             }
             op.attrs
@@ -335,18 +333,12 @@ impl<'p> Prefix<'p> {
             op
         };
         let entry = |frame: &Frame| {
-            vec![
+            let mut attrs = vec![
                 ("s_value", AttrValue::Str(frame.owner.clone())),
                 ("value", AttrValue::Int(frame.shape.entry_value())),
-                (
-                    "frame_prefix_bytes",
-                    AttrValue::Int(i64::from(frame.prefix.arena_bytes)),
-                ),
-                (
-                    "frame_prefix_depth",
-                    AttrValue::Int(i64::from(frame.prefix.recursion_depth)),
-                ),
-            ]
+            ];
+            attrs.extend(frame.prefix.attrs());
+            attrs
         };
         let leaf_entry = test(
             OpCode::FrameEntryAdmits,
@@ -373,12 +365,9 @@ impl<'p> Prefix<'p> {
             miss,
         );
         let literal = test(
-            OpCode::LiteralCellReady,
+            OpCode::StringLiteralCellReady,
             vec![],
-            vec![
-                ("value", AttrValue::Int(self.literal.0 as i64)),
-                ("bytes", AttrValue::Bytes(self.literal.1.to_vec())),
-            ],
+            vec![("bytes", AttrValue::Bytes(self.literal.to_vec()))],
             vec![cell(self.helper_cell, helper)],
             helper_entry,
             miss,
@@ -449,7 +438,7 @@ pub(super) fn verify_prefix(wrapper: &TirFunction, plan: &PackedWrapper) {
     });
     let mut ops = Vec::new();
     let mut slots = Vec::new();
-    let mut depths = Vec::new();
+    let mut prefixes = Vec::new();
     while block != hit {
         let b = &caller.blocks[&block];
         for op in &b.ops {
@@ -458,9 +447,10 @@ pub(super) fn verify_prefix(wrapper: &TirFunction, plan: &PackedWrapper) {
                 slots.push(slot.index);
             }
             if op.opcode == OpCode::FrameEntryAdmits {
-                depths.push(op.attrs["frame_prefix_depth"].clone());
+                let prefix = molt_ir::frame_entry::FramePrefix::from_attrs(&op.attrs).unwrap();
+                prefixes.push((prefix.homes, prefix.depth));
             }
-            if op.opcode == OpCode::LiteralCellReady {
+            if op.opcode == OpCode::StringLiteralCellReady {
                 assert_eq!(op.callee, Some(plan.wrapper.entry.function));
                 assert_eq!(op.attrs["bytes"], AttrValue::Bytes(vec![237, 160, 128]));
             }
@@ -489,7 +479,7 @@ pub(super) fn verify_prefix(wrapper: &TirFunction, plan: &PackedWrapper) {
             IsInlineInt,
             IsInlineInt,
             StaticCellLoad,
-            LiteralCellReady,
+            StringLiteralCellReady,
             FrameEntryAdmits,
             AsyncWorkPending,
             StaticCellLoad,
@@ -497,10 +487,7 @@ pub(super) fn verify_prefix(wrapper: &TirFunction, plan: &PackedWrapper) {
         ]
     );
     assert_eq!(slots, [7, 20]);
-    assert_eq!(
-        depths,
-        [AttrValue::Int(0), AttrValue::Int(1), AttrValue::Int(1)]
-    );
+    assert_eq!(prefixes, [(0, 0), (3, 1), (3, 1)]);
 
     let mut changed = plan.clone();
     let check = changed

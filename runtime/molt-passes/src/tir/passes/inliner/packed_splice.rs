@@ -344,7 +344,7 @@ mod tests {
                 {"kind":"load","value":8,"args":["r"],"out":"field"},
                 {"kind":"check_exception","exception_edge":"origin","value":8},
                 {"kind":"frame_set_location","value":6},
-                {"kind":"call","s_value":"molt_buffer2d_get","args":["field","x","y"],"out":"value"},
+                {"kind":"call","s_value":molt_ir::runtime_fn_generated::RuntimeFn::Buffer2dGet.symbol(),"args":["field","x","y"],"out":"value"},
                 {"kind":"check_exception","exception_edge":"origin","value":8},
                 {"kind":"frame_set_location","value":4},{"kind":"trace_exit"},
                 {"kind":"ret","args":["value"]},

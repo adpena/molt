@@ -354,7 +354,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::TryBuffer2dLoadI64
         | OpCode::ProbeInlineField
         | OpCode::FrameEntryAdmits
-        | OpCode::LiteralCellReady
+        | OpCode::StringLiteralCellReady
         | OpCode::IsInlineInt
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord

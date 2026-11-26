@@ -176,7 +176,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             | OpCode::ConstStr
             | OpCode::ConstBigInt
             | OpCode::ConstBytes
-            | OpCode::LiteralCellReady => constants::lower(self, b, op),
+            | OpCode::StringLiteralCellReady => constants::lower(self, b, op),
             // Arithmetic, comparison, bitwise, unary, identity, membership,
             // selection, truth and the late stage's word primitives.
             OpCode::Add

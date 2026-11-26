@@ -38,7 +38,8 @@ use crate::tir::op_kinds_generated::{
     kind_consumed_operand_table, kind_container_absorbed_operand_table,
     kind_result_absorbs_operand_ownership_table, kind_result_finalizer_source_operand_table,
     opcode_container_absorbed_operand, opcode_explicit_release_operands_table,
-    opcode_operand_ownership_table, opcode_result_absorbs_operand_ownership_table,
+    opcode_is_ownership_held_view_table, opcode_operand_ownership_table,
+    opcode_result_absorbs_operand_ownership_table,
     opcode_result_is_conditionally_valid_only_on_edge, terminator_operand_is_transferred,
 };
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
@@ -410,21 +411,12 @@ fn non_owning_copy_result_roots(func: &TirFunction, aliases: &AliasUnionFind) ->
         .collect()
 }
 
-/// An operation whose result is a view of an object another owner holds
-/// (`OwnershipRootFacts::is_held_view_root`).
-fn result_is_held_view(op: &TirOp) -> bool {
-    matches!(
-        op.opcode,
-        OpCode::StaticCellLoad | OpCode::FunctionClosure | OpCode::ProbeInlineField
-    )
-}
-
 /// The held-view results that are their own alias roots.
 fn held_view_roots(func: &TirFunction, aliases: &AliasUnionFind) -> HashSet<ValueId> {
     func.blocks
         .values()
         .flat_map(|block| &block.ops)
-        .filter(|op| result_is_held_view(op))
+        .filter(|op| opcode_is_ownership_held_view_table(op.opcode))
         .flat_map(|op| op.results.iter().copied())
         .filter(|&result| aliases.root(result) == result)
         .collect()
@@ -612,7 +604,7 @@ impl OwnershipRootFacts {
     ) -> bool {
         aliases.root(result) == result
             && !copy_results_hold_no_reference(op)
-            && !result_is_held_view(op)
+            && !opcode_is_ownership_held_view_table(op.opcode)
     }
 }
 

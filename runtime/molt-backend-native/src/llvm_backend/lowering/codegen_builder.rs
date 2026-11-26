@@ -1088,11 +1088,7 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         self.state.frame_homes.set(slot);
     }
 
-    fn pop_frame(
-        &mut self,
-        base: Self::Word,
-        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
-    ) {
+    fn pop_frame(&mut self, base: Self::Word, kind: Option<molt_ir::frame_entry::FrameEntryKind>) {
         crate::codegen_ssa::frame::leave(self, base, kind);
     }
     fn return_value(&mut self, value: Option<Self::Value>) {

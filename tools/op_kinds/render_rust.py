@@ -513,6 +513,26 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_residual_tir_semantic_roles(opcodes, data))
     out.append("\n")
 
+    for key, description in (
+        (
+            "spliced_frame_capture_constant",
+            "An immediate constant used for frame capture.",
+        ),
+        ("ownership_held_view", "A result held by another owner."),
+        (
+            "late_compiled_function_reference",
+            "A late operation that can name a compiled function.",
+        ),
+    ):
+        out.append(
+            f"/// {description}\n"
+            "#[inline]\n"
+            f"pub fn opcode_is_{key}_table(opcode: OpCode) -> bool {{\n"
+            "    match opcode {\n"
+        )
+        out.append(_render_opcode_bool_arms(opcodes, data.get(f"{key}_opcodes", [])))
+        out.append("    }\n}\n\n")
+
     inliner_numeric_raw_lane_consumers = list(
         data.get("inliner_numeric_raw_lane_consumer_opcodes", [])
     )

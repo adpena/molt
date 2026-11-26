@@ -31,18 +31,16 @@ pub(crate) fn literal_cell<B: CodegenBuilder>(
 
 /// Read the provider's literal cell only when its body is emitted here.
 /// Identical literal payloads in other objects fill independent cells.
-fn literal_cell_ready<B: CodegenBuilder>(
+fn string_literal_cell_ready<B: CodegenBuilder>(
     b: &mut B,
     op: &TirOp,
     functions: &molt_ir::FunctionTable,
 ) -> B::Predicate {
     let provider = op.callee.expect("verified literal cell provider");
     if functions.defines(provider)
-        && let (Some(AttrValue::Int(kind)), Some(AttrValue::Bytes(bytes))) =
-            (op.attrs.get("value"), op.attrs.get("bytes"))
-        && let Some(kind) = LiteralKind::from_bits(*kind as u64)
+        && let Some(AttrValue::Bytes(bytes)) = op.attrs.get("bytes")
     {
-        let cell = literal_cell(b, kind, bytes);
+        let cell = literal_cell(b, LiteralKind::Str, bytes);
         let word = b.load_word(cell, 0);
         let empty = b.constant(0);
         b.int_compare(IntComparison::NotEqual, word, empty)
@@ -139,8 +137,8 @@ pub(crate) fn lower<B: CodegenBuilder>(cx: &mut FunctionCx<'_, B>, b: &mut B, op
             literal(b, LiteralKind::BigInt, required_tir_literal_bytes(op)),
             TirType::DynBox,
         ),
-        OpCode::LiteralCellReady => {
-            let ready = literal_cell_ready(b, op, cx.functions);
+        OpCode::StringLiteralCellReady => {
+            let ready = string_literal_cell_ready(b, op, cx.functions);
             (b.bit_value(ready), TirType::Bool)
         }
         OpCode::ModuleSlot => {
@@ -377,31 +375,30 @@ mod tests {
     #[cfg(feature = "native-backend")]
     #[test]
     fn probing_a_literal_cell_only_sees_an_actual_fill_of_its_kind_and_payload() {
-        let probe = |kind: LiteralKind, bytes: &[u8], result, provider| {
-            let mut op = literal_op(OpCode::LiteralCellReady, bytes, result);
-            op.attrs.insert("value".into(), AttrValue::Int(kind as i64));
+        let probe = |bytes: &[u8], result, provider| {
+            let mut op = literal_op(OpCode::StringLiteralCellReady, bytes, result);
             op.callee = Some(molt_ir::FunctionId::from_index(provider));
             op
         };
         let run = literals(vec![
-            probe(LiteralKind::Str, b"context", 0, 0),
+            probe(b"context", 0, 0),
             literal_op(OpCode::ConstStr, b"context", 1),
-            probe(LiteralKind::Str, b"context", 2, 0),
-            probe(LiteralKind::Bytes, b"context", 3, 0),
-            probe(LiteralKind::Str, b"other", 4, 0),
-            probe(LiteralKind::Str, b"context", 5, 1),
+            probe(b"context", 2, 0),
+            literal_op(OpCode::ConstBytes, b"other", 3),
+            probe(b"other", 4, 0),
+            probe(b"context", 5, 1),
         ]);
         assert_eq!(run.results[0], Value::Bit(false));
         assert_eq!(
             &run.results[2..],
             &[
                 Value::Bit(true),
-                Value::Bit(false),
+                Value::Word(literal_word(RuntimeFn::BytesFromBytes, b"other")),
                 Value::Bit(false),
                 Value::Bit(false),
             ]
         );
-        assert_eq!(run.runtime_calls, [RuntimeFn::LiteralCellFill]);
+        assert_eq!(run.runtime_calls, [RuntimeFn::LiteralCellFill; 2]);
     }
 
     #[test]

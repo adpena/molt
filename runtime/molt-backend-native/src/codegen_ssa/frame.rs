@@ -2,10 +2,11 @@
 //! generated body in an inline helper and Cranelift places it in the caller.
 
 use molt_codegen_abi::frame_record::{
-    FrameBuilder, FrameEntryKind, FrameShape, HomeCount, generate_frame_pop, generate_frame_push,
-    generate_linked_frame_pop, generate_stateful_frame_link, generate_stateful_frame_unlink,
+    FrameBuilder, HomeCount, generate_frame_pop, generate_frame_push, generate_linked_frame_pop,
+    generate_stateful_frame_link, generate_stateful_frame_unlink,
 };
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_ir::frame_entry::{FrameEntryKind, FramePrefix, FrameShape};
 use molt_ir::{ExecutionContextPolicy, OpKind};
 
 use crate::tir::blocks::{BlockId, Terminator};
@@ -432,17 +433,8 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
                 .filter(|shape| shape.entry_value() == *value),
             _ => None,
         };
-        let prefix_field = |key| match op.attrs.get(key) {
-            None => Some(0),
-            Some(AttrValue::Int(value)) => u32::try_from(*value).ok(),
-            _ => None,
-        };
-        let prefix = prefix_field("frame_prefix_bytes")
-            .zip(prefix_field("frame_prefix_depth"))
-            .map(|(arena_bytes, recursion_depth)| VirtualFramePrefix {
-                arena_bytes,
-                recursion_depth,
-            });
+        let prefix = FramePrefix::from_attrs(&op.attrs)
+            .and_then(|p| VirtualFramePrefix::from_counts(p.homes, p.depth));
         let operands = self.operands();
         let function = op.operands[0];
         let admitted = if let (Some(shape), Some(AttrValue::Str(owner)), Some(prefix)) =

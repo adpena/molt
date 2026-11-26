@@ -4,10 +4,11 @@
 
 use super::*;
 use crate::codegen_ssa::frame::{self, FrameBody, FramePlacement};
-use molt_codegen_abi::frame_record::{FrameBuilder, FrameEntryKind, VirtualFramePrefix};
+use molt_codegen_abi::frame_record::{FrameBuilder, VirtualFramePrefix};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
+use molt_ir::frame_entry::FrameEntryKind;
 
 /// What one function's frame transitions call off their inline paths.
 #[derive(Clone, Copy)]

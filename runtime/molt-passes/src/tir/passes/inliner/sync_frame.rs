@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
-use molt_codegen_abi::frame_record::FrameEntryKind;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_ir::frame_entry::FrameEntryKind;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 use molt_ir::{ExecutionContextPolicy, OpKind};
 
@@ -183,29 +183,21 @@ impl SyncFrame {
             || func.has_exception_handlers()
             || func.is_codegen_partition()
         {
-            return refusal(func);
+            return None;
         }
-        let entry = func
-            .blocks
-            .get(&func.entry_block)
-            .or_else(|| refusal(func))?
-            .ops
-            .first()
-            .or_else(|| refusal(func))?;
+        let entry = func.blocks.get(&func.entry_block)?.ops.first()?;
         if !is_marker(entry, OpKind::TraceEnterSlot)
             || !entry.operands.is_empty()
             || !entry.results.is_empty()
         {
-            return refusal(func);
+            return None;
         }
         let Some(AttrValue::Int(entry_value)) = entry.attrs.get("value") else {
-            return refusal(func);
+            return None;
         };
-        let shape = FrameEntryKind::from_entry_value(*entry_value)
-            .shape()
-            .or_else(|| refusal(func))?;
+        let shape = FrameEntryKind::from_entry_value(*entry_value).shape()?;
         if shape.entry_value() != *entry_value {
-            return refusal(func);
+            return None;
         }
         let params: HashSet<_> = func.blocks[&func.entry_block]
             .args
@@ -218,17 +210,17 @@ impl SyncFrame {
         for (&id, block) in &func.blocks {
             for (at, op) in block.ops.iter().enumerate() {
                 if is_marker(op, OpKind::TraceEnterSlot) && (id != func.entry_block || at != 0) {
-                    return refusal(func);
+                    return None;
                 }
                 if op.origin == Some(OpKind::FrameHomeStore) {
-                    let slot = frame_location_placement::home_slot(op).or_else(|| refusal(func))?;
+                    let slot = frame_location_placement::home_slot(op)?;
                     if slot >= shape.homes as usize
                         || op.opcode != OpCode::Copy
                         || op.operands.len() != 1
                         || op.results.len() != 1
                         || !written.insert(slot)
                     {
-                        return refusal(func);
+                        return None;
                     }
                     // Module inlining precedes the pass that records this
                     // proof. Query the same representation rule lazily.
@@ -240,7 +232,7 @@ impl SyncFrame {
                             }),
                         )
                     {
-                        return refusal(func);
+                        return None;
                     }
                     if own_formals || !params.contains(&op.operands[0]) {
                         private.insert(i64::try_from(slot).ok()?, op.results[0]);
@@ -259,7 +251,7 @@ impl SyncFrame {
                     )
                 ) || frame_location_placement::direct_frame_runtime(op)
                 {
-                    return refusal(func);
+                    return None;
                 }
             }
         }
@@ -287,7 +279,7 @@ impl SyncFrame {
                 .is_some_and(|a| private_roots.contains(&a.root(v)))
         };
         while let Some(id) = queue.pop_front() {
-            let block = func.blocks.get(&id).or_else(|| refusal(func))?;
+            let block = func.blocks.get(&id)?;
             let mut state = incoming[&id].clone();
             let mut row = Vec::with_capacity(block.ops.len());
             for (at, op) in block.ops.iter().enumerate() {
@@ -324,7 +316,7 @@ impl SyncFrame {
                         || spliced_frame::may_observe_frames(op, &exact))
                     && op.opcode != OpCode::FrameSetLocation
                 {
-                    return refusal(func);
+                    return None;
                 }
                 row.push(state.live.then(|| FramePoint {
                     location,
@@ -335,12 +327,12 @@ impl SyncFrame {
                 }));
                 if is_marker(op, OpKind::TraceEnterSlot) {
                     if state.live {
-                        return refusal(func);
+                        return None;
                     }
                     state.live = true;
                 } else if exit {
                     if !state.live || !op.operands.is_empty() || !op.results.is_empty() {
-                        return refusal(func);
+                        return None;
                     }
                     state.live = false;
                     state.homes = Some(Rc::from([]));
@@ -348,18 +340,11 @@ impl SyncFrame {
                     state.published = false;
                 } else if op.origin == Some(OpKind::FrameHomeStore) {
                     if !state.live {
-                        return refusal(func);
+                        return None;
                     }
-                    let key = i64::try_from(
-                        frame_location_placement::home_slot(op).or_else(|| refusal(func))?,
-                    )
-                    .ok()
-                    .or_else(|| refusal(func))?;
-                    let mut homes = state.homes.as_ref().or_else(|| refusal(func))?.to_vec();
-                    let index = homes
-                        .binary_search_by_key(&key, |&(slot, _)| slot)
-                        .err()
-                        .or_else(|| refusal(func))?;
+                    let key = i64::try_from(frame_location_placement::home_slot(op)?).ok()?;
+                    let mut homes = state.homes.as_ref()?.to_vec();
+                    let index = homes.binary_search_by_key(&key, |&(slot, _)| slot).err()?;
                     homes.insert(index, (key, op.results[0]));
                     state.homes = Some(Rc::from(homes));
                     state.published = false;
@@ -367,14 +352,13 @@ impl SyncFrame {
                     if !state.live
                         || !matches!(op.attrs.get("value"), Some(AttrValue::Int(value)) if *value >= 0)
                     {
-                        return refusal(func);
+                        return None;
                     }
                     state.had_location = true;
                     state.published = false;
                 } else if check {
-                    let target =
-                        exception_transfer_target(op, &labels).or_else(|| refusal(func))?;
-                    let kind = op.exception_edge_kind().or_else(|| refusal(func))?;
+                    let target = exception_transfer_target(op, &labels)?;
+                    let kind = op.exception_edge_kind()?;
                     let mut failure = state.clone();
                     failure.had_location |= op.frame_location().is_some();
                     failure.published |=
@@ -396,10 +380,10 @@ impl SyncFrame {
                 && ((block.terminator.exits_activation() && !nested.dead_unwind(id))
                     || frame_elision::terminator_observer(&block.terminator, &exact).is_some())
             {
-                return refusal(func);
+                return None;
             }
             if matches!(block.terminator, Terminator::StateDispatch { .. }) {
-                return refusal(func);
+                return None;
             }
             for target in terminator_successors(&block.terminator) {
                 merge(target, state.clone(), &mut incoming, &mut queue)?;
@@ -423,18 +407,6 @@ impl SyncFrame {
             outgoing,
         })
     }
-}
-
-#[track_caller]
-fn refusal<T>(func: &TirFunction) -> Option<T> {
-    if func.name.contains("molt_buffer") {
-        eprintln!(
-            "[matrix frame probe] {} refused at {}",
-            func.name,
-            std::panic::Location::caller().line()
-        );
-    }
-    None
 }
 
 fn is_marker(op: &TirOp, kind: OpKind) -> bool {

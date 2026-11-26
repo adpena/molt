@@ -935,11 +935,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         self.imports.frame_homes = slot;
     }
 
-    fn pop_frame(
-        &mut self,
-        base: Value,
-        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
-    ) {
+    fn pop_frame(&mut self, base: Value, kind: Option<molt_ir::frame_entry::FrameEntryKind>) {
         let sites = self.frame_sites();
         let record = kind.map(|_| self.thread_record_word());
         emit_frame_record_pop(self.words.builder, sites, record, base, kind);
@@ -956,7 +952,7 @@ impl crate::codegen_ssa::frame::RecordPlacement for NativeCodegen<'_, '_> {
     fn push_frame(
         &mut self,
         code: Value,
-        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+        kind: Option<molt_ir::frame_entry::FrameEntryKind>,
         payload: Option<Value>,
     ) -> Value {
         let sites = self.frame_sites();

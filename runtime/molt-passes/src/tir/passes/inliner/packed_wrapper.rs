@@ -2,9 +2,8 @@
 //! All sites and SSA operands belong to the indicated immutable module body.
 //! A consumer must preserve the listed observations even on a fast hit.
 
-use molt_codegen_abi::frame_record::{FrameEntryKind, FrameShape, VirtualFramePrefix};
-use molt_codegen_abi::literal_cell::LiteralKind;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_ir::frame_entry::{FrameEntryKind, FramePrefix, FrameShape};
 use molt_ir::ir::GlobalSlotRef;
 use molt_ir::literal_payload::LiteralPayload;
 use molt_ir::{ClassId, FunctionId, OpKind};
@@ -35,7 +34,7 @@ pub(crate) struct Frame {
     pub entry: Site,
     pub owner: String,
     pub shape: FrameShape,
-    pub prefix: VirtualFramePrefix,
+    pub prefix: FramePrefix,
     formals: usize,
 }
 
@@ -95,7 +94,6 @@ pub(crate) enum Event {
     },
     Literal {
         site: Site,
-        kind: LiteralKind,
         bytes: Vec<u8>,
     },
     Invoke(Site),
@@ -127,7 +125,7 @@ pub(crate) struct PackedWrapper {
     pub events: Vec<Event>,
 }
 
-fn frame(func: &TirFunction, id: FunctionId, prefix: VirtualFramePrefix) -> Option<Frame> {
+fn frame(func: &TirFunction, id: FunctionId, prefix: FramePrefix) -> Option<Frame> {
     let entry = func.blocks.get(&func.entry_block)?.ops.first()?;
     if !func.return_abi.returns_value()
         || func.has_closure_parameter()
@@ -394,11 +392,7 @@ fn trace<'a>(
             } else if role == Role::Wrapper && op.opcode == OpCode::ConstStr {
                 let bytes = LiteralPayload::from_tir(op).ok()?.as_bytes().to_vec();
                 sources.insert(op.results[0], Source::Literal(site));
-                events.push(Event::Literal {
-                    site,
-                    kind: LiteralKind::Str,
-                    bytes,
-                });
+                events.push(Event::Literal { site, bytes });
                 required = Some((None, false));
             } else if role == Role::Wrapper && op.opcode == OpCode::Call {
                 if calls.len() == 2 {
@@ -493,7 +487,7 @@ pub(crate) fn summarize<'a>(
     wrapper: &'a TirFunction,
     resolve: impl Fn(FunctionId) -> Option<&'a TirFunction>,
 ) -> Option<PackedWrapper> {
-    let wrapper_frame = frame(wrapper, wrapper_id, VirtualFramePrefix::default())?;
+    let wrapper_frame = frame(wrapper, wrapper_id, FramePrefix::default())?;
     let outer = trace(wrapper, &wrapper_frame, Role::Wrapper, &resolve)?;
     let [identity_call, leaf_call]: [Invocation; 2] = outer.calls.try_into().ok()?;
     if identity_call.target == wrapper_id
@@ -788,11 +782,7 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 Event::Cell { slot, .. } => Some(slot.index as i64),
-                Event::Literal {
-                    kind: LiteralKind::Str,
-                    bytes,
-                    ..
-                } if bytes == &[237, 160, 128] => Some(-1),
+                Event::Literal { bytes, .. } if bytes == &[237, 160, 128] => Some(-1),
                 Event::Check(check)
                     if check.site.function == outer_id && check.location == Some(2) =>
                 {
