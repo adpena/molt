@@ -288,20 +288,32 @@ fn conditionally_valid_result_roots(
     roots
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompletionPath {
+    ProducerTerminator,
+    ExclusiveEmptyBlocks,
+}
+
 /// The initialized region of each conditionally-valid result root. The
 /// generated validity row marks a result written only on its producer's
-/// continuation edge. That edge is the `else` arm of the producer block's
+/// continuation edge. That edge is the `else` arm of the
 /// `CondBranch` on the producer's own completion flag (another result of the
 /// same operation): the `IterNextUnboxed` not-done edge that range and iterator
 /// devirtualization also consume. The region is that arm's target, and only
 /// when the arm is the target's sole entry, normal or exceptional. Any other
 /// shape records no region, so the root stays uninitialized at every point.
-fn conditionally_valid_regions(
+pub(super) fn conditionally_valid_regions(
     func: &TirFunction,
     aliases: &AliasUnionFind,
+    path: CompletionPath,
 ) -> HashMap<ValueId, BlockId> {
     let labels = crate::tir::dominators::exception_label_to_block(func);
     let mut entries: HashMap<BlockId, usize> = HashMap::default();
+    if path == CompletionPath::ExclusiveEmptyBlocks {
+        // The initial invocation is also an entry, even when a backedge
+        // targets the function entry block.
+        entries.insert(func.entry_block, 1);
+    }
     for block in func.blocks.values() {
         for target in block.terminator.successors() {
             *entries.entry(target).or_default() += 1;
@@ -317,26 +329,46 @@ fn conditionally_valid_regions(
     }
     let mut regions: HashMap<ValueId, Option<BlockId>> = HashMap::default();
     for (&bid, block) in &func.blocks {
-        let continuation = match &block.terminator {
-            Terminator::CondBranch {
-                cond,
-                then_block,
-                else_block,
-                ..
-            } if then_block != else_block
-                && *else_block != bid
-                && entries.get(else_block) == Some(&1) =>
-            {
-                Some((aliases.root(*cond), *else_block))
+        // Optimized generator splices can leave empty blocks between the
+        // checked step and its completion test. Each must be uniquely entered,
+        // including exceptional predecessors; none may bind an argument.
+        let continuation = || {
+            let mut current = block;
+            for _ in 0..func.blocks.len() {
+                match &current.terminator {
+                    Terminator::CondBranch {
+                        cond,
+                        then_block,
+                        else_block,
+                        ..
+                    } if then_block != else_block
+                        && *else_block != bid
+                        && entries.get(else_block) == Some(&1) =>
+                    {
+                        return Some((aliases.root(*cond), *else_block));
+                    }
+                    Terminator::Branch { target, args }
+                        if path == CompletionPath::ExclusiveEmptyBlocks
+                            && args.is_empty()
+                            && *target != bid
+                            && entries.get(target) == Some(&1) =>
+                    {
+                        current = func.blocks.get(target)?;
+                        if !current.args.is_empty() || !current.ops.is_empty() {
+                            return None;
+                        }
+                    }
+                    _ => return None,
+                }
             }
-            _ => None,
+            None
         };
         for op in &block.ops {
             for (index, &result) in op.results.iter().enumerate() {
                 if !opcode_result_is_conditionally_valid_only_on_edge(op.opcode, index) {
                     continue;
                 }
-                let region = continuation.and_then(|(flag, region)| {
+                let region = continuation().and_then(|(flag, region)| {
                     op.results
                         .iter()
                         .enumerate()
@@ -512,7 +544,11 @@ impl OwnershipRootFacts {
         Self {
             borrowed_parameter_roots: parameter_roots(func, aliases, false),
             conditionally_valid_result_roots: conditionally_valid_result_roots(func, aliases),
-            conditionally_valid_regions: conditionally_valid_regions(func, aliases),
+            conditionally_valid_regions: conditionally_valid_regions(
+                func,
+                aliases,
+                CompletionPath::ProducerTerminator,
+            ),
             non_owning_copy_result_roots: non_owning_copy_result_roots(func, aliases),
             binding_view_roots: binding_view_roots(func, aliases),
             held_view_roots: held_view_roots(func, aliases),

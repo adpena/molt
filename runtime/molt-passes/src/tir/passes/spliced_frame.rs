@@ -556,6 +556,7 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
         });
     }
     if pruned != 0 {
+        super::native_iterator::project_successful_items(func, &native_steps);
         let retained = super::reachability::metadata_preserving_reachable_blocks(func);
         func.retain_blocks(&retained)
             .expect("pruning splice snapshots preserves live edges");
