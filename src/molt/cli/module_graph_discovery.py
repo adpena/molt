@@ -1281,6 +1281,16 @@ def _discovery_pass(
     def drain_source_demands() -> None:
         demands.drain()
         by_writer: dict[str, list[PythonNamespaceWrite]] = {}
+
+        def record(writer: str, row: PythonNamespaceWrite) -> None:
+            known = state.namespace_writes.setdefault(writer, set())
+            if row in known:
+                return
+            known.add(row)
+            if row.module is not None:
+                state.writer_targets.setdefault(row.module, set()).add(row)
+            by_writer.setdefault(writer, []).append(row)
+
         for writer, receiver, effect in demands.drain_attribute_writes():
             construct = "setattr" if effect.site[-1] == "Call" else "attribute"
             for name in (None,) if effect.names is None else effect.names:
@@ -1291,11 +1301,11 @@ def _discovery_pass(
                     effect.site[0],
                     effect.owner,
                 )
-                known = state.namespace_writes.setdefault(writer, set())
-                if row not in known:
-                    known.add(row)
-                    state.writer_targets.setdefault(receiver, set()).add(row)
-                    by_writer.setdefault(writer, []).append(row)
+                record(writer, row)
+        for writer, writes in demands.namespace_writes.items():
+            for row in writes:
+                record(writer, row)
+        demands.namespace_writes.clear()
         for writer, rows in sorted(by_writer.items()):
             merge_namespace_writes(
                 graph_python_namespace_writes(

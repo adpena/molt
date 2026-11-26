@@ -28,7 +28,11 @@ from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypeAlias, cast, g
 
 from molt.python_canonical_ast import canonical_python_module
 from molt.python_private_names import python_import_binding
-from molt.compiler_analysis.python_builtin_shapes import builtin_method_writes_receiver
+from molt.compiler_analysis.python_builtin_shapes import (
+    MappingWriteScope,
+    builtin_mapping_write_scope,
+    builtin_method_writes_receiver,
+)
 from molt.compiler_analysis.python_lexical_scope import (
     LexicalDefinitionNode,
     PythonDependencyAuthority,
@@ -150,9 +154,6 @@ _READ_METHODS: Final = frozenset(
         "__len__",
         "__iter__",
     }
-)
-_ITEM_WRITE_METHODS: Final = frozenset(
-    {"pop", "setdefault", "__setitem__", "__delitem__"}
 )
 # Builtins that read an argument without keeping it.
 _WHOLE_READ_CALLS: Final = frozenset(
@@ -1055,7 +1056,11 @@ class _MappingFlow:
                 if isinstance(call, ast.Call) and call.func is parent:
                     if parent.attr in _READ_METHODS:
                         continue
-                    if parent.attr in _ITEM_WRITE_METHODS and call.args:
+                    if (
+                        builtin_mapping_write_scope(parent.attr)
+                        is MappingWriteScope.KEY
+                        and call.args
+                    ):
                         key = _literal_string(call.args[0])
                         if key is not None:
                             keys.add(key)
@@ -2190,7 +2195,7 @@ class _NamespaceWriteCollector:
             if isinstance(grandparent, ast.Call) and grandparent.func is parent:
                 if parent.attr in _READ_METHODS:
                     return False, None
-                if parent.attr in _ITEM_WRITE_METHODS:
+                if builtin_mapping_write_scope(parent.attr) is MappingWriteScope.KEY:
                     return True, (
                         _literal_string(grandparent.args[0])
                         if grandparent.args
@@ -2295,7 +2300,10 @@ class _NamespaceWriteCollector:
                         )
                     return
                 if spelling == "sys.modules":
-                    if parent.attr in _ITEM_WRITE_METHODS:
+                    if (
+                        builtin_mapping_write_scope(parent.attr)
+                        is MappingWriteScope.KEY
+                    ):
                         self._record_import_binding(
                             site,
                             grandparent.args[0] if grandparent.args else None,

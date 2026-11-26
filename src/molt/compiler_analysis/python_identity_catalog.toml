@@ -194,6 +194,19 @@ BUILTIN_ZERODIVISIONERROR = 187
 BUILTIN_BUILD_CLASS = 188
 INTRINSIC_NAMESPACE_ENTRY_GET = 189
 INTRINSIC_IMPORTLIB_ZIP_ARCHIVE_PATH = 191
+INTRINSIC_GETFRAME = 192
+INTRINSIC_ITERTOOLS_BATCHED_TYPE = 193
+ITERTOOLS_BATCHED = 194
+INTRINSIC_ITERTOOLS_CYCLE_TYPE = 195
+ITERTOOLS_CYCLE = 196
+INTRINSIC_ITERTOOLS_ISLICE_TYPE = 197
+ITERTOOLS_ISLICE = 198
+INTRINSIC_ITERTOOLS_PAIRWISE_TYPE = 199
+ITERTOOLS_PAIRWISE = 200
+INTRINSIC_ITERTOOLS_CHAIN_TYPE = 201
+ITERTOOLS_CHAIN = 202
+INTRINSIC_ITERTOOLS_REPEAT_TYPE = 203
+ITERTOOLS_REPEAT = 204
 
 [native_initializer]
 DATACLASS = ["PARAMETERS", "POSITIONAL", "DEFAULTS", "KWDEFAULTS", "CAPTURE_NAMES", "CAPTURES", "STORES", "POST_INIT_INPUTS", "FACTORY_MARKER", "FROZEN_OBJECT", "ANNOTATIONS", "GLOBALS", "MODULE", "BUILTINS"]
@@ -243,6 +256,11 @@ behavior = "FINDER"
 parameter_names = ["name", "package"]
 argument_roles = ["NAME", "PACKAGE"]
 minimum_arguments = 1
+
+[[intrinsic_callable]]
+name = "molt_getframe"
+identity = "INTRINSIC_GETFRAME"
+result_identity = "CURRENT_FRAME"
 
 [[intrinsic_callable]]
 name = "molt_sys_platform"
@@ -329,6 +347,42 @@ name = "molt_load_intrinsic_runtime"
 identity = "INTRINSICS_LOAD"
 acquisition = "optional"
 compiler_from = ["load_intrinsic", "_load_intrinsic"]
+
+[[intrinsic_callable]]
+name = "molt_itertools_batched_type"
+identity = "INTRINSIC_ITERTOOLS_BATCHED_TYPE"
+result_identity = "ITERTOOLS_BATCHED"
+iterator_payload = { parameter = "iterable", shape = "tuple" }
+
+[[intrinsic_callable]]
+name = "molt_itertools_cycle_type"
+identity = "INTRINSIC_ITERTOOLS_CYCLE_TYPE"
+result_identity = "ITERTOOLS_CYCLE"
+iterator_payload = { parameter = "iterable", shape = "item" }
+
+[[intrinsic_callable]]
+name = "molt_itertools_islice_type"
+identity = "INTRINSIC_ITERTOOLS_ISLICE_TYPE"
+result_identity = "ITERTOOLS_ISLICE"
+iterator_payload = { parameter = "iterable", shape = "item" }
+
+[[intrinsic_callable]]
+name = "molt_itertools_pairwise_type"
+identity = "INTRINSIC_ITERTOOLS_PAIRWISE_TYPE"
+result_identity = "ITERTOOLS_PAIRWISE"
+iterator_payload = { parameter = "iterable", shape = "tuple" }
+
+[[intrinsic_callable]]
+name = "molt_itertools_chain_type"
+identity = "INTRINSIC_ITERTOOLS_CHAIN_TYPE"
+result_identity = "ITERTOOLS_CHAIN"
+iterator_payload = { parameter = "iterables", shape = "item" }
+
+[[intrinsic_callable]]
+name = "molt_itertools_repeat_type"
+identity = "INTRINSIC_ITERTOOLS_REPEAT_TYPE"
+result_identity = "ITERTOOLS_REPEAT"
+iterator_payload = { parameter = "object", shape = "value" }
 
 [member_bits]
 IMPORTLIB_IMPORT_MODULE = 0
