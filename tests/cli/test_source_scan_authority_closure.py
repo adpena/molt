@@ -420,6 +420,37 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
     )
 
 
+@pytest.mark.parametrize(
+    "access", ["function.__builtins__", 'getattr(function, "__builtins__")']
+)
+@pytest.mark.parametrize(
+    ("usage", "requires_runtime_import"),
+    [
+        ('namespace["__import__"]("leaf")', True),
+        ('namespace.get("__import__")("leaf")', True),
+        ('namespace["__import__"]', False),
+        ('namespace["len"]', False),
+    ],
+)
+def test_builtin_namespace_import_requires_execution(
+    tmp_path: Path, access: str, usage: str, requires_runtime_import: bool
+) -> None:
+    path = _source(
+        tmp_path / "program.py",
+        f"def function(): pass\nnamespace = {access}\n{usage}\n",
+    )
+    _source(tmp_path / "leaf.py", "pass\n")
+    result = _discover(path, tmp_path, full=True, project=tmp_path)
+    assert (
+        scanner._module_graph_needs_runtime_import_support(
+            module_graph=result.graph,
+            scan_authority=result.scan_authority,
+            namespace_writes={},
+        ).needs_runtime_import_support
+        is requires_runtime_import
+    )
+
+
 def test_runtime_protocol_bit_tracks_activation_and_inventory() -> None:
     from molt.compiler_analysis.python_source_keys import python_node_source_key
 
