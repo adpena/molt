@@ -97,6 +97,23 @@ impl PlannedStdlibArchive {
         cache: Option<&NativeObjectCache>,
         publish: impl FnOnce(&[MappedObject], &StdlibArchiveProvenance) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.assemble_with_worker(log_prefix, cache, publish, |job, name, output| {
+            run_native_batch_worker_with_failure_artifacts(
+                "native stdlib batch worker",
+                job,
+                name,
+                output,
+            )
+        })
+    }
+
+    fn assemble_with_worker(
+        self,
+        log_prefix: &str,
+        cache: Option<&NativeObjectCache>,
+        publish: impl FnOnce(&[MappedObject], &StdlibArchiveProvenance) -> io::Result<()>,
+        worker: impl Fn(&[u8], &str, &std::path::Path) -> io::Result<NativeWorkerOrigin> + Sync + Send,
+    ) -> io::Result<()> {
         if cache.is_none() {
             eprintln!(
                 "{log_prefix}: stdlib object reuse inactive (no compiler manifest or explicit compilation diagnostics)"
@@ -137,15 +154,17 @@ impl PlannedStdlibArchive {
                     index + 1,
                     total
                 );
-                let origin = run_native_batch_worker_with_failure_artifacts(
-                    "native stdlib batch worker",
-                    &job,
-                    &format!("batch_{index}.json"),
-                    &object_path,
-                )?;
+                let origin = worker(&job, &format!("batch_{index}.json"), &object_path)?;
+                // A constituent is independently closed and verified. Publish
+                // it before waiting for sibling jobs, so a failed or cancelled
+                // archive build retains completed work for the next request.
+                // Only the complete ordered collection can publish an archive.
+                let origin = match (cache, batch.key) {
+                    (Some(cache), Some(key)) => cache.publish(&key, &object_path, &origin)?,
+                    _ => origin,
+                };
                 Ok::<_, io::Error>(Constituent::Emitted {
                     path: object_path,
-                    key: batch.key,
                     origin,
                 })
             })
@@ -165,8 +184,8 @@ impl PlannedStdlibArchive {
                 .sum::<u64>();
             let compile_elapsed = started.elapsed();
             let cache_started = Instant::now();
-            // Each miss publishes under its own key's lock, so publication runs
-            // on the pool too; the archive keeps batch order.
+            // Constituent publication already completed under each key's
+            // existing lock. Map outputs in archive member order.
             let emitted_bytes = specs
                 .iter()
                 .map(|spec| match spec {
@@ -176,13 +195,7 @@ impl PlannedStdlibArchive {
                 .sum::<io::Result<u64>>()?;
             let constituents = request_parallel_map(specs, |spec| match spec {
                 Constituent::Reused(object, origin) => Ok((object, origin)),
-                Constituent::Emitted { path, key, origin } => {
-                    let origin = match (cache, key) {
-                        (Some(cache), Some(key)) => cache.publish(&key, &path, &origin)?,
-                        _ => origin,
-                    };
-                    Ok((MappedObject::file(&path)?, origin))
-                }
+                Constituent::Emitted { path, origin } => Ok((MappedObject::file(&path)?, origin)),
             })
             .into_iter()
             .collect::<io::Result<Vec<_>>>()?;
@@ -198,7 +211,7 @@ impl PlannedStdlibArchive {
             publish(&objects, &provenance)?;
             drop(objects);
             eprintln!(
-                "{log_prefix}: stdlib object reuse: {} hits, {} misses, {} reused bytes, {} emitted bytes; compile {:?}, cache {:?}, publication {:?}",
+                "{log_prefix}: stdlib object reuse: {} hits, {} misses, {} reused bytes, {} emitted bytes; restore/compile/constituent publication {:?}, map {:?}, archive publication {:?}",
                 hits,
                 total - hits,
                 reused_bytes,
@@ -223,7 +236,10 @@ enum Constituent {
     /// A worker's private output, published under its input key when present.
     Emitted {
         path: std::path::PathBuf,
-        key: Option<[u8; 32]>,
         origin: NativeWorkerOrigin,
     },
 }
+
+#[cfg(test)]
+#[path = "batched_tests.rs"]
+mod tests;
