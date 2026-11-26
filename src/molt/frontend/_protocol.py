@@ -109,6 +109,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
