@@ -171,6 +171,10 @@ mod tests {
 
     #[test]
     fn persisted_stencil_matches_a_forced_compile_and_keeps_the_relocation_kind() {
+        use molt_ir::backend_environment::{self, BackendEnvironment};
+        use std::sync::Arc;
+
+        let _request = backend_environment::enter(Arc::new(BackendEnvironment::default()));
         let directory = super::super::tests::test_tir_pipeline_cache_dir();
         let location = TirCacheLocation::Root(directory.clone());
         let isa = super::super::SimpleBackend::native_isa(None, CodePlacement::Object);
