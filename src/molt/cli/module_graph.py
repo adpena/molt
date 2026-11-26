@@ -1650,14 +1650,20 @@ def _assemble_import_plan(
     package_parent_modules = _modules_with_any_reason(
         module_graph, module_reasons, _PACKAGE_PARENT_REASONS
     )
-    explicit_runtime_import_dispatch_roots = (
-        runtime_closure.dispatch_roots | support_explicit_imports
+    # Import requests keep unresolved names for namespace resolution, native
+    # artifact admission and import-query replay. Only admitted modules can
+    # own executable dispatch; a request for an absent child still reaches
+    # the known ancestors Python imports before it reports the miss.
+    dispatch_requests = runtime_closure.dispatch_roots | support_explicit_imports
+    native_initializers = frozenset(
+        spec.module for spec in native_artifact_plan.native_module_init_specs()
     )
-    runtime_import_dispatch_roots = frozenset(
-        explicit_runtime_import_dispatch_roots
+    runtime_import_dispatch_roots = (
+        (known_modules & dispatch_requests)
+        | _runtime_import_parent_modules(dispatch_requests, known_modules=known_modules)
+        | (source_modules & native_initializers)
         | _runtime_import_parent_modules(
-            explicit_runtime_import_dispatch_roots,
-            known_modules=known_modules,
+            native_initializers, known_modules=source_modules
         )
     )
     import_redirects = prepared_module_graph.namespace_import_redirects.join(

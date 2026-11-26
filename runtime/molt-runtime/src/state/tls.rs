@@ -103,7 +103,7 @@ pub(crate) struct ExecutionTls {
     /// a runtime path that holds the execution context reaches it with no
     /// thread-local access. No field has a destructor.
     pub(crate) thread_last_exception: crate::builtins::exceptions::state::ThreadExceptionState,
-    pub(crate) exception_stack: std::mem::ManuallyDrop<RefCell<Vec<usize>>>,
+    pub(crate) exception_handler_depth: Cell<usize>,
     pub(crate) exception_stack_baseline: Cell<usize>,
     pub(crate) active_exception_stack: std::mem::ManuallyDrop<RefCell<Vec<u64>>>,
     pub(crate) active_exception_fallback: std::mem::ManuallyDrop<
@@ -277,7 +277,7 @@ thread_local! {
             public_gil_owns_persistent: Cell::new(false),
             thread_last_exception:
                 crate::builtins::exceptions::state::ThreadExceptionState::new(),
-            exception_stack: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
+            exception_handler_depth: Cell::new(0),
             exception_stack_baseline: Cell::new(0),
             active_exception_stack: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
             active_exception_fallback: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
