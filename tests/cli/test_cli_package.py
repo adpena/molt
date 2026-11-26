@@ -1,4 +1,4 @@
-"""``molt.cli`` binds only ``main``, so importing it loads nothing else.
+"""``molt.cli`` exposes its implementation submodules without a facade.
 
 Every ``molt.cli.<submodule>`` import first runs the package ``__init__``. When
 that file imported the build pipeline, each frontend worker and each ``molt``
@@ -39,16 +39,13 @@ def test_importing_the_package_loads_no_other_molt_module() -> None:
     assert _molt_modules_loaded_by("import molt.cli") - {"molt"} == {"molt.cli"}
 
 
-def test_the_package_binds_only_main() -> None:
+def test_the_package_binds_no_implementation_names() -> None:
     namespace = _fresh_interpreter(
         "import molt.cli",
         "{'names': sorted(name for name in vars(molt.cli) if not name.startswith('__')),"
         " 'forwards': '__getattr__' in vars(molt.cli)}",
     )
-    # ``annotations`` is the ``from __future__`` feature binding. Without a
-    # module ``__getattr__`` (PEP 562), any other package attribute is an
-    # AttributeError until its submodule is imported.
-    assert namespace == {"names": ["annotations", "main"], "forwards": False}
+    assert namespace == {"names": [], "forwards": False}
 
 
 def test_entrypoint_imports_the_build_pipeline_only_when_a_command_builds() -> None:

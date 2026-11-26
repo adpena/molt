@@ -13,6 +13,7 @@ import pytest
 from molt.compilation_target import admit_target
 
 import molt.cli as cli
+from molt.cli import entrypoint
 from molt.cli import frontend_pipeline
 from molt.cli import backend_ir, backend_pipeline
 from molt.cli.function_records import encode_function_body
@@ -119,7 +120,7 @@ def test_demanded_release_closure_preserves_live_function_records(
                 str(entry),
             ],
         )
-        assert cli.main() == 0
+        assert entrypoint.main() == 0
     eager, demanded = results
     assert eager.declarations is not None
     assert demanded.declarations is not None
@@ -216,7 +217,7 @@ def test_demanded_leaf_edit_reuses_unchanged_module_until_demand_changes(
             ],
         )
         before = len(prepared)
-        assert cli.main() == 0
+        assert entrypoint.main() == 0
         assert len(prepared) == before + 1
         return prepared[-1]
 

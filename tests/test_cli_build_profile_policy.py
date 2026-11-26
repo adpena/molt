@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from molt.backend_environment import CodegenSelection
-import molt.cli as cli
+from molt.cli import entrypoint
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import script_commands as cli_commands
 from molt.cli import runtime_wasm_build_policy as cli_runtime_build
@@ -197,7 +197,7 @@ def test_build_profile_flag_routes_to_build_profile(
         ["molt", "build", "--profile", profile, str(entry)],
     )
 
-    assert cli.main() == 0
+    assert entrypoint.main() == 0
     assert seen_profiles == [profile]
 
 

@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-import molt.cli as cli
+from molt.cli import entrypoint
 import molt.wasm_artifact as wasm_artifact
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.c_api_symbols import is_c_api_external_requirement
@@ -1952,7 +1952,7 @@ def test_extension_build_emits_wheel_and_manifest(
             *(["--json"] if json_output else []),
         ],
     )
-    rc = cli.main()
+    rc = entrypoint.main()
     if inspection_failure is not None:
         assert rc == 2
         captured = capsys.readouterr()
@@ -2052,7 +2052,7 @@ def test_extension_build_cli_rejects_invalid_target_before_artifact_creation(
         pytest.fail("invalid Python target reached compiler execution")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", reject_command)
-    assert cli.main() == 2
+    assert entrypoint.main() == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["command"] == "extension-build"
     assert payload["status"] == "error"
@@ -2330,7 +2330,7 @@ def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mo
             "3.12",
         ],
     )
-    rc = cli.main()
+    rc = entrypoint.main()
 
     assert rc == 0
     wheels = sorted(out_dir.glob("*.whl"))

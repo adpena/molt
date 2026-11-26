@@ -902,7 +902,10 @@ its digest and PEP 263-aware AST. Grouped import requests retain owner/fromlist
 alternatives until live filesystem resolution. A policy without package
 ancestors prefers an existing named submodule over the package aggregate; each
 unresolved member independently falls back to its owner. Executable tooling
-additionally includes the package ancestors.
+additionally includes the package ancestors. The CLI initializer is inert.
+Invoking a command goes through `molt.cli.__main__.run` or the in-process
+`molt.cli.entrypoint.main`. A command-dispatch import in the package initializer,
+even inside a lazy wrapper, makes it part of every tool's lexical closure.
 Absolute statement candidates demand no binding analysis. Relative package state
 and dynamic-call identity still come from the canonical binding/import-flow facts;
 this optimization does not invent a lexical alias or metadata-purity classifier.

@@ -12,7 +12,7 @@ from typing import Any, cast
 import msgpack
 import pytest
 
-import molt.cli as cli
+from molt.cli import entrypoint
 from molt.backend_environment import CodegenSelection
 from molt.cli import factgraph as factgraph_module
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -117,7 +117,7 @@ def test_factgraph_cli_dispatches_typed_backend_request(
         ],
     )
 
-    assert cli.main() == 0
+    assert entrypoint.main() == 0
 
     [build_request] = captured
     request = build_request.fact_graph_request
@@ -163,7 +163,7 @@ def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> N
         ],
     )
 
-    assert cli.main() == 0
+    assert entrypoint.main() == 0
 
     [build_request] = captured
     request = build_request.fact_graph_request

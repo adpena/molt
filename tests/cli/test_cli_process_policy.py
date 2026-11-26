@@ -87,7 +87,7 @@ def test_cli_entry_matches_interpreter_shutdown() -> None:
         normal = (
             "import sys\n"
             f"sys.argv = ['molt', *{argv!r}]\n"
-            "from molt.cli import main\n"
+            "from molt.cli.entrypoint import main\n"
             "raise SystemExit(main())\n"
         )
         entry = (

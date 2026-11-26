@@ -1837,7 +1837,7 @@ def test_llvm_detection_rejects_mismatched_config_major(
 def test_cli_repl_command_delegates_to_guarded_repl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
+    from molt.cli import entrypoint
     from molt import repl
 
     calls: list[dict[str, object]] = []
@@ -1850,7 +1850,7 @@ def test_cli_repl_command_delegates_to_guarded_repl(
     monkeypatch.setattr(repl, "run_repl", fake_run_repl, raising=True)
     monkeypatch.setattr(sys, "argv", ["molt", "repl", "--io-mode", "virtual"])
 
-    assert cli.main() == 0
+    assert entrypoint.main() == 0
     assert calls == [
         {
             "capabilities": None,

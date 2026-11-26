@@ -11,7 +11,7 @@ makes the same two choices: a first-generation threshold of 200,000
 ``configure`` paces the collector at the start of a compiler process, and
 ``worker_initializer`` does so in each worker. ``exit_process`` ends a command
 process as interpreter shutdown does, except that it does not free the heap.
-In-process callers of ``molt.cli.main``, such as tests, keep the default policy.
+In-process callers of ``molt.cli.entrypoint.main``, such as tests, keep the default policy.
 """
 
 from __future__ import annotations

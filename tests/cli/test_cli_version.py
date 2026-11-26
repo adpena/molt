@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import molt
-import molt.cli as cli
+from molt.cli import entrypoint
 from tests.process_guard_common import run_guarded_test_process
 
 
@@ -34,7 +34,7 @@ def test_cli_version_comes_from_project_metadata(
     monkeypatch.setattr(sys, "argv", ["molt", "--version"])
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.main()
+        entrypoint.main()
 
     assert exc_info.value.code == 0
     assert capsys.readouterr().out == f"molt {_project_version()}\n"
