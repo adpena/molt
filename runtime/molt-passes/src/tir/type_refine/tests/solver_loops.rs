@@ -127,11 +127,13 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
     let header_id = BlockId(1);
     let body_id = BlockId(2);
     let exit_id = BlockId(3);
+    let consumer_id = BlockId(4);
 
     let i_init = ValueId(0);
     let i = ValueId(1);
     let cond = ValueId(2);
     let i_next = ValueId(3);
+    let observed = ValueId(4);
 
     let entry = TirBlock {
         id: entry_id,
@@ -179,6 +181,19 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
         id: exit_id,
         args: vec![],
         ops: vec![],
+        terminator: Terminator::Branch {
+            target: consumer_id,
+            args: vec![],
+        },
+    };
+    // Direct use of the header value, across a block that publishes no
+    // facts. Updating the header must wake this consumer.
+    let mut alias = make_op(OpCode::Copy, vec![i], vec![observed], AttrDict::default());
+    alias.origin = Some(molt_ir::OpKind::BindingAlias);
+    let consumer = TirBlock {
+        id: consumer_id,
+        args: vec![],
+        ops: vec![alias],
         terminator: Terminator::Return { values: vec![] },
     };
 
@@ -187,6 +202,7 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
     blocks.insert(header_id, header);
     blocks.insert(body_id, body);
     blocks.insert(exit_id, exit);
+    blocks.insert(consumer_id, consumer);
 
     let mut func = TirFunction {
         return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -198,8 +214,8 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
         return_type: TirType::None,
         blocks,
         entry_block: entry_id,
-        next_value: 4,
-        next_block: 4,
+        next_value: 5,
+        next_block: 5,
         attrs: AttrDict::default(),
         value_types: HashMap::default(),
         has_exception_handling: false,
@@ -209,6 +225,12 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
         loop_break_kinds: HashMap::default(),
         loop_cond_blocks: HashMap::default(),
     };
+
+    let facts = crate::tir::type_refine::solve_exact_scalars(
+        &func,
+        crate::tir::type_refine::ExactSeeds::default(),
+    );
+    assert_eq!(facts[&observed], TirType::DynBox);
 
     refine_types(&mut func);
     let first = func.value_types.clone();
