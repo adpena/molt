@@ -1,12 +1,6 @@
-//! The WASM application entry: the one exported `molt_main` a host calls.
-//!
-//! A native program starts in the CLI's C main stub, which registers the app
-//! resolver and the module registry, initializes the runtime and calls the
-//! compiled `molt_main`. A WASM module has no C stub: the host (Node's
-//! `run_wasm.js`, Wasmtime's `molt-wasm-host`) calls the exported
-//! `molt_main` with the attached execution context. That export is this
-//! wrapper. It runs the bootstrap the native C stub runs, then the compiled
-//! body.
+//! Wasm application entries publish the application's resolver and module
+//! registry before entering the compiled body. Hosts initialize the runtime
+//! when they acquire the execution context passed to these entries.
 
 #[cfg(feature = "llvm")]
 use super::LlvmBackend;
@@ -89,58 +83,14 @@ impl<'ctx> LlvmBackend<'ctx> {
         }
     }
 
-    /// Export each compiled host entry (`runtime_abi.toml`
-    /// `compiled_entries`: `molt_main`, and `molt_host_init` when the program
-    /// defines it) as a bootstrap wrapper over its renamed internal body.
-    ///
-    /// A host calls either entry first: `run_wasm.js` calls `molt_main`, and
-    /// the browser host's export invoker calls `molt_host_init` before any
-    /// user export. Both wrappers run the one bootstrap, as the WASM
-    /// backend's `compile_entry_wrapper` does for both.
-    ///
-    /// The wasm32 runtime admits a dynamic `intrinsics.require(name)` only for
-    /// the names the application publishes (closed world): the app callable
-    /// manifest's runtime callables, NUL-separated, handed to
-    /// `molt_set_intrinsic_manifest` before the runtime initializes.
-    pub fn emit_wasm_entry_wrapper(
-        &self,
-        has_module_registry: bool,
-        intrinsic_names: &std::collections::BTreeSet<String>,
-    ) {
-        let manifest = intrinsic_names
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join("\0");
-        let manifest_bytes = self.context.const_string(manifest.as_bytes(), false);
-        let manifest_global =
-            self.module
-                .add_global(manifest_bytes.get_type(), None, "__molt_intrinsic_manifest");
-        manifest_global.set_linkage(Linkage::Private);
-        manifest_global.set_constant(true);
-        manifest_global.set_initializer(&manifest_bytes);
-        let manifest = (manifest_global, manifest.len() as u64);
-        self.wrap_wasm_entry(
-            molt_ir::PROGRAM_ENTRY_SYMBOL,
-            true,
-            has_module_registry,
-            manifest,
-        );
-        self.wrap_wasm_entry(
-            molt_ir::HOST_INIT_SYMBOL,
-            false,
-            has_module_registry,
-            manifest,
-        );
+    /// Export a bootstrap wrapper for each attached host entry. Both
+    /// `molt_main` and `molt_host_init` can be the first application entry.
+    pub fn emit_wasm_entry_wrapper(&self, has_module_registry: bool) {
+        self.wrap_wasm_entry(molt_ir::PROGRAM_ENTRY_SYMBOL, true, has_module_registry);
+        self.wrap_wasm_entry(molt_ir::HOST_INIT_SYMBOL, false, has_module_registry);
     }
 
-    fn wrap_wasm_entry(
-        &self,
-        entry: &str,
-        required: bool,
-        has_module_registry: bool,
-        (manifest_global, manifest_len): (inkwell::values::GlobalValue<'ctx>, u64),
-    ) {
+    fn wrap_wasm_entry(&self, entry: &str, required: bool, has_module_registry: bool) {
         let ctx = self.context;
         let module = &self.module;
         let symbol = compiled_execution_symbol(entry);
@@ -159,9 +109,6 @@ impl<'ctx> LlvmBackend<'ctx> {
         let set_resolver = self
             .runtime_imports
             .get(ctx, module, RuntimeFn::SetAppCallableResolver);
-        let runtime_init = self
-            .runtime_imports
-            .get(ctx, module, RuntimeFn::RuntimeInit);
 
         // Every host calls `entry(context) -> word` (runtime_abi.toml
         // `compiled_entries`): the wrapper returns one boxed word whatever the
@@ -208,27 +155,6 @@ impl<'ctx> LlvmBackend<'ctx> {
                 )
                 .unwrap();
         }
-        let set_manifest = self
-            .runtime_imports
-            .get(ctx, module, RuntimeFn::SetIntrinsicManifest);
-        let manifest_ptr = builder
-            .build_ptr_to_int(
-                manifest_global.as_pointer_value(),
-                i64_ty,
-                "intrinsic_manifest",
-            )
-            .unwrap();
-        builder
-            .build_call(
-                set_manifest,
-                &[
-                    manifest_ptr.into(),
-                    i64_ty.const_int(manifest_len, false).into(),
-                ],
-                "",
-            )
-            .unwrap();
-        builder.build_call(runtime_init, &[], "").unwrap();
         let args: Vec<inkwell::values::BasicMetadataValueEnum> =
             wrapper.get_param_iter().map(Into::into).collect();
         let result = builder.build_call(body, &args, "entry").unwrap();

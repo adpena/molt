@@ -991,9 +991,10 @@ def _render_generated_rs(
         "    pub callable: Option<crate::builtins::functions::RuntimeCallable>,\n"
     )
     lines.append("}\n\n")
+    lines.append("/// Ordered by public lookup name for the shared resolver.\n")
     lines.append("pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[\n")
     non_callable = _non_runtime_callable_intrinsics()
-    for entry in entries:
+    for entry in sorted(entries, key=lambda entry: entry.name):
         lines.append("    IntrinsicSpec {\n")
         lines.append(f'        name: "{entry.name}",\n')
         lines.append(f'        symbol: "{entry.symbol}",\n')

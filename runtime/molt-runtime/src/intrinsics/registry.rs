@@ -15,27 +15,13 @@ use crate::{
     dict_set_in_place, exception_pending, inc_ref_bits, module_dict_bits, obj_from_bits,
     object_type_id, raise_exception, runtime_state, string_bytes, string_len,
 };
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const REGISTRY_NAME: &str = "_molt_intrinsics";
 const LOOKUP_HELPER_NAME: &str = "_molt_intrinsic_lookup";
 const STRICT_FLAG: &str = "_molt_intrinsics_strict";
 const RUNTIME_FLAG: &str = "_molt_runtime";
-#[cfg(not(target_arch = "wasm32"))]
 const LAZY_RESOLVE_NAME: &str = "_molt_lazy_resolve";
-
-/// Per-app intrinsic manifest for WASM tree shaking.
-static INTRINSIC_MANIFEST_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
-static INTRINSIC_MANIFEST_LEN: AtomicU32 = AtomicU32::new(0);
-
-const PUBLICATION_EMPTY: u8 = 0;
-const PUBLICATION_INITIALIZING: u8 = 1;
-const PUBLICATION_READY: u8 = 2;
-
-/// Publication state for the split manifest payload. The compiler-generated
-/// bootstrap is the sole winner, but embedders may race it. Readers may consume
-/// PTR/LEN only after observing READY with Acquire ordering.
-static MANIFEST_STATE: AtomicU8 = AtomicU8::new(PUBLICATION_EMPTY);
 
 /// Per-app runtime-callable resolver function pointer.
 ///
@@ -133,92 +119,6 @@ pub(crate) fn try_app_resolve_target(symbol: &str) -> Option<*const ()> {
         // `resolve_core_symbol`) are dead-stripped from the final binary.
         None
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
-    let Some(ptr) = crate::provenance::abi::mut_ptr::<u8>(ptr) else {
-        return 1;
-    };
-    let Ok(len) = u32::try_from(len) else {
-        return 1;
-    };
-    if crate::provenance::abi::checked_slice_len(ptr.cast_const(), u64::from(len)).is_none() {
-        return 1;
-    }
-    publish_manifest(ptr, len, || {}, || {})
-}
-
-fn publish_manifest(
-    ptr: *mut u8,
-    len: u32,
-    after_claim: impl FnOnce(),
-    on_competing_initialization: impl FnOnce(),
-) -> u64 {
-    // Validate before claiming the one-shot slot: malformed input must not
-    // permanently prevent the generated app bootstrap from installing the
-    // real manifest.
-    match MANIFEST_STATE.compare_exchange(
-        PUBLICATION_EMPTY,
-        PUBLICATION_INITIALIZING,
-        Ordering::Acquire,
-        Ordering::Acquire,
-    ) {
-        Ok(_) => after_claim(),
-        Err(mut state) => {
-            // A competing setter must not return while the winner's split
-            // payload is only half initialized. Observe its Release publication.
-            if state == PUBLICATION_INITIALIZING {
-                on_competing_initialization();
-            }
-            while state == PUBLICATION_INITIALIZING {
-                core::hint::spin_loop();
-                state = MANIFEST_STATE.load(Ordering::Acquire);
-            }
-            debug_assert_eq!(state, PUBLICATION_READY);
-            return 0;
-        }
-    }
-    INTRINSIC_MANIFEST_PTR.store(ptr, Ordering::Relaxed);
-    INTRINSIC_MANIFEST_LEN.store(len, Ordering::Relaxed);
-    MANIFEST_STATE.store(PUBLICATION_READY, Ordering::Release);
-    0
-}
-
-#[cfg(any(test, target_arch = "wasm32"))]
-fn manifest_snapshot() -> Option<(*mut u8, usize)> {
-    if MANIFEST_STATE.load(Ordering::Acquire) != PUBLICATION_READY {
-        return None;
-    }
-    let ptr = INTRINSIC_MANIFEST_PTR.load(Ordering::Relaxed);
-    let len = INTRINSIC_MANIFEST_LEN.load(Ordering::Relaxed) as usize;
-    Some((ptr, len))
-}
-
-#[cfg(any(test, target_arch = "wasm32"))]
-fn manifest_bytes() -> Option<&'static [u8]> {
-    let (ptr, len) = manifest_snapshot()?;
-    if len == 0 {
-        return Some(&[]);
-    }
-    if ptr.is_null() {
-        return None;
-    }
-    Some(unsafe { core::slice::from_raw_parts(ptr, len) })
-}
-
-#[cfg(target_arch = "wasm32")]
-fn parse_manifest() -> Option<std::collections::BTreeSet<&'static str>> {
-    let bytes = manifest_bytes()?;
-    let mut set = std::collections::BTreeSet::new();
-    for chunk in bytes.split(|&b| b == 0) {
-        if let Ok(name) = core::str::from_utf8(chunk)
-            && !name.is_empty()
-        {
-            set.insert(name);
-        }
-    }
-    Some(set)
 }
 
 fn module_dict_ptr(module_ptr: *mut u8) -> Option<*mut u8> {
@@ -568,8 +468,7 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     };
     let registry_bits = MoltObject::from_ptr(registry).bits();
     let enabled = MoltObject::from_bool(true).bits();
-    // Native namespaces share the registry's one lazy resolver callable.
-    #[cfg(not(target_arch = "wasm32"))]
+    // Both loader entry paths share the registry's one resolver callable.
     let lookup = match created.as_ref() {
         Some(created) => {
             unsafe { exact_name_value(_py, created.ptr, LAZY_RESOLVE_NAME.as_bytes()) }
@@ -579,27 +478,18 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         }
         None => registry_lookup_helper(_py, registry),
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let Some(lookup) = lookup else {
         ensure_registry_memory_error(_py, "intrinsic resolver allocation failed");
         return;
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let _lookup_owner = obj_from_bits(lookup)
         .as_ptr()
-        .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr));
-    #[cfg(not(target_arch = "wasm32"))]
+        .map(|ptr| crate::PtrDropGuard::new(_py, ptr));
     let bindings = [
         (REGISTRY_NAME, registry_bits),
         (STRICT_FLAG, enabled),
         (RUNTIME_FLAG, enabled),
         (LOOKUP_HELPER_NAME, lookup),
-    ];
-    #[cfg(target_arch = "wasm32")]
-    let bindings = [
-        (REGISTRY_NAME, registry_bits),
-        (STRICT_FLAG, enabled),
-        (RUNTIME_FLAG, enabled),
     ];
     let Some(displaced) = bind_names(_py, module_dict, &bindings) else {
         return;
@@ -623,71 +513,24 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
 fn new_runtime_registry<'guard>(_py: &'guard PyToken<'guard>) -> Option<OwnedExactDict<'guard>> {
     let registry = OwnedExactDict::empty(_py)?;
 
-    // The Python intrinsic-loader interface on wasm32 reads this dictionary;
-    // native instead publishes its lazy lookup helper below. Both targets'
-    // runtime resolver can materialize callables through the app-owned resolver.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let resolver_fn_ptr = fn_ref!(molt_intrinsic_resolve);
-        let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[], None) else {
-            ensure_registry_memory_error(_py, "intrinsic resolver allocation failed");
-            return None;
-        };
-        let installed = checked_dict_insert(
-            _py,
-            registry.ptr,
-            LAZY_RESOLVE_NAME.as_bytes(),
-            resolver_bits,
-        );
-        dec_ref_bits(_py, resolver_bits);
-        if !installed {
-            return None;
-        }
-    }
-
-    // On WASM with a manifest, eagerly register only the referenced
-    // intrinsics through the app resolver, once per runtime. The manifest
-    // already filters to only the functions the compiled module uses, and the
-    // resolver address-takes only those symbols.
-    #[cfg(target_arch = "wasm32")]
-    {
-        let manifest = parse_manifest();
-        if let Some(ref m) = manifest {
-            for spec in INTRINSICS {
-                if !m.contains(spec.symbol) {
-                    continue;
-                }
-                let Some(fn_ptr) = resolve_intrinsic_callable(spec) else {
-                    continue;
-                };
-                let Some(func_bits) =
-                    build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults, spec.public)
-                else {
-                    ensure_registry_memory_error(_py, "intrinsic function allocation failed");
-                    return None;
-                };
-                let installed =
-                    checked_dict_insert(_py, registry.ptr, spec.name.as_bytes(), func_bits)
-                        && match alias_name(spec.name) {
-                            Some(alias) => {
-                                checked_dict_insert(_py, registry.ptr, alias.as_bytes(), func_bits)
-                            }
-                            None => true,
-                        };
-                dec_ref_bits(_py, func_bits);
-                if !installed {
-                    return None;
-                }
-            }
-        }
-    }
-    Some(registry)
+    let resolver = fn_ref!(molt_intrinsic_resolve);
+    let Some(resolver_bits) = build_intrinsic_func(_py, resolver, 1, &[], None) else {
+        ensure_registry_memory_error(_py, "intrinsic resolver allocation failed");
+        return None;
+    };
+    let installed = checked_dict_insert(
+        _py,
+        registry.ptr,
+        LAZY_RESOLVE_NAME.as_bytes(),
+        resolver_bits,
+    );
+    dec_ref_bits(_py, resolver_bits);
+    installed.then_some(registry)
 }
 
-/// The lookup helper a native namespace binds when it shares the registry: the
+/// The lookup helper a namespace binds when it shares the registry: the
 /// registry's resolver materialization while it is intact, otherwise a fresh
 /// one. The shared registry itself is never rewritten here.
-#[cfg(not(target_arch = "wasm32"))]
 fn registry_lookup_helper(_py: &PyToken<'_>, registry: *mut u8) -> Option<u64> {
     let resolver_fn_ptr = fn_ref!(molt_intrinsic_resolve);
     if let Ok(Some(bits)) = unsafe { exact_name_value(_py, registry, LAZY_RESOLVE_NAME.as_bytes()) }
@@ -792,7 +635,10 @@ pub(crate) fn molt_intrinsic_resolve_attached_body(
 }
 
 fn find_spec_by_name(name: &str) -> Option<&'static crate::intrinsics::generated::IntrinsicSpec> {
-    INTRINSICS.iter().find(|spec| spec.name == name)
+    INTRINSICS
+        .binary_search_by_key(&name, |spec| spec.name)
+        .ok()
+        .map(|index| &INTRINSICS[index])
 }
 
 /// Find an `IntrinsicSpec` by primary name or `_molt_` alias.
@@ -1536,35 +1382,10 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     dec_ref_bits(_py, name_bits);
 }
 
-/// Reset process-wide one-shot globals in the intrinsic registry.
-///
-/// Called by `molt_runtime_reset_for_testing` after runtime shutdown so a
-/// same-process re-init can install a fresh manifest. The module/cache anchor
-/// is stored on `RuntimeState`, so dropping the state is sufficient to clear it.
+/// Clear the per-app callable resolver after runtime shutdown in tests.
 #[cfg(test)]
 pub(crate) fn reset_for_testing() {
-    MANIFEST_STATE.store(PUBLICATION_EMPTY, Ordering::SeqCst);
-    INTRINSIC_MANIFEST_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
-    INTRINSIC_MANIFEST_LEN.store(0, Ordering::SeqCst);
     APP_CALLABLE_RESOLVER_ADDRESS.store(0, Ordering::SeqCst);
-}
-
-// Expose internals for testing.
-#[cfg(test)]
-pub(crate) fn test_manifest_state() -> &'static AtomicU8 {
-    &MANIFEST_STATE
-}
-#[cfg(test)]
-pub(crate) fn test_manifest_ptr() -> &'static AtomicPtr<u8> {
-    &INTRINSIC_MANIFEST_PTR
-}
-#[cfg(test)]
-pub(crate) fn test_manifest_len() -> &'static AtomicU32 {
-    &INTRINSIC_MANIFEST_LEN
-}
-#[cfg(test)]
-pub(crate) fn test_app_resolver_address() -> &'static AtomicUsize {
-    &APP_CALLABLE_RESOLVER_ADDRESS
 }
 
 /// Runtime implementation of require_intrinsic(name, namespace=None) -> function.
@@ -2767,8 +2588,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_registry_reuses_one_lazy_resolver_callable() {
+    fn registry_reuses_one_lazy_resolver_callable() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(_py, {
                 let owner_bits = construct_registry_owner(_py);
@@ -2976,127 +2796,6 @@ mod tests {
         });
     }
 
-    fn reset_manifest_publication_for_test() {
-        test_manifest_state().store(PUBLICATION_EMPTY, Ordering::SeqCst);
-        test_manifest_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
-        test_manifest_len().store(0, Ordering::SeqCst);
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "molt_set_intrinsic_manifest stores a wasm linear-memory address represented as u64; native Miri strict provenance cannot model this wasm-only pointer contract"
-    )]
-    fn manifest_one_shot_guard() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-
-        reset_manifest_publication_for_test();
-
-        let malformed_len = u64::from(u32::MAX) + 1;
-        assert_eq!(molt_set_intrinsic_manifest(0x1000, malformed_len), 1);
-        assert_eq!(
-            test_manifest_state().load(Ordering::SeqCst),
-            PUBLICATION_EMPTY,
-            "invalid input must not poison the one-shot slot"
-        );
-
-        let ret = molt_set_intrinsic_manifest(0x1000, 10);
-        assert_eq!(ret, 0, "first call should return 0 (success)");
-        assert_eq!(
-            test_manifest_state().load(Ordering::SeqCst),
-            PUBLICATION_READY,
-            "manifest payload should be ready after first call"
-        );
-        assert_eq!(
-            test_manifest_ptr().load(Ordering::SeqCst) as usize,
-            0x1000,
-            "INTRINSIC_MANIFEST_PTR should be 0x1000 after first call"
-        );
-
-        let ret2 = molt_set_intrinsic_manifest(0x2000, 20);
-        assert_eq!(ret2, 0, "second call should also return 0");
-        assert_eq!(
-            test_manifest_ptr().load(Ordering::SeqCst) as usize,
-            0x1000,
-            "INTRINSIC_MANIFEST_PTR must still be 0x1000, NOT 0x2000"
-        );
-    }
-
-    #[test]
-    fn empty_manifest_is_ready_and_distinct_from_unset() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-
-        reset_manifest_publication_for_test();
-        assert_eq!(manifest_snapshot(), None);
-
-        assert_eq!(molt_set_intrinsic_manifest(0, 0), 0);
-        assert_eq!(
-            manifest_snapshot().map(|(ptr, len)| (ptr.is_null(), len)),
-            Some((true, 0))
-        );
-        assert_eq!(manifest_bytes(), Some(&[][..]));
-        assert_eq!(
-            test_manifest_state().load(Ordering::Acquire),
-            PUBLICATION_READY
-        );
-    }
-
-    #[test]
-    fn manifest_payload_is_hidden_until_release_publication() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        reset_manifest_publication_for_test();
-        let first_payload = Box::leak(Box::new([1_u8, 2, 3, 4]));
-        let second_payload = Box::leak(Box::new([9_u8, 8]));
-        let first_address = first_payload.as_mut_ptr() as usize;
-        let second_address = second_payload.as_mut_ptr() as usize;
-        let (winner_claimed_tx, winner_claimed_rx) = std::sync::mpsc::channel();
-        let (publish_tx, publish_rx) = std::sync::mpsc::channel();
-        let (loser_waiting_tx, loser_waiting_rx) = std::sync::mpsc::channel();
-        let (loser_done_tx, loser_done_rx) = std::sync::mpsc::channel();
-
-        let winner = std::thread::spawn(move || {
-            publish_manifest(
-                core::ptr::with_exposed_provenance_mut(first_address),
-                4,
-                || {
-                    winner_claimed_tx.send(()).unwrap();
-                    publish_rx.recv().unwrap();
-                },
-                || unreachable!("CAS winner cannot enter the competing path"),
-            )
-        });
-        winner_claimed_rx.recv().unwrap();
-        assert_eq!(
-            test_manifest_state().load(Ordering::Acquire),
-            PUBLICATION_INITIALIZING
-        );
-        assert_eq!(
-            manifest_snapshot(),
-            None,
-            "readers must not see split payload"
-        );
-
-        let loser = std::thread::spawn(move || {
-            let result = publish_manifest(
-                core::ptr::with_exposed_provenance_mut(second_address),
-                2,
-                || unreachable!("competing setter cannot win after the claim"),
-                || loser_waiting_tx.send(()).unwrap(),
-            );
-            loser_done_tx.send(()).unwrap();
-            result
-        });
-        loser_waiting_rx.recv().unwrap();
-        assert!(
-            loser_done_rx.try_recv().is_err(),
-            "loser returned before READY"
-        );
-        publish_tx.send(()).unwrap();
-        assert_eq!(winner.join().unwrap(), 0);
-        assert_eq!(loser.join().unwrap(), 0);
-        assert_eq!(manifest_snapshot(), Some((first_payload.as_mut_ptr(), 4)));
-    }
-
     /// A fake per-app resolver that returns a sentinel address for one known
     /// name and 0 (not found) for everything else, matching the ABI of the
     /// backend-emitted app callable resolver.
@@ -3119,12 +2818,12 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let function_class = crate::builtin_classes(py).function;
             let _resolver = std::mem::DropGuard::new(
-                test_app_resolver_address().swap(
+                APP_CALLABLE_RESOLVER_ADDRESS.swap(
                     usize::try_from(resolver).expect("function address fits"),
                     Ordering::SeqCst,
                 ),
                 |state| {
-                    test_app_resolver_address().store(state, Ordering::SeqCst);
+                    APP_CALLABLE_RESOLVER_ADDRESS.store(state, Ordering::SeqCst);
                 },
             );
             unsafe {
@@ -3237,7 +2936,7 @@ mod tests {
     )]
     fn app_resolver_used_when_registered() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        test_app_resolver_address().store(0, Ordering::SeqCst);
+        APP_CALLABLE_RESOLVER_ADDRESS.store(0, Ordering::SeqCst);
 
         let ret = molt_set_app_callable_resolver(crate::provenance::abi::expose_function_address(
             fake_app_resolver as *const (),
@@ -3263,7 +2962,7 @@ mod tests {
         }
 
         // Clean up for other tests sharing the process-global statics.
-        test_app_resolver_address().store(0, Ordering::SeqCst);
+        APP_CALLABLE_RESOLVER_ADDRESS.store(0, Ordering::SeqCst);
     }
 
     /// The resolver registration is one-shot: a second call must be ignored so a
@@ -3276,12 +2975,12 @@ mod tests {
     )]
     fn app_resolver_one_shot_guard() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        test_app_resolver_address().store(0, Ordering::SeqCst);
+        APP_CALLABLE_RESOLVER_ADDRESS.store(0, Ordering::SeqCst);
 
         let first = molt_set_app_callable_resolver(0x1000);
         assert_eq!(first, 0, "first registration should return 0 (success)");
         assert_eq!(
-            test_app_resolver_address().load(Ordering::SeqCst),
+            APP_CALLABLE_RESOLVER_ADDRESS.load(Ordering::SeqCst),
             0x1000,
             "resolver address should be 0x1000 after first registration"
         );
@@ -3290,12 +2989,12 @@ mod tests {
         let second = molt_set_app_callable_resolver(0x2000);
         assert_eq!(second, 0, "second registration should also return 0");
         assert_eq!(
-            test_app_resolver_address().load(Ordering::SeqCst),
+            APP_CALLABLE_RESOLVER_ADDRESS.load(Ordering::SeqCst),
             0x1000,
             "resolver address must still be 0x1000, NOT 0x2000"
         );
 
         // Clean up.
-        test_app_resolver_address().store(0, Ordering::SeqCst);
+        APP_CALLABLE_RESOLVER_ADDRESS.store(0, Ordering::SeqCst);
     }
 }

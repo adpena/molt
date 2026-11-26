@@ -142,6 +142,11 @@ internal binder reads retained metadata; user-visible builtin attributes keep
 CPython's restrictions. Python-defined function defaults remain mutable through
 the existing function metadata/version authority.
 
+Native and Wasm resolve dynamic intrinsic names on demand through the
+compiler-emitted application callable resolver. The runtime publishes the
+canonical name and its alias together under one callable identity. A name
+absent from the application resolver keeps the loader's missing-name behavior.
+
 Published native constructors share their ordinary `__new__` descriptor with
 class-call binding. `memoryview(object)` and `memoryview(object=...)` use the
 same required-argument admission and buffer owner as explicit

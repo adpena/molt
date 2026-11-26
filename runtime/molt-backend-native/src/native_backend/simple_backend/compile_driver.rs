@@ -439,10 +439,7 @@ impl SimpleBackend {
                 if let Some(registry) = self.module_registry.as_ref() {
                     llvm.emit_wasm_isolate_import(registry);
                 }
-                llvm.emit_wasm_entry_wrapper(
-                    self.module_registry.is_some(),
-                    &app_callable_manifest.runtime_callables,
-                );
+                llvm.emit_wasm_entry_wrapper(self.module_registry.is_some());
                 llvm.emit_wasm_attached_context_abi_section();
             }
 

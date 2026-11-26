@@ -154,28 +154,12 @@ def _build_entry_main_ops(
     *,
     entry_init: str,
     version_ops: Sequence[SimpleIROp],
+    code_slot_count: int,
 ) -> list[SimpleIROp]:
-    # NOTE: molt_runtime_init is called here for WASM targets where
-    # there is no C main stub.  For native targets the C stub calls
-    # molt_runtime_init before molt_main, so this is a harmless no-op
-    # (idempotent — returns immediately if already initialised).
-    #
-    # molt_runtime_shutdown is NOT called here.  For native targets the
-    # C stub's molt_finish() handles Python finalization + _exit(). WASM finite owners
-    # finalize after releasing execution leases and capturing pending errors;
-    # reusable embeddings finalize only when their owner disposes them. This
-    # same runtime teardown flushes buffered streams and runs atexit callbacks.
-    # Previously this function emitted a molt_runtime_shutdown call which tore down the
-    # runtime while the C stub still needed it (e.g. to check for
-    # pending exceptions), and the subsequent TLS/atexit destructor
-    # phase would hang or crash on exit.
+    # The host has already initialized and attached the runtime. This body
+    # owns only application initialization in that attached context.
     return [
-        {
-            "kind": "call",
-            "s_value": "molt_runtime_init",
-            "args": [],
-            "out": "v0",
-        },
+        {"kind": "code_slots_init", "value": code_slot_count},
         *version_ops,
         # Pending startup errors are preserved. The completed wrapper is guarded
         # after all late code-slot, sys-init, and spawn-override insertions.
@@ -307,6 +291,7 @@ def _guard_initialization_ops(
     ops: Sequence[SimpleIROp],
     *,
     failure_label: int | None = None,
+    check_at_entry: bool = False,
 ) -> list[SimpleIROp]:
     """Preserve pending setup failure before any subsequent initialization work.
 
@@ -326,7 +311,7 @@ def _guard_initialization_ops(
         "exception_edge": ExceptionEdgeKind.ORIGIN,
         "value": failure_label,
     }
-    guarded: list[SimpleIROp] = []
+    guarded: list[SimpleIROp] = [check.copy()] if check_at_entry else []
     for op in ops:
         if op == check and guarded and guarded[-1] == check:
             continue
@@ -2647,6 +2632,7 @@ def _prepare_backend_ir(
     entry_ops = _build_entry_main_ops(
         entry_init=entry_init,
         version_ops=version_ops,
+        code_slot_count=len(global_code_ids),
     )
     next_var = _next_tir_var_index(entry_ops)
     # Determine whether to inject a sys init call into molt_main.
@@ -2670,29 +2656,16 @@ def _prepare_backend_ir(
             next_var=next_var,
             lazy=False,
         )
-    # Wrappers own table allocation only. Each frontend-lowered module init
-    # publishes its lexical code/globals pair immediately before frame entry.
-    host_init_ops = _build_entry_main_ops(
-        entry_init=entry_init,
-        version_ops=version_ops,
-    )
-    if _inject_sys_init:
-        _append_entry_sys_init_op(
-            host_init_ops,
-            entry_init=entry_init,
-            next_var=next_var,
-            lazy=False,
-        )
-    host_init_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
+    # Both attached entries install the same application state. The program
+    # entry alone can replace its module invocation with a spawn override.
+    host_init_ops = _guard_initialization_ops(entry_ops, check_at_entry=True)
     if spawn_enabled:
         _replace_entry_call_with_spawn_override(
             entry_ops,
             entry_init=entry_init,
             next_var=next_var,
         )
-    entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
-    host_init_ops = _guard_initialization_ops(host_init_ops)
-    entry_ops = _guard_initialization_ops(entry_ops)
+    entry_ops = _guard_initialization_ops(entry_ops, check_at_entry=True)
     functions.append(
         {
             "name": "molt_host_init",
