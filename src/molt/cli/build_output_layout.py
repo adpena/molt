@@ -15,7 +15,7 @@ from molt.compilation_target import (
 from typing import TYPE_CHECKING, assert_never, get_args
 
 if TYPE_CHECKING:
-    from molt.build_record import RecordedBuildClaim
+    from molt.build_record import InputLedger, RecordedBuildClaim
 from molt.cli.build_request import BuildProfile
 
 from contextlib import ExitStack, contextmanager
@@ -156,6 +156,7 @@ class _BuildScope:
     maintenance_environment: ProcessEnvironment | None
     claimed: set[Path] = field(default_factory=set)
     state_claimed: set[Path] = field(default_factory=set)
+    unmaterialized_targets: list[RecordedBuildClaim] = field(default_factory=list)
 
 
 _BUILD_SCOPE: ContextVar[_BuildScope | None] = ContextVar(
@@ -185,7 +186,9 @@ def build_scope() -> Generator[_BuildScope]:
             _BUILD_SCOPE.reset(token)
 
 
-def _claim_checkout_state(root: Path, *, cargo_target: Path | None = None) -> None:
+def _claim_checkout_state(
+    root: Path, *, cargo_target: Path | None = None, cargo_output: bool = False
+) -> None:
     """Retain only this build's actual managed selection, including cache hits."""
     scope = _BUILD_SCOPE.get()
     if scope is None or root in scope.state_claimed:
@@ -197,21 +200,30 @@ def _claim_checkout_state(root: Path, *, cargo_target: Path | None = None) -> No
     )
     # A build writes into its selections, so its build control is created
     # and bound under the use's lock.
-    scope.stack.enter_context(checkout_state_use(((root, owner),), create=True))
+    locks = scope.stack.enter_context(checkout_state_use(((root, owner),), create=True))
     scope.state_claimed.add(root)
     if input_report.result_active():
         from molt.build_record import BuildClaimKind, RecordedBuildClaim
 
         try:
-            input_report.report_build_claim(
-                RecordedBuildClaim.capture(
-                    BuildClaimKind.CHECKOUT,
-                    root,
-                    cargo_target=cargo_target,
-                ).payload()
+            claim = RecordedBuildClaim.capture(
+                BuildClaimKind.CHECKOUT, root, cargo_target=cargo_target
             )
+            if cargo_output and locks and claim.directory_identity is None:
+                scope.unmaterialized_targets.append(claim)
+            input_report.report_build_claim(claim.payload())
         except (OSError, ValueError) as exc:
             input_report.refuse(f"checkout claim cannot be recorded: {exc}")
+
+
+def _record_completed_cargo_target_claims(ledger: InputLedger) -> None:
+    """Record first materialization while the build still owns the target lease."""
+    scope = _BUILD_SCOPE.get()
+    if scope is None or not scope.unmaterialized_targets:
+        return
+    for initial in scope.unmaterialized_targets:
+        ledger.complete_cargo_target_claim(initial)
+    scope.unmaterialized_targets.clear()
 
 
 def _claim_artifacts_root(root: Path) -> None:
