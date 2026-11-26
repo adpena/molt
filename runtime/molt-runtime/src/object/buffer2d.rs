@@ -2,42 +2,18 @@ use crate::BuiltinExc;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
-use super::backing::{tracked_vec_box_from_raw, tracked_vec_box_with_capacity};
+use super::backing::FixedBacking;
 use crate::{
     Buffer2D, MoltHeader, MoltObject, ObjectAuxPreselection, PyToken, TYPE_ID_BUFFER2D,
     buffer2d_ptr, dec_ref_bits, exception_pending, inc_ref_bits, obj_from_bits, object_type_id,
     raise_exception,
 };
 
-// The payload word of each variant is readable by generated code.
+// The first payload word of each variant points directly at its cell array.
 #[repr(C, u64)]
 pub(crate) enum Buffer2DStorage {
-    I64(
-        *mut crate::object::molt_vec::MoltVec<i64>,
-        #[cfg(target_pointer_width = "32")] u32,
-    ) = molt_codegen_abi::BUFFER2D_STORAGE_PACKED,
-    Boxed(
-        *mut crate::object::molt_vec::MoltVec<u64>,
-        #[cfg(target_pointer_width = "32")] u32,
-    ) = 1,
-}
-
-impl Buffer2DStorage {
-    fn packed(ptr: *mut crate::object::molt_vec::MoltVec<i64>) -> Self {
-        Self::I64(
-            ptr,
-            #[cfg(target_pointer_width = "32")]
-            0,
-        )
-    }
-
-    fn boxed(ptr: *mut crate::object::molt_vec::MoltVec<u64>) -> Self {
-        Self::Boxed(
-            ptr,
-            #[cfg(target_pointer_width = "32")]
-            0,
-        )
-    }
+    I64(FixedBacking<i64>) = molt_codegen_abi::BUFFER2D_STORAGE_PACKED,
+    Boxed(FixedBacking<u64>) = 1,
 }
 
 const _: () = {
@@ -46,19 +22,17 @@ const _: () = {
     assert!(offset_of!(Buffer2D, rows) == BUFFER2D_ROWS_OFFSET as usize);
     assert!(offset_of!(Buffer2D, cols) == BUFFER2D_COLS_OFFSET as usize);
     assert!(offset_of!(Buffer2D, data) == BUFFER2D_STORAGE_TAG_OFFSET as usize);
-    assert!(offset_of!(Buffer2D, data) + size_of::<u64>() == BUFFER2D_STORAGE_PTR_OFFSET as usize);
-    assert!(size_of::<Buffer2DStorage>() == 16);
-    assert!(size_of::<Buffer2D>() == 32);
+    assert!(offset_of!(Buffer2D, data) + size_of::<u64>() == BUFFER2D_STORAGE_DATA_OFFSET as usize);
+    assert!(size_of::<Buffer2DStorage>() == 32);
+    assert!(size_of::<Buffer2D>() == 48);
 };
 
 pub(crate) unsafe fn visit_owned_values(buffer: *mut Buffer2D, mut visit: impl FnMut(u64)) {
     if buffer.is_null() {
         return;
     }
-    if let Buffer2DStorage::Boxed(values, ..) = unsafe { &(*buffer).data }
-        && !values.is_null()
-    {
-        for &bits in unsafe { &**values } {
+    if let Buffer2DStorage::Boxed(values) = unsafe { &(*buffer).data } {
+        for &bits in values.iter() {
             visit(bits);
         }
     }
@@ -68,10 +42,8 @@ pub(crate) unsafe fn detach_owned_values(buffer: *mut Buffer2D, mut detach: impl
     if buffer.is_null() {
         return;
     }
-    if let Buffer2DStorage::Boxed(values, ..) = unsafe { &mut (*buffer).data }
-        && !values.is_null()
-    {
-        for bits in unsafe { &mut **values } {
+    if let Buffer2DStorage::Boxed(values) = unsafe { &mut (*buffer).data } {
+        for bits in values.iter_mut() {
             detach(std::mem::replace(bits, MoltObject::none().bits()));
         }
     }
@@ -182,42 +154,24 @@ fn integer_from_object(_py: &PyToken<'_>, bits: u64, name: &str) -> Option<Exact
     }
 }
 
-unsafe fn drop_i64_storage(ptr: *mut crate::object::molt_vec::MoltVec<i64>) {
-    if !ptr.is_null() {
-        drop(unsafe { tracked_vec_box_from_raw(ptr) });
-    }
-}
-
-unsafe fn drop_boxed_storage(_py: &PyToken<'_>, ptr: *mut crate::object::molt_vec::MoltVec<u64>) {
-    if ptr.is_null() {
-        return;
-    }
-    let owner = unsafe { tracked_vec_box_from_raw(ptr) };
-    for &bits in owner.iter() {
+fn release_cells(_py: &PyToken<'_>, cells: &[u64]) {
+    for &bits in cells {
         dec_ref_bits(_py, bits);
     }
-    drop(owner);
 }
 
-unsafe fn drop_staged(_py: &PyToken<'_>, storage: Buffer2DStorage) {
-    match storage {
-        Buffer2DStorage::I64(ptr, ..) => unsafe { drop_i64_storage(ptr) },
-        Buffer2DStorage::Boxed(ptr, ..) => unsafe { drop_boxed_storage(_py, ptr) },
+fn drop_staged(_py: &PyToken<'_>, storage: Buffer2DStorage) {
+    if let Buffer2DStorage::Boxed(cells) = &storage {
+        release_cells(_py, cells);
     }
 }
 
-fn allocate_i64_storage(
-    _py: &PyToken<'_>,
-    len: usize,
-    init: i64,
-) -> Option<*mut crate::object::molt_vec::MoltVec<i64>> {
-    let Some(ptr) = tracked_vec_box_with_capacity::<i64>(len) else {
+fn allocate_i64_storage(_py: &PyToken<'_>, len: usize, init: i64) -> Option<FixedBacking<i64>> {
+    let Some(mut cells) = FixedBacking::with_capacity(len) else {
         return memory_error(_py);
     };
-    unsafe {
-        (*ptr).resize(len, init);
-    }
-    Some(ptr)
+    cells.resize(len, init);
+    Some(cells)
 }
 
 fn owned_int_bits(_py: &PyToken<'_>, value: BigInt) -> Option<u64> {
@@ -267,31 +221,26 @@ fn allocate_boxed_storage(
     _py: &PyToken<'_>,
     len: usize,
     init: BigInt,
-) -> Option<*mut crate::object::molt_vec::MoltVec<u64>> {
-    let Some(ptr) = tracked_vec_box_with_capacity::<u64>(len) else {
+) -> Option<FixedBacking<u64>> {
+    let Some(mut cells) = FixedBacking::with_capacity(len) else {
         return memory_error(_py);
     };
-    let Some(bits) = owned_int_bits(_py, init) else {
-        unsafe { drop_boxed_storage(_py, ptr) };
-        return None;
-    };
-    unsafe {
-        for _ in 0..len {
-            inc_ref_bits(_py, bits);
-            (*ptr).push(bits);
-        }
+    let bits = owned_int_bits(_py, init)?;
+    for _ in 0..len {
+        inc_ref_bits(_py, bits);
+        cells.push(bits);
     }
     dec_ref_bits(_py, bits);
-    Some(ptr)
+    Some(cells)
 }
 
 fn allocate_storage(_py: &PyToken<'_>, len: usize, init: ExactInt) -> Option<Buffer2DStorage> {
     if len == 0 {
-        return allocate_i64_storage(_py, 0, 0).map(Buffer2DStorage::packed);
+        return allocate_i64_storage(_py, 0, 0).map(Buffer2DStorage::I64);
     }
     match init {
-        ExactInt::I64(value) => allocate_i64_storage(_py, len, value).map(Buffer2DStorage::packed),
-        ExactInt::Big(value) => allocate_boxed_storage(_py, len, value).map(Buffer2DStorage::boxed),
+        ExactInt::I64(value) => allocate_i64_storage(_py, len, value).map(Buffer2DStorage::I64),
+        ExactInt::Big(value) => allocate_boxed_storage(_py, len, value).map(Buffer2DStorage::Boxed),
     }
 }
 
@@ -299,7 +248,7 @@ fn publish_buffer(_py: &PyToken<'_>, rows: u64, cols: u64, storage: Buffer2DStor
     let Some(total) =
         std::mem::size_of::<MoltHeader>().checked_add(std::mem::size_of::<Buffer2D>())
     else {
-        unsafe { drop_staged(_py, storage) };
+        drop_staged(_py, storage);
         return memory_error(_py);
     };
     let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
@@ -309,7 +258,7 @@ fn publish_buffer(_py: &PyToken<'_>, rows: u64, cols: u64, storage: Buffer2DStor
         ObjectAuxPreselection::Default,
     );
     if ptr.is_null() {
-        unsafe { drop_staged(_py, storage) };
+        drop_staged(_py, storage);
         return MoltObject::none().bits();
     }
     unsafe {
@@ -346,11 +295,11 @@ fn checked_buffer(_py: &PyToken<'_>, bits: u64) -> Option<*mut Buffer2D> {
     }
 }
 
-unsafe fn exact_at(storage: &Buffer2DStorage, index: usize) -> ExactInt {
+fn exact_at(storage: &Buffer2DStorage, index: usize) -> ExactInt {
     match storage {
-        Buffer2DStorage::I64(ptr, ..) => ExactInt::I64(unsafe { (&**ptr)[index] }),
-        Buffer2DStorage::Boxed(ptr, ..) => {
-            let bits = unsafe { (&**ptr)[index] };
+        Buffer2DStorage::I64(cells) => ExactInt::I64(cells[index]),
+        Buffer2DStorage::Boxed(cells) => {
+            let bits = cells[index];
             ExactInt::Big(
                 crate::builtins::numbers::index_bigint_integral_bits(bits)
                     .expect("Buffer2D boxed storage contains only integers"),
@@ -386,7 +335,7 @@ fn add_product(acc: ExactInt, left: ExactInt, right: ExactInt) -> ExactInt {
     }
 }
 
-unsafe fn compute_cell(
+fn compute_cell(
     a: &Buffer2D,
     b: &Buffer2D,
     row: usize,
@@ -396,8 +345,8 @@ unsafe fn compute_cell(
 ) -> ExactInt {
     let mut acc = ExactInt::I64(0);
     for k in 0..a_cols {
-        let left = unsafe { exact_at(&a.data, row * a_cols + k) };
-        let right = unsafe { exact_at(&b.data, k * b_cols + col) };
+        let left = exact_at(&a.data, row * a_cols + k);
+        let right = exact_at(&b.data, k * b_cols + col);
         acc = add_product(acc, left, right);
     }
     match acc {
@@ -412,21 +361,19 @@ fn allocate_boxed_values(
     _py: &PyToken<'_>,
     capacity: usize,
     values: impl IntoIterator<Item = ExactInt>,
-) -> Option<*mut crate::object::molt_vec::MoltVec<u64>> {
-    let Some(boxed_ptr) = tracked_vec_box_with_capacity::<u64>(capacity) else {
+) -> Option<FixedBacking<u64>> {
+    let Some(mut cells) = FixedBacking::with_capacity(capacity) else {
         memory_error::<Option<()>>(_py);
         return None;
     };
-    unsafe {
-        for value in values {
-            let Some(bits) = owned_exact_bits(_py, value) else {
-                drop_boxed_storage(_py, boxed_ptr);
-                return None;
-            };
-            (*boxed_ptr).push(bits);
-        }
+    for value in values {
+        let Some(bits) = owned_exact_bits(_py, value) else {
+            release_cells(_py, &cells);
+            return None;
+        };
+        cells.push(bits);
     }
-    Some(boxed_ptr)
+    Some(cells)
 }
 
 pub(crate) fn molt_buffer2d_new_attached_body(
@@ -478,10 +425,11 @@ pub(crate) fn molt_buffer2d_get_attached_body(
         let cols = usize::try_from(cols).expect("non-empty Buffer2D columns fit usize");
         let index = row * cols + col;
         match unsafe { &(*buf_ptr).data } {
-            Buffer2DStorage::I64(ptr, ..) => owned_i64_bits(_py, unsafe { (&**ptr)[index] })
-                .unwrap_or_else(|| MoltObject::none().bits()),
-            Buffer2DStorage::Boxed(ptr, ..) => {
-                let bits = unsafe { (&**ptr)[index] };
+            Buffer2DStorage::I64(cells) => {
+                owned_i64_bits(_py, cells[index]).unwrap_or_else(|| MoltObject::none().bits())
+            }
+            Buffer2DStorage::Boxed(cells) => {
+                let bits = cells[index];
                 inc_ref_bits(_py, bits);
                 bits
             }
@@ -534,37 +482,34 @@ pub(crate) fn molt_buffer2d_set_attached_body(
         let index = row * cols + col;
         let mut promoted = None;
         match unsafe { &mut (*buf_ptr).data } {
-            Buffer2DStorage::I64(ptr, ..) => match value {
+            Buffer2DStorage::I64(cells) => match value {
                 ExactInt::I64(value) => {
-                    unsafe { (&mut **ptr)[index] = value };
+                    cells[index] = value;
                 }
                 ExactInt::Big(value) => {
-                    let old_ptr = *ptr;
-                    let old = unsafe { &*old_ptr };
-                    let values = old[..index]
+                    let values = cells[..index]
                         .iter()
                         .copied()
                         .map(ExactInt::I64)
                         .chain(std::iter::once(ExactInt::Big(value)))
-                        .chain(old[index + 1..].iter().copied().map(ExactInt::I64));
-                    let Some(boxed_ptr) = allocate_boxed_values(_py, old.len(), values) else {
+                        .chain(cells[index + 1..].iter().copied().map(ExactInt::I64));
+                    let Some(boxed) = allocate_boxed_values(_py, cells.len(), values) else {
                         return MoltObject::none().bits();
                     };
-                    promoted = Some((old_ptr, boxed_ptr));
+                    promoted = Some(boxed);
                 }
             },
-            Buffer2DStorage::Boxed(ptr, ..) => {
+            Buffer2DStorage::Boxed(cells) => {
                 let Some(bits) = owned_exact_bits(_py, value) else {
                     return MoltObject::none().bits();
                 };
-                let old_bits = unsafe { std::mem::replace(&mut (&mut **ptr)[index], bits) };
+                let old_bits = std::mem::replace(&mut cells[index], bits);
                 dec_ref_bits(_py, old_bits);
             }
         }
-        if let Some((old_ptr, boxed_ptr)) = promoted {
+        if let Some(boxed) = promoted {
             unsafe {
-                (*buf_ptr).data = Buffer2DStorage::boxed(boxed_ptr);
-                drop_i64_storage(old_ptr);
+                (*buf_ptr).data = Buffer2DStorage::Boxed(boxed);
             }
         }
         MoltObject::none().bits()
@@ -595,7 +540,7 @@ pub(crate) fn molt_buffer2d_matmul_attached_body(
             return memory_error(_py);
         };
         if len == 0 {
-            let Some(storage) = allocate_i64_storage(_py, 0, 0).map(Buffer2DStorage::packed) else {
+            let Some(storage) = allocate_i64_storage(_py, 0, 0).map(Buffer2DStorage::I64) else {
                 return MoltObject::none().bits();
             };
             return publish_buffer(_py, a.rows, b.cols, storage);
@@ -607,39 +552,32 @@ pub(crate) fn molt_buffer2d_matmul_attached_body(
         ) else {
             return memory_error(_py);
         };
-        let Some(i64_ptr) = tracked_vec_box_with_capacity::<i64>(len) else {
+        let Some(cells) = FixedBacking::with_capacity(len) else {
             return memory_error(_py);
         };
-        let mut staged = Buffer2DStorage::packed(i64_ptr);
+        let mut staged = Buffer2DStorage::I64(cells);
         for row in 0..rows {
             for col in 0..b_cols {
-                let value = unsafe { compute_cell(a, b, row, col, a_cols, b_cols) };
+                let value = compute_cell(a, b, row, col, a_cols, b_cols);
                 match (&mut staged, value) {
-                    (Buffer2DStorage::I64(ptr, ..), ExactInt::I64(value)) => unsafe {
-                        (**ptr).push(value);
-                    },
-                    (Buffer2DStorage::I64(ptr, ..), ExactInt::Big(value)) => {
-                        let old_ptr = *ptr;
-                        let values = unsafe { &*old_ptr }
+                    (Buffer2DStorage::I64(cells), ExactInt::I64(value)) => cells.push(value),
+                    (Buffer2DStorage::I64(cells), ExactInt::Big(value)) => {
+                        let values = cells
                             .iter()
                             .copied()
                             .map(ExactInt::I64)
                             .chain(std::iter::once(ExactInt::Big(value)));
-                        let Some(boxed_ptr) = allocate_boxed_values(_py, len, values) else {
-                            unsafe { drop_i64_storage(old_ptr) };
+                        let Some(boxed) = allocate_boxed_values(_py, len, values) else {
                             return MoltObject::none().bits();
                         };
-                        unsafe {
-                            drop_i64_storage(old_ptr);
-                        }
-                        staged = Buffer2DStorage::boxed(boxed_ptr);
+                        staged = Buffer2DStorage::Boxed(boxed);
                     }
-                    (Buffer2DStorage::Boxed(ptr, ..), value) => {
+                    (Buffer2DStorage::Boxed(cells), value) => {
                         let Some(bits) = owned_exact_bits(_py, value) else {
-                            unsafe { drop_boxed_storage(_py, *ptr) };
+                            release_cells(_py, cells);
                             return MoltObject::none().bits();
                         };
-                        unsafe { (**ptr).push(bits) };
+                        cells.push(bits);
                     }
                 }
             }
@@ -654,22 +592,27 @@ include!("../attached_exports_generated/object/buffer2d.rs");
 mod tests {
     #[test]
     fn packed_storage_pointer_matches_generated_layout() {
+        let cells = FixedBacking::with_capacity(0).expect("empty backing");
         let buffer = Buffer2D {
             rows: 1,
-            cols: 1,
-            data: Buffer2DStorage::packed(std::ptr::null_mut()),
+            cols: 0,
+            data: Buffer2DStorage::I64(cells),
         };
-        let Buffer2DStorage::I64(ref pointer, ..) = buffer.data else {
+        let Buffer2DStorage::I64(cells) = &buffer.data else {
             unreachable!();
         };
-        let offset = std::ptr::from_ref(pointer).addr() - std::ptr::from_ref(&buffer).addr();
-        assert_eq!(
-            offset,
-            molt_codegen_abi::BUFFER2D_STORAGE_PTR_OFFSET as usize
-        );
+        let word = unsafe {
+            std::ptr::from_ref(&buffer)
+                .cast::<u8>()
+                .add(molt_codegen_abi::BUFFER2D_STORAGE_DATA_OFFSET as usize)
+                .cast::<u64>()
+                .read_unaligned()
+        };
+        assert_eq!(word, cells.as_ptr() as u64,);
     }
 
     use super::*;
+    use crate::object::backing::{tracked_vec_box_from_raw, tracked_vec_box_with_capacity};
     use crate::resource::{OperationEstimate, ResourceError, ResourceTracker, set_tracker};
     use std::{cell::Cell, rc::Rc};
 
@@ -918,7 +861,7 @@ mod tests {
             else {
                 panic!("small Buffer2D must start in packed storage");
             };
-            let original_storage = *original_storage;
+            let original_storage = original_storage.as_ptr();
             let large = BigInt::from(1u8) << 90usize;
             let large_bits = crate::builtins::numbers::int_bits_from_bigint(_py, large.clone());
             let baseline_allocations = usage.used_allocations.get();
@@ -947,8 +890,8 @@ mod tests {
                 let Buffer2DStorage::I64(values, ..) = (unsafe { &(*buffer_ptr).data }) else {
                     panic!("failed promotion must leave packed storage authoritative");
                 };
-                assert_eq!(*values, original_storage);
-                assert_eq!(unsafe { &***values }, &[i64::MAX, i64::MAX, i64::MAX]);
+                assert_eq!(values.as_ptr(), original_storage);
+                assert_eq!(&**values, &[i64::MAX, i64::MAX, i64::MAX]);
             }
 
             usage.max_allocations.set(Some(baseline_allocations + 4));
@@ -958,15 +901,15 @@ mod tests {
                 panic!("successful promotion must publish boxed storage");
             };
             assert_eq!(
-                crate::builtins::numbers::index_i64_integral_bits(unsafe { (&***values)[0] }),
+                crate::builtins::numbers::index_i64_integral_bits(values[0]),
                 Some(i64::MAX)
             );
             assert_eq!(
-                crate::builtins::numbers::index_bigint_integral_bits(unsafe { (&***values)[1] }),
+                crate::builtins::numbers::index_bigint_integral_bits(values[1]),
                 Some(large)
             );
             assert_eq!(
-                crate::builtins::numbers::index_i64_integral_bits(unsafe { (&***values)[2] }),
+                crate::builtins::numbers::index_i64_integral_bits(values[2]),
                 Some(i64::MAX)
             );
 
@@ -1017,8 +960,8 @@ mod tests {
                 let Buffer2DStorage::I64(right_values, ..) = (unsafe { &(*right_ptr).data }) else {
                     panic!("matmul must not promote its right input");
                 };
-                assert_eq!(unsafe { &***left_values }, &[i64::MAX]);
-                assert_eq!(unsafe { &***right_values }, &[1, 2, 3]);
+                assert_eq!(&**left_values, &[i64::MAX]);
+                assert_eq!(&**right_values, &[1, 2, 3]);
             }
 
             usage.remaining_allocations.set(Some(6));
@@ -1063,9 +1006,8 @@ mod tests {
                 let Buffer2DStorage::I64(values, ..) = (unsafe { &(*buffer_ptr).data }) else {
                     panic!("empty storage must stay packed");
                 };
-                let cells = unsafe { &**values };
-                assert!(cells.is_empty());
-                assert_eq!(cells.capacity(), 0);
+                assert!(values.is_empty());
+                assert_eq!(values.capacity(), 0);
                 dec_ref_bits(_py, product);
                 dec_ref_bits(_py, left);
                 dec_ref_bits(_py, right);

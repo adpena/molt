@@ -60,10 +60,10 @@ from molt.wasi_sdk_identity import (
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     find_executable,
-    stable_executable_probe,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
+from molt.toolchain_facts import capture_probe_tool
 
 if TYPE_CHECKING:
     from molt.cargo_resource_selection import CargoResourceRoot
@@ -1878,10 +1878,11 @@ def _tool_version_fact_and_identity(
     # The external limiter's exception belongs to its caller, not tool discovery.
     timeout = 30 if probe_timeout is None else probe_timeout(30)
     try:
-        with stable_executable_probe(path, label=f"LLVM tool {role}") as (
-            entrypoint,
-            executable_identity,
-        ):
+        label = f"LLVM tool {role}"
+        # Prefix verification runs its version probes on separate workers.
+        tool = capture_probe_tool(path, label=label, operation_local=True)
+        executable_identity = tool.identity
+        with tool.fenced(label=label) as entrypoint:
             result = subprocess.run(
                 [str(entrypoint), "--version"],
                 check=False,

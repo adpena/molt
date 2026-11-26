@@ -49,8 +49,8 @@ impl<T: 'static> RecordField<T> {
 /// two-domain thread-state drain that releases its strong edge.
 pub(crate) static THREAD_LAST_EXCEPTION: RecordField<ThreadExceptionState> =
     RecordField(|tls| &tls.thread_last_exception);
-pub(crate) static EXCEPTION_STACK: RecordField<std::mem::ManuallyDrop<RefCell<Vec<usize>>>> =
-    RecordField(|tls| &tls.exception_stack);
+pub(crate) static EXCEPTION_HANDLER_DEPTH: RecordField<Cell<usize>> =
+    RecordField(|tls| &tls.exception_handler_depth);
 pub(crate) static EXCEPTION_STACK_BASELINE: RecordField<Cell<usize>> =
     RecordField(|tls| &tls.exception_stack_baseline);
 pub(crate) static ACTIVE_EXCEPTION_STACK: RecordField<std::mem::ManuallyDrop<RefCell<Vec<u64>>>> =

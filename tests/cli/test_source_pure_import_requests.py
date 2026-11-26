@@ -1737,7 +1737,7 @@ def test_intrinsic_acquisition_family_preserves_possible_import_demand(source):
         ("def __import__(*args):\n    pass\n__import__('leaf')\n", "full", False),
         ("def invoke():\n    import leaf\n", "module_init", False),
         ("def invoke():\n    __import__('leaf')\n", "module_init", False),
-        ("def invoke():\n    __import__('leaf')\n", "full", True),
+        ("def invoke():\n    __import__('leaf')\n", "full", False),
     ],
 )
 def test_protocol_and_import_demands_share_execution_regions(

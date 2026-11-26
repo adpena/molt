@@ -4041,7 +4041,13 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     expected_typed_slot_store = {"StoreAttr"}
     expected_typed_slot = expected_typed_slot_load | expected_typed_slot_store
     expected_copy = {"Copy"}
-    expected_container = {"DelIndex", "Index", "StoreIndex"}
+    expected_container = {
+        "DelIndex",
+        "Index",
+        "StoreIndex",
+        "TryBuffer2dLoadI64",
+        "TryBuffer2dStoreI64",
+    }
     expected_module = {
         "ModuleCacheDel",
         "ModuleCacheGet",

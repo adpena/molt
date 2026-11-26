@@ -84,6 +84,73 @@ fn run(func: &TirFunction) -> MemorySsaResult {
     compute_standalone(func, &alias)
 }
 
+#[test]
+fn packed_accesses_keep_their_cell_dependence_and_leave_inline_fields_available() {
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let block = func.entry_block;
+    let buffer = func.blocks[&block].args[0].id;
+    let object = func.fresh_value();
+    let zero = func.fresh_value();
+    let committed = func.fresh_value();
+    let raw = func.fresh_value();
+    let hit = func.fresh_value();
+    let field = func.fresh_value();
+    let opaque = func.fresh_value();
+    let after = func.fresh_value();
+    let after_hit = func.fresh_value();
+    let entry = func.blocks.get_mut(&block).unwrap();
+    entry.ops = vec![
+        allocation(object, 8),
+        const_int(0, zero),
+        store(object, zero, 0),
+        op(
+            OpCode::TryBuffer2dStoreI64,
+            vec![buffer, zero, zero, zero],
+            vec![committed],
+        ),
+        op(
+            OpCode::TryBuffer2dLoadI64,
+            vec![buffer, zero, zero],
+            vec![raw, hit],
+        ),
+        load(object, 0, field),
+        call(vec![buffer], opaque),
+        op(
+            OpCode::TryBuffer2dLoadI64,
+            vec![buffer, zero, zero],
+            vec![after, after_hit],
+        ),
+    ];
+    entry.terminator = Terminator::Return {
+        values: vec![field],
+    };
+
+    let memory = run(&func);
+    assert_eq!(
+        memory.reaching_def_for_use(block, 4),
+        memory.def_at(block, 3)
+    );
+    assert!(memory.def_at(block, 4).is_none());
+    assert_eq!(
+        memory.reaching_def_for_use(block, 5),
+        memory.def_at(block, 2)
+    );
+    assert_eq!(
+        memory.reaching_def_for_use(block, 7),
+        memory.def_at(block, 6)
+    );
+
+    let mut analysis = crate::tir::analysis::AnalysisManager::new();
+    super::super::mem_gvn::run(&mut func, &mut analysis);
+    assert_eq!(func.blocks[&block].ops[5].opcode, OpCode::Copy);
+    assert_eq!(func.blocks[&block].ops[5].operands, vec![zero]);
+}
+
 // ── Test 1: straight-line def-use forwarding ───────────────────────────
 
 #[test]
