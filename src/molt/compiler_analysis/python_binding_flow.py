@@ -269,7 +269,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 76
+_ANALYSIS_SCHEMA: Final = 82
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -5423,6 +5423,12 @@ class _Analyzer:
             and (
                 members := finite_python_strings(
                     self.transfer.expressions[self._node_key(node.args[1])].static_value
+                )
+                or (
+                    (argument_results[1].value,)
+                    if argument_results[1].value_known
+                    and type(argument_results[1].value) is str
+                    else None
                 )
             )
         ):

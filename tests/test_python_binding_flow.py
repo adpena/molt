@@ -6773,7 +6773,11 @@ def test_attribute_builtin_identity_follows_alias_and_replacement(name, identity
 
 @pytest.mark.parametrize(
     ("operand", "members"),
-    [("'chosen'", {"chosen"}), ("key", {"chosen", "alternate"})],
+    [
+        ("'chosen'", {"chosen"}),
+        ("str('chosen')", {"chosen"}),
+        ("key", {"chosen", "alternate"}),
+    ],
 )
 def test_getattr_selection_transports_callable_and_fallback_sources(
     operand: str, members: set[str]
