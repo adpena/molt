@@ -62,8 +62,11 @@ class PythonStringAlternatives:
     values: frozenset[str]
 
 
+PythonStringValue: TypeAlias = str | PythonStringAlternatives
+
+
 PythonStaticValue: TypeAlias = (
-    str | int | tuple[str, ...] | PythonParameterRef | PythonStringAlternatives | None
+    PythonStringValue | int | tuple[str, ...] | PythonParameterRef | None
 )
 
 
@@ -1206,6 +1209,7 @@ __all__ = [
     "PythonElementProtocol",
     "PythonSourceElement",
     "PythonStringAlternatives",
+    "PythonStringValue",
     "PythonScopeFact",
     "current_globals_dict_is_exact",
     "globals_mutation_call_identity",

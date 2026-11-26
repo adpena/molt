@@ -33,6 +33,7 @@ from molt.cli.models import (
     _PreparedBackendCompile,
     _PreparedBackendSetup,
     _PreparedBuildConfig,
+    _PreparedBuildRoots,
     _RuntimeArtifactState,
 )
 from molt.cli.backend_ir import _PreparedBackendIR
@@ -386,8 +387,11 @@ def test_native_object_publication_is_one_admitted_transaction(
     )
     result = backend_pipeline._run_backend_pipeline(
         prepared_build_preamble=preamble,
-        prepared_build_roots=NS(
-            project_root=tmp_path, molt_root=tmp_path, sysroot_path=None
+        prepared_build_roots=_PreparedBuildRoots(
+            cwd_root=tmp_path,
+            project_root=tmp_path,
+            molt_root=tmp_path,
+            sysroot_path=None,
         ),
         prepared_build_config=config,
         resolved_build_entry=NS(entry_module="app", source_path=source),

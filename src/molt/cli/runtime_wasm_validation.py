@@ -17,6 +17,7 @@ from molt._wasm_runtime_exports import (
     wasm_split_runtime_import_signature,
 )
 from molt.cli.command_runtime import _run_completed_command
+from molt.cli.output import CliFailure, fail
 from molt.tool_releases import (
     ToolDiscovery,
     ToolReleaseError,
@@ -61,6 +62,24 @@ def _require_runtime_wasm_validator(
         return None
     runtime_state.runtime_wasm_validator = validator
     return validator
+
+
+def _admit_runtime_wasm_validator(
+    runtime_state: _RuntimeArtifactState, *, project_root: Path, json_output: bool
+) -> CliFailure | None:
+    if (
+        _require_runtime_wasm_validator(runtime_state, project_root=project_root)
+        is not None
+    ):
+        return None
+    failure = runtime_state.runtime_wasm_build_failure
+    assert failure is not None
+    return fail(
+        failure.summary,
+        json_output,
+        command="build",
+        data={"runtime_wasm_failure": failure.json_payload()},
+    )
 
 
 def _validate_wasm_structural(path: Path) -> str | None:

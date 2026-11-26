@@ -42,7 +42,7 @@ def test_cli_frontend_pipeline_authority_is_single_home() -> None:
         assert f"def {name}(" not in cli_source
 
 
-def test_demanded_release_closure_preserves_live_function_records(
+def test_dev_closure_omits_unread_bodies_with_or_without_diagnostics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entry = tmp_path / "entry.py"
@@ -85,30 +85,32 @@ def test_demanded_release_closure_preserves_live_function_records(
         results.append(prepared_backend_ir)
         return 0
 
+    def select(
+        frontend: frontend_pipeline._PreparedFrontendPipelineBundle,
+        **kwargs: object,
+    ) -> tuple[backend_ir._PreparedBackendIR | None, CliFailure | None]:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            twins = [executor.submit(materialize, frontend, **kwargs) for _ in range(2)]
+            left, right = [future.result() for future in twins]
+        assert left is right
+        return left
+
     monkeypatch.setattr(backend_pipeline, "_run_backend_pipeline", capture)
-    for mode in ("eager", "demanded"):
-
-        def select(
-            frontend: frontend_pipeline._PreparedFrontendPipelineBundle,
-            **kwargs: object,
-        ) -> tuple[backend_ir._PreparedBackendIR | None, CliFailure | None]:
-            request = {**kwargs, "mode": mode}
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                twins = [
-                    executor.submit(materialize, frontend, **request) for _ in range(2)
-                ]
-                left, right = [future.result() for future in twins]
-            assert left is right
-            return left
-
-        monkeypatch.setattr(backend_ir, "materialize_tir_closure", select)
+    monkeypatch.setattr(backend_ir, "materialize_tir_closure", select)
+    for index, options in enumerate(
+        (
+            ("--release",),
+            ("--build-profile", "dev"),
+            ("--build-profile", "dev", "--diagnostics"),
+        )
+    ):
         monkeypatch.setattr(
             sys,
             "argv",
             [
                 "molt",
                 "build",
-                "--release",
+                *options,
                 "--python-version",
                 "3.12",
                 "--stdlib-profile",
@@ -116,12 +118,15 @@ def test_demanded_release_closure_preserves_live_function_records(
                 "--emit",
                 "obj",
                 "--output",
-                str(tmp_path / f"{mode}.o"),
+                str(tmp_path / f"output-{index}.o"),
                 str(entry),
             ],
         )
         assert entrypoint.main() == 0
-    eager, demanded = results
+    eager, demanded, observed = results
+    assert observed.plan_seal == demanded.plan_seal
+    assert observed.declarations == demanded.declarations
+    assert observed.ir == demanded.ir
     assert eager.declarations is not None
     assert demanded.declarations is not None
     omitted = {"py.entry._other_unused", "py.entry._unused"}

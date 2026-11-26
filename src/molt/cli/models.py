@@ -2136,6 +2136,7 @@ class _PreparedBuildRoots:
     project_root: Path
     molt_root: Path
     sysroot_path: Path | None
+    wasm_validator: ToolDiscovery | None = None
 
 
 @dataclass(frozen=True)

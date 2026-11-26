@@ -1139,3 +1139,60 @@ def test_join_copies_only_changed_payload_fields(
                 )
     pool.set_taint_domain(sum(1 << slot for slot in slots))
     _assert_dense_join(pool, parents, joined, slots)
+
+
+def test_shared_environment_join_keeps_state_history_and_late_domain() -> None:
+    pool = flow._StatePool()
+    base = pool.set_binding(0, 0, INERT, 7, owner_token=41)
+    left = pool.invalidate_members(base, 1)
+    right = pool.taint_exposed_bindings(base)
+    original = pool._binding_environments[base]
+    assert pool._binding_environments[left] is original
+    assert pool._binding_environments[right] is original
+    visits = pool.join_node_visits
+    joined = pool.join(left, right)
+    assert pool.join_node_visits == visits  # no root projection/merge traversal
+    assert pool._binding_environments[joined] is original
+    assert pool.get(joined).parents == (left, right)
+    assert pool.get(joined).taint_epoch == pool.get(right).taint_epoch
+    assert pool.get(joined).maybe_invalidated_members & 1
+    assert pool.static_value(joined, 0) == 7
+    assert pool.owner_token(joined, 0) == 41
+    pool.set_taint_domain(1)
+    assert pool.static_value(joined, 0) is None
+    assert pool.owner_token(joined, 0) == 0
+    pool.add_callback_deletions(1)
+    assert pool.binding(joined, 0) == INERT | OTHER_IDENTITY | UNBOUND_IDENTITY
+    rebound = pool.set_binding(joined, 0, INERT, 9, owner_token=99)
+    assert pool.static_value(rebound, 0) == 9
+    assert pool.owner_token(rebound, 0) == 99
+    assert pool.static_value(base, 0) == 7
+    _assert_fold(pool, flow._ObservedStateFrame([left, right]))
+
+
+def test_shared_environment_fast_path_matches_the_existing_root_merge() -> None:
+    pools = (flow._StatePool(), flow._StatePool())
+    states = []
+    for pool in pools:
+        base = pool.set_binding(0, 0, INERT, 7, owner_token=41)
+        states.append(
+            (pool.invalidate_members(base, 1), pool.taint_exposed_bindings(base))
+        )
+    candidate, control = pools
+    # Distinct immutable wrappers force the unchanged root-merge path while
+    # retaining exactly the same raw binding storage, states and epochs.
+    for state in states[1]:
+        control._binding_environments[state] = replace(
+            control._binding_environments[state]
+        )
+    visits = tuple(pool.join_node_visits for pool in pools)
+    joined = tuple(
+        pool.join(*parents) for pool, parents in zip(pools, states, strict=True)
+    )
+    assert candidate.join_node_visits == visits[0]
+    assert control.join_node_visits == visits[1] + 1
+    assert candidate.get(joined[0]) == control.get(joined[1])
+    for pool in pools:
+        pool.set_taint_domain(1)
+        pool.add_callback_deletions(1)
+    assert _projection(candidate, joined[0], 0) == _projection(control, joined[1], 0)

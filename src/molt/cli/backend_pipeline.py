@@ -292,6 +292,7 @@ def _run_backend_pipeline(
                 codegen=prepared_build_config.codegen,
                 rust_cpu=prepared_build_preamble.rust_cpu,
                 stage_timings_ms=pipeline_stage_ms,
+                wasm_validator=prepared_build_roots.wasm_validator,
             )
         )
         if pipeline_stage_ms is not None:

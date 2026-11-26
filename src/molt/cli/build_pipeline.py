@@ -138,7 +138,6 @@ def _run_build_pipeline(
         mode=(
             "demanded"
             if profile == "dev"
-            and not prepared_build_preamble.diagnostics_enabled
             and output_layout.emit_ir_path is None
             and fact_graph_request is None
             else "eager"
