@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from molt._wasm_abi_generated import (
     WASM_EXECUTION_MANIFEST_VERSION,
     compiled_execution_symbol,
-    RUNTIME_EXECUTION_ABIS,
     ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
     ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
     ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
@@ -14,6 +15,7 @@ from molt.capability_manifest import (
     resolve_runtime_policy_from_env,
 )
 from molt.wasm_artifact import wasm_execution_manifest_launch
+from molt._wasm_runtime_exports import wasm_runtime_lifetime_export_names
 
 import hashlib
 import json
@@ -32,10 +34,7 @@ def execution_abi_metadata() -> dict[str, object]:
             "section": ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
             "thread_record_offset": ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
         },
-        "runtime_execution_abis": {
-            logical: {"context": abi.context, "physical_symbol": abi.physical_symbol}
-            for logical, abi in RUNTIME_EXECUTION_ABIS.items()
-        },
+        "export_names": wasm_runtime_lifetime_export_names(),
     }
 
 
@@ -52,7 +51,15 @@ def _manifest_payload(
     mode: str,
     modules: dict[str, dict[str, object]],
     policy: ResolvedRuntimePolicy | None = None,
+    *,
+    runtime_exports: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
+    abi = execution_abi_metadata()
+    if runtime_exports:
+        abi["export_names"] = {
+            **wasm_runtime_lifetime_export_names(),
+            **runtime_exports,
+        }
     return {
         "version": WASM_EXECUTION_MANIFEST_VERSION,
         "mode": mode,
@@ -62,7 +69,7 @@ def _manifest_payload(
             "module": "linked" if mode == "linked" else "app",
             "function": compiled_execution_symbol("molt_main"),
         },
-        "abi": {"runtime_imports": execution_abi_metadata()},
+        "abi": {"runtime_imports": abi},
     }
 
 
@@ -71,6 +78,7 @@ def split_wasm_execution_manifest(
     runtime: bytes,
     *,
     policy: ResolvedRuntimePolicy | None = None,
+    runtime_exports: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Bind the generator's fixed lexical files to the actual fixture bytes."""
     return _manifest_payload(
@@ -87,6 +95,7 @@ def split_wasm_execution_manifest(
             )
         },
         policy,
+        runtime_exports=runtime_exports,
     )
 
 

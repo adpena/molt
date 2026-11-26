@@ -531,21 +531,20 @@ def test_static_browser_host_fd_write_preserves_tmp_file_bytes() -> None:
     assert "if (fdNum !== 1 && fdNum !== 2) {" in content
 
 
+def _split_worker_manifest(source: str) -> dict:
+    match = re.search(
+        r"^const deploymentManifest = requireMoltDeploymentManifest\(JSON.parse\((.*)\)\);$",
+        source,
+        re.MULTILINE,
+    )
+    assert match is not None
+    return json.loads(json.loads(match[1]))
+
+
 def test_generate_split_worker_maps_runtime_imports_to_runtime_exports() -> None:
     from molt.cli.wasm import _generate_split_worker_js
 
-    content = _generate_split_worker_js(
-        deployment_manifest=split_wasm_execution_manifest(
-            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
-        ),
-        shared_memory_initial_pages=8,
-        shared_table_initial=16,
-        runtime_import_names={"function_set_builtin", "string_from_bytes"},
-    )
-
-    match = re.search(r"const runtimeImportExportNames = (.*);", content)
-    assert match is not None
-    assert json.loads(match[1]) == {
+    expected = {
         "function_set_builtin": _runtime_symbol("molt_function_set_builtin"),
         "string_from_bytes": _runtime_symbol("molt_string_from_bytes"),
         "runtime_execution_enter": "molt_runtime_execution_enter",
@@ -555,6 +554,19 @@ def test_generate_split_worker_maps_runtime_imports_to_runtime_exports() -> None
         "compiled_execution_enter": "molt_compiled_execution_enter",
         "compiled_execution_leave": "molt_compiled_execution_leave",
     }
+    content = _generate_split_worker_js(
+        deployment_manifest=split_wasm_execution_manifest(
+            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE, runtime_exports=expected
+        ),
+        shared_memory_initial_pages=8,
+        shared_table_initial=16,
+    )
+    manifest = _split_worker_manifest(content)
+    assert manifest["abi"]["runtime_imports"]["export_names"] == expected
+    assert "runtime_execution_abis" not in manifest["abi"]["runtime_imports"]
+    assert (
+        "createRuntimeLifetime(rtInstance, runtimeImportAbi?.export_names," in content
+    )
     assert "callIsolateImportExport," in content
     assert (
         'return callIsolateImportExport(appInstance.exports[compiledExecutionSymbol("molt_isolate_import")], args);'
@@ -965,14 +977,20 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
 
     worker_js = _generate_split_worker_js(
         deployment_manifest=split_wasm_execution_manifest(
-            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
+            EMPTY_WASM_MODULE,
+            EMPTY_WASM_MODULE,
+            runtime_exports=_runtime_import_export_names_from_manifest(
+                import_names | {"molt_PyArg_ParseTuple"}
+            ),
         ),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
-        runtime_import_names=import_names | {"molt_PyArg_ParseTuple"},
     )
-    assert '"PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in worker_js
-    assert '"molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in worker_js
+    exports = _split_worker_manifest(worker_js)["abi"]["runtime_imports"][
+        "export_names"
+    ]
+    assert exports["PyArg_ParseTuple"] == "molt_PyArg_ParseTuple"
+    assert exports["molt_PyArg_ParseTuple"] == "molt_PyArg_ParseTuple"
     assert "exportCandidates" not in worker_js
     assert "`molt_${entry.name}`" not in worker_js
     assert 'importName.startsWith("molt_")' not in worker_js
