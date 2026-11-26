@@ -15,6 +15,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Literal, NamedTuple, cast, get_args
+from weakref import ReferenceType, ref
 
 from molt.compiler_analysis.python_lexical_scope import (
     python_execution_regions,
@@ -148,11 +149,9 @@ def _source_binding_policy(
     )
 
 
-# One logged read: the call that rebuilds its source under another premise,
-# the attribute path (None for a value read), the call's arguments (None for
-# an attribute read) and the answer.
-type _PremiseRead = tuple[
-    Callable[[object], object],
+type _PremiseBuilder = Callable[[PythonNamespacePremise | None], object]
+type _ProjectionRoot = PythonBindingFacts | ModuleImportFlow
+type _ProjectionRead = tuple[
     tuple[str, ...] | None,
     tuple[object, ...] | None,
     dict[str, object],
@@ -160,70 +159,86 @@ type _PremiseRead = tuple[
 ]
 
 
-class ScanPremiseReads:
-    """Every premise-dependent answer one scan consumed (HF-926 early cutoff).
-
-    A scan reads its namespace premise only through the binding analyses it
-    requests and the module's export fact. Each read is logged with the call
-    that rebuilds its source under another premise. A deterministic scan whose
-    every logged answer is unchanged under a new premise reads the same things
-    and returns the same output, so its consumer need not run it again
-    (rustc's red/green verification). A read that cannot be replayed makes
-    the log unusable, and the consumer scans again.
-    """
-
-    __slots__ = ("_reads", "usable")
-
-    def __init__(self) -> None:
-        self._reads: dict[tuple[object, ...], _PremiseRead] = {}
-        self.usable = True
-
-    def track(self, build: Callable[[object], object], target: object) -> object:
-        return _TrackedPremiseRead(self, build, (), target)
-
-    def value(self, build: Callable[[object], object], result: object) -> None:
-        self._reads.setdefault((id(build), None), (build, None, (), {}, result))
+@dataclass(slots=True)
+class _ProjectionReads:
+    build: _PremiseBuilder
+    origin: ReferenceType[_ProjectionRoot] | None = None
+    reads: dict[tuple[object, ...], _ProjectionRead] = field(default_factory=dict)
 
     def record(
         self,
-        build: Callable[[object], object],
-        path: tuple[str, ...],
+        path: tuple[str, ...] | None,
         args: tuple[object, ...] | None,
         kwargs: dict[str, object],
         result: object,
     ) -> None:
         key = (
-            id(build),
             path,
             None if args is None else tuple(id(arg) for arg in args),
             tuple((name, id(arg)) for name, arg in sorted(kwargs.items())),
         )
-        self._reads.setdefault(key, (build, path, args, kwargs, result))
+        self.reads.setdefault(key, (path, args, kwargs, result))
+
+    def unchanged_under(self, premise: PythonNamespacePremise | None) -> bool:
+        if not self.reads:
+            return True
+        root = self.build(premise)
+        if root is not None and self.origin is not None and self.origin() is root:
+            # The producer returned the identical immutable publication.
+            # Scan logs do not extend the binding cache's lifetime.
+            return True
+        for path, args, kwargs, expected in self.reads.values():
+            answer = root
+            if path is not None:
+                for name in path:
+                    answer = getattr(answer, name)
+                if args is not None:
+                    answer = cast(Callable[..., object], answer)(*args, **kwargs)
+            if answer != expected:
+                return False
+        return True
+
+
+class ScanPremiseReads:
+    """Every premise-dependent answer one scan consumed (HF-926 early cutoff).
+
+    For each binding projection, retain the exact reads and a weak reference to
+    the immutable publication. When the producer returns that publication
+    again, its answers still hold. A different publication must answer every
+    observed read. An unusable or changed proof causes a fresh scan.
+    """
+
+    __slots__ = ("_projections", "usable")
+
+    def __init__(self) -> None:
+        self._projections: dict[int, _ProjectionReads] = {}
+        self.usable = True
+
+    def track(self, build: _PremiseBuilder, target: _ProjectionRoot) -> object:
+        reads = self._projections.get(id(build))
+        if reads is None:
+            reads = self._projections[id(build)] = _ProjectionReads(build, ref(target))
+        elif reads.origin is not None and reads.origin() is not target:
+            reads.origin = None
+        return _TrackedPremiseRead(self, reads, (), target)
+
+    def value(self, build: _PremiseBuilder, result: object) -> None:
+        reads = self._projections.get(id(build))
+        if reads is None:
+            reads = self._projections[id(build)] = _ProjectionReads(build)
+        reads.origin = None
+        reads.record(None, None, {}, result)
 
     def unchanged_under(self, premise: PythonNamespacePremise | None) -> bool:
         """Whether every logged answer is the same under ``premise``."""
         if not self.usable:
             return False
-        roots: dict[int, object] = {}
         try:
-            for build, path, args, kwargs, result in self._reads.values():
-                root = roots.get(id(build))
-                if root is None:
-                    root = roots[id(build)] = build(premise)
-                if path is None:
-                    answer = root
-                else:
-                    answer = root
-                    for name in path[:-1]:
-                        answer = getattr(answer, name)
-                    answer = getattr(answer, path[-1])
-                    if args is not None:
-                        answer = cast(Callable[..., object], answer)(*args, **kwargs)
-                if answer != result:
-                    return False
+            return all(
+                reads.unchanged_under(premise) for reads in self._projections.values()
+            )
         except Exception:
             return False
-        return True
 
 
 # The log of the scan running in this context, if its consumer asked for one.
@@ -235,17 +250,17 @@ SCAN_PREMISE_READS: contextvars.ContextVar[ScanPremiseReads | None] = (
 class _TrackedPremiseRead:
     """A premise-dependent analysis object whose every read is logged."""
 
-    __slots__ = ("_log", "_build", "_path", "_target")
+    __slots__ = ("_log", "_reads", "_path", "_target")
 
     def __init__(
         self,
         log: ScanPremiseReads,
-        build: Callable[[object], object],
+        reads: _ProjectionReads,
         path: tuple[str, ...],
-        target: object,
+        target: _ProjectionRoot,
     ) -> None:
         self._log = log
-        self._build = build
+        self._reads = reads
         self._path = path
         self._target = target
 
@@ -253,9 +268,9 @@ class _TrackedPremiseRead:
         value = getattr(self._target, name)
         path = (*self._path, name)
         if isinstance(value, (PythonBindingFacts, ModuleImportFlow)):
-            return _TrackedPremiseRead(self._log, self._build, path, value)
+            return _TrackedPremiseRead(self._log, self._reads, path, value)
         if not callable(value) or isinstance(value, type):
-            self._log.record(self._build, path, None, {}, value)
+            self._reads.record(path, None, {}, value)
             return value
 
         def call(*args: object, **kwargs: object) -> object:
@@ -264,7 +279,7 @@ class _TrackedPremiseRead:
             except BaseException:
                 self._log.usable = False
                 raise
-            self._log.record(self._build, path, args, kwargs, result)
+            self._reads.record(path, args, kwargs, result)
             if isinstance(result, (PythonBindingFacts, ModuleImportFlow)):
                 # Reads of a returned analysis object have no replay path.
                 self._log.usable = False
@@ -273,7 +288,7 @@ class _TrackedPremiseRead:
         return call
 
 
-def _premise_analysis[T](
+def _premise_analysis[T: _ProjectionRoot](
     build: Callable[[PythonNamespacePremise | None], T],
     namespace_premise: PythonNamespacePremise | None,
 ) -> T:
@@ -282,7 +297,7 @@ def _premise_analysis[T](
     log = SCAN_PREMISE_READS.get()
     if log is None:
         return result
-    return cast(T, log.track(cast(Callable[[object], object], build), result))
+    return cast(T, log.track(build, result))
 
 
 def _module_import_scan_mode(module_name: str, *, full_scan: bool) -> ImportScanMode:
@@ -2760,7 +2775,7 @@ def _static_module_all_exports(
     result = exports(namespace_premise)
     log = SCAN_PREMISE_READS.get()
     if log is not None:
-        log.value(cast(Callable[[object], object], exports), result)
+        log.value(exports, result)
     return result
 
 

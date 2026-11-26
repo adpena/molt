@@ -882,7 +882,7 @@ class PythonBindingTelemetry:
     observation_fold_rebuilds: int = 0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class PythonBindingFacts:
     """Context-independent immutable facts and their shared query mappings."""
 
