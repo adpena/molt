@@ -46,7 +46,7 @@ from molt.cli.cargo_profiles import (
 )
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.lockfiles import _check_lockfiles
-from molt.cli.build_request import BuildProfile, BuildRequest
+from molt.cli.build_request import BuildProfile, BuildRequest, EmitMode
 from molt.compilation_target import Target, TargetKind, native_target_spec
 from molt.cli.models import (
     ModuleReason,
@@ -79,7 +79,11 @@ from molt.cli.project_roots import (
     _has_project_markers,
     _require_molt_root,
 )
-from molt.cli.config_resolution import _resolve_target_python_version
+from molt.cli.config_resolution import (
+    AUTO_STDLIB_PROFILE,
+    StdlibProfile,
+    _resolve_target_python_version,
+)
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -967,6 +971,9 @@ def _prepare_build_inputs(
     python_version: str | None = None,
     build_config: Mapping[str, Any] | None = None,
     codegen: CodegenSelection,
+    emit: EmitMode | None,
+    requires_runtime: bool,
+    stdlib_profile: StdlibProfile,
 ) -> tuple[
     tuple[
         _PreparedBuildPreamble,
@@ -1021,6 +1028,24 @@ def _prepare_build_inputs(
     if prepared_build_config_error is not None:
         return None, prepared_build_config_error
     assert prepared_build_config is not None
+
+    if (
+        requires_runtime
+        and stdlib_profile != AUTO_STDLIB_PROFILE
+        and target is not TargetKind.MLIR
+        and emit != "jit"
+    ):
+        from molt.cli.installed_runtime import require_installed_runtime_profile
+
+        try:
+            require_installed_runtime_profile(
+                prepared_build_roots.molt_root,
+                target=target,
+                cargo_profile=prepared_build_config.runtime_cargo_profile,
+                stdlib_profile=stdlib_profile,
+            )
+        except (OSError, ValueError) as exc:
+            return None, _fail(str(exc), json_output, command="build")
 
     resolved_build_entry, resolved_build_entry_error = _resolve_build_entry(
         file_path=file_path,

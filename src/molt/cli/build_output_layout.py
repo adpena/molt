@@ -518,10 +518,9 @@ def _resolve_build_output_layout(
         emit=emit,
     )
     is_wasm = is_wasm_target(target)
-    is_wasm_freestanding = target in {
-        TargetKind.WASM_FREESTANDING,
-        TargetKind.WASM_UNKNOWN,
-    }
+    is_wasm_freestanding = (
+        is_wasm and resolve_artifact_target(target) is TargetKind.WASM_UNKNOWN
+    )
     is_mlir_emit = target is TargetKind.MLIR
     facts_target = _runtime_facts_target(target)
     target_triple = (

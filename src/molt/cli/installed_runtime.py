@@ -33,10 +33,20 @@ from typing import TYPE_CHECKING, Any, Collection, Literal, Mapping, Sequence, c
 
 from molt import input_report
 from molt.native_target import resolve_native_target_spec
+from molt.compilation_target import (
+    Target,
+    TargetKind,
+    is_wasm_target,
+    resolve_artifact_target,
+    target_name,
+)
 from molt._wasm_runtime_exports import wasm_cpython_abi_distribution_export_names
 from molt.cli import installed_runtime_contract as _runtime_contract
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
-from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
+from molt.cli.config_resolution import (
+    DEFAULT_RUNTIME_STDLIB_PROFILE,
+    RuntimeStdlibProfile,
+)
 from molt.default_paths import _default_installed_runtime_store
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
@@ -59,7 +69,10 @@ from molt.cli.runtime_identity_schema import (
 )
 from molt.cli.runtime_paths import _runtime_lib_archive_name
 from molt.cli.runtime_native_generation import publish_native_runtime_directory
-from molt.cli.runtime_wasm_build_policy import _resolve_wasm_cargo_profile
+from molt.cli.runtime_wasm_build_policy import (
+    _resolve_wasm_cargo_profile,
+    runtime_wasm_simd_policy,
+)
 from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_features
 from molt.cli.runtime_wasm_build_support import wasm_runtime_simd_enabled
 from molt.cli.runtime_wasm_generation import (
@@ -326,6 +339,65 @@ def _describe_cells(installed: InstalledCompiler, kind: str) -> str:
     )
 
 
+def _missing_runtime_cell(
+    installed: InstalledCompiler, kind: str, requested: Mapping[str, Any]
+) -> _runtime_contract.InstalledRuntimeError:
+    """Render a requested kind label, including invalid labels at the boundary."""
+    description = ", ".join(
+        f"{name}={value}"
+        for name, value in sorted(requested.items())
+        if name != "runtime_features"
+    )
+    if "runtime_features" in requested:
+        description += f" (features: {', '.join(requested['runtime_features'])})"
+    return _runtime_contract.InstalledRuntimeError(
+        f"installed Molt does not ship a {kind} runtime for {description}. "
+        f"Shipped {kind} cells: {_describe_cells(installed, kind)}. "
+        "Choose a shipped profile/target/feature cell, or set MOLT_SOURCE_ROOT "
+        "to a Molt source checkout to build other runtime configurations."
+    )
+
+
+def require_installed_runtime_profile(
+    project_root: Path,
+    *,
+    target: Target,
+    cargo_profile: str,
+    stdlib_profile: RuntimeStdlibProfile,
+) -> None:
+    """Reject an impossible explicit profile without discovering user code.
+
+    Feature admission still belongs to the final closure and exact cell
+    selection. Here the profile and target already prove there can be no cell.
+    """
+    installed = _installed(project_root)
+    if installed is None:
+        return
+    if is_wasm_target(target):
+        kind = WASM_RUNTIME_CELL
+        coordinate = wasm_runtime_cell_key(
+            runtime_profile=_resolve_wasm_cargo_profile(cargo_profile),
+            stdlib_profile=stdlib_profile,
+            simd_enabled=runtime_wasm_simd_policy(),
+            freestanding=resolve_artifact_target(target) is TargetKind.WASM_UNKNOWN,
+        )
+    else:
+        kind = NATIVE_RUNTIME_CELL
+        coordinate = native_runtime_cell_key(
+            target_triple=None if target is TargetKind.NATIVE else target_name(target),
+            cargo_profile=cargo_profile,
+            stdlib_profile=stdlib_profile,
+            extra_runtime_features=None,
+        )
+    del coordinate["runtime_features"]
+    if not any(
+        row["kind"] == kind
+        and all(row["key"].get(name) == value for name, value in coordinate.items())
+        for row in installed.runtime["cells"]
+    ):
+        raise _missing_runtime_cell(installed, kind, coordinate)
+
+
 def select_installed_runtime_cell(
     installed: InstalledCompiler,
     *,
@@ -340,18 +412,7 @@ def select_installed_runtime_cell(
         if cell["kind"] == kind and cell["key"] == dict(key)
     ]
     if len(matches) != 1:
-        requested = ", ".join(
-            f"{name}={value}"
-            for name, value in sorted(key.items())
-            if name != "runtime_features"
-        )
-        raise _runtime_contract.InstalledRuntimeError(
-            f"installed Molt does not ship a {kind} runtime for {requested} "
-            f"(features: {', '.join(key.get('runtime_features', ()))}). "
-            f"Shipped {kind} cells: {_describe_cells(installed, kind)}. "
-            "Choose a shipped profile/target/feature cell, or set MOLT_SOURCE_ROOT "
-            "to a Molt source checkout to build other runtime configurations."
-        )
+        raise _missing_runtime_cell(installed, kind, key)
     return InstalledRuntimeCell(
         installed,
         matches[0],

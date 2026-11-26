@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
-from typing import BinaryIO
+from typing import BinaryIO, Never
 
 import pytest
 
@@ -30,6 +30,7 @@ from molt.cli import (
     runtime_native_build,
 )
 from molt.cli import runtime_wasm_pair_build
+from molt.cli.config_resolution import StdlibProfile
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.installed_runtime_contract import (
     InstalledNativeAdmission,
@@ -500,6 +501,59 @@ def test_unshipped_cell_fails_with_the_shipped_matrix(bundle):
         )
     assert "does not ship" in str(error.value)
     assert "cargo_profile=dev-fast" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("target_name", "tier", "expected"),
+    (
+        ("native", "server", "native-staticlib"),
+        ("wasm", "server", "wasm-pair"),
+        ("native", "micro", None),
+        ("native", "auto", None),
+    ),
+)
+def test_installed_build_rejects_missing_explicit_runtime_before_source(
+    bundle: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target_name: str,
+    tier: StdlibProfile,
+    expected: str | None,
+) -> None:
+    from molt.cli import build_inputs
+    from molt.cli.build_command import build
+    from molt.cli.build_request import BuildRequest
+    from molt.compilation_target import admit_target
+
+    class EntryReached(Exception):
+        pass
+
+    def record_entry(**_kwargs: object) -> Never:
+        raise EntryReached
+
+    # Use the real, validated release inventory and stop at the first read of
+    # the user's source. Compiler and lock-file admission have separate tests.
+    monkeypatch.setattr(build_inputs, "compiler_source_root", lambda: bundle / "source")
+    monkeypatch.setattr(build_inputs, "_require_molt_root", lambda *args: None)
+    monkeypatch.setattr(build_inputs, "_check_lockfiles", lambda *args: None)
+    monkeypatch.setattr(build_inputs, "_resolve_build_entry", record_entry)
+    request = BuildRequest(
+        file_path=str(tmp_path / "entry.py"),
+        target=admit_target(target_name),
+        stdlib_profile=tier,
+        profile="dev",
+        cache=False,
+    )
+    if expected is None:
+        with pytest.raises(EntryReached):
+            build(request)
+    else:
+        assert build(request) == 2
+        error = capsys.readouterr().err
+        assert f"does not ship a {expected} runtime" in error
+        assert "stdlib_profile=server" in error
+        assert not (tmp_path / "home" / "installed-runtime").exists()
 
 
 def test_installed_native_build_never_plans_cargo(bundle, tmp_path, monkeypatch):
