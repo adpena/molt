@@ -510,6 +510,9 @@ def build(request: BuildRequest) -> int:
                 python_version=request.python_version,
                 build_config=request.build_config,
                 codegen=codegen,
+                emit=request.emit,
+                requires_runtime=request.fact_graph_request is None,
+                stdlib_profile=stdlib_profile,
             )
         )
         if prepared_build_inputs_error is not None:
