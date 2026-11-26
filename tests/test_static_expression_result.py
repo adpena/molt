@@ -12,6 +12,7 @@ import runpy
 import pytest
 
 from molt.compiler_analysis.static_truth import (
+    ClassCallProof,
     ExpressionSequenceItem,
     ExpressionKind,
     StaticExpressionResult,
@@ -998,7 +999,7 @@ def test_widening_expires_shared_owner_and_preserves_child_provenance() -> None:
         deferred_complete=True,
         attribute_hooks=frozenset({direct}),
         instance_attribute_hooks=frozenset({child}),
-        class_instantiation_inert=True,
+        class_call_proofs=ClassCallProof.DEFAULT_CONSTRUCTOR,
     )
     expired = expression_result_without_value_facts(owner)
     assert expired is not owner
@@ -1032,7 +1033,7 @@ def test_widening_expires_shared_owner_and_preserves_child_provenance() -> None:
         {"deferred_complete": True},
         {"attribute_hooks": frozenset()},
         {"instance_attribute_hooks": frozenset()},
-        {"class_instantiation_inert": True},
+        {"class_call_proofs": ClassCallProof.DEFAULT_INIT_SUBCLASS},
         {"_publication_release_stable": True},
     ],
 )

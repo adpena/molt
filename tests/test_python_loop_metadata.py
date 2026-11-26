@@ -1034,21 +1034,28 @@ def test_deferred_storage_custody_preserves_actual_protocol_callbacks(setup, ope
         _modules(source + "from .child import value\n", (3, 12))
 
 
-def test_default_class_constructor_fact_expires_at_unknown_callback():
+def test_class_call_proofs_intersect_and_expire_at_writes() -> None:
     from molt.compiler_analysis.static_truth import (
+        ClassCallProof,
         StaticExpressionResult,
+        expression_result_for_publication,
+        expression_result_without_mutable_contents,
         expression_result_without_value_facts,
         join_static_expression_results,
     )
 
-    inert = StaticExpressionResult(class_instantiation_inert=True)
-    dynamic = StaticExpressionResult()
-    assert inert != dynamic
-    assert join_static_expression_results((inert, inert)).class_instantiation_inert
-    assert not join_static_expression_results(
-        (inert, dynamic)
-    ).class_instantiation_inert
-    assert not expression_result_without_value_facts(inert).class_instantiation_inert
+    constructor = ClassCallProof.DEFAULT_CONSTRUCTOR
+    subclass = ClassCallProof.DEFAULT_INIT_SUBCLASS
+    full = StaticExpressionResult(class_call_proofs=constructor | subclass)
+    partial = StaticExpressionResult(class_call_proofs=subclass)
+    assert full != partial
+    assert join_static_expression_results((full, partial)).class_call_proofs == subclass
+    assert (
+        expression_result_for_publication(full).class_call_proofs
+        == constructor | subclass
+    )
+    assert not expression_result_without_mutable_contents(full).class_call_proofs
+    assert not expression_result_without_value_facts(full).class_call_proofs
 
 
 @pytest.mark.parametrize("flag", [False, True])

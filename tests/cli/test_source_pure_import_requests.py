@@ -2189,6 +2189,38 @@ def test_iter_returns_the_user_iterators_other_methods(
     assert dormant not in found
 
 
+@pytest.mark.parametrize(
+    "hook", ["absent", "declared", "rebound", "body_write", "type_descriptor"]
+)
+def test_class_creation_preserves_only_reachable_subclass_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hook: str
+) -> None:
+    name = "_molt_subclass_hook_leaf"
+    provider = f"print(end='')\nclass Base:\n    def ordinary(self): import {name}\n"
+    if hook == "declared":
+        provider += "    def __init_subclass__(cls): cls().ordinary()\n"
+    if hook in {"rebound", "body_write", "type_descriptor"}:
+        provider += "def hook(cls): cls().ordinary()\n"
+    if hook == "rebound":
+        provider += "Base.__init_subclass__ = classmethod(hook)\n"
+    if hook == "type_descriptor":
+        provider += (
+            "set_slot = type.__setattr__\n"
+            "set_slot(Base, '__init_subclass__', classmethod(hook))\n"
+        )
+    provider += "class Child(Base):\n"
+    provider += (
+        "    Base.__init_subclass__ = classmethod(hook)\n"
+        if hook == "body_write"
+        else "    pass\n"
+    )
+    observed, found = source_protocol_oracle(
+        tmp_path, monkeypatch, "import carrier\n", provider, {name}
+    )
+    assert observed == ([] if hook == "absent" else [name])
+    assert (name in found) is (hook != "absent")
+
+
 def test_await_and_yield_from_keep_distinct_results_of_the_same_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

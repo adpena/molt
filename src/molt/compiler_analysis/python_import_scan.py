@@ -1082,10 +1082,6 @@ def _collect_imports(
             )
         )
 
-    plain_classes = frozenset(
-        info.owner for info in binding_index.source_classes if info.plain_metaclass
-    )
-
     def demand(
         result: StaticExpressionResult,
         phase: SourceDemandPhase,
@@ -2159,10 +2155,13 @@ def _collect_imports(
             if node.keywords or len(node.args) not in (2, 3):
                 return
             call = binding_index.call_fact(node)
-            if call is None or not call.callee_may_be(
-                PythonIdentity.BUILTIN_SETATTR
+            mutators = (
+                (PythonIdentity.BUILTIN_SETATTR, PythonIdentity.TYPE_SETATTR)
                 if len(node.args) == 3
-                else PythonIdentity.BUILTIN_DELATTR
+                else (PythonIdentity.BUILTIN_DELATTR, PythonIdentity.TYPE_DELATTR)
+            )
+            if call is None or not any(
+                call.callee_may_be(member) for member in mutators
             ):
                 return
             if any(isinstance(argument, ast.Starred) for argument in node.args):
@@ -2461,28 +2460,6 @@ def _collect_imports(
         ):
             demand(binding_index.expression_result(node), "read")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if isinstance(node, ast.ClassDef):
-                # A plain class statement (every base a plain class
-                # statement's class, no keyword) hands its bases to no code:
-                # the new class holds them, so they escape when it does.
-                plain_statement = python_node_source_key(node) in plain_classes
-                for base in () if plain_statement else node.bases:
-                    # Loading a base is not constructing an instance of it.
-                    # Calls in the expression and class preparation retain the
-                    # binding evaluator's own execution facts.
-                    demand(
-                        binding_index.expression_result(
-                            base.value if isinstance(base, ast.Starred) else base
-                        ),
-                        "escape",
-                        contents=isinstance(base, ast.Starred),
-                    )
-                for keyword in node.keywords:
-                    demand(
-                        binding_index.expression_result(keyword.value),
-                        "escape",
-                        contents=True,
-                    )
             for decorator in node.decorator_list:
                 demand(
                     binding_index.expression_result(decorator), "call", argument_count=1

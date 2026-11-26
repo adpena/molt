@@ -5912,7 +5912,12 @@ def test_retained_descriptor_outer_cell_remains_unproven():
 
 
 @pytest.mark.parametrize(
-    "prefix,entry", [("", 128), ("opaque()\n", 0), ("import opaque_provider\n", 0)]
+    "prefix,entry",
+    [
+        ("", int(PythonMember.BUILTINS_BUILD_CLASS)),
+        ("opaque()\n", 0),
+        ("import opaque_provider\n", 0),
+    ],
 )
 def test_native_class_preparation_is_independent_of_prior_import_or_callback(
     prefix, entry
@@ -5937,7 +5942,7 @@ def test_native_class_preparation_is_independent_of_prior_import_or_callback(
             x.protocol is PythonElementProtocol.CLASS_METHOD
             for x in index.source_elements
         )
-        assert retained is (model is PythonClassPreparation.MOLT_NATIVE)
+        assert retained is (entry == 0 or model is PythonClassPreparation.MOLT_NATIVE)
         assert (
             PythonBindingPolicy(class_preparation=model).flow_policy().class_preparation
             is model
@@ -7125,7 +7130,7 @@ def test_parameter_literal_classes_align_with_positional_parameters():
         ("class Meta(type):\n    pass\nclass A(metaclass=Meta):\n    pass\n", False),
         (
             "class A:\n    def __init_subclass__(cls):\n        pass\n",
-            False,
+            True,
         ),
         ("class A:\n    pass\nA = make()\n", False),
         ("from foreign import A\n", False),
@@ -7136,10 +7141,8 @@ def test_parameter_literal_classes_align_with_positional_parameters():
 def test_a_plain_class_base_keeps_a_plain_class_namespace(
     prefix: str, plain: bool
 ) -> None:
-    """A class statement whose bases are each a plain class statement's class
-    keeps metaclass ``type``: its body stores into a plain dict and run no
-    Python (HF-846 class facts). Any other base can run ``__prepare__``,
-    ``__mro_entries__`` or ``__init_subclass__``."""
+    """The metaclass determines the body mapping. An inherited subclass hook
+    runs after the body has finished using that mapping."""
     source = prefix + "class B(A):\n    def m(self):\n        return 1\n"
     tree = ast.parse(source)
     index = analyze_python_source_bindings(source)
