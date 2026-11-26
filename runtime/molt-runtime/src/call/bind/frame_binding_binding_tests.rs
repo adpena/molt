@@ -15,10 +15,20 @@ fn loaded_native_method_binds_transferred_inline_arguments_without_a_heap_vector
             let refs = |ptr| (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot();
             let receiver_refs = refs(receiver);
             let item_refs = refs(item);
-            let site = crate::call::bind::method_site::TestSite::new(b"append");
+            let name = crate::dynamic_attr_name_bits(py, b"append").unwrap();
+            let callable =
+                crate::molt_get_attr_name_attached_body(py, builtin_classes(py).list, name);
+            assert!(!exception_pending(py));
+            let function = obj_from_bits(callable)
+                .as_ptr()
+                .expect("list.append descriptor");
+            assert_eq!(object_type_id(function), TYPE_ID_FUNCTION);
+
+            // Supply the owned method ABI operands independently of the
+            // attribute lookup's representation of an exact list method.
             for count in [1, 2, DIRECT_ARGV_MAX] {
-                let loaded = site.load(py, receiver_bits);
-                assert_eq!(loaded.self_or_null, receiver_bits);
+                inc_ref_bits(py, callable);
+                inc_ref_bits(py, receiver_bits);
                 inc_ref_bits(py, item_bits);
                 let mut operands = [MoltObject::none().bits(); DIRECT_ARGV_MAX];
                 operands[0] = item_bits;
@@ -26,8 +36,8 @@ fn loaded_native_method_binds_transferred_inline_arguments_without_a_heap_vector
                 let before = allocated();
                 let result = crate::call::bind::inline_cache::call_loaded_method(
                     py,
-                    loaded.callable,
-                    loaded.self_or_null,
+                    callable,
+                    receiver_bits,
                     &operands[..count],
                 );
                 let bytes = allocated() - before;
@@ -45,7 +55,8 @@ fn loaded_native_method_binds_transferred_inline_arguments_without_a_heap_vector
                 assert_eq!(refs(item), item_refs + 1);
                 assert_eq!(crate::builtins::containers::list_len(receiver), 1);
             }
-            site.release(py);
+            dec_ref_bits(py, callable);
+            dec_ref_bits(py, name);
             dec_ref_bits(py, receiver_bits);
             assert_eq!(refs(item), item_refs);
             dec_ref_bits(py, item_bits);
