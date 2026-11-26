@@ -2,6 +2,7 @@
 //! read commits, every operation borrows its inputs and can abandon the attempt
 //! for the original invocation without releasing a credit or servicing work.
 
+use molt_ir::frame_entry::FramePrefix;
 use molt_ir::ir::GlobalSlotRef;
 
 use super::packed_splice::test_block;
@@ -22,6 +23,7 @@ pub(super) struct Prefix<'p> {
     leaf_cell: &'p GlobalSlotRef,
     literal: &'p [u8],
     observations: Observations<'p>,
+    reservation: FramePrefix,
     span: Option<(u32, u32)>,
 }
 
@@ -257,6 +259,14 @@ impl<'p> Prefix<'p> {
                 homes: wrapper_homes,
             },
         };
+        // The helper has already retired at leaf entry. Reserve the larger
+        // of the two live stacks, not the sum of both transient frames.
+        let helper_stack = summary.identity.prefix.enter(summary.identity.shape)?;
+        let leaf_stack = summary.leaf.prefix.enter(summary.leaf.shape)?;
+        let reservation = FramePrefix {
+            homes: helper_stack.homes.max(leaf_stack.homes),
+            depth: helper_stack.depth.max(leaf_stack.depth),
+        };
         Some(Self {
             summary,
             wrapper_function,
@@ -265,6 +275,7 @@ impl<'p> Prefix<'p> {
             leaf_cell,
             literal: bytes,
             observations,
+            reservation,
             span: op.source_span,
         })
     }
@@ -332,18 +343,20 @@ impl<'p> Prefix<'p> {
             op.source_span = self.span;
             op
         };
-        let entry = |frame: &Frame| {
-            let mut attrs = vec![
-                ("s_value", AttrValue::Str(frame.owner.clone())),
-                ("value", AttrValue::Int(frame.shape.entry_value())),
-            ];
-            attrs.extend(frame.prefix.attrs());
+        // All guarded operations before the read are pure. An asynchronous
+        // poll that has work goes to the original invocation; the hit edge
+        // cannot run Python or change the arena, recursion, or pending exception.
+        let entry = |frame: &Frame, reservation: Option<FramePrefix>| {
+            let mut attrs = vec![("s_value", AttrValue::Str(frame.owner.clone()))];
+            if let Some(reservation) = reservation {
+                attrs.extend(reservation.reservation_attrs());
+            }
             attrs
         };
         let leaf_entry = test(
             OpCode::FrameEntryAdmits,
             vec![leaf],
-            entry(&p.leaf),
+            entry(&p.leaf, None),
             vec![cell(self.leaf_cell, leaf)],
             ready,
             miss,
@@ -359,7 +372,7 @@ impl<'p> Prefix<'p> {
         let helper_entry = test(
             OpCode::FrameEntryAdmits,
             vec![helper],
-            entry(&p.identity),
+            entry(&p.identity, None),
             vec![],
             helper_poll,
             miss,
@@ -384,7 +397,7 @@ impl<'p> Prefix<'p> {
         test(
             OpCode::FrameEntryAdmits,
             vec![self.wrapper_function],
-            entry(&p.wrapper),
+            entry(&p.wrapper, Some(self.reservation)),
             vec![],
             row,
             miss,
@@ -447,7 +460,8 @@ pub(super) fn verify_prefix(wrapper: &TirFunction, plan: &PackedWrapper) {
                 slots.push(slot.index);
             }
             if op.opcode == OpCode::FrameEntryAdmits {
-                let prefix = molt_ir::frame_entry::FramePrefix::from_attrs(&op.attrs).unwrap();
+                let prefix =
+                    molt_ir::frame_entry::FramePrefix::reservation_from_attrs(&op.attrs).unwrap();
                 prefixes.push((prefix.homes, prefix.depth));
             }
             if op.opcode == OpCode::StringLiteralCellReady {
@@ -487,7 +501,9 @@ pub(super) fn verify_prefix(wrapper: &TirFunction, plan: &PackedWrapper) {
         ]
     );
     assert_eq!(slots, [7, 20]);
-    assert_eq!(prefixes, [(0, 0), (3, 1), (3, 1)]);
+    let reserved_homes =
+        plan.wrapper.shape.homes + plan.identity.shape.homes.max(plan.leaf.shape.homes);
+    assert_eq!(prefixes, [(reserved_homes, 2), (0, 0), (0, 0)]);
 
     let mut changed = plan.clone();
     let check = changed

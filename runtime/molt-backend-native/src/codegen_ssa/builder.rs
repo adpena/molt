@@ -111,8 +111,7 @@ pub(crate) enum SiteBody {
     FieldProbe { offset: i32 },
     /// Read-only frame admission. Words `[thread, function, code_slot]`.
     FrameEntryProbe {
-        homes: u32,
-        prefix: molt_codegen_abi::frame_record::VirtualFramePrefix,
+        reservation: molt_codegen_abi::frame_record::FrameReservation,
     },
     /// `object.<field at offset> = value`, answering None
     /// (`generate_field_slot_set`); words `[object, value]`; the miss is

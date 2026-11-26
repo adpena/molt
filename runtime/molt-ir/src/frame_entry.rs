@@ -1,4 +1,4 @@
-//! The wire declaration of a compiled frame and its logical ancestors.
+//! Logical frame shapes and reservation sizes.
 //! A target computes physical arena occupancy only when it lowers an entry.
 
 use crate::tir::ops::{AttrDict, AttrValue};
@@ -67,8 +67,8 @@ impl FrameEntryKind {
     }
 }
 
-/// The synchronous virtual ancestors present before a logical entry. The
-/// executing thread already accounts for the physical ancestors.
+/// The virtual frames and homes concurrently live at a point in a region.
+/// The executing thread already accounts for the physical ancestors.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FramePrefix {
     pub homes: u32,
@@ -76,8 +76,8 @@ pub struct FramePrefix {
 }
 
 impl FramePrefix {
-    const HOMES_ATTR: &str = "frame_prefix_homes";
-    const DEPTH_ATTR: &str = "frame_prefix_depth";
+    const HOMES_ATTR: &str = "frame_reservation_homes";
+    const DEPTH_ATTR: &str = "frame_reservation_depth";
 
     pub fn enter(self, shape: FrameShape) -> Option<Self> {
         Some(Self {
@@ -86,17 +86,23 @@ impl FramePrefix {
         })
     }
 
-    pub fn attrs(self) -> [(&'static str, AttrValue); 2] {
+    pub fn reservation_attrs(self) -> [(&'static str, AttrValue); 2] {
         [
             (Self::HOMES_ATTR, AttrValue::Int(i64::from(self.homes))),
             (Self::DEPTH_ATTR, AttrValue::Int(i64::from(self.depth))),
         ]
     }
 
-    pub fn from_attrs(attrs: &AttrDict) -> Option<Self> {
-        // An older executable encoded arena bytes directly. It cannot
-        // establish this logical entry's reservation with the new vocabulary.
-        if attrs.contains_key("frame_prefix_bytes") {
+    pub fn reservation_from_attrs(attrs: &AttrDict) -> Option<Self> {
+        // An older per-entry ancestor count is not a region reservation.
+        if [
+            "frame_prefix_bytes",
+            "frame_prefix_homes",
+            "frame_prefix_depth",
+        ]
+        .iter()
+        .any(|&field| attrs.contains_key(field))
+        {
             return None;
         }
         match (attrs.get(Self::HOMES_ATTR), attrs.get(Self::DEPTH_ATTR)) {
@@ -173,20 +179,20 @@ mod tests {
             .unwrap();
         assert_eq!(prefix, FramePrefix { homes: 3, depth: 2 });
         let attrs: AttrDict = prefix
-            .attrs()
+            .reservation_attrs()
             .into_iter()
             .map(|(k, v)| (k.into(), v))
             .collect();
-        assert_eq!(FramePrefix::from_attrs(&attrs), Some(prefix));
+        assert_eq!(FramePrefix::reservation_from_attrs(&attrs), Some(prefix));
         assert_eq!(
-            FramePrefix::from_attrs(&AttrDict::default()),
+            FramePrefix::reservation_from_attrs(&AttrDict::default()),
             Some(FramePrefix::default())
         );
         let mut incomplete = attrs.clone();
         incomplete.remove(FramePrefix::HOMES_ATTR);
-        assert!(FramePrefix::from_attrs(&incomplete).is_none());
+        assert!(FramePrefix::reservation_from_attrs(&incomplete).is_none());
         incomplete.insert("frame_prefix_bytes".into(), AttrValue::Int(96));
-        assert!(FramePrefix::from_attrs(&incomplete).is_none());
+        assert!(FramePrefix::reservation_from_attrs(&incomplete).is_none());
         assert!(
             prefix
                 .enter(FrameShape {

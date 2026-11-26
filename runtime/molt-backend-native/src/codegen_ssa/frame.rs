@@ -425,20 +425,14 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
     pub(crate) fn frame_entry_admits(&mut self, b: &mut B, op: &TirOp) {
         use super::builder::SiteBody;
         use super::value_table::HeldCarrier;
-        use molt_codegen_abi::frame_record::VirtualFramePrefix;
+        use molt_codegen_abi::frame_record::FrameReservation;
 
-        let shape = match op.attrs.get("value") {
-            Some(AttrValue::Int(value)) => FrameEntryKind::from_entry_value(*value)
-                .shape()
-                .filter(|shape| shape.entry_value() == *value),
-            _ => None,
-        };
-        let prefix = FramePrefix::from_attrs(&op.attrs)
-            .and_then(|p| VirtualFramePrefix::from_counts(p.homes, p.depth));
+        let reservation = FramePrefix::reservation_from_attrs(&op.attrs)
+            .and_then(|counts| FrameReservation::from_counts(counts.homes, counts.depth));
         let operands = self.operands();
         let function = op.operands[0];
-        let admitted = if let (Some(shape), Some(AttrValue::Str(owner)), Some(prefix)) =
-            (shape, op.attrs.get("s_value"), prefix)
+        let admitted = if let (Some(AttrValue::Str(owner)), Some(reservation)) =
+            (op.attrs.get("s_value"), reservation)
             && operands.held(function) == HeldCarrier::Boxed
         {
             let thread = b.thread_record_word();
@@ -446,10 +440,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
             let code = b.program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner);
             let unused_admission = b.constant(0);
             let result = b.site(
-                SiteBody::FrameEntryProbe {
-                    homes: shape.homes,
-                    prefix,
-                },
+                SiteBody::FrameEntryProbe { reservation },
                 &[
                     b.word_value(thread),
                     callable,
