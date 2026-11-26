@@ -540,6 +540,11 @@ def test_wide_join_prunes_internal_reads_and_preserves_original_write_history() 
             reads.append(offset)
             return super().__getitem__(offset)
 
+        def __iter__(self):
+            for offset, child in enumerate(super().__iter__()):
+                reads.append(offset)
+                yield child
+
     pool = flow._StatePool()
     result = StaticExpressionResult.scalar(7)
     binding = (0, INERT, 7, result, 13)

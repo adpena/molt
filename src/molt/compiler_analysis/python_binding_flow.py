@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, field, fields, replace
+from itertools import zip_longest
 from threading import Event, RLock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal, Sequence, assert_never, cast, overload
@@ -659,9 +660,8 @@ def _binding_branch(
     children = children[:count]
     if not children:
         return _EMPTY_BINDING_BRANCH
-    if len(children) == len(previous.children) and all(
-        child is old for child, old in zip(children, previous.children, strict=True)
-    ):
+    # Branches and chunks use object identity, so tuple equality tests sharing.
+    if children == previous.children:
         return previous
     ordinary = preserved = 0
     for offset, child in enumerate(children):
@@ -1253,7 +1253,7 @@ class _StatePool:
         ) -> _BindingChunk:
             self.join_chunk_merges += 1
             first = chunks[0]
-            if all(chunk is first for chunk in chunks[1:]):
+            if chunks.count(first) == len(chunks):
                 self.join_shared_subtrees_skipped += 1
                 return first
             if len(chunks) > 3:
@@ -1284,6 +1284,10 @@ class _StatePool:
                 left_epoch, right_epoch = chunk_epochs
                 left_present = left.active_mask | left.clean_mask
                 right_present = right.active_mask | right.clean_mask
+                different_custody = (left_present ^ right_present) | (
+                    left.clean_mask ^ right.clean_mask
+                )
+                matching_epoch = left_epoch == right_epoch == taint_epoch
                 remaining = candidate_mask
                 while remaining:
                     slot_bit = remaining & -remaining
@@ -1291,8 +1295,9 @@ class _StatePool:
                     remaining ^= slot_bit
                     self.join_two_way_slots += 1
                     if (
-                        (
-                            left_epoch == right_epoch == taint_epoch
+                        not (different_custody & slot_bit)
+                        and (
+                            matching_epoch
                             and left.clean_epochs[chunk_offset]
                             == right.clean_epochs[chunk_offset]
                             == taint_epoch
@@ -1304,10 +1309,6 @@ class _StatePool:
                                 or left.owner_tokens[chunk_offset] == 0
                             )
                         )
-                        and bool(left_present & slot_bit)
-                        == bool(right_present & slot_bit)
-                        and bool(left.clean_mask & slot_bit)
-                        == bool(right.clean_mask & slot_bit)
                         and left.identities[chunk_offset]
                         == right.identities[chunk_offset]
                         and left.static_values[chunk_offset]
@@ -1528,7 +1529,7 @@ class _StatePool:
             submitted = len(nodes)
             self.join_node_contributor_inputs += submitted
             first = nodes[0]
-            if all(node is first for node in nodes[1:]):
+            if nodes.count(first) == submitted:
                 self.join_node_contributor_outputs += submitted
                 self.join_shared_subtrees_skipped += 1
                 return first
@@ -1536,23 +1537,22 @@ class _StatePool:
                 nodes, epochs = distinct_contributors(nodes, epochs)
             self.join_node_contributor_outputs += len(nodes)
             self.join_node_duplicate_contributors += submitted - len(nodes)
-            child_count = max((len(node.children) for node in nodes), default=0)
             children: list[_BindingChunk | _BindingBranch] = []
             filler: _BindingChunk | _BindingBranch = (
                 _EMPTY_BINDING_CHUNK if level == 0 else _EMPTY_BINDING_BRANCH
             )
-            for offset in range(child_count):
-                branch = tuple(
-                    node.children[offset] if offset < len(node.children) else filler
-                    for node in nodes
-                )
+            # Zip aligned child columns, padding the shorter persistent spines
+            # with canonical empty storage.
+            for contributors in zip_longest(
+                *(node.children for node in nodes), fillvalue=filler
+            ):
                 if level == 0:
                     child = merge_chunks(
-                        cast(tuple[_BindingChunk, ...], branch), epochs
+                        cast(tuple[_BindingChunk, ...], contributors), epochs
                     )
                 else:
                     child = merge_nodes(
-                        cast(tuple[_BindingBranch, ...], branch),
+                        cast(tuple[_BindingBranch, ...], contributors),
                         epochs,
                         level - 1,
                     )
@@ -4282,41 +4282,31 @@ class _Analyzer:
                 )
             elif result_override is None:
                 result = UNKNOWN_EXPRESSION_RESULT
+        kind = result.kind
         if scope.activation_namespace_stable and identities == int(
             PythonIdentity.CURRENT_GLOBALS
         ):
-            # Module bootstrap pins the globals dictionary for its eager
-            # descendant scopes, including class bodies and comprehensions.
-            # Reuse activation ownership: deferred functions, generators and
-            # annotation evaluators may receive a FunctionType dict subclass,
-            # and their eager descendants inherit that unproven receiver type.
-            # Class-local mappings do not change the activation's globals type.
-            result = replace(result, kind="dict")
-        if isinstance(node, ast.Attribute) and result.source_origins:
-            source_key = self._node_key(node)
-            origins = self._known_expression_result(node.value).exposed_source_origins
-            previous = self.transfer.source_attributes.get(source_key)
-            self.transfer.source_attributes[source_key] = (
+            # Eager scopes inherit the module's exact globals dictionary.
+            # Deferred activations can receive a FunctionType dict subclass.
+            kind = "dict"
+        origins = result.source_origins
+        if isinstance(node, ast.Attribute) and origins:
+            receiver_origins = self._known_expression_result(
+                node.value
+            ).exposed_source_origins
+            previous_attribute = self.transfer.source_attributes.get(key)
+            self.transfer.source_attributes[key] = (
                 node.attr,
-                origins | (previous[1] if previous else frozenset()),
+                receiver_origins
+                | (previous_attribute[1] if previous_attribute else frozenset()),
             )
-        result = replace(result, identities=identities)
         if callable_identities := identities & SOURCE_CALLABLE_IDENTITIES:
-            # Canonical callable producers join the existing source-value graph.
-            # This is positive provenance, never a proof that OTHER is absent.
-            source = self._node_key(node)
-            self.transfer.source_callables[source] = (
-                self.transfer.source_callables.get(source, NO_IDENTITIES)
+            # Positive provenance alone cannot rule out OTHER.
+            self.transfer.source_callables[key] = (
+                self.transfer.source_callables.get(key, NO_IDENTITIES)
                 | callable_identities
             )
-            result = replace(result, source_origins=result.source_origins | {source})
-        if identities and not _identity_can_release(identities):
-            # Rooted retirement is a result fact, not just a STORE exemption.
-            # Transport it through containers and publication without granting
-            # allocation ownership or protecting mutable namespace contents.
-            result = replace(
-                result, release_may_call=False, _publication_release_stable=True
-            )
+            origins |= {key}
         name_lookup: PythonNameLookup = "none"
         star_export_lookup = False
         if isinstance(node, ast.Name):
@@ -4359,14 +4349,34 @@ class _Analyzer:
                 # The read may find a star-bound name: it selects that name
                 # from the star-imported modules, as an attribute read would.
                 star_export_lookup = True
-                source_key = self._node_key(node)
-                result = replace(
-                    result, source_origins=result.source_origins | {source_key}
-                )
-                self.transfer.source_attributes[source_key] = (
+                origins |= {key}
+                self.transfer.source_attributes[key] = (
                     node.id,
                     self._star_import_origins,
                 )
+        # A rooted value can retire without calling Python. This fact, lookup
+        # identity and provenance all travel on the source expression result.
+        # Seal them together so a copy normalizes and hashes the result once.
+        release_may_call = result.release_may_call
+        publication_release_stable = result._publication_release_stable
+        if identities and not _identity_can_release(identities):
+            release_may_call = False
+            publication_release_stable = True
+        if (
+            kind != result.kind
+            or identities != result.identities
+            or origins != result.source_origins
+            or release_may_call != result.release_may_call
+            or publication_release_stable != result._publication_release_stable
+        ):
+            result = replace(
+                result,
+                kind=kind,
+                identities=identities,
+                source_origins=origins,
+                release_may_call=release_may_call,
+                _publication_release_stable=publication_release_stable,
+            )
         previous = self.transfer.expressions.get(key)
         self.transfer.expressions[key] = PythonExpressionFact(
             key,

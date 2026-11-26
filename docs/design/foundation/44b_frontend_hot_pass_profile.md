@@ -105,6 +105,25 @@ late taint-domain projection, mutation and changed-field-copy controls live in
 `tests/test_python_binding_join_frontier.py` and the existing mutation suite.
 These costs belong to compilation and development checks, not emitted guests.
 
+Joins traverse aligned immutable child columns with canonical empty storage
+for shorter branches. Tuple comparisons use child object identity and a
+two-parent custody mask marks presence or cleanliness differences once per
+chunk. These changes retain the original parent history. Expression recording
+collects identity, release, and source-provenance facts before it seals the
+immutable result. An unchanged record reuses its input, and a changed result
+normalizes and hashes once.
+
+On Linux arm64 with CPython 3.12.16, cold source discovery against
+`c67b73772` retained the ordered module graph and source-demand facts for
+`import unittest` and `import asyncio`. The unittest sample took 29.26 s
+wall from 33.07 s and peak process RSS went from 680 to 662 MiB. The asyncio
+sample took 39.15 s wall within three controls spanning 38.90–43.97 s,
+with peak process RSS down from 831–833 to 810 MiB. Both workloads started the
+same number of binding fixpoints (197 and 241, respectively). The measurements
+cover discovery alone. An exact two-parent chunk identity and epoch census on
+asyncio found recurrence in under 6% of nonshared pairs with a 256-entry LRU,
+so this change adds no join memo and retains the 32-slot chunk geometry.
+
 Historical note: the following measurements and optimization proposals describe
 the Python optimizer retired by HF-773 slice E. They do not describe the current
 frontend or authorize a second optimizer.
