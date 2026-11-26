@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import get_args, TYPE_CHECKING
 
+from molt.compiler_analysis.python_binding_facts import MODULE_IMPORT_METADATA_NAMES
+
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_binding_facts import (
         PythonCallSiteFact,
@@ -97,8 +99,14 @@ ImportResolutionError = Literal[
     "missing_name",
     "invalid_name",
     "unknown_name",
+    "unknown_path",
     "missing_globals",
 ]
+
+
+DYNAMIC_RELATIVE_ANCHOR_ERRORS: frozenset[ImportResolutionError] = frozenset(
+    {"unknown_package", "unknown_spec", "unknown_name", "unknown_path"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +123,6 @@ NONE_VALUE = StaticMetadataValue("none")
 ABSENT_VALUE = StaticMetadataValue("absent")
 INVALID_VALUE = StaticMetadataValue("invalid")
 UNKNOWN_VALUE = StaticMetadataValue("unknown")
-_IMPORT_METADATA_NAMES = frozenset({"__package__", "__spec__", "__name__", "__path__"})
 _MAX_DISJUNCTIVE_IMPORT_STATES = 64
 
 
@@ -553,7 +560,7 @@ def import_metadata_target_name(target: ast.AST) -> str | None:
         return "__spec__"
     if (
         isinstance(target, ast.Attribute)
-        and target.attr in _IMPORT_METADATA_NAMES
+        and target.attr in MODULE_IMPORT_METADATA_NAMES
         and isinstance(target.value, ast.Subscript)
         and isinstance(target.value.value, ast.Attribute)
         and isinstance(target.value.value.value, ast.Name)
@@ -574,18 +581,37 @@ def import_metadata_target_name(target: ast.AST) -> str | None:
     return _globals_subscript_name(target)
 
 
-def _unknown_module_import_state(state: ModuleImportState) -> ModuleImportState:
-    return ModuleImportState(UNKNOWN_VALUE, UNKNOWN_VALUE, UNKNOWN_VALUE, None)
+def _invalidate_import_metadata(
+    state: ModuleImportState, names: Collection[str]
+) -> ModuleImportState:
+    if not names:
+        return state
+    return ModuleImportState(
+        UNKNOWN_VALUE if "__package__" in names else state.package,
+        UNKNOWN_VALUE if "__spec__" in names else state.spec_parent,
+        UNKNOWN_VALUE if "__name__" in names else state.name,
+        None if "__path__" in names else state.has_path,
+    )
+
+
+def _unproven_import_metadata(
+    proof: PythonModuleMetadataProof | None,
+) -> frozenset[str]:
+    if proof is None or not proof.activation_namespace_stable:
+        return MODULE_IMPORT_METADATA_NAMES
+    return MODULE_IMPORT_METADATA_NAMES - proof.clean_names
 
 
 def module_import_context_with_metadata_proof(
-    context: ModuleImportContext, proof: PythonModuleMetadataProof | None
+    context: ModuleImportContext,
+    proof: PythonModuleMetadataProof | None,
 ) -> ModuleImportContext:
-    """Admit the import-state projection only under binding storage custody."""
-    if proof is not None and proof.admits_current_namespace:
+    """Admit each metadata field under its own binding storage custody."""
+    unproven = _unproven_import_metadata(proof)
+    if not unproven:
         return context
     return context.with_state(
-        _unknown_module_import_state(context_import_state(context))
+        _invalidate_import_metadata(context_import_state(context), unproven)
     )
 
 
@@ -679,7 +705,14 @@ def _dunder_globals_states_from_expression(
                 ):
                     # A possible mapping identity supplies a candidate, not an
                     # exhaustive operand value. The other branch stays unknown.
-                    return _merge_states((state, _unknown_module_import_state(state)))
+                    return _merge_states(
+                        (
+                            state,
+                            _invalidate_import_metadata(
+                                state, MODULE_IMPORT_METADATA_NAMES
+                            ),
+                        )
+                    )
                 return (state,)
             return (
                 context_import_state(
@@ -714,7 +747,8 @@ def _dunder_globals_states_from_expression(
             )
             if unpacked is None:
                 states = _merge_states(
-                    _unknown_module_import_state(state) for state in states
+                    _invalidate_import_metadata(state, MODULE_IMPORT_METADATA_NAMES)
+                    for state in states
                 )
             else:
                 states = _merge_states(
@@ -726,7 +760,11 @@ def _dunder_globals_states_from_expression(
                         if overlay.spec_parent.kind != "absent"
                         else state.spec_parent,
                         overlay.name if overlay.name.kind != "absent" else state.name,
-                        overlay.has_path or state.has_path,
+                        True
+                        if overlay.has_path is True or state.has_path is True
+                        else None
+                        if overlay.has_path is None or state.has_path is None
+                        else False,
                     )
                     for state in states
                     for overlay in unpacked
@@ -736,7 +774,10 @@ def _dunder_globals_states_from_expression(
         if key_value.kind == "unknown":
             # An unknown key can equal any metadata member. Retain prior source
             # candidates, but never certify that this dictionary preserved them.
-            unknown = tuple(_unknown_module_import_state(state) for state in states)
+            unknown = tuple(
+                _invalidate_import_metadata(state, MODULE_IMPORT_METADATA_NAMES)
+                for state in states
+            )
             states = _merge_states(
                 states if captured_values is not None else (), unknown
             )
@@ -998,16 +1039,15 @@ def _analyze_module_import_flow_uncached(
     source_key: Callable[[ast.AST], PythonSourceKey],
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
     source_discovery: bool = False,
-    callbacks_rewrite_metadata: bool = True,
+    callback_metadata_writes: frozenset[str] = MODULE_IMPORT_METADATA_NAMES,
 ) -> ModuleImportFlow:
     """Project one requested metadata view through canonical completion facts.
 
     Source discovery retains explicit candidates beside unknown callback
     alternatives. Unknown source writes and completion partitions still apply.
     Semantic projection keeps every callback invalidation unchanged.
-    ``callbacks_rewrite_metadata`` is the binding authority's answer to whether
-    any callback can rebind this module's metadata; without it callback
-    summaries leave the metadata states unchanged.
+    The binding authority supplies the metadata slots callbacks can rebind.
+    Callback summaries preserve all other slots.
     """
 
     from molt.compiler_analysis.python_binding_facts import (
@@ -1060,7 +1100,7 @@ def _analyze_module_import_flow_uncached(
             source_discovery
             and isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)
-            and node.id in _IMPORT_METADATA_NAMES
+            and node.id in MODULE_IMPORT_METADATA_NAMES
         ):
             if source_discovery:
                 # Completeness consumes the existing storage proof at the exact
@@ -1086,10 +1126,10 @@ def _analyze_module_import_flow_uncached(
                     if requires_proof:
                         assert call is not None
                         proof = call.module_metadata_at_invocation
-                if requires_proof and (
-                    proof is None or not proof.admits_current_namespace
-                ):
-                    states = _join_import_states(states, unknown_states(states))
+                if requires_proof and (names := _unproven_import_metadata(proof)):
+                    states = _join_import_states(
+                        states, invalidated_states(states, names)
+                    )
             key = source_key(node)
             previous = by_node.get(key, _EMPTY_IMPORT_STATES)
             by_node[key] = _join_import_states(previous, states)
@@ -1119,7 +1159,7 @@ def _analyze_module_import_flow_uncached(
         targets: Sequence[ast.AST],
         value: ast.AST,
         *,
-        direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
+        direct_metadata_names: Collection[str] = MODULE_IMPORT_METADATA_NAMES,
         raised_states: list[_ImportStates] | None = None,
     ) -> _ImportStates:
         current = states
@@ -1182,29 +1222,35 @@ def _analyze_module_import_flow_uncached(
             return callback_states(states)
         return states
 
-    unknown_results: dict[_ImportStates, _ImportStates] = {}
+    invalidated_results: dict[tuple[_ImportStates, frozenset[str]], _ImportStates] = {}
 
-    def unknown_states(states: _ImportStates) -> _ImportStates:
-        current = unknown_results.get(states)
+    def invalidated_states(
+        states: _ImportStates, names: frozenset[str]
+    ) -> _ImportStates:
+        key = (states, names)
+        current = invalidated_results.get(key)
         if current is None:
             current = _join_import_states(
-                _unknown_module_import_state(state) for state in states
+                _invalidate_import_metadata(state, names) for state in states
             )
-            unknown_results[states] = current
+            invalidated_results[key] = current
             all_states.update(current)
         return current
 
-    def callback_states(
-        states: _ImportStates,
-    ) -> _ImportStates:
-        # Completed callback/escape summaries can choose metadata absent from
-        # visible source. Every such summary uses this projection: semantics
-        # loses the anchor, discovery retains candidates beside uncertainty.
-        # Explicit opaque metadata replacement instead uses unknown_states.
-        if not callbacks_rewrite_metadata:
+    def unknown_states(states: _ImportStates) -> _ImportStates:
+        return invalidated_states(states, MODULE_IMPORT_METADATA_NAMES)
+
+    def callback_states(states: _ImportStates) -> _ImportStates:
+        # Source discovery retains candidates beside the invalidated variant.
+        # Explicit opaque replacement uses unknown_states instead.
+        if not callback_metadata_writes:
             return states
-        unknown = unknown_states(states)
-        return _join_import_states(states, unknown) if source_discovery else unknown
+        invalidated = invalidated_states(states, callback_metadata_writes)
+        return (
+            _join_import_states(states, invalidated)
+            if source_discovery
+            else invalidated
+        )
 
     def bind_imported_names(
         states: _ImportStates,
@@ -1234,10 +1280,10 @@ def _analyze_module_import_flow_uncached(
 
     def target_writes_metadata(
         target: ast.AST,
-        direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
+        direct_metadata_names: Collection[str] = MODULE_IMPORT_METADATA_NAMES,
     ) -> bool:
         target_name = import_metadata_target_name(target)
-        if target_name in _IMPORT_METADATA_NAMES and (
+        if target_name in MODULE_IMPORT_METADATA_NAMES and (
             not isinstance(target, ast.Name) or target_name in direct_metadata_names
         ):
             return True
@@ -1252,7 +1298,7 @@ def _analyze_module_import_flow_uncached(
         expression: ast.AST,
         states: _ImportStates,
         *,
-        direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
+        direct_metadata_names: Collection[str] = MODULE_IMPORT_METADATA_NAMES,
         raised_states: list[_ImportStates] | None = None,
     ) -> _ImportStates:
         current = expression_metadata_transfer(
@@ -1517,7 +1563,7 @@ def _analyze_module_import_flow_uncached(
             if not isinstance(name, str):
                 if effects & WRITES_MODULE_METADATA:
                     current = callback_states(current)
-            elif name in _IMPORT_METADATA_NAMES:
+            elif name in MODULE_IMPORT_METADATA_NAMES:
                 target = ast.Name(id=name)
                 if mutation == PythonIdentity.GLOBALS_DELITEM:
                     current = _join_import_states(
@@ -1567,7 +1613,7 @@ def _analyze_module_import_flow_uncached(
         states: _ImportStates,
         *,
         eager_annotations: bool = True,
-        direct_metadata_names: Collection[str] = _IMPORT_METADATA_NAMES,
+        direct_metadata_names: Collection[str] = MODULE_IMPORT_METADATA_NAMES,
     ) -> PythonCompletionFlow[_ImportStates]:
         pending_expression_raises: list[_ImportStates] = []
 
@@ -1816,7 +1862,8 @@ def _analyze_module_import_flow_uncached(
                 ):
                     current = evaluate(expression, current)
                 class_global_metadata = (
-                    lexical.declarations(statement).globals & _IMPORT_METADATA_NAMES
+                    lexical.declarations(statement).globals
+                    & MODULE_IMPORT_METADATA_NAMES
                 )
                 # Class preparation can fail before the body independently of
                 # decorator/base expression evaluation.
@@ -2144,7 +2191,7 @@ def _analyze_module_import_flow_uncached(
             deferred_states,
             eager_annotations=False,
             direct_metadata_names=lexical.declarations(definition).globals
-            & _IMPORT_METADATA_NAMES,
+            & MODULE_IMPORT_METADATA_NAMES,
         )
     while deferred_expressions:
         _key, deferred_expression = deferred_expressions.popitem()
@@ -2152,7 +2199,7 @@ def _analyze_module_import_flow_uncached(
             comprehension_metadata_transfer(
                 deferred_expression,
                 deferred_states,
-                direct_metadata_names=_IMPORT_METADATA_NAMES,
+                direct_metadata_names=MODULE_IMPORT_METADATA_NAMES,
                 raised_states=None,
             )
         else:
@@ -2229,6 +2276,8 @@ def _fallback_package(state: ModuleImportState) -> StaticMetadataValue:
         return state.spec_parent
     if state.name.kind != "known":
         return state.name
+    if state.has_path is None:
+        return UNKNOWN_VALUE
     assert state.name.value is not None
     return StaticMetadataValue.known(
         state.name.value if state.has_path else state.name.value.rpartition(".")[0]
@@ -2287,6 +2336,8 @@ def resolve_relative_import(
         return RelativeImportResolution(None, "invalid_name")
     elif state.name.kind == "unknown":
         return RelativeImportResolution(None, "unknown_name")
+    elif state.has_path is None:
+        return RelativeImportResolution(None, "unknown_path")
     else:
         assert state.name.value is not None
         package = StaticMetadataValue.known(
@@ -2356,7 +2407,7 @@ def project_static_import_request(
         return StaticImportProjection(
             (),
             resolution.error,
-            resolution.error in {"unknown_package", "unknown_spec", "unknown_name"},
+            resolution.error in DYNAMIC_RELATIVE_ANCHOR_ERRORS,
         )
     return StaticImportProjection(
         static_import_candidates(resolution.module, request.fromlist),

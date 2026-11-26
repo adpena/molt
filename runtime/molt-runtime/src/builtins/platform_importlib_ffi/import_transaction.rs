@@ -819,35 +819,56 @@ pub(super) fn importlib_transaction_package_from_globals(
         return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, message));
     };
 
-    let package_name = crate::NameId::DunderPackage.bits(_py);
-    if let Some(package_bits) = unsafe { dict_get_in_place(_py, globals_ptr, package_name) }
-        .map_err(|()| MoltObject::none().bits())?
-        && !obj_from_bits(package_bits).is_none()
-    {
-        let Some(package) = string_obj_to_owned(obj_from_bits(package_bits)) else {
+    let get_metadata = |name: crate::NameId| {
+        let key = name.bits(_py);
+        unsafe { dict_get_in_place(_py, globals_ptr, key) }
+            .map_err(|()| MoltObject::none().bits())
+            .map(|value| {
+                value
+                    .filter(|bits| !obj_from_bits(*bits).is_none())
+                    .map(|bits| ExceptionValue::pin(_py, bits))
+            })
+    };
+    let package = get_metadata(crate::NameId::DunderPackage)?;
+    let spec = get_metadata(crate::NameId::DunderSpec)?;
+    if let Some(package) = package {
+        let Some(name) = string_obj_to_owned(obj_from_bits(package.bits())) else {
             return Err(raise_exception::<_>(
                 _py,
                 BuiltinExc::TypeError,
                 "package must be a string",
             ));
         };
-        if !package.is_empty() {
-            return Ok(Some(package));
+        if let Some(spec) = spec {
+            use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
+
+            let parent = ExceptionValue::adopt(_py, importlib_spec_parent(_py, spec.bits())?);
+            let compared = compare_object_eq_bool(
+                _py,
+                obj_from_bits(package.bits()),
+                obj_from_bits(parent.bits()),
+            );
+            drop(parent);
+            match compared {
+                CompareBoolOutcome::True => {}
+                CompareBoolOutcome::False => {
+                    if !crate::builtins::warnings_ext::emit_deprecation_warning(
+                        _py,
+                        "__package__ != __spec__.parent",
+                    ) {
+                        return Err(MoltObject::none().bits());
+                    }
+                }
+                CompareBoolOutcome::Error | CompareBoolOutcome::NotComparable => {
+                    return Err(MoltObject::none().bits());
+                }
+            }
         }
-        return Ok(None);
+        return Ok((!name.is_empty()).then_some(name));
     }
 
-    let spec_name = crate::NameId::DunderSpec.bits(_py);
-    if let Some(spec_bits) = unsafe { dict_get_in_place(_py, globals_ptr, spec_name) }
-        .map_err(|()| MoltObject::none().bits())?
-        && !obj_from_bits(spec_bits).is_none()
-    {
-        let parent_name = crate::NameId::Parent.bits(_py);
-        let parent_bits =
-            crate::molt_object_getattribute_attached_body(_py, spec_bits, parent_name);
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
+    if let Some(spec) = spec {
+        let parent_bits = importlib_spec_parent(_py, spec.bits())?;
         let Some(parent) = string_obj_to_owned(obj_from_bits(parent_bits)) else {
             if !obj_from_bits(parent_bits).is_none() {
                 dec_ref_bits(_py, parent_bits);
@@ -867,6 +888,13 @@ pub(super) fn importlib_transaction_package_from_globals(
         return Ok(None);
     }
 
+    if !crate::builtins::warnings_ext::emit_runtime_warning(
+        _py,
+        "can't resolve package from __spec__ or __package__, falling back on __name__ and __path__",
+        BuiltinExc::ImportWarning,
+    ) {
+        return Err(MoltObject::none().bits());
+    }
     let name_key = crate::NameId::DunderName.bits(_py);
     let Some(name_bits) = unsafe { dict_get_in_place(_py, globals_ptr, name_key) }
         .map_err(|()| MoltObject::none().bits())?
@@ -896,7 +924,7 @@ pub(super) fn importlib_transaction_package_from_globals(
             return Err(MoltObject::none().bits());
         }
     };
-    if path_bits.is_some_and(|bits| !obj_from_bits(bits).is_none()) {
+    if path_bits.is_some() {
         return Ok(Some(name));
     }
     let Some((parent, _)) = name.rsplit_once('.') else {
@@ -906,6 +934,16 @@ pub(super) fn importlib_transaction_package_from_globals(
         return Ok(None);
     }
     Ok(Some(parent.to_string()))
+}
+
+fn importlib_spec_parent(py: &PyToken<'_>, spec: u64) -> Result<u64, u64> {
+    let parent =
+        crate::molt_object_getattribute_attached_body(py, spec, crate::NameId::Parent.bits(py));
+    if exception_pending(py) {
+        crate::call::discard_owned_call_result(py, parent);
+        return Err(MoltObject::none().bits());
+    }
+    Ok(parent)
 }
 
 pub(super) fn importlib_transaction_resolved_name(

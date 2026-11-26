@@ -115,7 +115,7 @@ def test_filename_literal_is_not_an_intrinsic_dependency(tmp_path: Path) -> None
     )
 
 
-def test_real_importlib_intrinsic_evidence_preserves_unresolved_machinery_site() -> (
+def test_real_importlib_intrinsic_evidence_resolves_machinery_utility_dependency() -> (
     None
 ):
     stdlib = Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib"
@@ -129,19 +129,16 @@ def test_real_importlib_intrinsic_evidence_preserves_unresolved_machinery_site()
         graph["importlib.machinery"],
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
-    assert any(
-        request.level == 1 and request.fromlist == ("util",) and plan.requires_runtime
-        for _line, request, plan in evidence.unresolved_sites
-    )
-    assert "importlib.util" not in evidence.proven_modules
+    assert "importlib.util" in evidence.proven_modules
+    assert not evidence.unresolved_sites
     classification = classify_stdlib_module_statuses(
         graph, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
     assert all(
         status == STATUS_INTRINSIC for status in classification.statuses.values()
     )
-    assert any(
-        site["module"] == "importlib.machinery" and site["fromlist"] == ["util"]
+    assert all(
+        site["module"] != "importlib.machinery"
         for site in classification.unresolved_imports_payload()
     )
 

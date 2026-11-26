@@ -90,7 +90,7 @@ class _FileLoader:
             fullname = str(fullname)
         # Lazy import to avoid the ``importlib.util``/``importlib.machinery``
         # bootstrap cycle: ``util`` re-imports ``machinery``.
-        from . import util as _util
+        from importlib import util as _util
 
         spec = _util.spec_from_file_location(fullname, self.path, loader=self)
         if spec is None:

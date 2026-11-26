@@ -3,6 +3,7 @@
 import builtins
 import os
 import sys
+import warnings
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -68,4 +69,49 @@ show(
 show(
     "package-empty",
     lambda: builtins.__import__("helper", {"__package__": ""}, None, (), 1),
+)
+
+
+class ObservedSpec:
+    @property
+    def parent(self):
+        print("spec parent observed")
+        return "another_package"
+
+
+warnings.simplefilter("ignore", DeprecationWarning)
+
+observed_globals = {
+    "__package__": "import_dunder_pkg",
+    "__spec__": ObservedSpec(),
+}
+show(
+    "explicit-package-spec",
+    lambda: builtins.__import__("helper", observed_globals, None, ("ping",), 1),
+)
+show(
+    "explicit-package-missing-parent",
+    lambda: builtins.__import__(
+        "helper",
+        {"__package__": "import_dunder_pkg", "__spec__": missing_parent_spec},
+        None,
+        (),
+        1,
+    ),
+)
+show(
+    "present-none-path",
+    lambda: builtins.__import__(
+        "helper", {"__name__": "import_dunder_pkg", "__path__": None}, None, ("ping",), 1
+    ),
+)
+warnings.simplefilter("error", DeprecationWarning)
+show(
+    "spec-mismatch-warning",
+    lambda: builtins.__import__("helper", observed_globals, None, ("ping",), 1),
+)
+warnings.simplefilter("error", ImportWarning)
+show(
+    "fallback-warning",
+    lambda: builtins.__import__("helper", {"__name__": "import_dunder_pkg.mod"}, None, (), 1),
 )
