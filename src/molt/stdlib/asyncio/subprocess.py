@@ -29,6 +29,7 @@ from asyncio import (
 )
 from . import protocols as protocols
 from . import streams as streams
+from . import tasks as tasks
 from .streams import (
     ProcessStreamReader,
     ProcessStreamWriter,
@@ -40,7 +41,6 @@ STDOUT = -2
 DEVNULL = -3
 events: Any | None = None
 logger = _logging.getLogger("asyncio")
-tasks: Any | None = None
 
 _PROCESS_WAIT_FUTURES: dict[int, Any] = {}
 

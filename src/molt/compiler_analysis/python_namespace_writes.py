@@ -22,9 +22,9 @@ Design: ``docs/design/verified_namespace_premises.md``.
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from typing import Final, Literal, NamedTuple, TypeAlias, cast, get_args
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypeAlias, cast, get_args
 
 from molt.python_canonical_ast import canonical_python_module
 from molt.python_private_names import python_import_binding
@@ -54,8 +54,12 @@ from molt.compiler_analysis.python_string_facts import (
 )
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
+if TYPE_CHECKING:
+    from molt.compiler_analysis.python_binding_facts import PythonBindingFacts
+    from molt.compiler_analysis.python_imports import _SourceImportCacheWrite
+
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 18
+SUMMARY_SCHEMA: Final = 19
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -223,6 +227,8 @@ class PythonNamespaceWrite:
     # runs: the unconditional top-level imports of its module that precede the
     # top-level statement holding it. Its handler cannot swallow their failure.
     initialized: tuple[str, ...] = ()
+    # Source expression supplying a computed import-cache key.
+    key_source: PythonSourceKey | None = None
 
 
 def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
@@ -235,13 +241,21 @@ def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
         None if write.source_site is None else list(write.source_site),
         None if write.key_bound is None else write.key_bound.payload(),
         list(write.initialized),
+        None if write.key_source is None else list(write.key_source),
     ]
 
 
 def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
-    if not isinstance(raw, list) or len(raw) != 8:
+    if not isinstance(raw, list) or len(raw) != 9:
         raise ValueError("invalid foreign namespace write")
-    module, name, construct, line, owner, site, bound, initialized = raw
+    module, name, construct, line, owner, site, bound, initialized, key_source = raw
+    if key_source is not None and (
+        construct != "import_binding"
+        or site is None
+        or name is not None
+        or bound is not None
+    ):
+        raise ValueError("invalid namespace cache key source")
     if not isinstance(initialized, list) or not all(
         type(item) is str for item in initialized
     ):
@@ -312,6 +326,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         source_site,
         key_bound,
         tuple(initialized),
+        None if key_source is None else decode_python_source_key(key_source),
     )
 
 
@@ -415,7 +430,16 @@ def _resolved_python_namespace_summary(
 
 def _source_order(
     write: PythonNamespaceWrite,
-) -> tuple[int, str, str, str, PythonSourceKey, PythonSourceKey, tuple[str, str, int]]:
+) -> tuple[
+    int,
+    str,
+    str,
+    str,
+    PythonSourceKey,
+    PythonSourceKey,
+    PythonSourceKey,
+    tuple[str, str, int],
+]:
     absent: PythonSourceKey = (-1, -1, -1, -1, "")
     bound = write.key_bound
     return (
@@ -425,6 +449,7 @@ def _source_order(
         write.construct,
         write.source_owner or absent,
         write.source_site or absent,
+        write.key_source or absent,
         ("", "", -1) if bound is None else (bound.prefix, bound.suffix, bound.minimum),
     )
 
@@ -1057,6 +1082,7 @@ class _NamespaceWriteCollector:
                 PythonSourceKey | None,
                 PythonStringBound | None,
                 tuple[str, ...],
+                PythonSourceKey | None,
             ],
             PythonNamespaceWrite,
         ] = {}
@@ -1347,6 +1373,7 @@ class _NamespaceWriteCollector:
         source_site: PythonSourceKey | None = None,
         key_bound: PythonStringBound | None = None,
         initialized: tuple[str, ...] = (),
+        key_source: PythonSourceKey | None = None,
     ) -> None:
         if not site.executing:
             return
@@ -1359,6 +1386,7 @@ class _NamespaceWriteCollector:
             source_site,
             key_bound,
             initialized,
+            key_source,
         )
         line = getattr(site.node if node is None else node, "lineno", 0)
         known = self.writes.get(key)
@@ -1372,6 +1400,7 @@ class _NamespaceWriteCollector:
                 source_site,
                 key_bound,
                 initialized,
+                key_source,
             )
 
     def _member_store(
@@ -2203,6 +2232,9 @@ class _NamespaceWriteCollector:
             "import_binding",
             site,
             source_site=source_site,
+            key_source=python_node_source_key(key)
+            if spelled is None and isinstance(key, ast.expr)
+            else None,
             key_bound=spelled if isinstance(spelled, PythonStringBound) else None,
         )
 
@@ -2291,13 +2323,16 @@ class _NamespaceWriteCollector:
 
 
 def refine_namespace_cache_writes(
-    summary: PythonNamespaceSummary, cache_writes
+    summary: PythonNamespaceSummary,
+    cache_writes: Iterable[_SourceImportCacheWrite],
+    bindings: PythonBindingFacts | None = None,
 ) -> PythonNamespaceSummary:
     """Project exact typed cache keys onto their captured operation sites.
 
     Raw syntax remains policy-independent. A missing, uncertain or differently
     captured operation cannot narrow its write; same-line operations never
-    share a source-site identity. All alternatives of one operation join.
+    share a source-site identity. All alternatives of one operation join. A
+    key's own value fact is valid independently of the import-cache receiver.
     """
     keys_by_site = {}
     for site, keys, *_origins in cache_writes:
@@ -2314,7 +2349,17 @@ def refine_namespace_cache_writes(
     for write in summary.foreign_writes:
         keys = keys_by_site.get(write.source_site)
         if write.construct == "import_binding" and keys is not None:
-            rows.extend(replace(write, name=key, key_bound=None) for key in keys)
-        else:
-            rows.append(write)
+            rows.extend(
+                replace(write, name=key, key_bound=None, key_source=None)
+                for key in keys
+            )
+            continue
+        if bindings is not None and write.key_source is not None:
+            fact = bindings.expression_fact_at(write.key_source)
+            key = fact.static_value if fact is not None else None
+            if isinstance(key, PythonStringBound):
+                write = replace(write, key_bound=key, key_source=None)
+            elif isinstance(key, str):
+                write = replace(write, name=key, key_source=None)
+        rows.append(write)
     return replace(summary, foreign_writes=tuple(sorted(set(rows), key=_source_order)))

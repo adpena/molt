@@ -7,8 +7,26 @@ under the Python Software Foundation License.
 import encodings
 import encodings.aliases
 import sys
-from _locale import *
-from _locale import setlocale as _setlocale
+from _locale import (
+    CHAR_MAX,
+    LC_ALL,
+    LC_COLLATE,
+    LC_CTYPE,
+    LC_MONETARY,
+    LC_NUMERIC,
+    LC_TIME,
+    Error,
+    getencoding,
+    localeconv,
+    setlocale as _setlocale,
+    strcoll,
+    strxfrm,
+)
+
+try:
+    from _locale import LC_MESSAGES
+except ImportError:
+    pass
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _TARGET_315 = _require_intrinsic("molt_sys_version_info")()[:2] >= (3, 15)

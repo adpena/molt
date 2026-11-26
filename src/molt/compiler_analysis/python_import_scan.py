@@ -62,6 +62,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 )
 from molt.compiler_analysis.python_namespace_writes import (
     python_namespace_summary,
+    PythonNamespaceSummary,
     refine_namespace_cache_writes,
     python_package_name,
 )
@@ -878,6 +879,7 @@ def _collect_imports(
     _source_bindings: list[_SourceImportBinding] | None = None,
     _source_values: list[_SourceValueSummary] | None = None,
     _source_sites: list[SourceImportSite] | None = None,
+    _namespace_summary: list[PythonNamespaceSummary] | None = None,
     _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
     _star_modules: list[str] | None = None,
     _dynamic_star_modules: list[str] | None = None,
@@ -2605,6 +2607,10 @@ def _collect_imports(
             cache_writes=tuple(dict.fromkeys(cache_writes)),
             cache_reads=tuple(dict.fromkeys(cache_reads)),
         )
+    if _namespace_summary is not None:
+        _namespace_summary[0] = refine_namespace_cache_writes(
+            _namespace_summary[0], cache_writes, binding_index
+        )
     if _runtime_import_protocol is not None:
         _runtime_import_protocol.append(uses_runtime_import_protocol)
     if needs_typing:
@@ -2644,13 +2650,15 @@ def _collect_imports_for_graph(
     source_values: list[_SourceValueSummary] = []
     source_sites: list[SourceImportSite] = []
     runtime_import_protocol: list[bool] = []
-    namespace_summary = (
-        python_namespace_summary(
-            tree,
-            package=python_package_name(module_name or "", is_package=is_package),
-            target_python=target_python.feature_version,
-            ast_digest_admission=ast_digest_admission,
-        )
+    namespace_summaries = (
+        [
+            python_namespace_summary(
+                tree,
+                package=python_package_name(module_name or "", is_package=is_package),
+                target_python=target_python.feature_version,
+                ast_digest_admission=ast_digest_admission,
+            )
+        ]
         if source_owner is None and isinstance(tree, ast.Module)
         else None
     )
@@ -2670,6 +2678,7 @@ def _collect_imports_for_graph(
         _source_bindings=source_bindings,
         _source_values=source_values,
         _source_sites=source_sites,
+        _namespace_summary=namespace_summaries,
         _dynamic_relative_import_discovery=discovery,
         _star_modules=star_modules,
         _dynamic_star_modules=dynamic_star_modules,
@@ -2689,14 +2698,9 @@ def _collect_imports_for_graph(
             namespace_premise=namespace_premise,
             ast_digest_admission=ast_digest_admission,
         ),
-        namespace_summary=(
-            refine_namespace_cache_writes(
-                namespace_summary,
-                source_values[0].cache_writes if source_values else (),
-            )
-            if namespace_summary is not None
-            else None
-        ),
+        namespace_summary=namespace_summaries[0]
+        if namespace_summaries is not None
+        else None,
         runtime_catalog=(
             None
             if runtime_catalog is None

@@ -18,7 +18,7 @@ import traceback
 import warnings
 import weakref
 import logging as _logging
-from asyncio import socket as socket
+from . import _SOCKET as socket
 
 
 from asyncio import BaseEventLoop as BaseEventLoop

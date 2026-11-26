@@ -2,36 +2,9 @@
 
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Iterable, cast
-import heapq as _heapq
-import logging as _logging
-import os as _os
 import sys as _sys
-import time as _time
-import traceback as _traceback
-import collections.abc as _collections_abc
-import contextlib as _contextlib
-import inspect as _inspect
-import errno as _errno
-import io as _io
 import types as _types
-import threading as _threading
-import reprlib as _reprlib
-import linecache as _linecache
 import typing
-import signal as _signal
-import functools as _functools
-import collections as _collections
-import selectors as _selectors
-import concurrent as _concurrent
-import itertools as _itertools
-import stat as _stat
-import warnings as _warnings
-import weakref as _weakref
-import ssl as _ssl
-import subprocess as _subprocess
-
-import contextvars as _contextvars
-import enum as _enum
 
 from _intrinsics import require_intrinsic as _intrinsic_require
 
@@ -59,7 +32,7 @@ _SOCKET = _LazySocketModule()
 _socket = _SOCKET
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
-_IS_WINDOWS = _os.name == "nt"
+_IS_WINDOWS = _sys.platform == "win32"
 _EXPOSE_EVENT_LOOP = _VERSION_INFO >= (3, 13)
 _EXPOSE_WINDOWS_POLICIES = _IS_WINDOWS
 _EXPOSE_QUEUE_SHUTDOWN = _VERSION_INFO >= (3, 13)
@@ -399,10 +372,6 @@ if TYPE_CHECKING:
         _sock: Any, _data: Any, _addr: Any, _fd: int
     ) -> Any: ...
 
-    def _molt_inspect_iscoroutine(_obj: Any) -> bool: ...
-
-    def _molt_inspect_iscoroutinefunction(_obj: Any) -> bool: ...
-
     # Handle-based state machine intrinsics -- Future
     def _molt_asyncio_future_new() -> int: ...
 
@@ -564,22 +533,10 @@ from .exceptions import (
 def _is_cancelled_exc(exc: BaseException) -> bool:
     return isinstance(exc, CancelledError)
 
-_iscoroutine_typecache: set[type] = set()
-
-def iscoroutine(obj: Any) -> bool:
-    # CPython's asyncio.coroutines.iscoroutine: a native coroutine or any
-    # collections.abc.Coroutine (an async generator's asend/athrow awaitable
-    # among them), with a positive type cache of at most 100 types.
-    if type(obj) in _iscoroutine_typecache:
-        return True
-    if _molt_inspect_iscoroutine(obj) or isinstance(obj, _collections_abc.Coroutine):
-        if len(_iscoroutine_typecache) < 100:
-            _iscoroutine_typecache.add(type(obj))
-        return True
-    return False
-
-def iscoroutinefunction(func: Any) -> bool:
-    return bool(_molt_inspect_iscoroutinefunction(func))
+from .coroutines import (
+    iscoroutine as iscoroutine,
+    iscoroutinefunction as iscoroutinefunction,
+)
 
 _UNSET = object()
 _PROC_STDIO_INHERIT = 0
@@ -1071,7 +1028,6 @@ _molt_asyncio_sock_sendto_new = _intrinsic_require(
 )
 _molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
 
-_molt_module_new = _intrinsic_require("molt_module_new", globals())
 _molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
 _molt_process_spawn = _intrinsic_require("molt_process_spawn", globals())
 _molt_process_wait_future = _intrinsic_require("molt_process_wait_future", globals())
@@ -1090,10 +1046,6 @@ _molt_stream_reader_drop = _intrinsic_require("molt_stream_reader_drop", globals
 _molt_socket_reader_new = _intrinsic_require("molt_socket_reader_new", globals())
 _molt_socket_reader_at_eof = _intrinsic_require("molt_socket_reader_at_eof", globals())
 _molt_socket_reader_drop = _intrinsic_require("molt_socket_reader_drop", globals())
-_molt_inspect_iscoroutine = _intrinsic_require("molt_inspect_iscoroutine", globals())
-_molt_inspect_iscoroutinefunction = _intrinsic_require(
-    "molt_inspect_iscoroutinefunction", globals()
-)
 
 # Handle-based state machine intrinsics -- Future
 _molt_asyncio_future_new = _intrinsic_require("molt_asyncio_future_new", globals())
@@ -1361,35 +1313,6 @@ from .protocols import (
     SubprocessProtocol as SubprocessProtocol,
 )
 
-def _module(name: str, attrs: dict[str, Any]) -> _types.ModuleType:
-    mod = _require_asyncio_intrinsic(_molt_module_new, "module_new")(name)
-    mod_dict = getattr(mod, "__dict__", None)
-    if isinstance(mod_dict, dict):
-        mod_dict.update(attrs)
-    else:
-        for key, val in attrs.items():
-            setattr(mod, key, val)
-    mod.__name__ = name
-    mod.__package__ = name.rpartition(".")[0]
-    _sys.modules[name] = mod
-    return mod
-
-def _format_callback_source(
-    callback: Any, args: tuple[Any, ...], *, debug: bool = False
-) -> str:
-    name = getattr(callback, "__qualname__", None) or getattr(
-        callback, "__name__", None
-    )
-    if name is None:
-        name = repr(callback)
-    if args:
-        args_repr = ", ".join(repr(arg) for arg in args)
-        return f"{name}({args_repr})"
-    return f"{name}()"
-
-def _extract_stack(limit: int | None = None) -> list[Any]:
-    return _traceback.extract_stack(limit=limit)
-
 class FlowControlMixin:
     def __init__(self) -> None:
         self._paused = False
@@ -1470,101 +1393,17 @@ if _EXPOSE_WINDOWS_POLICIES:
         WindowsSelectorEventLoopPolicy as WindowsSelectorEventLoopPolicy,
     )
 
-base_events = _module(
-    "asyncio.base_events",
-    {
-        "BaseEventLoop": BaseEventLoop,
-        "AbstractServer": AbstractServer,
-        "SelectorEventLoop": SelectorEventLoop,
-        "Handle": Handle,
-        "TimerHandle": TimerHandle,
-        "Server": Server,
-    },
-)
+from . import constants as constants
+from . import coroutines as coroutines
+from . import format_helpers as format_helpers
+from . import log as log
+from . import mixins as mixins
 
-constants = _module(
-    "asyncio.constants",
-    {
-        "enum": _enum,
-        "LOG_THRESHOLD_FOR_CONNLOST_WRITES": 5,
-        "ACCEPT_RETRY_DELAY": 1,
-        "DEBUG_STACK_DEPTH": 10,
-        "SSL_HANDSHAKE_TIMEOUT": 60.0,
-        "SSL_SHUTDOWN_TIMEOUT": 30.0,
-        "SENDFILE_FALLBACK_READBUFFER_SIZE": 256 * 1024,
-        "FLOW_CONTROL_HIGH_WATER_SSL_READ": 256,
-        "FLOW_CONTROL_HIGH_WATER_SSL_WRITE": 512,
-        "THREAD_JOIN_TIMEOUT": 300,
-    },
-)
-
-coroutines = _module(
-    "asyncio.coroutines",
-    {
-        "collections": _collections,
-        "inspect": _inspect,
-        "iscoroutine": iscoroutine,
-        "iscoroutinefunction": iscoroutinefunction,
-        "os": _os,
-        "sys": _sys,
-        "types": _types,
-    },
-)
-
-format_helpers = _module(
-    "asyncio.format_helpers",
-    {
-        "constants": constants,
-        "_format_callback_source": _format_callback_source,
-        "extract_stack": _extract_stack,
-        "functools": _functools,
-        "inspect": _inspect,
-        "reprlib": _reprlib,
-        "sys": _sys,
-        "traceback": _traceback,
-    },
-)
 setattr(events, "format_helpers", format_helpers)
-
-def _make_log_module() -> _types.ModuleType:
-    logger = _logging.getLogger("asyncio")
-    return _module(
-        "asyncio.log",
-        {
-            "logger": logger,
-            "logging": _logging,
-        },
-    )
-
-def _make_mixins_module() -> _types.ModuleType:
-    return _module(
-        "asyncio.mixins",
-        {
-            "events": events,
-            "threading": _threading,
-        },
-    )
-
-log = _make_log_module()
-mixins = _make_mixins_module()
 locks.exceptions = exceptions
 locks.mixins = mixins
 queues.locks = locks
 queues.mixins = mixins
-
-def __getattr__(name: str) -> Any:
-    if name == "log":
-        mod = _make_log_module()
-    elif name == "mixins":
-        mod = _make_mixins_module()
-    elif name == "locks":
-        mod = locks
-    elif name == "queues":
-        mod = queues
-    else:
-        raise AttributeError(f"module 'asyncio' has no attribute '{name}'")
-    globals()[name] = mod
-    return mod
 
 from . import runners as runners
 from . import taskgroups as taskgroups
@@ -1595,127 +1434,9 @@ if _typing_final_alias is None:
     def _typing_final_alias(arg: Any) -> Any:
         return arg
 
-base_futures = _module(
-    "asyncio.base_futures",
-    {
-        "format_helpers": format_helpers,
-        "isfuture": isfuture,
-        "reprlib": _reprlib,
-    },
-)
-
-base_tasks = _module(
-    "asyncio.base_tasks",
-    {
-        "base_futures": base_futures,
-        "coroutines": coroutines,
-        "linecache": _linecache,
-        "reprlib": _reprlib,
-        "traceback": _traceback,
-    },
-)
-
-base_subprocess = _module(
-    "asyncio.base_subprocess",
-    {
-        "BaseSubprocessTransport": Process,
-        "ReadSubprocessPipeProto": Process,
-        "WriteSubprocessPipeProto": Process,
-        "collections": _collections,
-        "logger": _logging.getLogger("asyncio"),
-        "protocols": protocols,
-        "subprocess": _subprocess,
-        "transports": transports,
-        "warnings": _warnings,
-    },
-)
-
-_SC_IOV_MAX = 1024
-if hasattr(_os, "sysconf"):
-    _sysconf_val = _os.sysconf("SC_IOV_MAX")
-    if isinstance(_sysconf_val, int) and _sysconf_val > 0:
-        _SC_IOV_MAX = _sysconf_val
-
-selector_events = _module(
-    "asyncio.selector_events",
-    {
-        "BaseSelectorEventLoop": SelectorEventLoop,
-        "SC_IOV_MAX": _SC_IOV_MAX,
-        "base_events": base_events,
-        "collections": _collections,
-        "constants": constants,
-        "errno": _errno,
-        "events": events,
-        "functools": _functools,
-        "futures": base_futures,
-        "itertools": _itertools,
-        "logger": _logging.getLogger("asyncio"),
-        "os": _os,
-        "protocols": protocols,
-        "selectors": _selectors,
-        "socket": _SOCKET,
-        "ssl": _ssl,
-        "transports": transports,
-        "warnings": _warnings,
-        "weakref": _weakref,
-    },
-)
-
-class EnumType(type):
-    pass
-
-class AppProtocolState(metaclass=EnumType):
-    STATE_INIT = 0
-    STATE_CON_MADE = 1
-    STATE_EOF = 2
-    STATE_CON_LOST = 3
-
-class SSLProtocolState(metaclass=EnumType):
-    UNWRAPPED = 0
-    DO_HANDSHAKE = 1
-    WRAPPED = 2
-    FLUSHING = 3
-    SHUTDOWN = 4
-
-class SSLProtocol:
-    pass
-
-del EnumType
-
-_ssl_again_errors: list[type[Any]] = []
-for _name in ("SSLWantReadError", "SSLWantWriteError"):
-    _value = getattr(_ssl, _name, None)
-    if isinstance(_value, type):
-        _ssl_again_errors.append(_value)
-if not _ssl_again_errors:
-    _ssl_again_errors = [_ssl.SSLError]
-SSLAgainErrors = tuple(_ssl_again_errors)
-
-def add_flowcontrol_defaults(
-    *args: Any, **kwargs: Any
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    return args, kwargs
-
-sslproto = _module(
-    "asyncio.sslproto",
-    {
-        "AppProtocolState": AppProtocolState,
-        "SSLAgainErrors": SSLAgainErrors,
-        "SSLProtocol": SSLProtocol,
-        "SSLProtocolState": SSLProtocolState,
-        "add_flowcontrol_defaults": add_flowcontrol_defaults,
-        "collections": _collections,
-        "constants": constants,
-        "enum": _enum,
-        "exceptions": exceptions,
-        "logger": _logging.getLogger("asyncio"),
-        "protocols": protocols,
-        "ssl": _ssl,
-        "transports": transports,
-        "warnings": _warnings,
-    },
-)
-setattr(selector_events, "sslproto", sslproto)
+from . import base_futures as base_futures
+from . import base_tasks as base_tasks
+from . import base_subprocess as base_subprocess
 
 futures.base_futures = base_futures
 futures.events = events
@@ -1727,10 +1448,6 @@ tasks.events = events
 tasks.exceptions = exceptions
 tasks.futures = futures
 tasks.timeouts = timeouts
-setattr(runners, "tasks", tasks)
-setattr(timeouts, "tasks", tasks)
-setattr(taskgroups, "tasks", tasks)
-setattr(subprocess, "tasks", tasks)
 
 streams.coroutines = coroutines
 streams.events = events
@@ -1738,146 +1455,6 @@ streams.exceptions = exceptions
 streams.format_helpers = format_helpers
 streams.protocols = protocols
 subprocess.events = events
-subprocess.protocols = protocols
-subprocess.logger = _logging.getLogger("asyncio")
-
-tasks = _module(
-    "asyncio.tasks",
-    {
-        "ALL_COMPLETED": "ALL_COMPLETED",
-        "FIRST_COMPLETED": "FIRST_COMPLETED",
-        "FIRST_EXCEPTION": "FIRST_EXCEPTION",
-        "GenericAlias": _types.GenericAlias,
-        "Task": Task,
-        "all_tasks": all_tasks,
-        "as_completed": as_completed,
-        "base_tasks": base_tasks,
-        "concurrent": _concurrent,
-        "contextvars": _contextvars,
-        "coroutines": coroutines,
-        "create_eager_task_factory": create_eager_task_factory,
-        "create_task": create_task,
-        "current_task": current_task,
-        "eager_task_factory": eager_task_factory,
-        "ensure_future": ensure_future,
-        "events": events,
-        "exceptions": exceptions,
-        "functools": _functools,
-        "futures": futures,
-        "gather": gather,
-        "inspect": _inspect,
-        "itertools": _itertools,
-        "run_coroutine_threadsafe": run_coroutine_threadsafe,
-        "shield": shield,
-        "sleep": sleep,
-        "timeouts": timeouts,
-        "types": _types,
-        "wait": wait,
-        "wait_for": wait_for,
-        "warnings": _warnings,
-        "weakref": _weakref,
-    },
-)
-setattr(runners, "tasks", tasks)
-setattr(timeouts, "tasks", tasks)
-setattr(taskgroups, "tasks", tasks)
-setattr(subprocess, "tasks", tasks)
-
-class TransportSocket:
-    pass
-
-trsock = _module(
-    "asyncio.trsock",
-    {
-        "TransportSocket": TransportSocket,
-        "socket": _SOCKET,
-    },
-)
-setattr(selector_events, "trsock", trsock)
-
-if not _IS_WINDOWS:
-    _unix_events_attrs: dict[str, Any] = {
-        "SelectorEventLoop": SelectorEventLoop,
-        "base_events": base_events,
-        "base_subprocess": base_subprocess,
-        "can_use_pidfd": can_use_pidfd,
-        "constants": constants,
-        "coroutines": coroutines,
-        "errno": _errno,
-        "events": events,
-        "exceptions": exceptions,
-        "futures": futures,
-        "io": _io,
-        "itertools": _itertools,
-        "logger": _logging.getLogger("asyncio"),
-        "os": _os,
-        "selector_events": selector_events,
-        "selectors": _selectors,
-        "signal": _signal,
-        "socket": _SOCKET,
-        "stat": _stat,
-        "subprocess": _subprocess,
-        "sys": _sys,
-        "tasks": tasks,
-        "threading": _threading,
-        "transports": transports,
-        "waitstatus_to_exitcode": waitstatus_to_exitcode,
-        "warnings": _warnings,
-    }
-    if _EXPOSE_CHILD_WATCHERS:
-        _unix_events_attrs.update(
-            {
-                "__all__": (
-                    "SelectorEventLoop",
-                    "AbstractChildWatcher",
-                    "SafeChildWatcher",
-                    "FastChildWatcher",
-                    "PidfdChildWatcher",
-                    "MultiLoopChildWatcher",
-                    "ThreadedChildWatcher",
-                    "DefaultEventLoopPolicy",
-                ),
-                "AbstractChildWatcher": AbstractChildWatcher,
-                "BaseChildWatcher": BaseChildWatcher,
-                "FastChildWatcher": FastChildWatcher,
-                "MultiLoopChildWatcher": MultiLoopChildWatcher,
-                "PidfdChildWatcher": PidfdChildWatcher,
-                "SafeChildWatcher": SafeChildWatcher,
-                "ThreadedChildWatcher": ThreadedChildWatcher,
-            }
-        )
-        _unix_events_attrs["DefaultEventLoopPolicy"] = _UnixDefaultEventLoopPolicy
-    else:
-        _unix_all = ["SelectorEventLoop"]
-        if _EXPOSE_EVENT_LOOP:
-            _unix_all.append("EventLoop")
-        _unix_events_attrs["__all__"] = tuple(_unix_all)
-    unix_events = _module("asyncio.unix_events", _unix_events_attrs)
-    if _EXPOSE_EVENT_LOOP:
-        setattr(unix_events, "EventLoop", SelectorEventLoop)
-
-if _IS_WINDOWS:
-    windows_events = _module(
-        "asyncio.windows_events",
-        {
-            "SelectorEventLoop": SelectorEventLoop,
-            "ProactorEventLoop": _ProactorEventLoop,
-            "DefaultEventLoopPolicy": _WindowsProactorEventLoopPolicy,
-            "WindowsSelectorEventLoopPolicy": _WindowsSelectorEventLoopPolicy,
-            "WindowsProactorEventLoopPolicy": _WindowsProactorEventLoopPolicy,
-        },
-    )
-    if _EXPOSE_EVENT_LOOP:
-        setattr(windows_events, "EventLoop", _ProactorEventLoop)
-    windows_utils = _module(
-        "asyncio.windows_utils",
-        {
-            "BUFSIZE": 8192,
-            "PIPE": _subprocess.PIPE,
-            "STDOUT": _subprocess.STDOUT,
-            "DEVNULL": _subprocess.DEVNULL,
-        },
-    )
 
 async def staggered_race(
     coro_fns: Iterable[Any], delay: float | None
@@ -2027,74 +1604,21 @@ async def staggered_race(
         # after staggered_race exits.
         on_completed_fut_cell[0] = None
 
-staggered = _module(
-    "asyncio.staggered",
-    {
-        "contextlib": _contextlib,
-        "events": events,
-        "exceptions_mod": exceptions,
-        "locks": locks,
-        "staggered_race": staggered_race,
-        "tasks": tasks,
-    },
-)
+from . import staggered as staggered
+from . import sslproto as sslproto
+from . import trsock as trsock
+from . import base_events as base_events
+from . import selector_events as selector_events
 
-for _name in ("AbstractServer", "SelectorEventLoop", "Handle", "TimerHandle"):
-    if hasattr(base_events, _name):
-        delattr(base_events, _name)
-for _name, _value in {
-    "MAXIMUM_SELECT_TIMEOUT": 24 * 3600,
-    "collections": _collections,
-    "concurrent": _concurrent,
-    "constants": constants,
-    "coroutines": coroutines,
-    "errno": _errno,
-    "events": events,
-    "exceptions": exceptions,
-    "futures": futures,
-    "heapq": _heapq,
-    "itertools": _itertools,
-    "logger": _logging.getLogger("asyncio"),
-    "os": _os,
-    "protocols": protocols,
-    "socket": _SOCKET,
-    "ssl": _ssl,
-    "sslproto": sslproto,
-    "staggered": staggered,
-    "stat": _stat,
-    "subprocess": _subprocess,
-    "sys": _sys,
-    "tasks": tasks,
-    "threading": _threading,
-    "time": _time,
-    "timeouts": timeouts,
-    "traceback": _traceback,
-    "transports": transports,
-    "trsock": trsock,
-    "warnings": _warnings,
-    "weakref": _weakref,
-}.items():
-    setattr(base_events, _name, _value)
+if _IS_WINDOWS:
+    from . import windows_events as windows_events
+    from . import windows_utils as windows_utils
+else:
+    from . import unix_events as unix_events
 
 if _EXPOSE_GRAPH:
-    graph = _module(
-        "asyncio.graph",
-        {
-            "capture_call_graph": capture_call_graph,
-            "format_call_graph": format_call_graph,
-            "print_call_graph": print_call_graph,
-            "FrameCallGraphEntry": FrameCallGraphEntry,
-            "FutureCallGraph": FutureCallGraph,
-        },
-    )
-    tools = _module(
-        "asyncio.tools",
-        {
-            "capture_call_graph": capture_call_graph,
-            "format_call_graph": format_call_graph,
-            "print_call_graph": print_call_graph,
-        },
-    )
+    from . import graph as graph
+    from . import tools as tools
 
 if not _EXPOSE_EVENT_LOOP:
     if "EventLoop" in globals():

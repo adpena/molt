@@ -2,20 +2,47 @@
 
 from __future__ import annotations
 
-import sys as _sys
-import asyncio as _asyncio
+import errno
+import io
+import itertools
+import os
+import selectors
+import signal
+import stat
+import subprocess
+import sys
+import threading
+import warnings
 
+from . import (
+    _SOCKET as socket,
+    _VERSION_INFO,
+    SelectorEventLoop,
+    base_events,
+    base_subprocess,
+    can_use_pidfd,
+    constants,
+    coroutines,
+    events,
+    exceptions,
+    futures,
+    selector_events,
+    tasks,
+    transports,
+    waitstatus_to_exitcode,
+)
+from .log import logger
 
-_VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
-
-from asyncio import SelectorEventLoop
+if sys.platform == "win32":
+    raise ImportError("Signals are not really supported on Windows")
 
 if _VERSION_INFO >= (3, 13):
-    EventLoop = _asyncio.EventLoop
+    EventLoop = SelectorEventLoop
 
 if _VERSION_INFO < (3, 14):
     from asyncio import (
         AbstractChildWatcher,
+        BaseChildWatcher as BaseChildWatcher,
         FastChildWatcher,
         MultiLoopChildWatcher,
         PidfdChildWatcher,

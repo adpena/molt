@@ -80,6 +80,7 @@ from molt.compiler_analysis.python_parameter_classes import (
 from molt.compiler_analysis.python_namespace_writes import (
     _own_namespace_names,
 )
+from molt.compiler_analysis.python_string_facts import python_string_spelling
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     PythonSourceProjection,
@@ -6836,6 +6837,8 @@ class _Analyzer:
             )
             state_id = self._apply_effects(state_id, boundary)
             effects |= boundary
+            if isinstance(node, ast.JoinedStr):
+                static_value = python_string_spelling(node)
         if identities & _FRAME_NAMESPACE_IDENTITIES:
             self._namespace_observation_epoch += 1
         expression_result = self._record_expression(
