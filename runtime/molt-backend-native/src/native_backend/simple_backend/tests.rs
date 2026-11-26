@@ -369,10 +369,14 @@ fn refcount_word_accesses(function: &Function) -> Vec<Inst> {
 /// admission load when it touches a count word, and none when every
 /// transition reaches the runtime: debug and atomic compilers, or
 /// immediate-only bodies leave the load dead. Each count-word access must lie
-/// under the `== AttachedPlain` arm of a branch on that load. The oracle is
+/// under the arm that accepts either grant carrying plain storage. The oracle is
 /// the emitted body, so it holds whichever storage mode built the compiler.
 /// Returns every admission load and the record load that addresses it.
 fn assert_refcount_word_access_is_admitted(compiled: &CompiledFunctionClif) -> Vec<(Block, Inst)> {
+    use molt_codegen_abi::inline_refcount::CompiledRefcountAdmission::{
+        AttachedFrameOwners, AttachedPlain,
+    };
+
     let function = &compiled.function;
     let used = |inst: Inst| {
         let result = function.dfg.first_result(inst);
@@ -454,13 +458,13 @@ fn assert_refcount_word_access_is_admitted(compiled: &CompiledFunctionClif) -> V
                 return None;
             };
             let condition = function.dfg.inst_args(branch)[0];
-            comparison_operand(
-                function,
-                condition,
-                IntCC::Equal,
-                molt_codegen_abi::inline_refcount::CompiledRefcountAdmission::AttachedPlain as i64,
-            )
-            .filter(|&operand| value_originates_only_from(function, operand, admission))?;
+            let granted =
+                comparison_operand(function, condition, IntCC::Equal, AttachedPlain as i64)?;
+            let plain_mask = !(AttachedFrameOwners as i64 ^ AttachedPlain as i64);
+            let loaded = masked_operand(function, granted, plain_mask)?;
+            if !value_originates_only_from(function, loaded, admission) {
+                return None;
+            }
             let admitted = blocks[0].block(&function.dfg.value_lists);
             let predecessors: Vec<_> = cfg.pred_iter(admitted).collect();
             (predecessors.len() == 1 && predecessors[0].inst == branch).then_some(admitted)
@@ -471,7 +475,7 @@ fn assert_refcount_word_access_is_admitted(compiled: &CompiledFunctionClif) -> V
             admitted_arms
                 .iter()
                 .any(|&arm| dominators.dominates(arm, access, &function.layout)),
-            "count-word access {access} bypasses the AttachedPlain admission check:\n{}",
+            "count-word access {access} bypasses the plain-storage admission check:\n{}",
             function.display()
         );
     }
