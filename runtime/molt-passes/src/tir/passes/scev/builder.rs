@@ -7,13 +7,12 @@ use crate::tir::op_kinds_generated::{ScevExprRule, opcode_scev_expr_rule_table};
 use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
 
-use super::index::{DefIndex, LoopContext, collect_header_incoming};
+use super::index::{DefIndex, LoopContext};
 
 /// SCEV builder. Owns the def index + loop context and memoizes results to
 /// terminate on the recurrence cycle (a header arg's SCEV is computed while
 /// computing the back-edge value's SCEV).
 pub(super) struct ScevBuilder<'a> {
-    func: &'a TirFunction,
     pub(super) loops: &'a LoopContext,
     pub(super) guards: super::super::counted_loop::LoopGuardContext,
     defs: &'a DefIndex<'a>,
@@ -32,7 +31,6 @@ impl<'a> ScevBuilder<'a> {
         defs: &'a DefIndex<'a>,
     ) -> Self {
         Self {
-            func,
             loops,
             guards: super::super::counted_loop::LoopGuardContext::new(func),
             defs,
@@ -71,7 +69,7 @@ impl<'a> ScevBuilder<'a> {
         enum Work {
             Value(ValueId),
             Memoize(ValueId),
-            Header(ValueId, BlockId),
+            Header(ValueId, BlockId, usize),
             Invariant(ValueId),
             InvariantOr(ValueId),
             Binary(ScevExprRule),
@@ -96,8 +94,8 @@ impl<'a> ScevBuilder<'a> {
                         work.push(Work::Value(source));
                     } else if let Some(&constant) = self.defs.const_int.get(&value) {
                         answers.push(ScevExpr::Constant(constant));
-                    } else if let Some(&header) = self.header_of_arg(value) {
-                        work.push(Work::Header(value, header));
+                    } else if let Some(&(header, index)) = self.defs.header_arg_sites.get(&value) {
+                        work.push(Work::Header(value, header, index));
                     } else if let Some((opcode, operands, _)) = self.defs.def_op.get(&value) {
                         let rule = opcode_scev_expr_rule_table(*opcode);
                         if operands.len() == 2
@@ -121,22 +119,24 @@ impl<'a> ScevBuilder<'a> {
                     self.in_progress.remove(&value);
                     self.memo.insert(value, result.clone());
                 }
-                Work::Header(iv, header) => match self.header_recurrence(iv, header) {
-                    Ok((start, step)) => {
-                        work.push(Work::Recurrence(header));
-                        work.push(Work::Invariant(step));
-                        work.push(Work::Invariant(start));
+                Work::Header(iv, header, index) => {
+                    match self.header_recurrence(iv, header, index) {
+                        Ok((start, step)) => {
+                            work.push(Work::Recurrence(header));
+                            work.push(Work::Invariant(step));
+                            work.push(Work::Invariant(start));
+                        }
+                        Err(result) => answers.push(result),
                     }
-                    Err(result) => answers.push(result),
-                },
+                }
                 Work::Invariant(value) => {
                     if let Some(&constant) = self.defs.const_int.get(&value) {
                         answers.push(ScevExpr::Constant(constant));
-                    } else if let Some(&header) = self.header_of_arg(value) {
+                    } else if let Some(&(header, index)) = self.defs.header_arg_sites.get(&value) {
                         // This is a direct header query, not a memoized value
                         // query: preserve the recurrence recognizer's guard.
                         work.push(Work::InvariantOr(value));
-                        work.push(Work::Header(value, header));
+                        work.push(Work::Header(value, header, index));
                     } else {
                         answers.push(ScevExpr::Invariant(value));
                     }
@@ -180,21 +180,13 @@ impl<'a> ScevBuilder<'a> {
         answers.pop().expect("SCEV evaluation produces one answer")
     }
 
-    /// If `v` is a header block-argument, return that header.
-    fn header_of_arg(&self, v: ValueId) -> Option<&BlockId> {
-        // header_args is small (one entry per loop header); linear scan is fine.
-        self.defs
-            .header_args
-            .iter()
-            .find_map(|(h, args)| if args.contains(&v) { Some(h) } else { None })
-    }
-
     /// Recognize a header block-argument as an induction-variable recurrence,
     /// or classify it as invariant / unknown.
     fn header_recurrence(
         &mut self,
         iv: ValueId,
         header: BlockId,
+        arg_index: usize,
     ) -> Result<(ValueId, ValueId), ScevExpr> {
         if let Some(&known) = self.iv_of_header.get(&header)
             && known == iv
@@ -208,58 +200,39 @@ impl<'a> ScevBuilder<'a> {
             return Err(ScevExpr::Unknown);
         }
 
-        let body = match self.loops.bodies.get(&header) {
-            Some(b) => b.clone(),
-            None => return Err(ScevExpr::Invariant(iv)),
-        };
-        let incoming = collect_header_incoming(self.func, header, &body, &self.defs.reachable);
-
-        // Partition into entry (non-back-edge) and back-edge args for this iv.
-        let arg_index = match self
-            .defs
-            .header_args
-            .get(&header)
-            .and_then(|args| args.iter().position(|&a| a == iv))
-        {
-            Some(i) => i,
-            None => return Err(ScevExpr::Invariant(iv)),
+        let (Some(body), Some(edges)) = (
+            self.loops.bodies.get(&header),
+            self.defs.header_edges.get(&header),
+        ) else {
+            return Err(ScevExpr::Invariant(iv));
         };
 
-        let mut start_vals: Vec<ValueId> = Vec::new();
-        let mut next_vals: Vec<ValueId> = Vec::new();
-        for (_pred, args, is_back) in &incoming.edges {
+        let mut start = None;
+        let mut next = None;
+        let mut agrees = true;
+        for &(pred, args) in edges {
             let Some(&val) = args.get(arg_index) else {
-                // A predecessor that does not pass this arg → malformed for our
-                // purposes; refuse to model.
                 return Err(ScevExpr::Unknown);
             };
-            // Resolve through plain copies so the back-edge/start values name
-            // their canonical sources (lowering wraps both in copies).
             let val = self.defs.resolve(val);
-            if *is_back {
-                next_vals.push(val);
+            let slot = if body.contains(&pred) {
+                &mut next
             } else {
-                start_vals.push(val);
-            }
+                &mut start
+            };
+            agrees &= slot.replace(val).is_none_or(|prior| prior == val);
         }
-
-        // Exactly one distinct start and one distinct back-edge value.
-        if start_vals.is_empty() || next_vals.is_empty() {
+        let (Some(start_val), Some(next_val)) = (start, next) else {
             return Err(ScevExpr::Invariant(iv));
-        }
-        let start_val = start_vals[0];
-        if start_vals.iter().any(|&s| s != start_val) {
-            return Err(ScevExpr::Unknown);
-        }
-        let next_val = next_vals[0];
-        if next_vals.iter().any(|&n| n != next_val) {
+        };
+        if !agrees {
             return Err(ScevExpr::Unknown);
         }
 
         // The back-edge value must be `Add(iv, step)` with `no_signed_wrap`,
         // and `step` loop-invariant. (Subtraction is normalized to Add of a
         // negative const upstream; we additionally accept Add(step, iv).)
-        let (opcode, operands, nsw) = match self.defs.def_op.get(&next_val).cloned() {
+        let (opcode, operands, nsw) = match self.defs.def_op.get(&next_val).copied() {
             Some(t) => t,
             None => return Err(ScevExpr::Invariant(iv)),
         };

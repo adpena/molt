@@ -157,6 +157,30 @@ fn detects_backedge_loop_without_loop_roles() {
 }
 
 #[test]
+fn distinct_edges_from_one_predecessor_must_agree_on_the_start() {
+    let (mut func, header, iv, _body) = range_loop(10, true);
+    let selector = func.fresh_value();
+    func.param_types.push(TirType::I64);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.args.push(TirValue {
+        id: selector,
+        ty: TirType::I64,
+    });
+    let start = entry.ops[0].results[0];
+    let other_start = entry.ops[2].results[0];
+    entry.terminator = Terminator::Switch {
+        value: selector,
+        cases: vec![(0, header, vec![other_start])],
+        default: header,
+        default_args: vec![start],
+    };
+
+    let scev = compute_scev(&func);
+    assert_eq!(scev.scev_of(iv), ScevExpr::Unknown);
+    assert_eq!(scev.trip_count(header), TripCount::Unknown);
+}
+
+#[test]
 fn wrapping_increment_is_not_addrec() {
     // Without no_signed_wrap, we MUST NOT form an AddRec.
     let (func, _header, iv, _body) = range_loop(10, false);

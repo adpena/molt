@@ -40,7 +40,7 @@ pub(super) fn compute_trip_count(
     {
         return TripCount::Unknown;
     }
-    let (mut opcode, raw_operands, _nsw) = match defs.def_op.get(&guard.condition).cloned() {
+    let (mut opcode, raw_operands, _nsw) = match defs.def_op.get(&guard.condition).copied() {
         Some(t) => t,
         None => return TripCount::Unknown,
     };
@@ -50,12 +50,12 @@ pub(super) fn compute_trip_count(
         };
         opcode = inverted;
     }
-    if raw_operands.len() != 2 {
+    let [lhs, rhs] = raw_operands else {
         return TripCount::Unknown;
-    }
+    };
     // Resolve guard operands through plain copies so `Lt(Copy(iv), Copy(stop))`
     // names the canonical iv / stop values.
-    let operands: Vec<ValueId> = raw_operands.iter().map(|&o| defs.resolve(o)).collect();
+    let (lhs, rhs) = (defs.resolve(*lhs), defs.resolve(*rhs));
     let iv = defs.resolve(iv);
     // Recover the IV's recurrence: start, step.
     let (start, step) = match builder.scev(iv) {
@@ -64,7 +64,6 @@ pub(super) fn compute_trip_count(
     };
 
     // Identify which operand is the iv and which is the bound.
-    let (lhs, rhs) = (operands[0], operands[1]);
     let (bound_val, iv_is_lhs) = if lhs == iv {
         (rhs, true)
     } else if rhs == iv {

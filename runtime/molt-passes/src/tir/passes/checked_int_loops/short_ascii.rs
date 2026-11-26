@@ -12,12 +12,13 @@ pub(super) struct ShortAscii {
 
 impl ShortAscii {
     pub(super) fn admit(
-        func: &TirFunction,
+        facts: &LoopFacts<'_>,
         header: BlockId,
         body: &HashSet<BlockId>,
         vr: &crate::tir::ValueRangeResult,
         preheader: BlockId,
     ) -> Option<Self> {
+        let func = facts.scalar.body();
         if func.frame_locals_exposed() {
             return None;
         }
@@ -60,18 +61,16 @@ impl ShortAscii {
         }
         // Passing the original boxed owner may not introduce a fallible box
         // at a location that had no such operation.
-        let facts = super::super::value_identity::ScalarFacts::new(func);
-        let repr = crate::representation_facts::repr_by_value_from(&facts, Some(vr));
-        if repr.get(&owner) != Some(&molt_ir::repr::Repr::DynBox) {
+        if facts.representations(vr).get(&owner) != Some(&Repr::DynBox) {
             return None;
         }
         let preview = super::super::value_range::under_length_guard(
-            &facts,
+            &facts.scalar,
             &lengths,
             i64::from(u32::BITS / u8::BITS),
         );
         if !ordinals.iter().all(|&(bid, index)| {
-            facts.types().get(&index) == Some(&TirType::I64)
+            facts.scalar.types().get(&index) == Some(&TirType::I64)
                 && preview.proves_index_lt_len_symbolically(bid, owner, index)
         }) {
             return None;
