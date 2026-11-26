@@ -1752,13 +1752,24 @@ fn expand_numeric(
     join
 }
 
-#[derive(Clone, Copy)]
-enum PackedAccess {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PackedAccess {
     Read,
     Write,
 }
 
-fn packed_access(op: &TirOp) -> Option<PackedAccess> {
+impl PackedAccess {
+    /// A failed probe has no Python effects and never commits a write.
+    pub(super) fn probe(self, call: &TirOp, result: ValueId, hit: ValueId) -> TirOp {
+        let (opcode, outputs) = match self {
+            Self::Read => (OpCode::TryBuffer2dLoadI64, vec![result, hit]),
+            Self::Write => (OpCode::TryBuffer2dStoreI64, vec![hit]),
+        };
+        new_op(opcode, call.operands.clone(), outputs, call.source_span)
+    }
+}
+
+pub(super) fn packed_access(op: &TirOp) -> Option<PackedAccess> {
     use molt_ir::ir::ParameterCustody;
     use molt_ir::runtime_fn_generated::RuntimeFn;
     use molt_ir::tir::call_targets::direct_boxed_runtime;
@@ -1786,13 +1797,12 @@ fn expand_packed_access(
     let miss = func.fresh_block();
     let join = func.fresh_block();
     let hit = fresh_typed(func, TirType::Bool);
-    let (opcode, outputs, result, materialize) = match access {
+    let (probe_result, result, materialize) = match access {
         PackedAccess::Read => {
             let raw = fresh_typed(func, TirType::I64);
             let result = fresh_typed(func, TirType::DynBox);
             (
-                OpCode::TryBuffer2dLoadI64,
-                vec![raw, hit],
+                raw,
                 result,
                 new_op(OpCode::BoxVal, vec![raw], vec![result], span),
             )
@@ -1800,14 +1810,13 @@ fn expand_packed_access(
         PackedAccess::Write => {
             let result = fresh_typed(func, TirType::None);
             (
-                OpCode::TryBuffer2dStoreI64,
-                vec![hit],
+                result,
                 result,
                 new_op(OpCode::ConstNone, vec![], vec![result], span),
             )
         }
     };
-    let operation = new_op(opcode, call.operands.clone(), outputs, span);
+    let operation = access.probe(&call, probe_result, hit);
     end_block(
         func,
         current,

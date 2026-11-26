@@ -90,6 +90,7 @@ use crate::tir::values::{TirValue, ValueId};
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 use super::PassStats;
+use super::fast_path_expansion::{PackedAccess, packed_access};
 
 mod short_ascii;
 
@@ -317,7 +318,7 @@ impl LoopRewrite {
         if guard.is_none()
             && selection.checked.is_empty()
             && selection.projections.is_empty()
-            && selection.packed_loads.is_empty()
+            && selection.packed.is_empty()
         {
             for (block, index) in selection.exact {
                 func.blocks
@@ -711,6 +712,7 @@ fn select(
     let mut arithmetic: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
     let mut checked_before: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
     let mut call_results = HashMap::default();
+    let mut stores = Vec::new();
     let mut copies: Vec<(ValueId, ValueId)> = Vec::new();
     let mut phis: Vec<(BlockId, usize, ValueId)> = Vec::new();
     for &bid in body {
@@ -740,6 +742,11 @@ fn select(
                 // A loop versioned before (a type-flow clone of a versioned
                 // body) already checks this op; its result is a raw carrier.
                 checked_before.push((bid, index, *result, [*lhs, *rhs]));
+            } else if final_tir
+                && packed_access(op) == Some(PackedAccess::Write)
+                && has_packed_observer(func, facts, &block.ops, index)
+            {
+                stores.push((bid, index));
             } else if final_tir
                 && matches!(op.opcode, OpCode::Call | OpCode::CallRuntime)
                 && let [result] = op.results[..]
@@ -840,14 +847,28 @@ fn select(
             }
         }
     }
+    // Absorb stores into the numeric fast loop when their inputs can use the
+    // same raw lane. A failed store guard exits to the original call in the
+    // residual loop before any cell has changed.
+    if !selection.is_empty() {
+        for (block, index) in stores {
+            let inputs = &func.blocks[&block].ops[index].operands[1..];
+            if inputs
+                .iter()
+                .all(|value| is_int(value) && raw(value, &capable))
+            {
+                numeric_inputs.extend(inputs);
+                selection.packed.push((block, index, PackedAccess::Write));
+            }
+        }
+    }
     // Project only call results reaching selected numerical work. Copies and
     // phis may forward the same value through more than one block.
     if !call_results.is_empty() {
         let numeric_only = if !numeric_inputs.is_empty()
-            && call_results
-                .values()
-                .any(|&(block, index)| is_packed_buffer_read(&func.blocks[&block].ops[index]))
-        {
+            && call_results.values().any(|&(block, index)| {
+                packed_access(&func.blocks[&block].ops[index]) == Some(PackedAccess::Read)
+            }) {
             packed_numeric_demand(func, body, &capable, &numeric_inputs)
         } else {
             HashSet::default()
@@ -873,21 +894,11 @@ fn select(
                 // An escaped Python reference or a handler payload can observe
                 // the physical boxed result. Only proven numeric uses may
                 // consume the packed word without constructing that object.
-                if is_packed_buffer_read(call)
+                if packed_access(call) == Some(PackedAccess::Read)
                     && numeric_only.contains(&value)
-                    && ops.get(index + 1).is_some_and(|check| {
-                        !check.has_checked_invocation_binding()
-                            && check.exception_edge_kind()
-                                == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin)
-                            && crate::tir::type_refine::checked_result_observer(
-                                func,
-                                &facts.labels,
-                                check,
-                            )
-                            .is_some()
-                    })
+                    && has_packed_observer(func, facts, ops, index)
                 {
-                    selection.packed_loads.push(site);
+                    selection.packed.push((block, index, PackedAccess::Read));
                 } else {
                     selection.projections.push(site);
                 }
@@ -909,10 +920,19 @@ fn select(
     Ok(selection)
 }
 
-fn is_packed_buffer_read(op: &TirOp) -> bool {
-    crate::tir::call_targets::direct_boxed_runtime(op)
-        == Some(molt_ir::runtime_fn_generated::RuntimeFn::Buffer2dGet)
-        && op.argument_custody().is_none()
+fn has_packed_observer(
+    func: &TirFunction,
+    facts: &LoopFacts<'_>,
+    ops: &[TirOp],
+    index: usize,
+) -> bool {
+    ops.get(index + 1).is_some_and(|check| {
+        !check.has_checked_invocation_binding()
+            && check.exception_edge_kind()
+                == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin)
+            && crate::tir::type_refine::checked_result_observer(func, &facts.labels, check)
+                .is_some()
+    })
 }
 
 /// Discharge every actual use, backwards from selected numeric operands.
@@ -1005,9 +1025,9 @@ struct Selection {
     checked: Vec<(BlockId, usize)>,
     /// Exact-int calls whose fast successors consume the inline payload.
     projections: Vec<(BlockId, usize)>,
-    /// A packed hit supplies the selected arithmetic directly; a miss runs
-    /// the original load and its exception transfer in the boxed clone.
-    packed_loads: Vec<(BlockId, usize)>,
+    /// A packed hit consumes or produces the raw word. A miss runs the
+    /// original access and observation in the boxed clone.
+    packed: Vec<(BlockId, usize, PackedAccess)>,
     /// Ops whose exact result the ranges place inside i64: a plain machine op.
     exact: Vec<(BlockId, usize)>,
     /// Checked ops of an earlier versioning whose exact result the ranges
@@ -1025,7 +1045,7 @@ impl Selection {
 enum FastCheck {
     Overflow,
     CallResult,
-    PackedLoad,
+    Packed(PackedAccess),
 }
 
 /// A checked op: its first result is the wrapped value, its second the
@@ -1193,11 +1213,16 @@ fn version(
     for (checks, kind) in [
         (&selection.checked, FastCheck::Overflow),
         (&selection.projections, FastCheck::CallResult),
-        (&selection.packed_loads, FastCheck::PackedLoad),
     ] {
         for &(block, index) in checks {
             by_block.entry(block.0).or_default().push((index, kind));
         }
+    }
+    for &(block, index, access) in &selection.packed {
+        by_block
+            .entry(block.0)
+            .or_default()
+            .push((index, FastCheck::Packed(access)));
     }
     let mut variables: HashMap<ValueId, Vec<ValueId>> = defined
         .iter()
@@ -1226,7 +1251,7 @@ fn version(
             func.value_types.insert(flag, TirType::Bool);
             // A packed miss enters before the original call in its slow
             // clone. That clone defines its own result at the original point.
-            let alternate = if matches!(check, FastCheck::PackedLoad) {
+            let alternate = if matches!(check, FastCheck::Packed(_)) {
                 None
             } else {
                 let value = func.fresh_value();
@@ -1237,7 +1262,7 @@ fn version(
             let slow_rest = func.fresh_block();
 
             let slow_block = func.blocks.get_mut(&slow).expect("cloned block exists");
-            let slow_split = if matches!(check, FastCheck::PackedLoad) {
+            let slow_split = if matches!(check, FastCheck::Packed(_)) {
                 index
             } else {
                 split
@@ -1284,7 +1309,7 @@ fn version(
                     added += 1;
                     (transfer, fast_rest)
                 }
-                FastCheck::CallResult | FastCheck::PackedLoad => (fast_rest, slow_rest),
+                FastCheck::CallResult | FastCheck::Packed(_) => (fast_rest, slow_rest),
             };
             let fast_block = func.blocks.get_mut(&fast).expect("selected block exists");
             let mut rest_ops = fast_block.ops.split_off(split);
@@ -1294,14 +1319,17 @@ fn version(
                     checked.opcode = checked_opcode(original.opcode).expect("selected arithmetic");
                     checked.results.push(flag);
                 }
-                FastCheck::PackedLoad => {
-                    let mut load = TirOp::new(
-                        OpCode::TryBuffer2dLoadI64,
-                        original.operands,
-                        vec![result, flag],
-                    );
-                    load.source_span = original.source_span;
-                    *checked = load;
+                FastCheck::Packed(access) => {
+                    if super::async_work_poll::is_call_return_poll(&original) {
+                        rest_ops[0].mark_async_work_poll();
+                    }
+                    if access == PackedAccess::Write {
+                        let mut unit = TirOp::new(OpCode::ConstNone, vec![], vec![result]);
+                        unit.source_span = original.source_span;
+                        rest_ops.insert(0, unit);
+                        added += 1;
+                    }
+                    *checked = access.probe(&original, result, flag);
                 }
                 FastCheck::CallResult => {
                     let alternate = alternate.expect("boxed call defines a physical result");
