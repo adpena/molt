@@ -792,16 +792,6 @@ NotRequired = _SpecialForm(
 )
 
 
-def _require_importlib_util_module() -> object:
-    modules = getattr(_sys, "modules", {})
-    mod = modules.get("importlib.util")
-    if mod is None:
-        mod = __import__("importlib.util", fromlist=("find_spec", "module_from_spec"))
-    if mod is None:
-        raise RuntimeError("typing requires importlib.util")
-    return mod
-
-
 _ABC_CACHE = None
 
 
@@ -836,51 +826,9 @@ def _load_collections_abc() -> ModuleType:
     )
     missing = [name for name in required_names if getattr(abc_mod, name, None) is None]
     if missing:
-        repaired = _reload_collections_abc()
-        if isinstance(repaired, ModuleType):
-            abc_mod = repaired
-            missing = [
-                name for name in required_names if getattr(abc_mod, name, None) is None
-            ]
-    if missing:
         raise RuntimeError(f"typing missing _collections_abc.{missing[0]}")
     _ABC_CACHE = abc_mod
     return abc_mod
-
-
-def _reload_collections_abc() -> ModuleType | None:
-    modules = getattr(_sys, "modules", {})
-    previous = modules.pop("_collections_abc", None)
-    importlib_util = _require_importlib_util_module()
-    find_spec = getattr(importlib_util, "find_spec", None)
-    module_from_spec = getattr(importlib_util, "module_from_spec", None)
-    if not callable(find_spec) or not callable(module_from_spec):
-        if previous is not None:
-            modules["_collections_abc"] = previous
-        return None
-    try:
-        spec = find_spec("_collections_abc", None)
-        if spec is None:
-            if previous is not None:
-                modules["_collections_abc"] = previous
-            return None
-        module = module_from_spec(spec)
-        modules["_collections_abc"] = module
-        loader = getattr(spec, "loader", None)
-        if loader is not None:
-            if hasattr(loader, "exec_module"):
-                loader.exec_module(module)
-            elif hasattr(loader, "load_module"):
-                loaded = loader.load_module("_collections_abc")
-                if loaded is not None:
-                    module = loaded
-        reloaded = modules.get("_collections_abc", module)
-        return _typing_cast(ModuleType, reloaded)
-    except Exception:
-        modules.pop("_collections_abc", None)
-        if previous is not None:
-            modules["_collections_abc"] = previous
-        return None
 
 
 _abc_module = _load_collections_abc()
