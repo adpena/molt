@@ -3,6 +3,9 @@
 import os
 import sys
 from pathlib import Path
+
+import pytest
+
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import cargo_execution as cli_cargo_execution
 
@@ -131,11 +134,11 @@ def test_shared_locks_create_cross_platform_lock_files(tmp_path: Path):
 
 
 def test_cargo_build_env_does_not_select_a_python_generator(
-    monkeypatch, developer_host_context
-):
-    # developer_host_context: no run context, so _cargo_build_env does not
-    # materialize the real checkout's roots (a plain clone's toolchain root
-    # lies inside the checkout).
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, developer_host_context: None
+) -> None:
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
     monkeypatch.delenv("MOLT_BUILD_PYTHON", raising=False)
     assert "MOLT_BUILD_PYTHON" not in cli_cargo_execution._cargo_build_env()
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "missing-poison")

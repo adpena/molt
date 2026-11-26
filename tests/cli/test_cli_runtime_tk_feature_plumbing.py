@@ -502,8 +502,11 @@ def test_cargo_target_root_memo_tracks_every_environment_read_and_the_cwd(
 
 
 def test_cargo_build_env_preserves_public_cargo_defaults_without_dev_request(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
     for key in (
         "MOLT_EXT_ROOT",
         "CARGO_TARGET_DIR",

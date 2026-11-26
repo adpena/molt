@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from molt import host_capacity
@@ -39,11 +41,11 @@ def test_memory_bounded_cargo_jobs_capped_by_cpu(
 
 
 def test_cargo_build_env_defaults_jobs_but_respects_override(
-    monkeypatch: pytest.MonkeyPatch, developer_host_context: None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, developer_host_context: None
 ) -> None:
-    # developer_host_context: no run context, so _cargo_build_env does not
-    # materialize the real checkout's roots (a plain clone's toolchain root
-    # lies inside the checkout).
+    from tests.sccache_test_support import isolate_sccache_environment
+
+    isolate_sccache_environment(monkeypatch, tmp_path)
     monkeypatch.setattr(CARGO_EXEC, "memory_bounded_cargo_jobs", lambda _env: 3)
     monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
     env = CARGO_EXEC._cargo_build_env()
