@@ -5643,6 +5643,23 @@ class _Analyzer:
             # Python, cannot fail, and neither calls nor publishes `x`
             # (HF-971). The result is a class object of unknown identity.
             argument_protocol_indices = frozenset()
+        elif (
+            callee == int(PythonIdentity.BUILTIN_ITER)
+            and len(node.args) == 1
+            and not node.keywords
+            and not isinstance(node.args[0], ast.Starred)
+        ):
+            # The source call transfer owns iterator acquisition and the
+            # value retained by the resulting iterator. The operand does not
+            # escape to a separate unknown function.
+            argument_protocol_indices = frozenset()
+            argument = argument_results[0]
+            selected_deferred = frozenset(
+                DeferredExecution(ref.source, "get_iter")
+                for ref in argument.deferred
+                if ref.phase in {"resume", "escape"}
+            )
+            effects |= UNKNOWN_EFFECTS
         elif exact and callee == int(PythonIdentity.BUILTIN_SETATTR):
             effects |= (
                 WRITES_OBJECT_STATE

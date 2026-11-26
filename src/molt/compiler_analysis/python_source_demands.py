@@ -2907,8 +2907,29 @@ class PythonSourceDemands:
                 and identity is PythonIdentity.BUILTIN_ITER
             ):
                 return set()
+            acquired: set[SourceCandidate] = set()
             for argument in operands.values():
                 for receiver in argument:
+                    if identity is PythonIdentity.BUILTIN_ITER and unary:
+                        if receiver.kind == "instance" and not receiver.contained:
+                            member = (
+                                receiver.module,
+                                SourceMember(receiver, "__iter__"),
+                            )
+                            acquired.update(
+                                self.watch(
+                                    (receiver.module, SourceReturn(member)), user
+                                )
+                            )
+                        elif receiver.kind == "iterator" or (
+                            receiver.kind == "resumable"
+                            and self._function_kind(receiver) == FunctionKind.GENERATOR
+                        ):
+                            acquired.add(receiver)
+                        elif self._source_class_candidate(receiver):
+                            # A custom metaclass can supply the iteration slot.
+                            # Keep its callbacks until the metaclass is sealed.
+                            self.activate(receiver, "escape", consumer=module)
                     if identity is PythonIdentity.BUILTIN_REVERSED:
                         if receiver.kind == "instance" and not receiver.contained:
                             for method in ("__reversed__", "__len__"):
@@ -2918,11 +2939,14 @@ class PythonSourceDemands:
                                 )
                     else:
                         self.activate(receiver, "get_iter", consumer=module)
-            return {
+            # The native sequence fallback supplies an iterator as well;
+            # an explicit __iter__ can return an object with additional methods.
+            acquired.add(
                 SourceCandidate(
                     module, call.owner, "iterator", iterator_producer=identity
                 )
-            }
+            )
+            return acquired
 
         if not (unary or binary):
             return set()
