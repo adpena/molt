@@ -284,6 +284,32 @@ def test_seek_resolves_variable_width_rows_without_decoding_unasked_entries(
         assert _read(reader, kind, "f" * 64, max_bytes=_LIMIT) is None
 
 
+def test_resident_index_reuses_verified_bytes_until_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(records, "_RESIDENT_AFTER_LOOKUPS", 0)
+    writer = FrontendRecordFiles(tmp_path)
+    assert writer.put("import-scan", _KEY, b"before")
+    reader = FrontendRecordFiles(tmp_path)
+    assert _read(reader, "import-scan", _KEY, max_bytes=_LIMIT) == b"before"
+
+    opened = []
+    original_snapshot = records._verified_index_snapshot
+
+    def snapshot(path: Path, budget: int) -> bytes | None:
+        opened.append(path)
+        return original_snapshot(path, budget)
+
+    monkeypatch.setattr(records, "_verified_index_snapshot", snapshot)
+    assert reader.digest("import-scan", _OTHER) is None
+    assert reader.digest("import-scan", "c" * 24) is None
+    assert opened == []
+
+    assert writer.put("import-scan", _OTHER, b"published")
+    assert _read(reader, "import-scan", _OTHER, max_bytes=_LIMIT) == b"published"
+    assert len(opened) == 1
+
+
 def test_a_malformed_index_file_answers_nothing(tmp_path: Path) -> None:
     files = FrontendRecordFiles(tmp_path)
     assert files.put("import-scan", _KEY, b"[1]")
