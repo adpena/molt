@@ -765,6 +765,16 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
                 }
             }
         }),
+        pass("materialized_tuple_fields", OpsOnly, |f, am, tti| {
+            if target_uses_tir_drop_insertion(tti) {
+                passes::sroa::forward_materialized_tuple_fields(f, am)
+            } else {
+                PassStats {
+                    name: "materialized_tuple_fields",
+                    ..Default::default()
+                }
+            }
+        }),
         pass("block_arg_prune_post_drop", Cfg, |f, _am, _tti| {
             let mut stats = passes::block_arg_prune::run(f);
             stats.name = "block_arg_prune_post_drop";
@@ -1108,8 +1118,8 @@ mod tests {
             .expect("later memory/value/cleanup phases must preserve the edge payload");
     }
 
-    /// The RC drop-insertion pipeline (round-7) is the two design-20 passes plus
-    /// the post-drop block-argument cleanup, in order, then the home-store
+    /// The RC drop-insertion pipeline (round-7) runs the two design-20 passes,
+    /// materialized tuple field forwarding and block-argument cleanup, then the home-store
     /// nothrow proofs, the check elimination they enable, frame-home
     /// placement, then frame-location
     /// placement, which must see final types and inserted releases. It is a
@@ -1124,6 +1134,7 @@ mod tests {
                 "poll_strip_mining",
                 "drop_insertion",
                 "refcount_elim_post",
+                "materialized_tuple_fields",
                 "block_arg_prune_post_drop",
                 "frame_home_nothrow",
                 "check_exception_elim_post_drop",
@@ -1302,7 +1313,7 @@ mod tests {
         // inserts nothing; every pass still RUNS and reports stats.)
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
-        assert_eq!(dstats.len(), 8);
+        assert_eq!(dstats.len(), dp.pass_names().len());
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {

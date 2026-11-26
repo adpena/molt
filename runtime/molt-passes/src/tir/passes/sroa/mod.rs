@@ -23,8 +23,10 @@
 
 mod engine;
 mod report;
+mod tuple_fields;
 
 #[cfg(test)]
 mod tests;
 
 pub use engine::run;
+pub(crate) use tuple_fields::forward_materialized_tuple_fields;
