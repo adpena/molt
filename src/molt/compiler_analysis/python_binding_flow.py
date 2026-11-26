@@ -91,6 +91,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 from molt.compiler_analysis.python_binding_facts import (
+    MODULE_IMPORT_METADATA_NAMES,
     PythonBindingFacts,
     PythonSourceCall,
     PythonNativeInitializerSource,
@@ -268,7 +269,6 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 
 _ANALYSIS_SCHEMA: Final = 72
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
-_METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
 )
@@ -3262,7 +3262,7 @@ class _Analyzer:
                 _Analyzer._target_may_write_import_metadata(element)
                 for element in target.elts
             )
-        return import_metadata_target_name(target) in _METADATA_NAMES
+        return import_metadata_target_name(target) in MODULE_IMPORT_METADATA_NAMES
 
     def _queue_function(
         self,
@@ -3696,22 +3696,24 @@ class _Analyzer:
         assert self.module_scope is not None
         module_slots = self.module_scope.slots
         epoch = self.states.get(state_id).taint_epoch
-        clean = True
+        clean: set[str] = set()
         pristine: set[str] = set()
-        for name in _METADATA_NAMES:
+        for name in MODULE_IMPORT_METADATA_NAMES:
             # The foreign-write footprint already includes this entire family.
             slot = module_slots.get(name)
             if slot is None:
                 # A bounded namespace gains no name a callback could bind.
-                clean &= epoch == 0 or self._callback_module_names is not None
+                if epoch == 0 or self._callback_module_names is not None:
+                    clean.add(name)
                 pristine.add(name)
             else:
                 resolution = self.states._binding_resolution(state_id, slot)
-                clean &= resolution.clean
+                if resolution.clean:
+                    clean.add(name)
                 if not resolution.present:
                     pristine.add(name)
         result = PythonModuleMetadataProof(
-            scope.activation_namespace_stable, clean, frozenset(pristine)
+            scope.activation_namespace_stable, frozenset(clean), frozenset(pristine)
         )
         if self._initializer_premise_reads is not None:
             self._initializer_premise_reads.metadata[(state_id, scope.scope_id)] = (
@@ -5509,7 +5511,7 @@ class _Analyzer:
                 if member is not None:
                     state_id = self._invalidate_member_target(state_id, owner, member)
                 if owner & _MODULE_OR_UNKNOWN_IDENTITIES and (
-                    member is None or member in _METADATA_NAMES
+                    member is None or member in MODULE_IMPORT_METADATA_NAMES
                 ):
                     # A failed exact-owner proof cannot rule out sys.modules.get
                     # (or another lookup) returning this module.
@@ -6852,7 +6854,7 @@ class _Analyzer:
             self._namespace_observation_epoch != observation_before,
             result_override,
             self._module_metadata_borrowing_snapshot(state_id, scope)
-            if isinstance(node, ast.Name) and node.id in _METADATA_NAMES
+            if isinstance(node, ast.Name) and node.id in MODULE_IMPORT_METADATA_NAMES
             else NO_MODULE_METADATA_PROOF,
             deferred_execution=deferred_execution,
             module_metadata_effects=module_metadata_effects,
@@ -7536,7 +7538,7 @@ class _Analyzer:
             effects |= INVOKES_DESCRIPTOR
             if (
                 target.owner_identities & int(PythonIdentity.CURRENT_MODULE)
-                and target.node.attr in _METADATA_NAMES
+                and target.node.attr in MODULE_IMPORT_METADATA_NAMES
             ):
                 effects |= WRITES_MODULE_METADATA | WRITES_GLOBAL_NAMESPACE
         elif (
@@ -7545,7 +7547,7 @@ class _Analyzer:
         ):
             effects |= WRITES_GLOBAL_NAMESPACE
             # An unknown key can select any import-metadata member.
-            if strings is None or strings & _METADATA_NAMES:
+            if strings is None or strings & MODULE_IMPORT_METADATA_NAMES:
                 effects |= WRITES_MODULE_METADATA
         self._record_operation_execution(
             scope,
@@ -7610,7 +7612,7 @@ class _Analyzer:
         if not bindings:
             return state_id, effects
         effects |= WRITES_GLOBAL_NAMESPACE | WRITES_OBJECT_STATE
-        if strings & _METADATA_NAMES:
+        if strings & MODULE_IMPORT_METADATA_NAMES:
             effects |= WRITES_MODULE_METADATA
         state_id, release_effects = self._replace_bindings(
             state_id,
@@ -7946,7 +7948,7 @@ class _Analyzer:
         state_id, effects = self._replace_binding(
             state_id, slot, value, static_value, result, owner_token, scope=scope
         )
-        if name in _METADATA_NAMES and self.module_slot_mask & (1 << slot):
+        if name in MODULE_IMPORT_METADATA_NAMES and self.module_slot_mask & (1 << slot):
             effects |= WRITES_MODULE_METADATA | WRITES_GLOBAL_NAMESPACE
             scope.module_metadata_effects |= WRITES_MODULE_METADATA
         return state_id, effects
@@ -8206,7 +8208,8 @@ class _Analyzer:
         ):
             self._module_import_flow_required = True
         elif isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-            alias.name == "*" or python_import_binding(alias) in _METADATA_NAMES
+            alias.name == "*"
+            or python_import_binding(alias) in MODULE_IMPORT_METADATA_NAMES
             for alias in node.names
         ):
             # Import bindings can replace the relative-import anchor just as
@@ -9973,7 +9976,7 @@ class _Analyzer:
             and self._callback_module_names is not None
         ):
             self._foreign_reads = (
-                set(_METADATA_NAMES)
+                set(MODULE_IMPORT_METADATA_NAMES)
                 if self._initializer_premise_reads is None
                 else set()
             )
@@ -10050,7 +10053,7 @@ class _Analyzer:
             and self._foreign_reads is not None
         ):
             self._initializer_premise_reads.names = frozenset(self._foreign_reads)
-            self._foreign_reads.update(_METADATA_NAMES)
+            self._foreign_reads.update(MODULE_IMPORT_METADATA_NAMES)
             self._foreign_reads.update(self._initializer_premise_reads.deferred_names)
 
     def _run_deferred_job(
@@ -10152,8 +10155,11 @@ class _Analyzer:
             source_digest=self.source_digest,
             class_builder_reads=self.transfer.class_builder_reads,
             decoration_annotation_heads=self.transfer.decoration_annotation_heads,
-            callbacks_rewrite_metadata=self._callback_module_names is None
-            or not self._callback_module_names.isdisjoint(_METADATA_NAMES),
+            callback_metadata_writes=(
+                MODULE_IMPORT_METADATA_NAMES
+                if self._callback_module_names is None
+                else self._callback_module_names & MODULE_IMPORT_METADATA_NAMES
+            ),
             source_namespaces=tuple(
                 (
                     owner,
@@ -11165,7 +11171,7 @@ def _project_binding_index(
             argument_plan=argument_plan,
             source_key=source_key,
             ast_digest_admission=ast_digest_admission,
-            callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
+            callback_metadata_writes=facts.callback_metadata_writes,
         )
     else:
         state = context_import_state(context)
@@ -11188,7 +11194,7 @@ def _project_binding_index(
             source_key=source_key,
             ast_digest_admission=ast_digest_admission,
             source_discovery=True,
-            callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
+            callback_metadata_writes=facts.callback_metadata_writes,
         )
         flow = replace(
             flow,

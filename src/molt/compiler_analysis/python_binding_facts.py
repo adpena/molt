@@ -342,27 +342,40 @@ PythonNameLookup: TypeAlias = Literal[
 ]
 
 
+MODULE_IMPORT_METADATA_NAMES: Final = frozenset(
+    {"__package__", "__spec__", "__name__", "__path__"}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PythonModuleMetadataProof:
     """Binding storage custody shared by reads, import calls and statements."""
 
     activation_namespace_stable: bool = False
-    callback_clean: bool = False
+    clean_names: frozenset[str] = frozenset()
     pristine_names: frozenset[str] = frozenset()
+
+    @property
+    def callback_clean(self) -> bool:
+        return self.clean_names == MODULE_IMPORT_METADATA_NAMES
 
     @property
     def admits_current_namespace(self) -> bool:
         return self.activation_namespace_stable and self.callback_clean
 
     def admits_loader_borrow(self, name: str) -> bool:
-        return self.admits_current_namespace and name in self.pristine_names
+        return (
+            self.activation_namespace_stable
+            and name in self.clean_names
+            and name in self.pristine_names
+        )
 
     def intersect(self, other: PythonModuleMetadataProof) -> PythonModuleMetadataProof:
         if self is other:
             return self
         return PythonModuleMetadataProof(
             self.activation_namespace_stable and other.activation_namespace_stable,
-            self.callback_clean and other.callback_clean,
+            self.clean_names & other.clean_names,
             self.pristine_names & other.pristine_names,
         )
 
@@ -940,10 +953,8 @@ class PythonBindingFacts:
         tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...
     ]
     source_bases: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...]
-    # Whether a callback can rebind this module's import metadata
-    # (``__name__``, ``__package__``, ``__spec__``, ``__path__``). True unless
-    # a closed-graph namespace premise bounds the callback domain (HF-226).
-    callbacks_rewrite_metadata: bool
+    # The import metadata slots a callback can rebind (HF-226).
+    callback_metadata_writes: frozenset[str]
     # LOAD_BUILD_CLASS reads only the executing frame's builtins, not any
     # lexical/global/class binding. Values join at this implicit source read.
     class_builder_reads: Mapping[PythonSourceKey, IdentityMask]
@@ -995,7 +1006,7 @@ class PythonBindingFacts:
             tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
         ] = (),
         module_getattr_may_be_bound: bool = False,
-        callbacks_rewrite_metadata: bool = True,
+        callback_metadata_writes: frozenset[str] = MODULE_IMPORT_METADATA_NAMES,
         class_builder_reads: Mapping[PythonSourceKey, IdentityMask] | None = None,
         decoration_annotation_heads: Mapping[PythonSourceKey, IdentityMask]
         | None = None,
@@ -1028,7 +1039,7 @@ class PythonBindingFacts:
             module_getattr_may_be_bound=module_getattr_may_be_bound,
             source_attributes=source_attributes,
             source_bases=source_bases,
-            callbacks_rewrite_metadata=callbacks_rewrite_metadata,
+            callback_metadata_writes=callback_metadata_writes,
             class_builder_reads=MappingProxyType(dict(class_builder_reads or {})),
             decoration_annotation_heads=MappingProxyType(
                 dict(decoration_annotation_heads or {})

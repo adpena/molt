@@ -13,6 +13,7 @@ import ast
 from typing import Sequence
 
 from molt.compiler_analysis.python_imports import (
+    DYNAMIC_RELATIVE_ANCHOR_ERRORS,
     ModuleImportContext,
     normalize_stdlib_module_name,
     resolve_relative_import,
@@ -46,13 +47,11 @@ _NON_MODULE_PROVENANCE = "<non-module>"
 # protocol raises or resolves them with CPython's own messages and warnings.
 _RUNTIME_RELATIVE_IMPORT_ERRORS = frozenset(
     {
+        *DYNAMIC_RELATIVE_ANCHOR_ERRORS,
         "invalid_package",
-        "unknown_package",
         "invalid_spec",
-        "unknown_spec",
         "missing_name",
         "invalid_name",
-        "unknown_name",
     }
 )
 

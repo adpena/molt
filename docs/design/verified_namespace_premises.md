@@ -250,9 +250,10 @@ receiver behavior.
    protocols such as `__all__` and `__getattr__`, dynamic namespace reads and
    published source-value facts. Lexical name reads alone do not prove that
    those outputs are unchanged; current member masks remain intact.
-3. **The import flow asks the binding flow.** `PythonBindingFacts.callbacks_rewrite_metadata` says
-   whether any callback can rebind `__name__`, `__package__`, `__spec__` or `__path__`. Without it,
-   every callback summary in the import flow leaves the metadata states unchanged.
+3. **The import flow asks the binding flow.** `PythonBindingFacts.callback_metadata_writes` names the
+   loader metadata fields that a callback can rebind. The import flow keeps the other fields and
+   uses the source-point storage proof for each one. A stable `__package__` can identify a relative
+   import even when `__spec__` may change. The runtime still owns observable loader checks and warnings.
 4. **One graph projection.** `compiler_analysis/python_namespace_graph.py` owns
    `PythonNamespacePremise`, `PythonGraphNamespaceWrites` and `graph_python_namespace_writes`.
    It aggregates the existing summaries through the caller's module resolver; source capture, package
