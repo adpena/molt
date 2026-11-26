@@ -22246,14 +22246,24 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     if binding is not None:
         binding = bind_runtime_wasm_codegen(binding.generation, None, use=codegen_use)
 
-    def bind_runtime(state: cli_models._RuntimeArtifactState, **kwargs: object) -> bool:
+    def prepare_runtime(
+        state: cli_models._RuntimeArtifactState, **kwargs: object
+    ) -> Callable[[], bool]:
         assert kwargs["bind_for_codegen"] is True
         assert kwargs["codegen_use"] is codegen_use
-        call_order.append("runtime_binding")
-        state.runtime_wasm_codegen_binding = binding
-        return True
+        assert kwargs["verify_before_materialization"] is True
+        call_order.append("runtime_plan")
 
-    monkeypatch.setattr(cli_backend_compile, "_ensure_runtime_wasm_both", bind_runtime)
+        def bind_runtime() -> bool:
+            call_order.append("runtime_binding")
+            state.runtime_wasm_codegen_binding = binding
+            return True
+
+        return bind_runtime
+
+    monkeypatch.setattr(
+        cli_backend_compile, "_prepare_runtime_wasm_pair", prepare_runtime
+    )
     # The fixture runtime defines no callables; the LLVM wasm32 lane's binding
     # of them is proven by its own tests.
     monkeypatch.setattr(
@@ -22357,6 +22367,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     assert prepared_backend_setup.backend_bin == backend_bin
     assert call_order == [
         "runtime_callables",
+        *(["runtime_plan"] if is_wasm else []),
         "backend_binary",
         *(["runtime_binding"] if is_wasm else []),
         "cache_setup",

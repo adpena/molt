@@ -11,7 +11,9 @@ import json
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial, wraps
 from pathlib import Path
 from typing import Literal
 
@@ -81,6 +83,7 @@ from molt.cli.runtime_wasm_build_timings import (
 from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.cli.runtime_wasm_generation import (
+    RuntimeWasmCodegenBinding,
     RuntimeWasmCodegenUse,
     RuntimeWasmGeneration,
     RuntimeWasmRelocGeneration,
@@ -1032,7 +1035,7 @@ def _ensure_installed_runtime_wasm(
     return True
 
 
-def _ensure_runtime_wasm_both(
+def _prepare_runtime_wasm_pair(
     runtime_state: _RuntimeArtifactState,
     *,
     json_output: bool,
@@ -1048,7 +1051,9 @@ def _ensure_runtime_wasm_both(
     required_exports: set[str] | frozenset[str] | None = None,
     bind_for_codegen: bool = False,
     codegen_use: RuntimeWasmCodegenUse | None = None,
-) -> bool:
+    verify_before_materialization: bool = False,
+) -> Callable[[], bool] | None:
+    """Resolve one runtime request before either producer is materialized."""
     runtime_state.runtime_wasm_build_failure = None
     binding = runtime_state.runtime_wasm_codegen_binding
     if codegen_use is None:
@@ -1058,19 +1063,20 @@ def _ensure_runtime_wasm_both(
             else RuntimeWasmCodegenUse.DEPLOYED_RUNTIME
         )
     elif binding is not None and codegen_use is not binding.use:
-        return record_runtime_wasm_failure(
+        record_runtime_wasm_failure(
             runtime_state,
             project_root=project_root,
             stage="codegen-identity-stability",
             summary="Runtime WASM output mode changed after code generation was bound.",
         )
+        return None
     # Validator availability is a prerequisite, not an artifact cache miss.
     # Refuse before source/toolchain identity planning or any Cargo transaction.
     if (
         _require_runtime_wasm_validator(runtime_state, project_root=project_root)
         is None
     ):
-        return False
+        return None
     # Once app layout is emitted, imports are admission obligations, not a new
     # runtime build plan. Recapture current source/toolchain identity using the
     # original plan; never rebuild or switch physical members beneath the app.
@@ -1086,14 +1092,16 @@ def _ensure_runtime_wasm_both(
             freestanding=freestanding,
         )
     except ValueError as exc:
-        return record_runtime_wasm_failure(
+        record_runtime_wasm_failure(
             runtime_state,
             project_root=project_root,
             stage="installed-runtime-selection",
             summary=str(exc),
         )
+        return None
     if installed is not None:
-        return _ensure_installed_runtime_wasm(
+        return partial(
+            _ensure_installed_runtime_wasm,
             runtime_state,
             installed,
             project_root=project_root,
@@ -1120,7 +1128,44 @@ def _ensure_runtime_wasm_both(
         codegen_use=codegen_use,
     )
     if ctx is None:
-        return False
+        return None
+    return partial(
+        _materialize_source_runtime_wasm_pair,
+        ctx,
+        binding=binding,
+        required_exports=required_exports,
+        bind_for_codegen=bind_for_codegen,
+        verify_inputs=verify_before_materialization,
+    )
+
+
+def _materialize_source_runtime_wasm_pair(
+    ctx: _RuntimeWasmPairBuild,
+    *,
+    binding: RuntimeWasmCodegenBinding | None,
+    required_exports: set[str] | frozenset[str] | None,
+    bind_for_codegen: bool,
+    verify_inputs: bool,
+) -> bool:
+    if verify_inputs:
+        identity = ctx.pre_identity
+        plan = ctx.reloc_spec.cargo_plan
+        if identity is None or identity.input_observation is None or plan is None:
+            return ctx.fail(
+                "pair-preparation", "Deferred runtime WASM build lacks input custody."
+            )
+        try:
+            identity.input_observation.verify(
+                runtime_source_roots(
+                    ctx.project_root, ctx.reloc_spec.fingerprint_features
+                )
+            )
+            plan.verify()
+        except (OSError, ValueError) as exc:
+            return ctx.fail(
+                "identity-stability",
+                f"Runtime WASM build inputs changed before materialization: {exc}",
+            )
     try:
         if binding is not None:
             generation = binding.generation
@@ -1174,13 +1219,27 @@ def _ensure_runtime_wasm_both(
                 )
             try:
                 binding = bind_runtime_wasm_codegen(
-                    generation, planned_exports, use=codegen_use
+                    generation, ctx.required_exports, use=ctx.codegen_use
                 )
             except (OSError, ValueError) as exc:
                 return ctx.fail(
                     "codegen-binding", f"Runtime WASM codegen binding failed: {exc}"
                 )
-            runtime_state.runtime_wasm_codegen_binding = binding
+            ctx.runtime_state.runtime_wasm_codegen_binding = binding
         return True
     finally:
         ctx.cleanup_staging()
+
+
+def _ensure_prepared_pair[**P](
+    prepare: Callable[P, Callable[[], bool] | None],
+) -> Callable[P, bool]:
+    @wraps(prepare)
+    def ensure(*args: P.args, **kwargs: P.kwargs) -> bool:
+        materialize = prepare(*args, **kwargs)
+        return materialize is not None and materialize()
+
+    return ensure
+
+
+_ensure_runtime_wasm_both = _ensure_prepared_pair(_prepare_runtime_wasm_pair)

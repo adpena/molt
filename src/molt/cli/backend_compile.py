@@ -101,7 +101,10 @@ from molt.cli.runtime_native_codegen import (
 )
 from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
 from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenUse
-from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
+from molt.cli.runtime_wasm_pair_build import (
+    _ensure_runtime_wasm_both,
+    _prepare_runtime_wasm_pair,
+)
 from molt.cli.runtime_wasm_validation import _admit_runtime_wasm_validator
 from molt.tool_releases import ToolDiscovery
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -337,6 +340,55 @@ def _prepare_backend_setup(
     if callable_symbols_error is not None:
         return None, callable_symbols_error
 
+    def runtime_wasm_failure() -> _CliFailure:
+        failure = runtime_state.runtime_wasm_build_failure
+        return _fail(
+            "Runtime wasm build failed" if failure is None else failure.summary,
+            json_output,
+            command="build",
+            data=None
+            if failure is None
+            else {"runtime_wasm_failure": failure.json_payload()},
+        )
+
+    materialize_runtime_wasm = None
+    if is_wasm and codegen.backend == "llvm" and not (split_runtime or linked):
+        # An LLVM wasm32 object is published linked, or as a side module beside
+        # its runtime (`--split-runtime`); an unlinked object runs nowhere.
+        return None, _fail(
+            "--target wasm --backend llvm publishes a linked module or a split "
+            "runtime (pass --linked or --split-runtime)",
+            json_output,
+            command="build",
+        )
+    if is_wasm:
+        # Resolve runtime inputs before invoking either producer. Materialize
+        # and bind this plan before admitting any app cache tier below.
+        runtime_plan_start = time.perf_counter()
+        materialize_runtime_wasm = _prepare_runtime_wasm_pair(
+            runtime_state,
+            json_output=json_output,
+            build_profile=profile,
+            cargo_profile=runtime_cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=molt_root,
+            simd_enabled=runtime_wasm_simd_policy(),
+            freestanding=is_wasm_freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+            required_exports=native_artifact_plan.runtime_export_symbols() or None,
+            bind_for_codegen=True,
+            codegen_use=RuntimeWasmCodegenUse.for_output(
+                linked=linked, split_runtime=split_runtime
+            ),
+            verify_before_materialization=True,
+        )
+        _record_pipeline_stage_ms(
+            stage_timings_ms, "backend_setup_runtime_wasm_plan", runtime_plan_start
+        )
+        if materialize_runtime_wasm is None:
+            return None, runtime_wasm_failure()
     backend_selection = _select_backend_binary(
         molt_root=molt_root,
         backend_cargo_profile=backend_cargo_profile,
@@ -364,45 +416,16 @@ def _prepare_backend_setup(
     backend_bin = backend_ensure_result.binary
     assert backend_bin is not None
     runtime_wasm_codegen_digest = ""
-    if is_wasm and codegen.backend == "llvm" and not (split_runtime or linked):
-        # An LLVM wasm32 object is published linked, or as a side module beside
-        # its runtime (`--split-runtime`); an unlinked object runs nowhere.
-        return None, _fail(
-            "--target wasm --backend llvm publishes a linked module or a split "
-            "runtime (pass --linked or --split-runtime)",
-            json_output,
-            command="build",
+    if materialize_runtime_wasm is not None:
+        runtime_materialization_start = time.perf_counter()
+        runtime_ready = materialize_runtime_wasm()
+        _record_pipeline_stage_ms(
+            stage_timings_ms,
+            "backend_setup_runtime_wasm_materialization",
+            runtime_materialization_start,
         )
-    if is_wasm:
-        # Runtime layout is an input to every WASM cache tier, including cache
-        # hits that never dispatch the backend. Bind before admitting artifacts.
-        if not _ensure_runtime_wasm_both(
-            runtime_state,
-            json_output=json_output,
-            build_profile=profile,
-            cargo_profile=runtime_cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=molt_root,
-            simd_enabled=runtime_wasm_simd_policy(),
-            freestanding=is_wasm_freestanding,
-            stdlib_profile=stdlib_profile,
-            resolved_modules=resolved_modules,
-            required_link_features=required_link_features,
-            required_exports=native_artifact_plan.runtime_export_symbols() or None,
-            bind_for_codegen=True,
-            codegen_use=RuntimeWasmCodegenUse.for_output(
-                linked=linked, split_runtime=split_runtime
-            ),
-        ):
-            failure = runtime_state.runtime_wasm_build_failure
-            return None, _fail(
-                "Runtime wasm build failed" if failure is None else failure.summary,
-                json_output,
-                command="build",
-                data=None
-                if failure is None
-                else {"runtime_wasm_failure": failure.json_payload()},
-            )
+        if not runtime_ready:
+            return None, runtime_wasm_failure()
         binding = runtime_state.runtime_wasm_codegen_binding
         if binding is None:
             return None, _fail(

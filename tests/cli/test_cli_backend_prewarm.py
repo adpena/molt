@@ -15,7 +15,7 @@ from molt.compilation_target import Target, TargetKind, admit_target
 
 from molt.cli.cache_keys import FunctionDigests
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import hashlib
 import json
 import os
@@ -300,7 +300,10 @@ def _build_backend_setup(
     )
 
 
-@pytest.mark.parametrize("stage", ["validator-readiness", "combined-cdylib-validation"])
+@pytest.mark.parametrize(
+    "stage",
+    ["validator-readiness", "identity-provisioning", "combined-cdylib-validation"],
+)
 def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
     tmp_path, monkeypatch, capsys, stage, admitted_validator_for_backend_controls
 ):
@@ -312,11 +315,11 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
 
     _isolated_molt_root(tmp_path, monkeypatch)
     state = _RuntimeArtifactState()
-    reason = (
-        "wasm-tools is required from attested toolchain custody"
-        if stage == "validator-readiness"
-        else "wasm-tools validate failed: type mismatch in function 7"
-    )
+    reason = {
+        "validator-readiness": "wasm-tools is required from attested toolchain custody",
+        "identity-provisioning": "WASI_SDK_PATH differs from the selected WASI SDK",
+        "combined-cdylib-validation": "wasm-tools validate failed: type mismatch in function 7",
+    }[stage]
     monkeypatch.setattr(
         cli_backend_compile,
         "_initialize_runtime_artifact_state",
@@ -332,8 +335,8 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
         return admitted_validator_for_backend_controls
 
     def compiler(*_args, **_kwargs):
-        assert stage != "validator-readiness", (
-            "missing validator must not admit backend Cargo"
+        assert stage == "combined-cdylib-validation", (
+            "runtime readiness must be established before admitting backend Cargo"
         )
         return SimpleNamespace(binary=tmp_path / "backend")
 
@@ -347,7 +350,9 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
         cli_backend_compile, "_ensure_selected_backend_binary", compiler
     )
 
-    def refuse(runtime_state, **_kwargs):
+    def prepare(
+        runtime_state: _RuntimeArtifactState, **_kwargs: object
+    ) -> Callable[[], bool] | None:
         assert stage != "validator-readiness", (
             "missing validator must not plan runtime Cargo"
         )
@@ -357,14 +362,21 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
             )
             is admitted_validator_for_backend_controls
         )
-        return record_runtime_wasm_failure(
-            runtime_state,
-            project_root=tmp_path,
-            stage=stage,
-            summary=reason,
-        )
 
-    monkeypatch.setattr(cli_backend_compile, "_ensure_runtime_wasm_both", refuse)
+        def refuse() -> bool:
+            return record_runtime_wasm_failure(
+                runtime_state,
+                project_root=tmp_path,
+                stage=stage,
+                summary=reason,
+            )
+
+        if stage == "identity-provisioning":
+            refuse()
+            return None
+        return refuse
+
+    monkeypatch.setattr(cli_backend_compile, "_prepare_runtime_wasm_pair", prepare)
     prepared, error = _build_backend_setup(TargetKind.WASM, tmp_path, "llvm")
     assert prepared is None and error == 2
     payload = json.loads(capsys.readouterr().out)
@@ -517,6 +529,15 @@ def test_prewarm_admits_the_backend_the_build_selects(
         cli_backend_compile,
         "_stage_runtime_callable_symbols_for_native_codegen",
         lambda *_args, **_kwargs: ("", None),
+    )
+
+    def unexpected_runtime_materialization() -> bool:
+        raise AssertionError("the backend admission refusal must stop materialization")
+
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_prepare_runtime_wasm_pair",
+        lambda *_args, **_kwargs: unexpected_runtime_materialization,
     )
     build_targets: list[Target] = []
     build_backends: list[str] = []
