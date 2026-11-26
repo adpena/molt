@@ -134,6 +134,20 @@ receiver behavior.
    activated bodies and arguments do not change syntax. Graph and binding queries
    therefore share that source generation's summaries; intrinsic classification
    consumes the full scan's summary directly. Unadmitted mutable trees recompute.
+
+   Unresolved module escapes through positional call operands retain the source call and
+   operand position. Graph refinement drops the row only when every use of the value,
+   through local aliases included, borrows the module under the current call proof.
+   The invocation transfer owns this fact and intersects it across reaching alternatives.
+   A missing or changed callee keeps the escape. A returned namespace entry or default
+   has independent provenance. General attribute lookup may invoke a receiver hook,
+   so reading `__dict__` through that path provides no unconditional borrow.
+   Go's [escape analysis](https://go.dev/src/cmd/compile/internal/escape/escape.go)
+   likewise carries per-operand effects and independent result flows.
+   The same graph refinement reads computed store keys from the evaluated name operand.
+   A constant becomes a named store, a spelling bound restricts identity writes, and an
+   unknown name stays conservative. Refinement publishes only the earliest surviving
+   escape per owner and module target.
    Canonical private-name resolution precedes publication, so a class's
    `target.__member` and `global __name` retain CPython's mangled bindings while
    literal strings passed to `setattr` retain their exact spelling. Summary schema
@@ -275,8 +289,10 @@ receiver behavior.
    identical context/premise pairs do no further scan. Uninspected native/artifact/catalog owners
    contribute unknown writes rather than an empty proof. The resulting scan authority carries
    its actual premise to runtime-import policy, frontend contexts, cache identities
-   and workers. The five-field premise carries foreign names, future canonical-member
-   writes, entry member uncertainty, noncanonical providers and opaque source activations.
+   and workers. The premise carries foreign names, future canonical-member writes,
+   entry member uncertainty, noncanonical providers, opaque source activations and
+   code rebinding. An opaque caller widens argument values. Executing the same code
+   over another globals mapping also requires an admitted code rebinder.
    Unknown opaque custody is distinct from a proved empty set. Source bodies whose
    real function/class values escape, are recreated or have visible attribute mutations
    retain conservative activation. Exact callees transfer arguments through the

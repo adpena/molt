@@ -419,9 +419,11 @@ class PythonBindingFlowPolicy:
     target_sys_platform: str | None = None
     standard_imports_are_canonical: bool = True
     noncanonical_imports: tuple[str, ...] = ()
-    # A closed value-demand graph records source bodies whose callable/code
-    # can escape into a different FunctionType activation namespace.
+    # Bodies with one or more callers outside the proven argument graph.
     opaque_activation_sources: tuple[PythonSourceKey, ...] | None = None
+    # Recreating an exposed function over other globals requires a code
+    # rebinder. Standalone callers have no closed graph ruling one out.
+    code_rebinding: bool = True
     analyze_deferred_bodies: bool = True
     # One source-owned activation may carry proven string arguments, including
     # a joined finite domain. The binding fixpoint owns their lifetime and flow;
@@ -502,6 +504,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             standard_imports_are_canonical=self.standard_imports_are_canonical,
             noncanonical_imports=self.noncanonical_imports,
             opaque_activation_sources=self.opaque_activation_sources,
+            code_rebinding=self.code_rebinding,
             analyze_deferred_bodies=self.analyze_deferred_bodies,
             activation_argument_values=self.activation_argument_values,
             foreign_namespace_writes=self.foreign_namespace_writes,
@@ -2576,6 +2579,7 @@ class _CallSemantics:
     argument_escape_indices: frozenset[int] = frozenset()
     deferred_execution: frozenset[DeferredExecution] = frozenset()
     source_result_projected: bool = False
+    borrowed_module_operand: int | None = None
 
 
 @dataclass(slots=True)
@@ -3868,16 +3872,15 @@ class _Analyzer:
             return False
         slot = self._slot_for_name(scope, name)
         if slot is None or self.module_slot_mask & (1 << slot):
-            if (
-                not self._callback_rebinds_module_name(name)
-                and self._opaque_activation_sources is not None
-            ):
-                # Initialization histories already join every source-visible
-                # global value. Exposed code/callables can instead run with
-                # another globals dictionary; that fact belongs to the same
-                # source-value demand worklist, including enclosing recreations.
-                return self._lexical_activation_is_opaque(scope)
-            return True
+            if self._callback_rebinds_module_name(name):
+                return True
+            # Initialization histories already join the current module's
+            # values. Another globals mapping needs both a possible code
+            # rebinder and an exposed definition or enclosing activation.
+            return self.policy.code_rebinding and (
+                self._opaque_activation_sources is None
+                or self._lexical_activation_is_opaque(scope)
+            )
         owner = scope.namespace_lookup_owner(name)
         return owner is not None and bool(
             self.states._binding_resolution(state_id, slot).identities
@@ -4843,6 +4846,7 @@ class _Analyzer:
         argument_escape_indices: frozenset[int] = frozenset()
         selected_deferred: frozenset[DeferredExecution] = frozenset()
         source_result_projected = False
+        borrowed_module_operand: int | None = None
         method_shape = None
         receiver_node: ast.expr | None = None
         receiver_slot: int | None = None
@@ -5072,6 +5076,7 @@ class _Analyzer:
             # read, with no lookup hook (the runtime reads the static cell,
             # then the mapping) and no operand escape.
             owner_index, name_index, missing_index = entry_read
+            borrowed_module_operand = owner_index
             owner = argument_results[owner_index]
             mapping = python_source_projection_key(
                 node, PythonSourceProjection.CALL_ATTRIBUTE
@@ -5532,6 +5537,7 @@ class _Analyzer:
             argument_escape_indices=argument_escape_indices,
             deferred_execution=selected_deferred,
             source_result_projected=source_result_projected,
+            borrowed_module_operand=borrowed_module_operand,
         )
 
     @staticmethod
@@ -5802,10 +5808,16 @@ class _Analyzer:
                 )
                 if inert_alias:
                     shape = StaticSubscriptionShape(shape.result, invokes_python=False)
-                result_override = (
-                    shape.result
-                    if assignment_target.slice_parts is not None
-                    else self._source_element_result(
+                if assignment_target.slice_parts is not None:
+                    result_override = shape.result
+                elif owner_identities == int(PythonIdentity.SYS_MODULES):
+                    # The source scan publishes this lookup's cache-key
+                    # projection. The selected value does not own the cache.
+                    result_override = StaticExpressionResult(
+                        source_origins=frozenset({self._node_key(node)})
+                    )
+                else:
+                    result_override = self._source_element_result(
                         self._node_key(node),
                         assignment_target.owner_result,
                         shape.result,
@@ -5814,7 +5826,6 @@ class _Analyzer:
                         if type(assignment_target.static_index) is str
                         else None,
                     )
-                )
                 if assignment_target.is_exact_globals_dict:
                     selected = self._current_globals_item(
                         state_id, assignment_target.static_index
@@ -6479,6 +6490,13 @@ class _Analyzer:
                     previous_call.module_metadata_at_invocation
                 ),
                 builtin_specializations=builtin_specializations,
+                borrowed_module_operand=(
+                    call_semantics.borrowed_module_operand
+                    if previous_call is None
+                    or previous_call.borrowed_module_operand
+                    == call_semantics.borrowed_module_operand
+                    else None
+                ),
             )
         elif isinstance(node, ast.NamedExpr):
             if self._target_may_write_import_metadata(node.target):
@@ -8697,10 +8715,17 @@ class _Analyzer:
                 name=node.name,
                 declarations=declarations,
             )
+            # An explicit, proven builtin object selects the same native
+            # metaclass and namespace preparation as the implicit root.
+            native_root = not node.bases or (
+                len(node.bases) == 1
+                and not isinstance(node.bases[0], ast.Starred)
+                and base_results[0].identities == int(PythonIdentity.BUILTIN_OBJECT)
+            )
             native_preparation = (
                 self.policy.class_preparation is PythonClassPreparation.MOLT_NATIVE
                 and scope.activation_namespace_stable
-                and not node.bases
+                and native_root
                 and not node.keywords
             )
             # Bases that are each a plain class statement's class keep the

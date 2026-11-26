@@ -1268,10 +1268,102 @@ def test_import_cache_key_survives_alias_only_when_frame_is_sealed(
     assert decode_python_namespace_write(python_namespace_write_payload(write)) == write
 
 
+def test_module_escape_consumes_only_exact_borrowed_call_operands() -> None:
+    from molt.compiler_analysis.python_import_scan import _collect_imports_for_graph
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.target_python import TargetPythonVersion
+
+    tree = ast.parse(
+        """\
+import sys
+from _intrinsics import require_intrinsic as require
+read = require("molt_namespace_entry_get")
+read_globals = require("molt_dataclasses_init_globals")
+def reader(key, flag):
+    borrowed = sys.modules[key]
+    if flag:
+        return read(borrowed, "first", None)
+    return read(borrowed, "last", None)
+def fallback(key):
+    return read(None, "ignored", sys.modules[key])
+def mixed(key, callback, flag):
+    callee = read if flag else callback
+    return callee(sys.modules[key], "value", None)
+def dispatches_getattribute(key):
+    return read_globals(sys.modules[key])
+"""
+    )
+    raw = python_namespace_summary(tree)
+    candidates = {
+        row.line: row for row in raw.foreign_writes if row.construct == "module_escape"
+    }
+    assert set(candidates) == {6, 11, 14, 16}
+    assert len(candidates[6].borrowed_if) == 2
+    assert all(
+        decode_python_namespace_write(python_namespace_write_payload(row)) == row
+        for row in candidates.values()
+    )
+
+    for foreign_writes, expected in [
+        ((), {11, 14, 16}),
+        (("read",), {6, 11, 14, 16}),
+    ]:
+        result = _collect_imports_for_graph(
+            tree,
+            module_name="probe",
+            target_python=TargetPythonVersion(3, 15, 0),
+            namespace_premise=PythonNamespacePremise(
+                foreign_writes, 0, 0, (), opaque_activation_sources=()
+            ),
+        )
+        assert result.namespace_summary is not None
+        assert {
+            row.line
+            for row in result.namespace_summary.foreign_writes
+            if row.construct == "module_escape"
+        } == expected
+
+
+def test_computed_store_uses_the_attribute_operand_at_its_source_point() -> None:
+    from molt.compiler_analysis.python_import_scan import _collect_imports_for_graph
+    from molt.compiler_analysis.python_namespace_graph import (
+        PythonNamespacePremise,
+        graph_python_namespace_writes,
+    )
+    from molt.compiler_analysis.python_string_facts import PythonStringBound
+    from molt.target_python import TargetPythonVersion
+
+    tree = ast.parse(
+        """\
+def assign(instance, suffix):
+    name = f"public_{suffix}"
+    setattr(instance, name, 1)
+    name = "__class__"
+    object.__setattr__(instance, name, 2)
+"""
+    )
+    scan = _collect_imports_for_graph(
+        tree,
+        module_name="producer",
+        target_python=TargetPythonVersion(3, 15, 0),
+        namespace_premise=PythonNamespacePremise(
+            (), 0, 0, (), opaque_activation_sources=()
+        ),
+    )
+    assert scan.namespace_summary is not None
+    first, second = scan.namespace_summary.foreign_writes
+    assert first.construct == "computed_member_store"
+    assert first.key_bound == PythonStringBound("public_", "", 7)
+    assert second.construct == "member_store"
+    assert second.name == "__class__"
+    graph = graph_python_namespace_writes((first,), lambda _: None)
+    assert not graph.computed_member_writes
+
+
 def test_same_line_namespace_cache_writes_keep_source_site_order():
     from dataclasses import replace
     from molt.compiler_analysis.python_namespace_writes import (
-        refine_namespace_cache_writes,
+        refine_namespace_writes,
     )
 
     tree = ast.parse(
@@ -1282,14 +1374,14 @@ def test_same_line_namespace_cache_writes_keep_source_site_order():
     )
     summary = python_namespace_summary(tree)
     assert {write.source_site for write in summary.foreign_writes} == {first, second}
-    refined = refine_namespace_cache_writes(
+    refined = refine_namespace_writes(
         summary,
         [
             (first, ("typing",), frozenset(), frozenset()),
             (second, ("typing",), frozenset(), frozenset()),
         ],
     )
-    reversed_input = refine_namespace_cache_writes(
+    reversed_input = refine_namespace_writes(
         replace(summary, foreign_writes=tuple(reversed(summary.foreign_writes))),
         [
             (second, ("typing",), frozenset(), frozenset()),

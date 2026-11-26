@@ -3730,9 +3730,7 @@ def test_archive_normal_result_controls_only_exact_calls(
     index = analyze_python_bindings(
         tree,
         source_digest=python_ast_digest(tree),
-        policy=python_namespace_binding_policy(
-            PythonBindingPolicy(), premise, lowering=True
-        ),
+        policy=python_namespace_binding_policy(PythonBindingPolicy(), premise),
     )
     call = next(
         node

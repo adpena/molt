@@ -76,28 +76,34 @@ impl Analysis for ValueRange {
     }
 
     fn compute_in(func: &TirFunction, analyses: &mut AnalysisManager) -> Self::Result {
-        let facts = ScalarFacts::new(func);
-        analyses.get::<LoopForest>(func);
-        if analyses.cached::<ScalarEvolution>().is_none() {
-            // Reuse this solve's scalar provenance while establishing the
-            // recurrence facts consumed by both analyses.
-            let forest = analyses
-                .cached::<LoopForest>()
-                .expect("prepared loop forest");
-            let scev = compute_scev_with_loop_forest(&facts, forest);
-            analyses.prepopulate::<ScalarEvolution>(scev);
-        }
-        compute_seeded(
-            &facts,
-            analyses
-                .cached::<ScalarEvolution>()
-                .expect("prepared scalar evolution"),
-            analyses
-                .cached::<LoopForest>()
-                .expect("prepared loop forest"),
-            None,
-        )
+        compute_in_with_scalar_facts(&ScalarFacts::new(func), analyses)
     }
+}
+
+pub(super) fn compute_in_with_scalar_facts(
+    facts: &ScalarFacts<'_>,
+    analyses: &mut AnalysisManager,
+) -> ValueRangeResult {
+    analyses.get::<LoopForest>(facts.body());
+    if analyses.cached::<ScalarEvolution>().is_none() {
+        // Reuse this solve's scalar provenance while establishing the
+        // recurrence facts consumed by both analyses.
+        let forest = analyses
+            .cached::<LoopForest>()
+            .expect("prepared loop forest");
+        let scev = compute_scev_with_loop_forest(facts, forest);
+        analyses.prepopulate::<ScalarEvolution>(scev);
+    }
+    compute_seeded(
+        facts,
+        analyses
+            .cached::<ScalarEvolution>()
+            .expect("prepared scalar evolution"),
+        analyses
+            .cached::<LoopForest>()
+            .expect("prepared loop forest"),
+        None,
+    )
 }
 
 // ---------------------------------------------------------------------------

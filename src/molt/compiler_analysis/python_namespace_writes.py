@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import _SourceImportCacheWrite
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 19
+SUMMARY_SCHEMA: Final = 20
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -204,6 +204,11 @@ _INPLACE_METHODS: Final[dict[type[ast.operator], str]] = {
 }
 
 
+class ModuleBorrowRequirement(NamedTuple):
+    call: PythonSourceKey
+    position: int
+
+
 @dataclass(frozen=True, slots=True)
 class PythonNamespaceWrite:
     """One named write to another module's namespace.
@@ -227,8 +232,10 @@ class PythonNamespaceWrite:
     # runs: the unconditional top-level imports of its module that precede the
     # top-level statement holding it. Its handler cannot swallow their failure.
     initialized: tuple[str, ...] = ()
-    # Source expression supplying a computed import-cache key.
+    # Source expression supplying a computed cache key or member name.
     key_source: PythonSourceKey | None = None
+    # All these uses must borrow for the module value to stay local.
+    borrowed_if: tuple[ModuleBorrowRequirement, ...] = ()
 
 
 def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
@@ -242,20 +249,33 @@ def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
         None if write.key_bound is None else write.key_bound.payload(),
         list(write.initialized),
         None if write.key_source is None else list(write.key_source),
+        [[list(call), position] for call, position in write.borrowed_if],
     ]
 
 
 def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
-    if not isinstance(raw, list) or len(raw) != 9:
+    if not isinstance(raw, list) or len(raw) != 10:
         raise ValueError("invalid foreign namespace write")
-    module, name, construct, line, owner, site, bound, initialized, key_source = raw
+    (
+        module,
+        name,
+        construct,
+        line,
+        owner,
+        site,
+        bound,
+        initialized,
+        key_source,
+        borrows,
+    ) = raw
     if key_source is not None and (
-        construct != "import_binding"
-        or site is None
+        construct not in {"import_binding", "computed_member_store"}
+        or construct == "import_binding"
+        and site is None
         or name is not None
         or bound is not None
     ):
-        raise ValueError("invalid namespace cache key source")
+        raise ValueError("invalid namespace key source")
     if not isinstance(initialized, list) or not all(
         type(item) is str for item in initialized
     ):
@@ -317,6 +337,31 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         raise ValueError("invalid module escape")
     if construct == "own_module_escape" and (module is not None or name is not None):
         raise ValueError("invalid own module escape")
+    if (
+        not isinstance(borrows, list)
+        or borrows
+        and construct
+        not in {
+            "module_escape",
+            "own_module_escape",
+        }
+    ):
+        raise ValueError("invalid module borrow requirements")
+    borrowed_if = []
+    for operand in borrows:
+        if (
+            not isinstance(operand, list)
+            or len(operand) != 2
+            or type(operand[1]) is not int
+            or operand[1] < 0
+        ):
+            raise ValueError("invalid module borrow operand")
+        call = decode_python_source_key(operand[0])
+        if call[-1] != "Call":
+            raise ValueError("invalid module borrow call")
+        borrowed_if.append(ModuleBorrowRequirement(call, operand[1]))
+    if borrowed_if != sorted(set(borrowed_if)):
+        raise ValueError("noncanonical module borrow requirements")
     return PythonNamespaceWrite(
         module,
         name,
@@ -327,6 +372,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         key_bound,
         tuple(initialized),
         None if key_source is None else decode_python_source_key(key_source),
+        tuple(borrowed_if),
     )
 
 
@@ -439,6 +485,7 @@ def _source_order(
     PythonSourceKey,
     PythonSourceKey,
     tuple[str, str, int],
+    tuple[ModuleBorrowRequirement, ...],
 ]:
     absent: PythonSourceKey = (-1, -1, -1, -1, "")
     bound = write.key_bound
@@ -451,6 +498,7 @@ def _source_order(
         write.source_site or absent,
         write.key_source or absent,
         ("", "", -1) if bound is None else (bound.prefix, bound.suffix, bound.minimum),
+        write.borrowed_if,
     )
 
 
@@ -1083,6 +1131,7 @@ class _NamespaceWriteCollector:
                 PythonStringBound | None,
                 tuple[str, ...],
                 PythonSourceKey | None,
+                tuple[ModuleBorrowRequirement, ...],
             ],
             PythonNamespaceWrite,
         ] = {}
@@ -1240,6 +1289,8 @@ class _NamespaceWriteCollector:
             spelling = self.references.get(node.id)
             if spelling is None or spelling in _IMPORT_HOOK_OBJECTS:
                 continue
+            if spelling == "types.FunctionType" and direct_call:
+                self._record(None, None, "code", site)
             module_name, _, member = spelling.rpartition(".")
             if module_name == "builtins" and member in _NAMESPACE_BUILTINS:
                 # ``from builtins import globals [as g]``.
@@ -1374,6 +1425,7 @@ class _NamespaceWriteCollector:
         key_bound: PythonStringBound | None = None,
         initialized: tuple[str, ...] = (),
         key_source: PythonSourceKey | None = None,
+        borrowed_if: tuple[ModuleBorrowRequirement, ...] = (),
     ) -> None:
         if not site.executing:
             return
@@ -1387,6 +1439,7 @@ class _NamespaceWriteCollector:
             key_bound,
             initialized,
             key_source,
+            borrowed_if,
         )
         line = getattr(site.node if node is None else node, "lineno", 0)
         known = self.writes.get(key)
@@ -1401,18 +1454,31 @@ class _NamespaceWriteCollector:
                 key_bound,
                 initialized,
                 key_source,
+                borrowed_if,
             )
 
     def _member_store(
         self,
-        name: str | PythonStringBound | None,
+        name: str | ast.expr | None,
         site: _Site,
         receiver: ast.AST | None = None,
     ) -> None:
         """An attribute write on a receiver that is not a module reference."""
-        if not isinstance(name, str):
-            self._record(None, None, "computed_member_store", site, key_bound=name)
-        elif (
+        spelling = python_string_spelling(name)
+        if not isinstance(spelling, str):
+            self._record(
+                None,
+                None,
+                "computed_member_store",
+                site,
+                key_bound=spelling,
+                key_source=python_node_source_key(name)
+                if spelling is None and isinstance(name, ast.expr)
+                else None,
+            )
+            return
+        name = spelling
+        if (
             receiver is not None
             and name not in _CONSERVATIVE_MEMBER_NAMES
             and self._local_definition(receiver)
@@ -1689,54 +1755,67 @@ class _NamespaceWriteCollector:
         ``key`` is a ``sys.modules``/``import_module`` key; ``module`` an import
         binding's spelling. ``__name__`` names this module's own value.
         """
-        if not self._value_escapes(value, 0):
+        borrows = self._module_borrow_requirements(value, 0)
+        if borrows == ():
             return
-        if module is not None:
-            self._record(module, None, "module_escape", site)
-        elif isinstance(key, ast.Name) and key.id == "__name__":
-            self._record(None, None, "own_module_escape", site)
+        if module is None and isinstance(key, ast.Name) and key.id == "__name__":
+            self._record(
+                None, None, "own_module_escape", site, borrowed_if=borrows or ()
+            )
         else:
-            self._record(_literal_module_name(key), None, "module_escape", site)
+            self._record(
+                module if module is not None else _literal_module_name(key),
+                None,
+                "module_escape",
+                site,
+                borrowed_if=borrows or (),
+            )
 
-    def _value_escapes(self, value: ast.AST, depth: int) -> bool:
-        """Whether a module value may reach code that keeps or writes it.
+    def _module_borrow_requirements(
+        self, value: ast.AST, depth: int
+    ) -> tuple[ModuleBorrowRequirement, ...] | None:
+        """Find the calls that must borrow along every use of this module value.
 
-        An attribute access on it (a direct receiver's named store is recorded
-        where it occurs), a comparison, a truth test, a discarded value and a
-        read-only builtin call keep it here; a store or ``setattr`` through an
-        alias, and ``vars``, do not. A local alias keeps it when every load of the alias
-        in its function does; any other use escapes.
+        An empty tuple means the syntax keeps the value local. None means it
+        reaches a store, return, opaque alias or another unconditional escape.
+        Source points describe the remaining positional argument uses so the
+        typed call analysis can discharge them under its own premise.
         """
-        parents = self._tree_parents()
-        parent = parents.get(value)
+        parent = self._tree_parents().get(value)
         if isinstance(parent, ast.Attribute) and parent.value is value:
             # A store through an alias writes the module where no module
             # reference names it; a direct receiver's store is recorded.
-            return depth > 0 and isinstance(parent.ctx, (ast.Store, ast.Del))
-        if isinstance(parent, (ast.Expr, ast.Compare, ast.Assert)):
-            return False
-        if isinstance(parent, ast.Call) and parent.func is value:
-            return False
-        if isinstance(parent, (ast.If, ast.While)) and parent.test is value:
-            return False
-        if isinstance(parent, ast.IfExp):
-            return parent.test is not value and (
-                depth >= _ESCAPE_ALIAS_DEPTH or self._value_escapes(parent, depth + 1)
+            return (
+                None
+                if depth > 0 and isinstance(parent.ctx, (ast.Store, ast.Del))
+                else ()
             )
-        if isinstance(parent, ast.BoolOp):
-            return depth >= _ESCAPE_ALIAS_DEPTH or self._value_escapes(
-                parent, depth + 1
+        if isinstance(parent, (ast.Expr, ast.Compare, ast.Assert)):
+            return ()
+        if isinstance(parent, ast.Call) and parent.func is value:
+            return ()
+        if isinstance(parent, (ast.If, ast.While, ast.IfExp)) and parent.test is value:
+            return ()
+        if isinstance(parent, (ast.IfExp, ast.BoolOp)):
+            return (
+                self._module_borrow_requirements(parent, depth + 1)
+                if depth < _ESCAPE_ALIAS_DEPTH
+                else None
             )
         if isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not):
-            return False
-        if (
-            isinstance(parent, ast.Call)
-            and parent.func is not value
-            and value in parent.args
-            and isinstance(parent.func, ast.Name)
-            and parent.func.id in _MODULE_READ_CALLS
-        ):
-            return False
+            return ()
+        if isinstance(parent, ast.Call) and value in parent.args:
+            if (
+                isinstance(parent.func, ast.Name)
+                and parent.func.id in _MODULE_READ_CALLS
+            ):
+                return ()
+            return (
+                ModuleBorrowRequirement(
+                    python_node_source_key(parent),
+                    parent.args.index(cast(ast.expr, value)),
+                ),
+            )
         if (
             isinstance(parent, ast.Assign)
             and parent.value is value
@@ -1744,28 +1823,29 @@ class _NamespaceWriteCollector:
             and isinstance(parent.targets[0], ast.Name)
             and depth < _ESCAPE_ALIAS_DEPTH
         ):
-            return self._alias_escapes(parent.targets[0].id, parent, depth + 1)
-        return True
+            return self._alias_borrow_requirements(
+                parent.targets[0].id, parent, depth + 1
+            )
+        return None
 
-    def _alias_escapes(self, name: str, binding: ast.AST, depth: int) -> bool:
-        """Whether any load of local alias ``name`` lets its module escape.
-
-        The alias must be a function local: a module-scope alias is a global
-        any code may read, and a captured alias outlives the function.
-        """
+    def _alias_borrow_requirements(
+        self, name: str, binding: ast.AST, depth: int
+    ) -> tuple[ModuleBorrowRequirement, ...] | None:
+        """Combine every use of a noncaptured function-local module alias."""
         parents = self._tree_parents()
         scope = parents.get(binding)
         while scope is not None and not isinstance(
             scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
         ):
             if isinstance(scope, ast.ClassDef):
-                return True
+                return None
             scope = parents.get(scope)
         if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return True
+            return None
+        borrows: set[ModuleBorrowRequirement] = set()
         for node in ast.walk(scope):
             if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
-                return True
+                return None
             if not (isinstance(node, ast.Name) and node.id == name):
                 continue
             owner = parents.get(node)
@@ -1775,10 +1855,13 @@ class _NamespaceWriteCollector:
                 owner = parents.get(owner)
             if owner is not scope:
                 # A nested scope captures or shadows it: either may keep it.
-                return True
-            if isinstance(node.ctx, ast.Load) and self._value_escapes(node, depth):
-                return True
-        return False
+                return None
+            if isinstance(node.ctx, ast.Load):
+                requirements = self._module_borrow_requirements(node, depth)
+                if requirements is None:
+                    return None
+                borrows.update(requirements)
+        return tuple(sorted(borrows))
 
     def _dunder_only_use(
         self,
@@ -1931,6 +2014,15 @@ class _NamespaceWriteCollector:
                 self._member_store(node.attr, site, node.value)
             return
         if (
+            node.attr == "FunctionType"
+            and self._reference(node.value) == "types"
+            and isinstance(parent, ast.Call)
+            and parent.func is node
+        ):
+            # The code argument may arrive through a computed getattr. The
+            # constructor itself supplies the foreign-globals capability.
+            self._record(None, None, "code", site)
+        if (
             node.attr == "import_module"
             and self._reference(node.value) == "importlib"
             and isinstance(parent, ast.Call)
@@ -1959,10 +2051,7 @@ class _NamespaceWriteCollector:
                     name = _literal_string(parent.args[0]) if parent.args else None
                     self._record(module, name, "setattr", site, node=parent)
                 else:
-                    name = python_string_spelling(
-                        _dunder_setattr_name(node.attr, parent)
-                    )
-                    self._member_store(name, site)
+                    self._member_store(_dunder_setattr_name(node.attr, parent), site)
         elif node.attr in _HOOK_ATTRIBUTES:
             spelling = self._reference(node)
             if spelling in _IMPORT_HOOK_OBJECTS:
@@ -1992,13 +2081,18 @@ class _NamespaceWriteCollector:
         elif func in {"setattr", "delattr"} and node.args:
             is_module, module = self._module_receiver(node.args[0])
             name = (
-                python_string_spelling(node.args[1])
-                if len(node.args) > 1 and not isinstance(node.args[0], ast.Starred)
+                node.args[1]
+                if len(node.args) > 1
+                and not any(isinstance(arg, ast.Starred) for arg in node.args[:2])
                 else None
             )
             if is_module:
+                spelling = python_string_spelling(name)
                 self._record(
-                    module, name if isinstance(name, str) else None, "setattr", site
+                    module,
+                    spelling if isinstance(spelling, str) else None,
+                    "setattr",
+                    site,
                 )
             else:
                 self._member_store(name, site, node.args[0])
@@ -2322,12 +2416,12 @@ class _NamespaceWriteCollector:
         return self._initialized_at.get(statement, ())
 
 
-def refine_namespace_cache_writes(
+def refine_namespace_writes(
     summary: PythonNamespaceSummary,
     cache_writes: Iterable[_SourceImportCacheWrite],
     bindings: PythonBindingFacts | None = None,
 ) -> PythonNamespaceSummary:
-    """Project exact typed cache keys onto their captured operation sites.
+    """Apply typed cache keys and borrowed operands at their captured sites.
 
     Raw syntax remains policy-independent. A missing, uncertain or differently
     captured operation cannot narrow its write; same-line operations never
@@ -2346,7 +2440,28 @@ def refine_namespace_cache_writes(
                 else tuple(sorted(set(previous) | set(keys)))
             )
     rows = []
+    escapes: dict[
+        tuple[str | None, PythonNamespaceWriteConstruct, PythonSourceKey | None],
+        PythonNamespaceWrite,
+    ] = {}
+    computed_stores: dict[
+        tuple[PythonSourceKey | None, PythonStringBound | None], PythonNamespaceWrite
+    ] = {}
     for write in summary.foreign_writes:
+        if write.construct in {"module_escape", "own_module_escape"}:
+            key = (write.module, write.construct, write.source_owner)
+            # Raw rows are already in source order. Only the first surviving
+            # escape of this value class is needed by graph publication.
+            if key not in escapes and not (
+                bindings is not None
+                and write.borrowed_if
+                and all(
+                    bindings.module_operand_is_borrowed(*operand)
+                    for operand in write.borrowed_if
+                )
+            ):
+                escapes[key] = replace(write, borrowed_if=())
+            continue
         keys = keys_by_site.get(write.source_site)
         if write.construct == "import_binding" and keys is not None:
             rows.extend(
@@ -2360,6 +2475,27 @@ def refine_namespace_cache_writes(
             if isinstance(key, PythonStringBound):
                 write = replace(write, key_bound=key, key_source=None)
             elif isinstance(key, str):
-                write = replace(write, name=key, key_source=None)
+                write = replace(
+                    write,
+                    name=key,
+                    construct="member_store"
+                    if write.construct == "computed_member_store"
+                    else write.construct,
+                    key_source=None,
+                )
+        if write.construct == "computed_member_store":
+            # The evaluated spelling is the graph input. Discard the
+            # source-scoped query coordinate once its answer is consumed.
+            computed_stores.setdefault(
+                (write.source_owner, write.key_bound), replace(write, key_source=None)
+            )
+            continue
         rows.append(write)
-    return replace(summary, foreign_writes=tuple(sorted(set(rows), key=_source_order)))
+    rows.extend(escapes.values())
+    rows.extend(computed_stores.values())
+    refined = tuple(sorted(set(rows), key=_source_order))
+    return (
+        summary
+        if refined == summary.foreign_writes
+        else replace(summary, foreign_writes=refined)
+    )

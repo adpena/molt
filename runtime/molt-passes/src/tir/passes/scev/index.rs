@@ -2,7 +2,6 @@ use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::LoopForestResult;
 use crate::tir::blocks::BlockId;
-use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
 
@@ -15,19 +14,16 @@ pub(super) struct DefIndex<'a> {
     /// value → defining block.
     pub(super) def_block: HashMap<ValueId, BlockId>,
     /// value → (opcode, operands, no_signed_wrap) for op-defined values.
-    pub(super) def_op: HashMap<ValueId, (OpCode, Vec<ValueId>, bool)>,
+    pub(super) def_op: HashMap<ValueId, (OpCode, &'a [ValueId], bool)>,
     /// value → constant integer (ConstInt).
     pub(super) const_int: HashMap<ValueId, i64>,
-    /// header → its block-argument value ids (in order).
-    pub(super) header_args: HashMap<BlockId, Vec<ValueId>>,
+    /// Argument value → (loop header, incoming payload index).
+    pub(super) header_arg_sites: HashMap<ValueId, (BlockId, usize)>,
+    /// Every explicit incoming edge from a reachable block, with its own payload.
+    pub(super) header_edges: HashMap<BlockId, Vec<(BlockId, &'a [ValueId])>>,
     /// Mathematical scalar resolution, including exact borrowed binding views.
     /// It describes values, never permission to erase publication or callbacks.
     pub(super) copy_src: &'a HashMap<ValueId, ValueId>,
-    /// Blocks some execution reaches. An edge from any other block delivers
-    /// nothing: the SSA lift keeps a vestigial `loop_end -> header` edge whose
-    /// arguments are fabricated `None`s, and counting it as an entry would make
-    /// every loop's start value disagree (the standard SCCP phi rule).
-    pub(super) reachable: HashSet<BlockId>,
 }
 
 impl DefIndex<'_> {
@@ -53,15 +49,32 @@ pub(super) fn build_def_index<'a>(
     let mut def_block = HashMap::default();
     let mut def_op = HashMap::default();
     let mut const_int = HashMap::default();
-    let mut header_args: HashMap<BlockId, Vec<ValueId>> = HashMap::default();
+    let mut header_arg_sites = HashMap::default();
+    let mut header_edges: HashMap<_, Vec<_>> = HashMap::default();
     let copy_src = facts.forwarding();
+    let reachable = crate::tir::dominators::executable_reachable_blocks(func);
 
     for (&bid, block) in &func.blocks {
         for arg in &block.args {
             def_block.insert(arg.id, bid);
         }
         if loop_headers.contains(&bid) {
-            header_args.insert(bid, block.args.iter().map(|a| a.id).collect());
+            header_arg_sites.extend(
+                block
+                    .args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, arg)| (arg.id, (bid, index))),
+            );
+        }
+        // Retained lexical latches can carry fabricated phi values. Only
+        // executable predecessors contribute to recurrence analysis.
+        if reachable.contains(&bid) {
+            block.terminator.for_each_labeled_edge(|_, target, args| {
+                if loop_headers.contains(&target) {
+                    header_edges.entry(target).or_default().push((bid, args));
+                }
+            });
         }
         for op in &block.ops {
             // A result proven to fit the inline-int47 window is the exact sum:
@@ -77,7 +90,7 @@ pub(super) fn build_def_index<'a>(
             }
             for &r in &op.results {
                 def_block.insert(r, bid);
-                def_op.insert(r, (op.opcode, op.operands.clone(), nsw));
+                def_op.insert(r, (op.opcode, op.operands.as_slice(), nsw));
             }
         }
     }
@@ -92,37 +105,8 @@ pub(super) fn build_def_index<'a>(
         def_block,
         def_op,
         const_int,
-        header_args,
+        header_arg_sites,
+        header_edges,
         copy_src,
-        reachable: crate::tir::dominators::executable_reachable_blocks(func),
     }
-}
-
-/// Incoming edges to a header that pass arguments: for each predecessor block,
-/// the argument vector it forwards to `header` and whether it is a back-edge
-/// (i.e. the predecessor is inside the loop body).
-pub(super) struct HeaderIncoming {
-    /// (predecessor, args, is_back_edge)
-    pub(super) edges: Vec<(BlockId, Vec<ValueId>, bool)>,
-}
-
-pub(super) fn collect_header_incoming(
-    func: &TirFunction,
-    header: BlockId,
-    body: &HashSet<BlockId>,
-    reachable: &HashSet<BlockId>,
-) -> HeaderIncoming {
-    let mut edges = Vec::new();
-    for (&bid, block) in &func.blocks {
-        if !reachable.contains(&bid) {
-            continue;
-        }
-        let is_back = body.contains(&bid);
-        block.terminator.for_each_edge(|target, args| {
-            if target == header {
-                edges.push((bid, args.to_vec(), is_back));
-            }
-        });
-    }
-    HeaderIncoming { edges }
 }
