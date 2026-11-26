@@ -247,9 +247,6 @@ fn trace<'a>(
     resolve: &impl Fn(FunctionId) -> Option<&'a TirFunction>,
 ) -> Option<Trace> {
     let state = SyncFrame::analyze(func)?;
-    if state.has_private_homes() {
-        return None;
-    }
     let labels = exception_label_to_block(func);
     let entry = &func.blocks.get(&func.entry_block)?.args;
     if entry.len() != frame.formals {
@@ -535,7 +532,6 @@ pub(crate) fn summarize<'a>(
         || helper.exact_param_types.get(forwarded) != Some(&class)
         || leaf_call.arguments.get(packed.receiver)?.source
             != Source::CallResult(identity_call.site)
-        || packed.field_release.is_some()
     {
         return None;
     }

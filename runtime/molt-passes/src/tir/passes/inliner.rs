@@ -9,8 +9,6 @@ mod call_sites;
 mod clone_body;
 mod driver;
 mod eligibility;
-mod frame_splice;
-mod nested_frames;
 mod packed_read;
 mod packed_splice;
 pub(crate) mod packed_wrapper;

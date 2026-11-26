@@ -58,11 +58,8 @@ pub(super) struct PackedRead {
     /// must prove its receiver reaches this specialization or guard its class.
     pub class: ClassId,
     pub offset: i64,
-    pub parameter_custody: [ParameterCustody; 3],
     pub field_load: Site,
     pub buffer_read: Site,
-    /// Keep the original owned field result live through its post-read poll.
-    pub field_release: Option<Site>,
     pub origins: Vec<Origin>,
     pub retirement: (Site, Snapshot),
 }
@@ -109,9 +106,6 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
         return None;
     }
     let frame = SyncFrame::analyze(func)?;
-    if frame.has_private_homes() {
-        return None;
-    }
     let labels = exception_label_to_block(func);
     let entry = func.blocks.get(&func.entry_block)?;
     if entry.args.len() != func.param_types.len() {
@@ -128,7 +122,6 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
     let mut field = None;
     let mut read = None;
     let mut return_poll = false;
-    let mut release = None;
     let mut retirement = None;
     let mut origins = Vec::new();
     let mut visited = HashSet::default();
@@ -227,12 +220,6 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
                 read = Some((site, formal(&sources, *row)?, formal(&sources, *column)?));
                 sources.insert(*result, Source::Read);
                 awaiting = Some(After::BufferRead);
-            } else if op.opcode == OpCode::DecRef
-                && read.is_some()
-                && release.is_none()
-                && matches!(&op.operands[..], [value] if sources.get(value) == Some(&Source::Field))
-            {
-                release = Some(site);
             } else if op.opcode == OpCode::ConstBool {
                 let Some(AttrValue::Bool(flag)) = op.attrs.get("value") else {
                     return None;
@@ -272,11 +259,9 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
                     column,
                     class,
                     offset,
-                    parameter_custody: std::array::from_fn(|i| func.parameter_custody(i)),
                     field_load,
                     buffer_read,
                     origins,
-                    field_release: release,
                     retirement: retirement?,
                 });
             }
@@ -349,6 +334,24 @@ mod tests {
         );
         assert_eq!(plan.origins[2].snapshot.homes, [(0, 1), (1, 2), (2, 0)]);
         assert_eq!(plan.retirement.1.location, Some(4));
+
+        // Recognizing the constituent read never authorizes an observable
+        // leaf to take the ordinary body-splicing path by itself.
+        let module = crate::tir::function::TirModule::decode_spelled("m", vec![func.clone()]);
+        let graph = crate::tir::call_graph::CallGraph::build(&module);
+        let summaries = crate::tir::passes::ip_summary::ModuleSummaries::compute(&module, &graph);
+        assert_eq!(
+            super::super::classify_inline_eligibility(
+                module.ids[0],
+                &module.functions[0],
+                &graph,
+                &summaries,
+                &crate::tir::target_info::TargetInfo::native_release_fast(),
+            ),
+            crate::tir::call_facts::InlineEligibility::WhyNot(
+                crate::tir::call_facts::InlineWhyNot::ExecutionContext
+            ),
+        );
 
         let mut annotated = func.clone();
         annotated.param_types[1] = TirType::Class(class);

@@ -1492,7 +1492,6 @@ fn run_planned(
     // observation authority, including a uniquely reached successor block.
     // Keep each producer's operand/result release order on success; the
     // exceptional landing derives its unwind from final normal-path liveness.
-    let mut after_split = HashMap::<BlockId, Vec<ValueId>>::default();
     let mut after_observation: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::default();
     let raise = crate::tir::passes::check_exception_elim::classify::RaiseFacts::of(func);
     let predecessors = crate::tir::dominators::build_pred_map(func);
@@ -1506,38 +1505,29 @@ fn run_planned(
         if !raise.op_may_raise(op) || op.opcode == OpCode::CheckException {
             continue;
         }
-        use crate::tir::passes::exception_observation::PostOperationObservation;
-        let Some(observation) =
-            crate::tir::passes::exception_observation::post_operation_observation(
-                func,
-                bid,
-                index,
-                &predecessors,
-                &raise,
-            )
+        let Some(crate::tir::passes::exception_observation::PostOperationObservation::Check(
+            block,
+            observation,
+        )) = crate::tir::passes::exception_observation::post_operation_observation(
+            func,
+            bid,
+            index,
+            &predecessors,
+            &raise,
+        )
         else {
             continue;
         };
-        if matches!(observation, PostOperationObservation::DeferredFinally(..)) {
-            continue;
-        }
         let values = plans
             .get_mut(&bid)
             .unwrap()
             .after_op
             .remove(&index)
             .unwrap();
-        let ordered = ordered_unique_after_op_values(&values, op, &canon);
-        match observation {
-            PostOperationObservation::Check(block, at) => after_observation
-                .entry((block, at))
-                .or_default()
-                .extend(ordered),
-            PostOperationObservation::PolledOrigin { continuation, .. } => {
-                after_split.entry(continuation).or_default().extend(ordered)
-            }
-            PostOperationObservation::DeferredFinally(..) => unreachable!(),
-        }
+        after_observation
+            .entry((block, observation))
+            .or_default()
+            .extend(ordered_unique_after_op_values(&values, op, &canon));
     }
 
     // ── Apply the plans ──────────────────────────────────────────────────────
@@ -1556,13 +1546,6 @@ fn run_planned(
         };
         // Rebuild the op vector inserting before_op (IncRef) / after_op (DecRef).
         let mut new_ops: Vec<TirOp> = Vec::with_capacity(block.ops.len() + 8);
-        // Both normal arms of a split Origin have completed its observation;
-        // the service arm has also unlinked the temporary record. Release the
-        // producer's dead values once, before the continuation's own cleanup.
-        for value in after_split.remove(&bid).unwrap_or_default() {
-            new_ops.push(make_op(OpCode::DecRef, vec![value]));
-            inserted += 1;
-        }
         // at_entry DecRefs first.
         for v in sorted_unique_values(&plan.at_entry) {
             new_ops.push(make_op(OpCode::DecRef, vec![v]));
@@ -1615,7 +1598,7 @@ fn run_planned(
         block.ops = new_ops;
     }
     assert!(
-        after_observation.is_empty() && after_split.is_empty(),
+        after_observation.is_empty(),
         "DropInsertion lost an exception observation's success cleanup"
     );
     assert!(

@@ -72,7 +72,6 @@ pub(super) struct Activations {
     rewritten_reads: HashSet<(BlockId, usize)>,
     pub(super) capture: ParameterCapture,
     prepared: HashMap<(FunctionId, Vec<Binding>), Option<TirFunction>>,
-    reads: HashMap<FunctionId, Option<super::packed_read::PackedRead>>,
 }
 
 /// What a caller, read before its first splice, guarantees about the values
@@ -123,10 +122,7 @@ impl Activations {
                 if callee.parameter_custody(position) == ParameterCustody::Transferred {
                     return Binding::Owned;
                 }
-                if facts.kept_alive_at(site, argument)
-                    || (callee.execution_context == molt_ir::ExecutionContextPolicy::Local
-                        && facts.physical_frame_holds(site, argument))
-                {
+                if facts.kept_alive_at(site, argument) {
                     return Binding::Direct;
                 }
                 if facts.single_use_sequences.contains(&argument) {
@@ -172,26 +168,6 @@ impl Activations {
                     || facts.kept_alive_at(site, value)
                     || facts.physical_frame_holds(site, value))
         })
-    }
-
-    /// Read finalized callees lazily, once for all their caller sites.
-    pub(super) fn packed_read(
-        &mut self,
-        id: FunctionId,
-        callee: &TirFunction,
-    ) -> Option<&super::packed_read::PackedRead> {
-        self.reads
-            .entry(id)
-            .or_insert_with(|| {
-                (callee.param_types.len() == 3
-                    && callee.blocks.values().flat_map(|b| &b.ops).any(|op| {
-                        crate::tir::call_targets::direct_boxed_runtime(op)
-                            == Some(molt_ir::runtime_fn_generated::RuntimeFn::Buffer2dGet)
-                    }))
-                .then(|| super::packed_read::extract(callee))
-                .flatten()
-            })
-            .as_ref()
     }
 
     /// The body to splice for `callee` under `bindings`, or `None` when no
@@ -337,10 +313,7 @@ impl CallerFacts {
 /// The callee body the splice clones for `bindings`: the parameter custody
 /// the activation holds, each exit's frame clear, and owned captures of the
 /// frame bindings a return names.
-pub(super) fn prepare_activation(
-    callee: &TirFunction,
-    bindings: &[Binding],
-) -> Option<TirFunction> {
+fn prepare_activation(callee: &TirFunction, bindings: &[Binding]) -> Option<TirFunction> {
     // The module phase inlines before terminal DropInsertion. A body whose RC
     // is already placed for its own frame has no plan left to reproduce.
     if matches!(
@@ -465,7 +438,7 @@ pub(super) fn releases_unowned_parameter(
 }
 
 /// The operands `op` releases by itself, from the generated release table.
-pub(super) fn released_operands(op: &TirOp) -> Vec<ValueId> {
+fn released_operands(op: &TirOp) -> Vec<ValueId> {
     match opcode_explicit_release_operands_table(op.opcode, op.operands.len()) {
         ExplicitReleaseOperands::None => Vec::new(),
         ExplicitReleaseOperands::All => op.operands.clone(),

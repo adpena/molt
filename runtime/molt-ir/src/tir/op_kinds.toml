@@ -1561,9 +1561,6 @@ final_tir_opcodes = [
     "GlobalSlotBase",
 ]
 
-# Immediate constants used while reconstructing a cold frame capture.
-spliced_frame_capture_constant_opcodes = ["ConstInt", "ConstNone", "ConstBool"]
-
 # A value rooted in another owner, with no independent reference credit.
 ownership_held_view_opcodes = ["StaticCellLoad", "FunctionClosure", "ProbeInlineField"]
 

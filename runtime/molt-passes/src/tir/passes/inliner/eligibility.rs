@@ -10,6 +10,7 @@ use crate::tir::types::TirType;
 
 use super::super::ip_summary::ModuleSummaries;
 use super::activation::releases_unowned_parameter;
+use super::packed_wrapper::PackedWrapper;
 
 /// inlining this arc (and likely permanently - these are never simple leaves).
 fn is_generator_or_async_op(opcode: OpCode) -> bool {
@@ -80,11 +81,24 @@ pub fn classify_inline_eligibility(
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
 ) -> InlineEligibility {
+    classify_with_wrapper(callee_id, callee, call_graph, summaries, tti, None)
+}
+
+/// A source-validated composed wrapper has its own frame-preserving rewrite.
+/// All ordinary call sites retain the frameless eligibility policy.
+pub(super) fn classify_with_wrapper(
+    callee_id: molt_ir::FunctionId,
+    callee: &TirFunction,
+    call_graph: &CallGraph,
+    summaries: &ModuleSummaries,
+    tti: &TargetInfo,
+    wrapper: Option<&PackedWrapper>,
+) -> InlineEligibility {
     // A closure callee inlines where its environment is the callee's own
     // closure tuple, which a final-TIR target reads from the proven call's
     // function object (design 78 5.10); the splice admits only those sites.
     let closures = tti.lowering.final_lowering == crate::tir::target_info::FinalLowering::FinalTir;
-    if let Some(reason) = inline_safety_gate(callee_id, callee, call_graph, closures) {
+    if let Some(reason) = inline_safety_gate(callee_id, callee, call_graph, closures, wrapper) {
         return InlineEligibility::WhyNot(reason);
     }
     if callee_op_count(callee_id, callee, summaries) > tti.inline_budget(&callee.name) {
@@ -133,10 +147,11 @@ fn inline_safety_gate(
     callee: &TirFunction,
     call_graph: &CallGraph,
     closures_at_proven_sites: bool,
+    wrapper: Option<&PackedWrapper>,
 ) -> Option<InlineWhyNot> {
     let observable = closures_at_proven_sites
         && callee.execution_context == molt_ir::ExecutionContextPolicy::Local
-        && super::sync_frame::SyncFrame::analyze(callee).is_some();
+        && wrapper.is_some_and(|proof| proof.wrapper.entry.function == callee_id);
     if callee.execution_context != molt_ir::ExecutionContextPolicy::None && !observable {
         return Some(InlineWhyNot::ExecutionContext);
     }
@@ -172,14 +187,13 @@ fn inline_safety_gate(
     None
 }
 
-/// Safety without any of the final-TIR frame operations.
-#[cfg(test)]
+/// The conservative ordinary safety policy for exceeding the inline budget.
 pub(super) fn is_inline_safe(
     callee_id: molt_ir::FunctionId,
     callee: &TirFunction,
     call_graph: &CallGraph,
 ) -> bool {
-    inline_safety_gate(callee_id, callee, call_graph, false).is_none()
+    inline_safety_gate(callee_id, callee, call_graph, false, None).is_none()
 }
 
 /// True when the callee return type can carry a raw numeric lane across the

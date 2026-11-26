@@ -40,102 +40,7 @@ pub(super) fn is_deferred_finally_observer(op: &TirOp) -> bool {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) enum PostOperationObservation {
     Check(BlockId, usize),
-    /// Both paths observe the producer. Only the pending path services work.
-    PolledOrigin {
-        service: (BlockId, usize),
-        fast: (BlockId, usize),
-        continuation: BlockId,
-    },
     DeferredFinally(BlockId, usize),
-}
-
-/// Recognize the paired Origins of a virtual frame. Both preserve the
-/// producer's payload and converge on the same normal continuation. The
-/// exception landings each forward their own incoming arguments to the same
-/// original handler; one consumes linked records, the other publishes them.
-fn split_origin(
-    func: &TirFunction,
-    gate: BlockId,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-) -> Option<PostOperationObservation> {
-    use crate::tir::dominators::{exception_label_to_block, exception_transfer_target};
-    use crate::tir::op_kinds_generated::ExceptionEdgeKind;
-    let gate_block = &func.blocks[&gate];
-    let Terminator::CondBranch {
-        cond,
-        then_block: service,
-        else_block: fast,
-        then_args,
-        else_args,
-    } = &gate_block.terminator
-    else {
-        return None;
-    };
-    let test = gate_block.ops.last()?;
-    if test.opcode != OpCode::AsyncWorkPending
-        || test.results != [*cond]
-        || !then_args.is_empty()
-        || !else_args.is_empty()
-        || predecessors.get(service)?.as_slice() != [gate]
-        || predecessors.get(fast)?.as_slice() != [gate]
-    {
-        return None;
-    }
-    let service_block = &func.blocks[service];
-    let fast_block = &func.blocks[fast];
-    let (marked_index, marked) =
-        super::spliced_frame::poll_service(&service_block.ops, ExceptionEdgeKind::Origin)?;
-    let [plain] = fast_block.ops.as_slice() else {
-        return None;
-    };
-    if plain.opcode != OpCode::CheckException
-        || plain.is_async_work_poll()
-        || plain.exception_edge_kind() != Some(ExceptionEdgeKind::Origin)
-        || plain.operands != marked.operands
-        || plain.source_span != marked.source_span
-    {
-        return None;
-    }
-    let (
-        Terminator::Branch {
-            target: continuation,
-            args: service_args,
-        },
-        Terminator::Branch {
-            target: fast_target,
-            args: fast_args,
-        },
-    ) = (&service_block.terminator, &fast_block.terminator)
-    else {
-        return None;
-    };
-    let incoming = predecessors.get(continuation)?;
-    if continuation != fast_target
-        || service_args != fast_args
-        || incoming.len() != 2
-        || !incoming.contains(service)
-        || !incoming.contains(fast)
-    {
-        return None;
-    }
-    let labels = exception_label_to_block(func);
-    let destination = |check: &TirOp| {
-        let cold = &func.blocks[&exception_transfer_target(check, &labels)?];
-        let Terminator::Branch { target, args } = &cold.terminator else {
-            return None;
-        };
-        (cold.args.len() == check.exception_payload().len()
-            && args.iter().copied().eq(cold.args.iter().map(|arg| arg.id)))
-        .then_some(*target)
-    };
-    if destination(plain)? != destination(marked)? {
-        return None;
-    }
-    Some(PostOperationObservation::PolledOrigin {
-        service: (*service, marked_index),
-        fast: (*fast, 0),
-        continuation: *continuation,
-    })
 }
 
 /// Locate the frontend-authored exception observation for an operation boundary.
@@ -168,12 +73,6 @@ pub(super) fn post_operation_observation(
         }
         let block = func.blocks.get(&current)?;
         for (index, op) in block.ops.iter().enumerate().skip(start) {
-            if op.opcode == OpCode::AsyncWorkPending
-                && index + 1 == block.ops.len()
-                && let Some(split) = split_origin(func, current, predecessors)
-            {
-                return Some(split);
-            }
             if op.opcode == OpCode::CheckException {
                 if op.is_async_work_poll() && check_label(op).is_none() {
                     return Some(PostOperationObservation::Check(current, index));

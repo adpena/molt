@@ -338,7 +338,6 @@ pub(crate) fn call_return_poll(
         {
             Some((check_block, check_index))
         }
-        PostOperationObservation::PolledOrigin { service, .. } => Some(service),
         _ => None,
     }
 }
@@ -459,7 +458,6 @@ fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacement
 
 fn observation_is_marked(func: &TirFunction, observation: PostOperationObservation) -> bool {
     let (block, index) = match observation {
-        PostOperationObservation::PolledOrigin { service, .. } => service,
         PostOperationObservation::Check(block, index)
         | PostOperationObservation::DeferredFinally(block, index) => (block, index),
     };
@@ -501,11 +499,8 @@ fn services_pending_before_join(
     let cold = &func.blocks[&service];
     predecessors[&service].as_slice() == [gate]
         && matches!(cold.terminator, Terminator::Branch {target, ..} if target == join)
-        && super::spliced_frame::poll_service(
-            &cold.ops,
-            crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind,
-        )
-        .is_some_and(|(_, poll)| check_label(poll) != func.label_id_map.get(&join.0).copied())
+        && super::spliced_frame::poll_service(&cold.ops)
+            .is_some_and(|poll| check_label(poll) != func.label_id_map.get(&join.0).copied())
 }
 
 /// A fused generator's fast and cold arms can share a chain of empty blocks
@@ -668,9 +663,7 @@ pub(crate) fn materialize_before_ssa(
 
     for (block, index, target) in &plan.call_sites {
         match post_operation_observation(preview, *block, *index, &plan.predecessors, &plan.raise) {
-            Some(
-                PostOperationObservation::Check(..) | PostOperationObservation::PolledOrigin { .. },
-            ) => {}
+            Some(PostOperationObservation::Check(..)) => {}
             Some(PostOperationObservation::DeferredFinally(observer_block, observer_index)) => {
                 let prepared_index = preview.blocks[&observer_block].ops[observer_index]
                     .source_op_index()
@@ -785,12 +778,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     for (block_id, index, _) in plan.call_sites {
         let observation =
             post_operation_observation(func, block_id, index, &plan.predecessors, &plan.raise);
-        if matches!(
-            observation,
-            Some(PostOperationObservation::PolledOrigin { .. })
-        ) {
-            continue;
-        }
         if let Some(PostOperationObservation::Check(existing_block, existing_index)) = observation {
             let block = func.blocks.get_mut(&existing_block).unwrap();
             stats.attrs_changed += usize::from(mark_poll(&mut block.ops[existing_index]));

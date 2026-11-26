@@ -355,65 +355,30 @@ fn is_link_op(op: &TirOp) -> bool {
 /// boundary. Splicing and checked-loop versioning can put the back edge on
 /// either side of this bracket; the check still runs at its original source
 /// and exceptional successor.
-fn checked_poll_and_unlink(poll: &TirOp, unlink: &TirOp) -> bool {
-    poll.opcode == OpCode::CheckException
+fn poll_and_unlink(ops: &[TirOp]) -> bool {
+    matches!(ops, [poll, unlink, ..] if poll.opcode == OpCode::CheckException
         && poll.is_async_work_poll()
         && matches!(poll.attrs.get("value"), Some(AttrValue::Int(_)))
-        && unlink.runtime == Some(RuntimeFn::SplicedFrameUnlink)
-}
-
-fn poll_and_unlink(ops: &[TirOp]) -> bool {
-    matches!(ops, [poll, unlink, ..] if checked_poll_and_unlink(poll, unlink))
+        && unlink.runtime == Some(RuntimeFn::SplicedFrameUnlink))
 }
 
 /// The complete cold service arm built by generator frame elision. Nothing
 /// else may run between the pending-work test and the delivery of that work.
-pub(super) fn poll_service(
-    ops: &[TirOp],
-    kind: crate::tir::op_kinds_generated::ExceptionEdgeKind,
-) -> Option<(usize, &TirOp)> {
-    let (setup, poll, unlink, index) = match ops {
-        [alias, setup @ .., poll, release, unlink]
-            if kind == crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin
-                && alias.opcode == OpCode::Copy
-                && alias.origin == Some(molt_ir::OpKind::BindingAlias)
-                && alias.operands.len() == 1
-                && alias.results.len() == 1
-                && matches!(release.opcode, OpCode::DelBoundary | OpCode::DecRef)
-                && release.operands == alias.results
-                && release.results.is_empty() =>
-        {
-            (setup, poll, unlink, ops.len() - 3)
-        }
-        [setup @ .., poll, unlink] => (setup, poll, unlink, ops.len() - 2),
-        _ => return None,
+pub(super) fn poll_service(ops: &[TirOp]) -> Option<&TirOp> {
+    let [setup @ .., poll, _unlink] = ops else {
+        return None;
     };
     let mut calls = setup.iter().filter(|op| op.opcode != OpCode::ConstInt);
     let link = calls.next()?;
     (link.runtime == Some(RuntimeFn::SplicedFrameLink)
-        && calls.all(|op| {
-            matches!(
-                op.runtime,
-                Some(RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameBind)
-            )
-        })
-        && poll.exception_edge_kind() == Some(kind)
-        && checked_poll_and_unlink(poll, unlink))
-    .then_some((index, poll))
+        && calls.all(|op| op.runtime == Some(RuntimeFn::SplicedFrameBind))
+        && poll.exception_edge_kind()
+            == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
+        && poll_and_unlink(&ops[setup.len()..]))
+    .then_some(poll)
 }
 
 pub(super) fn ends_with_poll_bracket(ops: &[TirOp]) -> bool {
-    if let Some(alias) = ops
-        .iter()
-        .rposition(|op| op.origin == Some(molt_ir::OpKind::BindingAlias))
-        && poll_service(
-            &ops[alias..],
-            crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin,
-        )
-        .is_some()
-    {
-        return true;
-    }
     let Some(check) = ops.len().checked_sub(2) else {
         return false;
     };
@@ -432,14 +397,6 @@ pub(super) fn starts_with_poll_bracket(ops: &[TirOp]) -> bool {
         [close, rest @ ..] if close.runtime == Some(RuntimeFn::SplicedFrameUnlink) => rest,
         _ => ops,
     };
-    if poll_service(
-        ops,
-        crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin,
-    )
-    .is_some()
-    {
-        return true;
-    }
     let aliases = ops
         .iter()
         .take_while(|op| {
@@ -600,17 +557,6 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
 pub(crate) fn publish_if_observed(caller: &mut TirFunction, source: BlockId, frame: &Level) {
     let ops = snapshot_ops(caller, frame);
     if_frame_observed(caller, source, frame.identity, ops);
-}
-
-/// Finish a synchronous activation's identity slot only if a Python observer
-/// populated it. Refresh a still-live frame first when an exit needs it.
-pub(crate) fn retire_if_observed(
-    caller: &mut TirFunction,
-    source: BlockId,
-    identity: ValueId,
-    frame: Option<&Level>,
-) {
-    retire_if_observed_under(caller, source, identity, frame, &[]);
 }
 
 /// Retire an observed inner frame under its virtual callers. Both the final

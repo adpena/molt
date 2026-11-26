@@ -92,9 +92,9 @@ use crate::tir::target_info::TargetInfo;
 use super::activation::Activations;
 use super::call_sites::{InlineSiteUses, collect_call_sites};
 use super::eligibility::{
-    callee_op_count, classify_inline_eligibility, is_numeric_raw_lane_return_type,
+    callee_op_count, classify_with_wrapper, is_inline_safe, is_numeric_raw_lane_return_type,
 };
-use super::splice::splice;
+use super::splice::splice_call_site;
 
 /// Statistics from one [`run_inliner`] invocation over a module.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -168,14 +168,17 @@ pub fn run_inliner(
             {
                 wrappers.insert(id, proof);
             }
-            let budget = match classify_inline_eligibility(id, f, call_graph, summaries, tti) {
+            let wrapper = wrappers.get(&id);
+            let budget = match classify_with_wrapper(id, f, call_graph, summaries, tti, wrapper) {
                 InlineEligibility::Eligible => InlineBudget::Ordinary,
-                // The typed OverBudget verdict already proved safety with this
-                // target's frame support. Keep that proof for the site budget.
-                InlineEligibility::WhyNot(InlineWhyNot::OverBudget) => InlineBudget::NeedsBenefit {
-                    numeric: is_numeric_raw_lane_return_type(&f.return_type),
-                    within_hot_cap: callee_op_count(id, f, summaries) <= hot_cap,
-                },
+                InlineEligibility::WhyNot(InlineWhyNot::OverBudget)
+                    if wrapper.is_some() || is_inline_safe(id, f, call_graph) =>
+                {
+                    InlineBudget::NeedsBenefit {
+                        numeric: is_numeric_raw_lane_return_type(&f.return_type),
+                        within_hot_cap: callee_op_count(id, f, summaries) <= hot_cap,
+                    }
+                }
                 InlineEligibility::WhyNot(_) | InlineEligibility::Unknown => return None,
             };
             Some((id, (idx, budget)))
@@ -300,21 +303,22 @@ pub fn run_inliner(
                     (&mut right[0], &left[callee_idx])
                 };
                 let callee_has_exception_handling = callee.has_exception_handling;
-                let composed = wrappers.get(&site.callee).and_then(|summary| {
-                    super::packed_wrapper_resume::splice(
+                let splice = if let Some(summary) = wrappers.get(&site.callee) {
+                    let continuation = super::packed_wrapper_resume::splice(
                         caller,
                         callee,
                         &site,
                         summary,
                         &mut activations,
-                    )
-                });
-                if composed.is_some() && diagnostics.is_some() {
-                    eprintln!("[packed-wrapper splice] {} -> {}", caller.name, callee.name);
-                }
-                let splice = composed
-                    .map(|continuation| (continuation, true))
-                    .or_else(|| splice(caller, callee, &site, &mut activations));
+                    );
+                    if continuation.is_some() && diagnostics.is_some() {
+                        eprintln!("[packed-wrapper splice] {} -> {}", caller.name, callee.name);
+                    }
+                    continuation.map(|block| (block, true))
+                } else {
+                    splice_call_site(caller, callee, &site, &mut activations)
+                        .map(|block| (block, false))
+                };
                 if let Some((continuation, preserve_poll)) = splice {
                     stats.sites_inlined += 1;
                     if !preserve_poll && let Some((poll_block, poll_index)) = poll {

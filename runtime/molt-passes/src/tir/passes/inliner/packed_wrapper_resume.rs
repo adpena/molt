@@ -95,6 +95,7 @@ struct Poll {
 struct WrapperScope {
     identity: ValueId,
     present: ValueId,
+    callable: ValueId,
     method: ValueId,
 }
 
@@ -158,9 +159,10 @@ impl Resume<'_, '_> {
         identity: ValueId,
         exit: Option<&Level>,
         callers: &[Level],
+        callable: ValueId,
         next: BlockId,
     ) -> BlockId {
-        let release = insert(self.func, vec![pop()], jump(next));
+        let release = insert(self.func, vec![Self::release(callable), pop()], jump(next));
         let retire = insert(self.func, vec![], jump(release));
         spliced_frame::retire_if_observed_under(self.func, retire, identity, exit, callers);
         retire
@@ -177,6 +179,7 @@ impl Resume<'_, '_> {
         let WrapperScope {
             identity,
             present,
+            callable,
             method,
         } = scope;
         let frame = self
@@ -187,11 +190,11 @@ impl Resume<'_, '_> {
             .state
             .wrapper
             .level(self.state.wrapper_retire, identity, present);
-        let failed = self.retire(identity, None, &[], outward);
+        let failed = self.retire(identity, None, &[], callable, outward);
         let next = if origin == ExceptionEdgeKind::Unwind {
             failed
         } else {
-            self.retire(identity, Some(&final_frame), &[], ready)
+            self.retire(identity, Some(&final_frame), &[], callable, ready)
         };
         let service = self.poll(
             ops,
@@ -225,6 +228,7 @@ impl Resume<'_, '_> {
         let scope = WrapperScope {
             identity: wrapper_id,
             present,
+            callable: self.hold(&mut ops, self.state.wrapper.function),
             method,
         };
         let (wrapper_service, _) =
@@ -236,12 +240,15 @@ impl Resume<'_, '_> {
         let leaf_id = push(self.func, &mut ops);
         let present = self.present(&mut ops);
         // LOAD_METHOD's callable credit spans the leaf's poll and the
-        // wrapper's return poll. The linked homes hold the receivers.
+        // wrapper's return poll. Each physical frame separately owns its
+        // callable. The linked homes hold the receivers.
         let method = self.hold(&mut ops, self.state.leaf.function);
+        let leaf_callable = self.hold(&mut ops, self.state.leaf.function);
         let field = self.hold(&mut ops, field);
         let scope = WrapperScope {
             identity: wrapper_id,
             present,
+            callable: self.hold(&mut ops, self.state.wrapper.function),
             method,
         };
         let wrapper = self
@@ -269,9 +276,16 @@ impl Resume<'_, '_> {
             leaf_id,
             Some(&final_leaf),
             std::slice::from_ref(&wrapper),
+            leaf_callable,
             normal,
         );
-        let failed = self.retire(leaf_id, None, std::slice::from_ref(&wrapper), failed);
+        let failed = self.retire(
+            leaf_id,
+            None,
+            std::slice::from_ref(&wrapper),
+            leaf_callable,
+            failed,
+        );
         let leaf_service = self.poll(
             ops,
             &[wrapper, leaf],

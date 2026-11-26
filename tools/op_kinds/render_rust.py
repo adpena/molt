@@ -514,10 +514,6 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n")
 
     for key, description in (
-        (
-            "spliced_frame_capture_constant",
-            "An immediate constant used for frame capture.",
-        ),
         ("ownership_held_view", "A result held by another owner."),
         (
             "late_compiled_function_reference",
