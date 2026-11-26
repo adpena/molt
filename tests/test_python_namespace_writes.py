@@ -276,8 +276,18 @@ def test_unscheduled_lazy_annotation_writers_keep_enclosing_owner(future) -> Non
     ],
 )
 def test_namespace_write_codec_rejects_unschedulable_or_malformed_owner(owner) -> None:
+    (write,) = _summary("import target\ntarget.flag = 1\n").foreign_writes
+    payload = python_namespace_write_payload(write)
+    payload[4] = owner
     with pytest.raises(ValueError):
-        decode_python_namespace_write(["target", "flag", "attribute", 1, owner, None])
+        decode_python_namespace_write(payload)
+
+
+def test_namespace_write_codec_rejects_a_non_string_construct() -> None:
+    with pytest.raises(ValueError, match="construct"):
+        decode_python_namespace_write(
+            ["sys.modules", None, [], 1, None, None, None, [], [1], []]
+        )
 
 
 @pytest.mark.parametrize(

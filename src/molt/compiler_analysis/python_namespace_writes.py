@@ -259,7 +259,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
     (
         module,
         name,
-        construct,
+        raw_construct,
         line,
         owner,
         site,
@@ -268,6 +268,11 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         key_source,
         borrows,
     ) = raw
+    if type(raw_construct) is not str or raw_construct not in get_args(
+        PythonNamespaceWriteConstruct
+    ):
+        raise ValueError("invalid foreign namespace write construct")
+    construct = cast(PythonNamespaceWriteConstruct, raw_construct)
     if key_source is not None and (
         construct not in {"import_binding", "computed_member_store"}
         or construct == "import_binding"
@@ -287,7 +292,6 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         and type(module) is not str
         or name is not None
         and type(name) is not str
-        or construct not in get_args(PythonNamespaceWriteConstruct)
         or type(line) is not int
         or line < 1
     ):
@@ -370,7 +374,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         source_owner,
         source_site,
         key_bound,
-        tuple(initialized),
+        tuple(cast(list[str], initialized)),
         None if key_source is None else decode_python_source_key(key_source),
         tuple(borrowed_if),
     )
