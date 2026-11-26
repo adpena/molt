@@ -54,6 +54,7 @@ from molt.compiler_analysis.python_binding_facts import (
     EnclosingBindingDeclarations,
     PythonParameterRef,
     PythonStringAlternatives,
+    PythonStringValue,
 )
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
@@ -126,7 +127,9 @@ def _source_binding_policy(
     is_package: bool = False,
     namespace_premise: PythonNamespacePremise | None = None,
     include_import_discovery: bool = False,
-    activation_argument_values: tuple[tuple[PythonSourceKey, str], ...] = (),
+    activation_argument_values: tuple[
+        tuple[PythonSourceKey, PythonStringValue], ...
+    ] = (),
 ) -> PythonBindingPolicy:
     return python_namespace_binding_policy(
         PythonBindingPolicy(

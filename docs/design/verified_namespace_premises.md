@@ -395,6 +395,26 @@ completion, including a return before a lazy hook's tail. Parameter stores and
 callbacks follow the same fact lifetime as all other bindings. There is no
 consumer-side reconstruction of that activation's control flow.
 
+The same activation-input authority accepts a joined `PythonStringAlternatives`
+value. One frame receives its finite static key domain and the canonical join of
+its exact-string expression facts; it does not create a body job for each name.
+An empty set is not an unknown argument. Unknown actual coverage removes the
+parameter fact, and ordinary stores, callbacks and opaque activation namespaces
+retain their existing widening. The input contract does not establish complete
+caller coverage: direct-call selection must prove that separately before supplying
+a domain. In particular, a finite name cannot make a loader-aware module
+constructor fresh or make an escaped `sys.modules` receiver exact.
+
+One local producer closes caller coverage without a graph census: an admitted
+function frame that only defines a plain local helper and directly calls it with
+positional string literals. Every observed call must select that same exact
+source function; any unknown actual, unpacking, keyword, alternate parent
+statement, self-reference or escape refuses the projection. The existing opaque
+activation and frame-writer premises must also be closed. The queued helper
+frame joins all those literals once, so ordinary truth/completion analysis can
+omit an impossible import branch. Earlier call-fact reads remain recorded
+cross-job dependencies; they cannot become independently replayable leaves.
+
 Versioned stdlib APIs gate their producers and imports, not just their public
 aliases. The asyncio call-graph classes and helpers, including their dataclasses
 dependency, are constructed only for Python 3.14+. Their `_EXPOSE_GRAPH` selector
@@ -1275,3 +1295,10 @@ CPython 3.12.16 as oracle and denominator.
   across generated/native source views, strict joins and generation rejection,
   two-root namespace identity against an isolated CPython oracle, and cold/warm
   child inventory reuse without interpreting unused children.
+
+
+When all state predecessors already hold the same immutable binding environment,
+the storage join retains that environment before projecting roots or constructing
+merge helpers. State interning still retains every parent, namespace epoch and
+member invalidation. Later callback-domain growth and deletion witnesses project
+through the joined state's own metadata; shared storage never grants freshness.

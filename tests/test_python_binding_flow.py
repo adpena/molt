@@ -7467,6 +7467,8 @@ def test_successive_opacity_revisions_match_each_fresh_transfer(
     ids=["branch", "comprehension", "closure", "changed-definition"],
 )
 def test_successive_argument_revisions_match_each_fresh_transfer(body: str) -> None:
+    from molt.compiler_analysis.python_binding_facts import PythonStringAlternatives
+
     flow = python_binding_flow
     source = (
         f"def first(value):\n    {body}\n"
@@ -7490,6 +7492,13 @@ def test_successive_argument_revisions_match_each_fresh_transfer(body: str) -> N
             (),
             ((parameter, "left"),),
             ((parameter, "right"),),
+            ((parameter, PythonStringAlternatives(frozenset({"left", "right"}))),),
+            (
+                (
+                    parameter,
+                    PythonStringAlternatives(frozenset({"left", "right", "tail"})),
+                ),
+            ),
             ((parameter, "right"), (other_parameter, "sibling")),
             (),
         )
@@ -7510,4 +7519,135 @@ def test_successive_argument_revisions_match_each_fresh_transfer(body: str) -> N
                     ),
                 )
                 == cold
+            )
+
+
+@pytest.mark.parametrize("frame_writer", [None, "possible frame writer"])
+@pytest.mark.parametrize("replacement", ["", "    alias = 'rebound'\n"])
+def test_joined_string_activation_retains_one_frame_and_existing_expiry(
+    frame_writer: str | None, replacement: str
+) -> None:
+    from types import SimpleNamespace
+    from molt.compiler_analysis.python_binding_facts import PythonStringAlternatives
+
+    source = (
+        "import sys\n"
+        "def install(name, value):\n"
+        "    alias = name\n" + replacement + "    sys.modules[alias] = value\n"
+        "install('asyncio.base_events', None)\n"
+        "install('asyncio.tasks', None)\n"
+    )
+    tree = ast.parse(source)
+    owner = tree.body[1]
+    assert isinstance(owner, ast.FunctionDef)
+    source_key = python_node_source_key(owner)
+    unbound = analyze_python_source_bindings(source)
+    actuals = [
+        call.argument_strings[0]
+        for call in unbound.source_calls
+        if call.callees == {source_key}
+    ]
+    assert len(actuals) == 2 and all(type(value) is str for value in actuals)
+    domain = PythonStringAlternatives(
+        frozenset(value for value in actuals if value is not None)
+    )
+    parameter = python_node_source_key(owner.args.args[0])
+    policy = PythonBindingFlowPolicy(
+        frame_locals_writer=frame_writer,
+        activation_argument_values=((parameter, domain),),
+    )
+    analyzer = python_binding_flow._Analyzer(policy, python_source_digest(source))
+    facts = analyzer.analyze(tree).facts
+    assert len(analyzer.function_jobs) == 1
+    target = owner.body[-1].targets[0]
+    assert isinstance(target, ast.Subscript)
+    selected = facts.static_value(target.slice)
+    assert selected == (None if frame_writer else "rebound" if replacement else domain)
+    # Execute the authored calls against an independent module-cache mapping.
+    cache: dict[str, object] = {}
+    namespace = {"sys": SimpleNamespace(modules=cache)}
+    executable = ast.Module(body=tree.body[1:], type_ignores=[])
+    exec(compile(executable, "<joined-activation-oracle>", "exec"), namespace)
+    assert set(cache) == ({"rebound"} if replacement else domain.values)
+    # A joined name is never a guessed singleton or an exact fresh module.
+    if not replacement:
+        first_read = owner.body[0].value
+        result = facts.expression_result(first_read)
+        assert result.kind == "str" and not result.value_known
+        assert "asyncio.tasks" in domain.values  # registered loader refusal name
+
+
+def test_empty_joined_activation_does_not_mean_an_unknown_actual() -> None:
+    from molt.compiler_analysis.python_binding_facts import PythonStringAlternatives
+
+    with pytest.raises(ValueError, match="nonempty exact strings"):
+        PythonBindingFlowPolicy(
+            activation_argument_values=(
+                ((1, 0, 1, 1, "arg"), PythonStringAlternatives(frozenset())),
+            )
+        )
+
+
+@pytest.mark.parametrize("change", ["opaque", "frame-writer"])
+def test_local_literal_call_coverage_revisions_match_fresh_transfer(
+    change: str,
+) -> None:
+    source = (
+        "def outer():\n"
+        "    def helper(name):\n"
+        "        if name:\n            import chosen\n"
+        "        else:\n            import fallback\n"
+        "    helper('left')\n    helper('right')\n"
+        "outer()\n"
+    )
+    tree = ast.parse(source)
+    parent = tree.body[0]
+    assert isinstance(parent, ast.FunctionDef)
+    helper = parent.body[0]
+    assert isinstance(helper, ast.FunctionDef)
+    admission = _PythonAstDigestAdmission.for_tree(tree)
+    base = PythonBindingFlowPolicy(
+        opaque_activation_sources=(),
+        frame_locals_writer=None,
+        foreign_namespace_writes=(),
+        callback_member_writes=0,
+    )
+    changed = (
+        replace(base, opaque_activation_sources=(python_node_source_key(helper),))
+        if change == "opaque"
+        else replace(base, frame_locals_writer="possible writer")
+    )
+    policies = (base, changed, base)
+    fresh = []
+    for policy in policies:
+        analyzer = python_binding_flow._Analyzer(policy, admission.digest)
+        fresh.append(analyzer.analyze(tree, ast_digest_admission=admission).facts)
+        raw = (
+            python_binding_flow._Analyzer(policy, admission.digest).analyze(tree).facts
+        )
+        assert (
+            replace(
+                raw, state_count=fresh[-1].state_count, telemetry=fresh[-1].telemetry
+            )
+            == fresh[-1]
+        )
+        assert len(analyzer.function_jobs) == 2  # one parent and one joined helper
+    fallback = helper.body[0]
+    assert isinstance(fallback, ast.If)
+    assert fresh[0].statement_fact(fallback.orelse[0]) is None
+    assert fresh[1].statement_fact(fallback.orelse[0]) is not None
+    with python_binding_flow.python_binding_revision_scope():
+        for policy, expected in zip(policies, fresh, strict=True):
+            actual = (
+                python_binding_flow._Analyzer(policy, admission.digest)
+                .analyze(tree, ast_digest_admission=admission)
+                .facts
+            )
+            assert (
+                replace(
+                    actual,
+                    state_count=expected.state_count,
+                    telemetry=expected.telemetry,
+                )
+                == expected
             )
