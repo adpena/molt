@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, TypedDict, cast
 
 from tools.compat.comparison import (
     COMPARISON_LAW_VERSION,
@@ -24,6 +24,52 @@ from tools.compat.comparison import (
 )
 
 SCHEMA_VERSION = 7
+
+
+class PhaseTimingStats(TypedDict):
+    count: int
+    median_ms: float | None
+    min_ms: float | None
+    max_ms: float | None
+    samples_ms: list[float]
+
+
+class WasmPhaseSample(TypedDict):
+    index: int
+    status: str
+    exit_code: int | None
+    output_matches: bool
+    valid: bool
+    error: str | None
+
+
+class WasmPhaseDiagnostics(TypedDict):
+    schema_version: Literal[1]
+    diagnostic_only: Literal[True]
+    measurement_scope: Literal["fresh_node_process_warm_files"]
+    guest_entry_scope: Literal["runtime initialization and Python body"]
+    command: list[str]
+    requested_samples: int
+    valid_samples: int
+    phase_stats: dict[str, PhaseTimingStats]
+    records: list[WasmPhaseSample]
+
+
+def _optional_wasm_phases(value: object) -> WasmPhaseDiagnostics | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or (
+        set(value) != WasmPhaseDiagnostics.__required_keys__
+        or type(value.get("schema_version")) is not int
+        or value.get("schema_version") != 1
+        or value.get("diagnostic_only") is not True
+        or value.get("measurement_scope") != "fresh_node_process_warm_files"
+        or value.get("guest_entry_scope") != "runtime initialization and Python body"
+    ):
+        raise ValueError("WASM phases require the diagnostic fresh-process scope")
+    return cast(WasmPhaseDiagnostics, value)
+
+
 RED_THRESHOLD = 1.00
 UNSTABLE_CV = 0.20
 
@@ -515,6 +561,7 @@ class PerfCell:
     codon_equivalent: bool | None
     output_parity: dict[str, Any] | None
     execution_host: dict[str, Any] | None
+    wasm_phases: WasmPhaseDiagnostics | None
     log_artifact: str | None
     fact_class: str | None
     suspected_missing_fact: str | None
@@ -557,6 +604,7 @@ class PerfCell:
             codon_equivalent=_optional_bool(payload.get("codon_equivalent")),
             output_parity=_optional_dict(payload.get("output_parity")),
             execution_host=_optional_dict(payload.get("execution_host")),
+            wasm_phases=_optional_wasm_phases(payload.get("wasm_phases")),
             log_artifact=_optional_str(payload.get("log_artifact")),
             fact_class=_optional_str(payload.get("fact_class")),
             suspected_missing_fact=_optional_str(payload.get("suspected_missing_fact")),
@@ -906,6 +954,10 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
     from tools.bench_evidence import workload_identity_problems
 
     problems: list[str] = cell_execution_host_problems(cell)
+    try:
+        _optional_wasm_phases(cell.get("wasm_phases"))
+    except ValueError as exc:
+        problems.append(str(exc))
     problems.extend(workload_identity_problems(cell.get("workload")))
     workload = cell.get("workload")
     if isinstance(workload, Mapping) and workload.get("entry") != cell.get("benchmark"):

@@ -651,3 +651,89 @@ fn const_ints(f: &TirFunction) -> Vec<i64> {
     values.sort_unstable();
     values
 }
+
+#[test]
+fn capture_budget_removes_call_and_local_allocation_only_for_noncapturing_formal() {
+    // The identity chain is live at the exit; each link compares a new result
+    // to a dynamic input. The callee exceeds the ordinary budget.
+    fn callee(name: &str, capture: bool) -> TirFunction {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox; 2],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let mut compared = ValueId(1);
+        for _ in 0..35 {
+            let result = func.fresh_value();
+            let op = TirOp::new(OpCode::Is, vec![compared, ValueId(1)], vec![result]);
+            func.blocks.get_mut(&func.entry_block).unwrap().ops.push(op);
+            compared = result;
+        }
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Return {
+            values: vec![if capture { ValueId(0) } else { compared }],
+        };
+        func
+    }
+    fn caller(name: &str, callee: &str, finalizer: bool) -> TirFunction {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let root = func.fresh_value();
+        let result = func.fresh_value();
+        let mut allocation = TirOp::new(OpCode::Alloc, vec![], vec![root]);
+        allocation.attrs.insert("value".into(), AttrValue::Int(8));
+        if finalizer {
+            allocation
+                .attrs
+                .insert("defines_del".into(), AttrValue::Bool(true));
+        }
+        let mut call = TirOp::new(OpCode::Call, vec![root, ValueId(0)], vec![result]);
+        call.attrs
+            .insert("s_value".into(), AttrValue::Str(callee.into()));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.extend([
+            allocation,
+            call,
+            TirOp::new(OpCode::DecRef, vec![root], vec![]),
+        ]);
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        func
+    }
+    for tti in [
+        TargetInfo::native_release_fast(),
+        TargetInfo::llvm_release_fast(),
+    ] {
+        let mut m = module(vec![
+            caller("local", "reads", false),
+            caller("returned", "retains", false),
+            caller("finalizer", "reads", true),
+            callee("reads", false),
+            callee("retains", true),
+        ]);
+        let (cg, sm) = analysis(&m);
+        for name in ["reads", "retains"] {
+            let count = sm.get(id_of(&m, name)).unwrap().op_count;
+            assert!(tti.inline_budget(name) < count && count <= tti.hot_inline_op_limit());
+        }
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
+        assert_eq!(stats.sites_inlined, 1);
+        for (body, preserved) in m.functions.iter().take(3).zip([false, true, true]) {
+            let has = |opcode| {
+                body.blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .any(|op| op.opcode == opcode)
+            };
+            assert_eq!(has(OpCode::Call), preserved, "{}", body.name);
+            assert_eq!(has(OpCode::Alloc), preserved, "{}", body.name);
+            crate::tir::verify::verify_function(body)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", body.name));
+        }
+    }
+}

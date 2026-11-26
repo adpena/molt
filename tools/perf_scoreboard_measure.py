@@ -19,6 +19,8 @@ from tools import bench_suites  # noqa: E402
 from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
 from molt.node_runtime import NodeRuntimeError  # noqa: E402
 from tools.perf_schema import (  # noqa: E402
+    WasmPhaseDiagnostics,
+    WasmPhaseSample,
     RED_THRESHOLD,
     molt_contract_parity_evidence,
     output_parity_evidence,
@@ -76,6 +78,80 @@ def _cpython_run_env() -> ProcessEnvironment:
     return ProcessEnvironment(env)
 
 
+def _measure_wasm_phases(
+    *,
+    command: tuple[str, ...],
+    environment: ProcessEnvironment,
+    cwd: Path,
+    guest_stderr_path: Path | None,
+    execution_host: bench.NodeExecutionPlan,
+    workload: AdmittedBenchmarkWorkload,
+    expected_stdout: str | None,
+    expected_stderr: str | None,
+    samples: int,
+    rss_mb: int,
+    timeout_s: float,
+    log_lines: list[str],
+) -> WasmPhaseDiagnostics:
+    """Attribute the same artifact in separate, guarded fresh Node processes."""
+    from tools.startup_bench import NODE_PROBE, _parse_node_phases, _phase_stats
+
+    instrumented = [command[0], "--require", str(NODE_PROBE), *command[1:]]
+    records: list[WasmPhaseSample] = []
+    accepted: list[dict[str, str]] = []
+    for index in range(samples):
+        workload.verify()
+        execution_host.verify()
+        outcome = _run_measured_command(
+            instrumented,
+            env=environment,
+            cwd=cwd,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label=f"wasm-phase-diagnostic:{index}",
+            capture_output=True,
+            guest_stderr_path=guest_stderr_path,
+        )
+        execution_host.verify()
+        workload.verify()
+        diagnostic_stderr = outcome.host_stderr or ""
+        log_lines.append(f"WASM PHASE DIAGNOSTIC {index}:\n{diagnostic_stderr}")
+        parity = outcome.stdout == expected_stdout and outcome.stderr == expected_stderr
+        error = None
+        try:
+            phases = _parse_node_phases(diagnostic_stderr)
+            if not phases or phases.get("schema_version") != 2:
+                raise ValueError("missing schema-2 Node phase evidence")
+            stats = _phase_stats([{"stderr": diagnostic_stderr}])
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            error = str(exc)
+            stats = {}
+        valid = outcome.ok and parity and bool(stats) and error is None
+        records.append(
+            {
+                "index": index,
+                "status": outcome.status,
+                "exit_code": outcome.exit_code,
+                "output_matches": parity,
+                "valid": valid,
+                "error": error,
+            }
+        )
+        if valid:
+            accepted.append({"stderr": diagnostic_stderr})
+    return {
+        "schema_version": 1,
+        "diagnostic_only": True,
+        "measurement_scope": "fresh_node_process_warm_files",
+        "guest_entry_scope": "runtime initialization and Python body",
+        "command": instrumented,
+        "requested_samples": samples,
+        "valid_samples": len(accepted),
+        "phase_stats": _phase_stats(accepted),
+        "records": records,
+    }
+
+
 def measure_cell(
     *,
     script_path: Path,
@@ -96,6 +172,7 @@ def measure_cell(
     codon_runner: Any | None = None,
     repeat: int = 1,
     emit_cycle_profile: bool = False,
+    emit_wasm_phases: bool = False,
     execution_host: bench.NodeExecutionPlan | None = None,
 ) -> Cell:
     """Build + time one (benchmark, target, backend, profile) cell.
@@ -414,6 +491,21 @@ def measure_cell(
 
         cell.molt_stats = asdict(molt_stats)
         cell.cpython_stats = asdict(cpy_stats) if reference else None
+        if emit_wasm_phases and execution_host is not None and failed_molt is None:
+            cell.wasm_phases = _measure_wasm_phases(
+                command=guest.command,
+                environment=guest.environment,
+                cwd=guest.cwd or REPO_ROOT,
+                guest_stderr_path=invocation.guest_stderr_path,
+                execution_host=execution_host,
+                workload=workload,
+                expected_stdout=cold_molt.stdout,
+                expected_stderr=cold_molt.stderr,
+                samples=samples,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                log_lines=log_lines,
+            )
         cell.molt_ok = molt_stats.n > 0 and failed_molt is None
         cell.cpython_ok = cpy_stats.n > 0 and failed_cpy is None
 

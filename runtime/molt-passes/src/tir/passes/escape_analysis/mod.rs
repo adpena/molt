@@ -11,5 +11,5 @@ mod classify;
 mod tests;
 
 pub use analysis::analyze;
-pub(crate) use analysis::finalizer_alloc_roots;
+pub(crate) use analysis::{ParameterCapture, finalizer_alloc_roots, op_result_defines_del};
 pub use classify::EscapeState;

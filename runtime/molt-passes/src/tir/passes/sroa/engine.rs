@@ -104,7 +104,9 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 }
             }
 
-            if alias.is_transparent_alias_op(op) && touched.len() == 1 {
+            // An identity-preserving guard can still perform a check. Only a
+            // pure SSA move may disappear with the allocation.
+            if super::super::value_identity::copy_value_source(op).is_some() && touched.len() == 1 {
                 let root = *touched.iter().next().unwrap();
                 removable_ops.entry(root).or_default().push((bid, op_idx));
                 continue;

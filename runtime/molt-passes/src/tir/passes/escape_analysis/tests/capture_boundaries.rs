@@ -341,3 +341,103 @@ fn storing_into_mixed_cfg_owner_does_not_prove_local_containment() {
     };
     assert_eq!(analyze(&func)[&child], EscapeState::GlobalEscape);
 }
+
+#[test]
+fn checked_call_capture_joins_every_actual_use_and_rejects_frame_or_teardown_observers() {
+    use crate::tir::function::FRAME_LOCALS_EXPOSED_ATTR;
+    use molt_ir::{ExecutionContextPolicy, FunctionId, ParameterCustody};
+
+    // f(x, y) returns y through a CFG parameter and a duplicate-operand move.
+    let mut callee = TirFunction::new(
+        "callee".into(),
+        vec![TirType::DynBox; 2],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let return_block = callee.fresh_block();
+    let phi = callee.fresh_value();
+    let alias = callee.fresh_value();
+    let mut target = empty_block(return_block);
+    target.args.push(TirValue {
+        id: phi,
+        ty: TirType::DynBox,
+    });
+    target
+        .ops
+        .push(make_op(OpCode::Copy, vec![phi, phi], vec![alias]));
+    target.terminator = Terminator::Return {
+        values: vec![alias],
+    };
+    callee.blocks.insert(return_block, target);
+    callee
+        .blocks
+        .get_mut(&callee.entry_block)
+        .unwrap()
+        .terminator = Terminator::Branch {
+        target: return_block,
+        args: vec![ValueId(1)],
+    };
+
+    let mut caller = TirFunction::new(
+        "caller".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let root = caller.fresh_value();
+    let result = caller.fresh_value();
+    let entry = caller.blocks.get_mut(&caller.entry_block).unwrap();
+    entry.ops.push(make_op(OpCode::Alloc, vec![], vec![root]));
+    let mut call = make_op(OpCode::Call, vec![root, ValueId(0)], vec![result]);
+    call.callee = Some(FunctionId(1));
+    entry.ops.push(call);
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let classify = |caller: &TirFunction, callee: &TirFunction| {
+        ParameterCapture::default().analyze(caller, |id| (id == FunctionId(1)).then_some(callee))
+            [&root]
+    };
+    assert_eq!(classify(&caller, &callee), EscapeState::ArgEscape);
+    assert_eq!(analyze(&caller)[&root], EscapeState::GlobalEscape);
+
+    for args in [vec![ValueId(0), root], vec![root, root], vec![root]] {
+        let mut changed = caller.clone();
+        changed.blocks.get_mut(&changed.entry_block).unwrap().ops[1].operands = args;
+        assert_eq!(classify(&changed, &callee), EscapeState::GlobalEscape);
+    }
+    let mut changed = caller.clone();
+    changed
+        .blocks
+        .get_mut(&changed.entry_block)
+        .unwrap()
+        .terminator = Terminator::Return { values: vec![root] };
+    assert_eq!(classify(&changed, &callee), EscapeState::GlobalEscape);
+
+    for hazard in 0..6 {
+        let mut changed = callee.clone();
+        let entry = changed.blocks.get_mut(&changed.entry_block).unwrap();
+        match hazard {
+            0 => changed.execution_context = ExecutionContextPolicy::Local,
+            1 => {
+                changed
+                    .attrs
+                    .insert(FRAME_LOCALS_EXPOSED_ATTR.into(), AttrValue::Bool(true));
+            }
+            2 => changed.set_parameter_custody(&[
+                ParameterCustody::Borrowed,
+                ParameterCustody::Transferred,
+            ]),
+            3 => entry
+                .ops
+                .push(make_op(OpCode::DecRef, vec![ValueId(1)], vec![])),
+            4 => entry.terminator = Terminator::Unwind,
+            _ => entry.ops.push(make_op(OpCode::Call, vec![], vec![])),
+        }
+        assert_eq!(
+            classify(&caller, &changed),
+            EscapeState::GlobalEscape,
+            "hazard {hazard}"
+        );
+    }
+}

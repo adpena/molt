@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from tests.process_guard_common import (
@@ -26,6 +27,7 @@ from tests.process_guard_common import (
     install_module_view,
 )
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 import subprocess
@@ -49,6 +51,129 @@ LOCKED_METHODOLOGY = {
     "methodology_sha256": "d" * 64,
     "methodology_locked": True,
 }
+
+
+@pytest.mark.parametrize("mode", ["linked", "direct"])
+def test_wasm_phase_diagnostic_measures_guarded_node_separately(
+    tmp_path: Path, mode: Literal["linked", "direct"]
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for phase diagnostics")
+    script = tmp_path / "phase.js"
+    guest_stderr = tmp_path / "guest-stderr.bin"
+    guest_stderr.write_bytes(b"")
+    script.write_text(
+        f"process.emit('molt:wasm:startup', '{mode}:guest:enter');\n"
+        "process.stdout.write('42\\n');\n"
+        f"process.emit('molt:wasm:startup', '{mode}:guest:completed');\n"
+        "process.emit('molt:wasm:startup', 'runMain:dispose:enter');\n"
+        "process.emit('molt:wasm:startup', 'runMain:dispose:completed');\n",
+        encoding="utf-8",
+    )
+    log_lines: list[str] = []
+    environment = ProcessEnvironment({**os.environ, "MOLT_NODE_BIN": node})
+    host = measure.bench.admit_wasm_execution(environment)
+    result = measure._measure_wasm_phases(
+        command=(str(host.runtime.path), str(script)),
+        environment=environment,
+        cwd=tmp_path,
+        guest_stderr_path=guest_stderr,
+        execution_host=host,
+        workload=SimpleNamespace(verify=lambda: None),
+        expected_stdout="42\n",
+        expected_stderr="",
+        samples=2,
+        rss_mb=256,
+        timeout_s=15,
+        log_lines=log_lines,
+    )
+    assert result["diagnostic_only"] is True
+    assert result["valid_samples"] == 2
+    assert all(record["output_matches"] for record in result["records"])
+    for name in (
+        f"runner:{mode}_guest_entry",
+        "runner:host_dispose",
+        "node_to_preload_ms",
+    ):
+        assert result["phase_stats"][name]["count"] == 2
+        assert result["phase_stats"][name]["min_ms"] >= 0
+    assert "molt_startup_phases=" in "\n".join(log_lines)
+    cell = _cell(
+        warm_molt_s=0.1, warm_cpython_s=0.2, cold_molt_s=0.1, cold_cpython_s=0.2
+    )
+    cell.target = "wasm"
+    cell.backend = "wasm"
+    cell.execution_host = host.as_record()
+    cell.finalize(budget_ms=1000)
+    acceptance = (
+        cell.verdict,
+        cell.warm_speedup,
+        cell.cold_speedup,
+        cell.output_parity,
+    )
+    cell.wasm_phases = result
+    cell.finalize(budget_ms=1000)
+    assert (
+        cell.verdict,
+        cell.warm_speedup,
+        cell.cold_speedup,
+        cell.output_parity,
+    ) == acceptance
+    payload = asdict(cell)
+    assert schema.PerfCell.from_payload(payload).wasm_phases == result
+    assert ps._cell_from_dict(payload).wasm_phases == result
+    for invalid_scope in (
+        {"diagnostic_only": False},
+        {"schema_version": True},
+        {"measurement_scope": "persistent_instance"},
+        {"guest_entry_scope": "Python body only"},
+    ):
+        with pytest.raises(ValueError, match="diagnostic fresh-process scope"):
+            schema.PerfCell.from_payload(
+                {**payload, "wasm_phases": {**result, **invalid_scope}}
+            )
+
+
+@pytest.mark.parametrize("defect", ["missing", "malformed", "output", "failed"])
+def test_wasm_phase_diagnostic_rejects_unqualified_samples(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, defect: str
+) -> None:
+    marker = 'molt_startup_phases={"schema_version":2,"preload_to_exit_ms":10}\n'
+    host_stderr = {"missing": "", "malformed": "molt_startup_phases={\n"}.get(
+        defect, marker
+    )
+    monkeypatch.setattr(
+        measure,
+        "_run_measured_command",
+        lambda *args, **kwargs: measure.RunOutcome(
+            defect != "failed",
+            0.1,
+            1,
+            "ok" if defect != "failed" else "runtime_failed",
+            0,
+            stdout="wrong\n" if defect == "output" else "42\n",
+            stderr="",
+            host_stderr=host_stderr,
+        ),
+    )
+    result = measure._measure_wasm_phases(
+        command=("/node", "/runner"),
+        environment=ProcessEnvironment({}),
+        cwd=tmp_path,
+        guest_stderr_path=tmp_path / "stderr",
+        execution_host=SimpleNamespace(verify=lambda: None),
+        workload=SimpleNamespace(verify=lambda: None),
+        expected_stdout="42\n",
+        expected_stderr="",
+        samples=1,
+        rss_mb=256,
+        timeout_s=1,
+        log_lines=[],
+    )
+    assert result["valid_samples"] == 0
+    assert result["phase_stats"] == {}
+    assert result["records"][0]["valid"] is False
 
 
 def _matching_output_parity() -> dict[str, object]:
@@ -2753,6 +2878,7 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
         if measure_fails and measured:
             raise primary_error
         plan = kwargs["execution_host"]
+        assert kwargs["emit_wasm_phases"] is (backend == "wasm")
         if backend == "wasm":
             assert plan.runtime.path == image
             plan.verify()
@@ -2808,6 +2934,8 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     ]
     if no_gate:
         argv.append("--no-gate")
+    if backend == "wasm":
+        argv.append("--emit-wasm-phases")
     if failure is not None:
         qualified = _cell(
             warm_molt_s=0.1,

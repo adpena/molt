@@ -3,7 +3,7 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Sequence, Set as AbstractSet
 import functools
 import hashlib
 import os
@@ -509,9 +509,7 @@ class _ModuleResolutionCache:
             compiler_sources = compiler_source_root() / "src"
             excluded = []
             for module in CANONICAL_IMPORT_IDENTITIES:
-                resolved = self.resolve_module(
-                    module, list(roots), stdlib_root, set(allowlist)
-                )
+                resolved = self.resolve_module(module, roots, stdlib_root, allowlist)
                 if resolved is None:
                     # Runtime-owned canonical modules need no Python body.
                     continue
@@ -593,15 +591,18 @@ class _ModuleResolutionCache:
     def roots_for_module(
         self,
         module_name: str,
-        roots: list[Path],
+        roots: Sequence[Path],
         stdlib_root: Path,
-        stdlib_allowlist: set[str],
+        stdlib_allowlist: AbstractSet[str],
     ) -> list[Path]:
         key = (module_name, (tuple(roots), stdlib_root, frozenset(stdlib_allowlist)))
         candidate_roots = self.roots_cache.get(key)
         if candidate_roots is None:
             candidate_roots = _roots_for_module(
-                module_name, roots, stdlib_root, stdlib_allowlist
+                module_name,
+                roots if isinstance(roots, list) else list(roots),
+                stdlib_root,
+                stdlib_allowlist,
             )
             self.roots_cache[key] = candidate_roots
         return candidate_roots
@@ -609,9 +610,9 @@ class _ModuleResolutionCache:
     def resolve_module(
         self,
         module_name: str,
-        roots: list[Path],
+        roots: Sequence[Path],
         stdlib_root: Path,
-        stdlib_allowlist: set[str],
+        stdlib_allowlist: AbstractSet[str],
     ) -> Path | None:
         cache_name = module_name
         if module_name.startswith("molt.stdlib."):
@@ -1089,7 +1090,7 @@ def _module_name_from_relative_parts(
     return ".".join(filtered)
 
 
-def _is_stdlib_module(name: str, stdlib_allowlist: set[str]) -> bool:
+def _is_stdlib_module(name: str, stdlib_allowlist: AbstractSet[str]) -> bool:
     if name.startswith("molt."):
         return False
     if name in stdlib_allowlist:
@@ -1102,7 +1103,7 @@ def _roots_for_module(
     module_name: str,
     roots: list[Path],
     stdlib_root: Path,
-    stdlib_allowlist: set[str],
+    stdlib_allowlist: AbstractSet[str],
 ) -> list[Path]:
     if _is_stdlib_module(module_name, stdlib_allowlist):
         if module_name == "test.tokenizedata" or module_name.startswith(

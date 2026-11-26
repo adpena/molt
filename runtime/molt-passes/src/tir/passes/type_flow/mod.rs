@@ -43,6 +43,7 @@ mod sites;
 mod tests;
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
 
 use molt_ir::FunctionId;
@@ -176,9 +177,8 @@ pub(in crate::tir) fn run_with_registry(
             .collect(),
         relevant: &relevant,
         participates: &participates,
-        exact_plans: (0..sites.len())
-            .map(|_| std::cell::OnceCell::new())
-            .collect(),
+        forwarded_parameters: (0..sites.len()).map(|_| OnceCell::new()).collect(),
+        exact_plans: (0..sites.len()).map(|_| OnceCell::new()).collect(),
         specializable: &specializable,
     };
     let analysis = Analysis::run(&inputs);

@@ -1,8 +1,6 @@
 //! Escape lattice and shared allocation/transparent-copy predicates.
 
-use crate::tir::op_kinds_generated::{
-    copy_kind_is_explicit_no_heap_move_table, opcode_is_escape_alloc_site_table,
-};
+use crate::tir::op_kinds_generated::opcode_is_escape_alloc_site_table;
 use crate::tir::ops::OpCode;
 
 /// Escape lattice for allocated values.
@@ -14,32 +12,6 @@ pub enum EscapeState {
     ArgEscape = 1,
     /// Stored to heap/global or returned — must heap allocate.
     GlobalEscape = 2,
-}
-
-/// Returns `true` when an `OpCode::Copy` op is a genuine SSA move (its result
-/// aliases its operand — the same heap object), as opposed to the opaque
-/// `origin` passthrough that `kind_to_opcode` assigns to SimpleIR ops
-/// without a dedicated TIR opcode.
-///
-/// A move has either no `origin` (a true SSA-lift copy) or an
-/// `origin` the generated registry proves is a no-heap move of operand 0
-/// (the named SSA/var moves plus the validate-and-pass-through guards). Anything
-/// else under `Copy` is a passthrough whose result is a *distinct* value (e.g. a
-/// freshly built container), so it must NOT be aliased to its operand.
-///
-/// The kind set is the single generated authority `op_kinds.toml`
-/// `classifier_no_heap_move` (`copy_kind_is_explicit_no_heap_move_table`), shared
-/// with `alias_analysis.rs` and the ownership lattice — escape analysis no longer
-/// keeps a private hand-list that could diverge. Every alias-propagation site
-/// below reads `op.operands.first()` / `op.results.first()`, which matches the
-/// registry's operand-0 pure-move contract for all those kinds (including the
-/// guard passthroughs), so consuming the broader authority is sound and only
-/// tightens the alias relation toward the rest of the compiler.
-pub(super) fn is_pure_move_copy(origin: Option<molt_ir::OpKind>) -> bool {
-    match origin {
-        None => true,
-        Some(kind) => copy_kind_is_explicit_no_heap_move_table(kind),
-    }
 }
 
 /// Returns `true` if this opcode is an allocation site whose result we

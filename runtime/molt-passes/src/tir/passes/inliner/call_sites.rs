@@ -1,5 +1,6 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
+use super::super::escape_analysis::{EscapeState, ParameterCapture};
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::call_graph::CallGraph;
 use crate::tir::call_targets::{gpu_runtime_result_type_for_op, static_call};
@@ -55,6 +56,8 @@ pub(super) fn collect_call_sites(caller: &TirFunction, call_graph: &CallGraph) -
 #[derive(Default)]
 pub(super) struct InlineSiteUses {
     split_fields: HashSet<ValueId>,
+    fresh_objects: HashSet<ValueId>,
+    capture: std::cell::OnceCell<HashMap<ValueId, EscapeState>>,
     numeric_consumers: HashMap<ValueId, OpCode>,
 }
 
@@ -64,6 +67,11 @@ impl InlineSiteUses {
         for op in caller.blocks.values().flat_map(|block| &block.ops) {
             if op.opcode == OpCode::Copy && op.origin == Some(molt_ir::OpKind::StringSplitField) {
                 uses.split_fields.extend(op.results.iter().copied());
+            }
+            if let Some(allocation) = super::super::typed_slot_access::boxed_allocation_layout(op)
+                && !super::super::escape_analysis::op_result_defines_del(op)
+            {
+                uses.fresh_objects.insert(allocation.result);
             }
             if opcode_is_inliner_numeric_raw_lane_consumer_table(op.opcode) {
                 for &operand in &op.operands {
@@ -81,6 +89,34 @@ impl InlineSiteUses {
                     .iter()
                     .any(|arg| self.split_fields.contains(arg))
             })
+    }
+
+    /// A fresh object whose only nonlocal use is as a noncapturing argument
+    /// can become local after splicing. Check every alias and every other
+    /// use before spending the larger budget, once per candidate caller.
+    pub(super) fn receives_noncaptured_allocation<'a>(
+        &self,
+        op: &TirOp,
+        caller: &TirFunction,
+        parameters: &mut ParameterCapture,
+        body: impl Fn(molt_ir::FunctionId) -> Option<&'a TirFunction>,
+    ) -> bool {
+        let Some(call) = static_call(op) else {
+            return false;
+        };
+        if !call
+            .arguments
+            .iter()
+            .any(|v| self.fresh_objects.contains(v))
+        {
+            return false;
+        }
+        let states = self
+            .capture
+            .get_or_init(|| parameters.analyze(caller, body));
+        call.arguments.iter().any(|v| {
+            self.fresh_objects.contains(v) && states.get(v) == Some(&EscapeState::ArgEscape)
+        })
     }
 
     pub(super) fn numeric_consumer(&self, op: &TirOp) -> Option<(ValueId, OpCode)> {

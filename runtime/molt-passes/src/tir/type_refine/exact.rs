@@ -150,7 +150,109 @@ pub(crate) struct ExactScalarPlan<'a> {
     projected_calls: HashMap<ValueId, &'a crate::tir::ops::TirOp>,
     returns: Vec<ValueId>,
     has_non_value_return: bool,
-    returned_parameter: std::cell::OnceCell<Option<usize>>,
+}
+
+/// A sparse backwards walk of the values returned by one body. It can pause
+/// at a checked invocation while the module derives that callee's origin.
+pub(crate) struct ReturnParameterSearch {
+    origins: HashMap<ValueId, ReturnOrigin>,
+    pending: Vec<ValueId>,
+    visited: HashSet<ValueId>,
+    parameter: Option<usize>,
+}
+
+enum ReturnOrigin {
+    Parameter(usize),
+    Copy(ValueId),
+    Join(BlockId, usize),
+}
+
+impl ReturnParameterSearch {
+    fn new(plan: &ExactScalarPlan<'_>) -> Self {
+        use crate::tir::passes::value_identity::forwarded_python_value_source;
+        let entry = &plan.func.blocks[&plan.func.entry_block];
+        let mut origins: HashMap<_, _> = entry
+            .args
+            .iter()
+            .take(plan.func.param_types.len())
+            .enumerate()
+            .map(|(position, arg)| (arg.id, ReturnOrigin::Parameter(position)))
+            .collect();
+        for &id in plan.order.iter() {
+            let block = &plan.func.blocks[&id];
+            if plan.normal_incoming_edges(id).is_some() {
+                for (position, arg) in block.args.iter().enumerate() {
+                    origins.insert(arg.id, ReturnOrigin::Join(id, position));
+                }
+            }
+            for op in &block.ops {
+                // A checked projection must pass the continuation proof.
+                // Copy forwarding would instead ask about the mixed-use ABI word.
+                if op.has_valid_shape()
+                    && op.checked_call_result_source().is_none()
+                    && let Some(source) = forwarded_python_value_source(op)
+                {
+                    origins.insert(op.results[0], ReturnOrigin::Copy(source));
+                }
+            }
+        }
+        Self {
+            origins,
+            pending: plan.returns.clone(),
+            visited: HashSet::default(),
+            parameter: None,
+        }
+    }
+
+    /// All returned values must trace to one formal. Copies may retain or
+    /// release ownership and a call may still fail. This proves the successful
+    /// result's Python value only.
+    pub(crate) fn advance<E>(
+        &mut self,
+        plan: &ExactScalarPlan<'_>,
+        mut call_actual: impl FnMut(&TirOp) -> Result<Option<ValueId>, E>,
+    ) -> Result<Option<usize>, E> {
+        while let Some(value) = self.pending.pop() {
+            if !self.visited.insert(value) {
+                continue;
+            }
+            match self.origins.get(&value) {
+                Some(&ReturnOrigin::Parameter(origin)) => {
+                    if self.parameter.is_some_and(|current| current != origin) {
+                        return Ok(None);
+                    }
+                    self.parameter = Some(origin);
+                }
+                Some(&ReturnOrigin::Copy(source)) => self.pending.push(source),
+                Some(&ReturnOrigin::Join(block, position)) => {
+                    for edge in &plan.incoming[&block] {
+                        let Some(&actual) = edge.get(position) else {
+                            return Ok(None);
+                        };
+                        self.pending.push(actual);
+                    }
+                }
+                None => {
+                    let Some(call) = plan.checked.checked_compiled_call(plan.func, value) else {
+                        return Ok(None);
+                    };
+                    match call_actual(call) {
+                        Ok(Some(actual)) => self.pending.push(actual),
+                        Ok(None) => return Ok(None),
+                        Err(dependency) => {
+                            // Resume at exactly this projection after the
+                            // callee becomes known. A CFG backedge is visited
+                            // once and cannot invent a formal seed.
+                            self.visited.remove(&value);
+                            self.pending.push(value);
+                            return Err(dependency);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(self.parameter)
+    }
 }
 
 impl<'a> ExactScalarPlan<'a> {
@@ -215,21 +317,19 @@ impl<'a> ExactScalarPlan<'a> {
             initial,
             returns,
             has_non_value_return,
-            returned_parameter: std::cell::OnceCell::new(),
         }
     }
 
-    /// A parameter whose type is forwarded by every successful value return.
-    /// A frame publication or owned alias can retain and run cleanup; only
-    /// its result type is projected, never its ownership or effects.
+    #[cfg(test)]
     pub(crate) fn forwarded_return_parameter(&self) -> Option<usize> {
-        *self
-            .returned_parameter
-            .get_or_init(|| self.find_return_parameter())
+        self.return_parameter_search()?
+            .advance(self, |_| Ok::<_, ()>(None))
+            .ok()
+            .flatten()
     }
 
-    fn find_return_parameter(&self) -> Option<usize> {
-        use crate::tir::passes::value_identity::forwarded_python_value_source;
+    /// Only executable, value-returning paths can establish a forwarded formal.
+    pub(crate) fn return_parameter_search(&self) -> Option<ReturnParameterSearch> {
         let entry = self.func.entry_block;
         if self.incoming.contains_key(&entry)
             || self.handlers.contains(&entry)
@@ -238,57 +338,7 @@ impl<'a> ExactScalarPlan<'a> {
         {
             return None;
         }
-        let parameters: HashMap<ValueId, usize> = self.func.blocks[&entry]
-            .args
-            .iter()
-            .take(self.func.param_names.len())
-            .enumerate()
-            .map(|(i, arg)| (arg.id, i))
-            .collect();
-        let mut copies = HashMap::default();
-        let mut joins = HashMap::default();
-        for id in self.order.iter() {
-            let block = &self.func.blocks[id];
-            if let Some(edges) = self.normal_incoming_edges(*id) {
-                for (position, arg) in block.args.iter().enumerate() {
-                    joins.insert(arg.id, (edges, position));
-                }
-            }
-            for op in &block.ops {
-                if op.has_valid_shape()
-                    && let Some(source) = forwarded_python_value_source(op)
-                {
-                    copies.insert(op.results[0], source);
-                }
-            }
-        }
-
-        // Every origin of every returned value must be the same formal.
-        // A loop phi can refer back to itself, so visit each SSA value once
-        // and require a real parameter seed on an executable incoming path.
-        let mut parameter = None;
-        let mut visited = HashSet::default();
-        let mut pending = self.returns.clone();
-        while let Some(value) = pending.pop() {
-            if !visited.insert(value) {
-                continue;
-            }
-            if let Some(&origin) = parameters.get(&value) {
-                if parameter.is_some_and(|current| current != origin) {
-                    return None;
-                }
-                parameter = Some(origin);
-            } else if let Some(&source) = copies.get(&value) {
-                pending.push(source);
-            } else if let Some(&(edges, position)) = joins.get(&value) {
-                for edge in edges {
-                    pending.push(*edge.get(position)?);
-                }
-            } else {
-                return None;
-            }
-        }
-        parameter
+        Some(ReturnParameterSearch::new(self))
     }
 
     pub(crate) fn return_values(&self) -> &[ValueId] {

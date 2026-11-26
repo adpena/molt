@@ -40,12 +40,33 @@ seeding every function's analysis manager or retaining an all-function table.
 | `leaf` | Callee call graph; `Proven` for no calls, `False` for a calling callee, `Unknown` for an unresolved callee |
 | `no_throw` | Generated operation effect contract; handler absence or builtin spelling cannot prove no-throw |
 | `inlinable` | The inliner's existing eligibility classifier, including typed refusal reasons |
-| `no_alloc`, `no_escape_args` | Remain conservative until a sound producer and consumer are implemented |
+| `no_alloc` | Unknown |
 
 `FactValue` distinguishes `Proven`, `False`, `Unknown`, `Guarded`, and `Profiled`.
 Unknown is pessimistic. The local floor must never out-claim precise facts.
 Fact construction reuses the existing classifier; the inliner does not read this
 diagnostic table. No backend optimization may infer a proof from its presence.
+
+## Argument capture in the inliner
+
+The module inliner asks `escape_analysis::ParameterCapture` for a caller's
+allocation escape states when a fixed-layout allocation reaches a call above
+the ordinary inline budget and within the hot budget. It supplies finalized
+callee bodies from its bottom-up traversal. A checked `StaticCall::bind` maps
+each positional argument to its formal. The summary follows copies and block
+arguments to every use, including returns and heap stores. Frames, suspension,
+possible Python callbacks, exceptional exits and reference transfers keep the
+capture result conservative. The caller joins the facts for each occurrence
+and alias of its allocation. A retained occurrence dominates a noncapturing
+one.
+
+An allocation that crosses just noncapturing boundaries can justify the larger
+inline budget. The resulting body goes through the regular SROA and ownership
+passes, which independently check allocation effects, field representation
+and destruction. The summary does not relax a memory barrier, remove a
+reference operation or suppress call admission. Each inliner traversal owns
+its demand-built cache. Function-local alias analysis and the diagnostic
+CallFacts table still use their local contracts.
 
 ## FactGraph export
 

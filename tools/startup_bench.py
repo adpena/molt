@@ -17,6 +17,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -34,6 +35,7 @@ DEFAULT_BUDGET = ROOT / "bench" / "scoreboard" / "startup_budget.json"
 
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
+from tools.perf_schema import PhaseTimingStats  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.python_interpreter import (  # noqa: E402
     PythonInterpreter,
@@ -73,7 +75,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _stats(samples_ms: list[float]) -> dict[str, Any]:
+def _stats(samples_ms: list[float]) -> PhaseTimingStats:
     return {
         "count": len(samples_ms),
         "median_ms": round(statistics.median(samples_ms), 3) if samples_ms else None,
@@ -148,7 +150,9 @@ def _parse_node_phases(stderr: str) -> dict[str, Any] | None:
     return None
 
 
-def _phase_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _phase_stats(
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, PhaseTimingStats]:
     samples: dict[str, list[float]] = {}
     for record in records:
         phase = _parse_node_phases(str(record.get("stderr", "")))

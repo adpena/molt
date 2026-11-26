@@ -16,6 +16,7 @@ pub(super) fn materialize_native_application_batch_jobs(
     batch_ops_budget: usize,
 ) -> io::Result<Vec<NativeBatchJobSpec>> {
     let total_batches = plan.batches.len();
+    let codegen_environment = molt_ir::backend_environment::NativeCodegenEnvironment::capture()?;
     let mut batch_specs: Vec<NativeBatchJobSpec> = Vec::new();
     for (batch_idx, batch_funcs) in plan.batches.into_iter().enumerate() {
         log_native_application_batch(
@@ -39,7 +40,7 @@ pub(super) fn materialize_native_application_batch_jobs(
             ir: batch_ir,
             code_slots: (batch_idx == 0).then(|| std::mem::take(&mut options.code_slots)),
             module_context: NativeBackendModuleContext::default(),
-            codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::capture()?,
+            codegen_environment: codegen_environment.clone(),
             target_triple: options.target_triple.map(str::to_owned),
             emit_app_callable_resolver: batch_idx == 0,
             app_callable_manifest: if batch_idx == 0 {

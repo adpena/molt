@@ -365,20 +365,6 @@ impl AliasAnalysisResult {
                 Some(EscapeState::NoEscape) | Some(EscapeState::ArgEscape)
             )
     }
-
-    /// True if the shared `no_heap_alias_source` fact proves that the result
-    /// names the same heap object as its source. This is exactly the operation
-    /// set [`build_alias_union_find`] resolves to one root, so callers that
-    /// already route values through [`root`](Self::root) can preserve identity.
-    ///
-    /// Runtime guards retain their checks and exceptions; alias identity grants
-    /// no permission to erase effects. Unknown non-owning passthrough carriers
-    /// do not prove source identity and return `false`. SROA consumes this fact
-    /// rather than reconstructing the alias contract.
-    #[inline]
-    pub fn is_transparent_alias_op(&self, op: &TirOp) -> bool {
-        no_heap_alias_source(op).is_some()
-    }
 }
 
 // ===========================================================================
