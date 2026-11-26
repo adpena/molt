@@ -11141,6 +11141,7 @@ def _project_binding_index(
             call_facts=facts._call_lookup,
             argument_plan=argument_plan,
             source_key=source_key,
+            ast_digest_admission=ast_digest_admission,
             callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
         )
     else:
@@ -11162,6 +11163,7 @@ def _project_binding_index(
             call_facts=facts._call_lookup,
             argument_plan=argument_plan,
             source_key=source_key,
+            ast_digest_admission=ast_digest_admission,
             source_discovery=True,
             callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
         )

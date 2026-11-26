@@ -986,7 +986,7 @@ def _normalized_import_context(context: ModuleImportContext) -> ModuleImportCont
 
 
 def _analyze_module_import_flow_uncached(
-    tree: ast.AST,
+    tree: ast.Module,
     context: ModuleImportContext,
     *,
     statement_facts: Mapping[PythonSourceKey, PythonStatementFact],
@@ -996,6 +996,7 @@ def _analyze_module_import_flow_uncached(
     call_facts: Mapping[PythonSourceKey, PythonCallSiteFact],
     argument_plan: Callable[[ast.Call | ast.ClassDef], CallArgumentPlan],
     source_key: Callable[[ast.AST], PythonSourceKey],
+    ast_digest_admission: _PythonAstDigestAdmission | None = None,
     source_discovery: bool = False,
     callbacks_rewrite_metadata: bool = True,
 ) -> ModuleImportFlow:
@@ -1024,18 +1025,32 @@ def _analyze_module_import_flow_uncached(
         WRITES_MODULE_METADATA,
     )
 
+    from molt.compiler_analysis.python_lexical_scope import (
+        PythonDependencyAuthority,
+        module_annotation_execution,
+    )
+
+    if ast_digest_admission is not None:
+        lexical = ast_digest_admission.lexical_plan(
+            tree, target_python=context.target_python
+        ).authority
+    else:
+        future, eager = module_annotation_execution(
+            tree, target_python=context.target_python
+        )
+        lexical = PythonDependencyAuthority(
+            eager_annotations=eager, future_annotations=future
+        )
+
     initial = frozenset({context_import_state(context)})
     by_node: dict[PythonSourceKey, _ImportStates] = {}
     all_states: set[ModuleImportState] = set(initial)
-    deferred_bodies: dict[PythonSourceKey, Sequence[ast.stmt]] = {}
+    deferred_definitions: dict[
+        PythonSourceKey, ast.FunctionDef | ast.AsyncFunctionDef
+    ] = {}
     pending_bodies: deque[PythonSourceKey] = deque()
     deferred_expressions: dict[PythonSourceKey, ast.expr] = {}
-    future_annotations = any(
-        isinstance(statement, ast.ImportFrom)
-        and statement.module == "__future__"
-        and any(alias.name == "annotations" for alias in statement.names)
-        for statement in getattr(tree, "body", ())
-    )
+    future_annotations = lexical.future_annotations
 
     def record(node: ast.AST, states: _ImportStates) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -1232,22 +1247,6 @@ def _analyze_module_import_flow_uncached(
                 for element in target.elts
             )
         return False
-
-    def scope_global_metadata_names(statements: Sequence[ast.stmt]) -> frozenset[str]:
-        names: set[str] = set()
-        pending: list[ast.AST] = list(statements)
-        while pending:
-            node = pending.pop()
-            if isinstance(node, ast.Global):
-                names.update(node.names)
-                continue
-            if isinstance(
-                node,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                continue
-            pending.extend(ast.iter_child_nodes(node))
-        return frozenset(names & _IMPORT_METADATA_NAMES)
 
     def expression_effects(
         expression: ast.AST,
@@ -1806,9 +1805,9 @@ def _analyze_module_import_flow_uncached(
                     for expression in annotations:
                         current = evaluate(expression, current)
                 deferred_key = source_key(statement)
-                if deferred_key not in deferred_bodies:
+                if deferred_key not in deferred_definitions:
                     pending_bodies.append(deferred_key)
-                deferred_bodies[deferred_key] = statement.body
+                deferred_definitions[deferred_key] = statement
             elif isinstance(statement, ast.ClassDef):
                 for expression in (
                     *statement.decorator_list,
@@ -1816,7 +1815,9 @@ def _analyze_module_import_flow_uncached(
                     *(keyword.value for keyword in statement.keywords),
                 ):
                     current = evaluate(expression, current)
-                class_global_metadata = scope_global_metadata_names(statement.body)
+                class_global_metadata = (
+                    lexical.declarations(statement).globals & _IMPORT_METADATA_NAMES
+                )
                 # Class preparation can fail before the body independently of
                 # decorator/base expression evaluation.
                 pending_expression_raises.append(current)
@@ -2137,14 +2138,13 @@ def _analyze_module_import_flow_uncached(
     # Function imports observe globals when called. Graph consumers therefore
     # union every reachable module state; frontend lowering keeps them relative.
     while pending_bodies:
-        body_key = pending_bodies.popleft()
-        deferred_body = deferred_bodies[body_key]
-        body_states = deferred_states
+        definition = deferred_definitions[pending_bodies.popleft()]
         flow_statements(
-            deferred_body,
-            body_states,
+            definition.body,
+            deferred_states,
             eager_annotations=False,
-            direct_metadata_names=scope_global_metadata_names(deferred_body),
+            direct_metadata_names=lexical.declarations(definition).globals
+            & _IMPORT_METADATA_NAMES,
         )
     while deferred_expressions:
         _key, deferred_expression = deferred_expressions.popitem()
