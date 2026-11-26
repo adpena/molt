@@ -100,6 +100,14 @@ class SourceCandidate(NamedTuple):
         return self.module, self.source
 
 
+_INTERPRETER_BUILTINS = SourceCandidate(
+    "builtins", None, "namespace", namespace_ownership=PythonNamespaceOwnership.BORROWED
+)
+_INTERPRETER_IMPORT = SourceCandidate(
+    "builtins", None, identity=PythonIdentity.BUILTINS_IMPORT
+)
+
+
 def _candidate_order(value: object) -> tuple[object, ...]:
     """A total order over candidates whose optional fields may be None: two
     candidates of one value can differ in a source, receiver or identity that
@@ -1293,6 +1301,8 @@ class PythonSourceDemands:
         namespace = self.namespaces.get(owner.value, _EMPTY_NAMESPACE)
         sources = namespace.origins(key)
         result = set()
+        if owner.value == _INTERPRETER_BUILTINS.value and key in {None, "__import__"}:
+            result.add(_INTERPRETER_IMPORT)
         for source in sources:
             result.update(self.watch((owner.module, source), user))
         if (
@@ -1403,6 +1413,8 @@ class PythonSourceDemands:
             if phase in {"escape", "expose"}:
                 # Retained mappings remain live as their owners publish values.
                 self.demand(origin.value, phase)
+                if origin.value == _INTERPRETER_BUILTINS.value:
+                    self.activate(_INTERPRETER_IMPORT, phase)
             elif phase == "call" and origin.kind in {
                 "namespace_clear",
                 "namespace_remove",
@@ -1998,6 +2010,10 @@ class PythonSourceDemands:
                         candidates.update(self._returned_values(candidate, value))
         elif value in self.attributes:
             name, owners = self.attributes[value]
+            if name in {"__builtins__", "f_builtins"}:
+                # Native metadata may become visible through a decorator or
+                # dynamic member whose callable source has no graph candidate.
+                candidates.add(_INTERPRETER_BUILTINS)
             for owner in sorted(owners):
                 candidates.update(
                     self._select_attribute((module_name, owner), name, value)

@@ -1602,15 +1602,6 @@ def _decode_import_scan_payload(
             item.site[-1] not in {"Call", "Attribute"}
             or not item.receivers
             or item.names == ()
-            or item.owner is not None
-            and item.owner[-1]
-            not in {
-                "FunctionDef",
-                "AsyncFunctionDef",
-                "Lambda",
-                "GeneratorExp",
-                "TypeAlias",
-            }
             or admission.source_owner is not None
             and item.owner != admission.source_owner
             for item in values.attribute_writes

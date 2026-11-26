@@ -267,7 +267,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 72
+_ANALYSIS_SCHEMA: Final = 73
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -5390,40 +5390,46 @@ class _Analyzer:
                 EXECUTES_ARBITRARY_PYTHON | INVOKES_IMPORT_SYSTEM | ALLOCATES | RAISES
             )
         elif (
-            exact
-            and callee
-            in {
-                int(PythonIdentity.BUILTIN_GETATTR),
-                int(PythonIdentity.BUILTIN_HASATTR),
-                int(PythonIdentity.BUILTIN_DELATTR),
-            }
+            (
+                (may_getattr := bool(callee & int(PythonIdentity.BUILTIN_GETATTR)))
+                or callee
+                in {
+                    int(PythonIdentity.BUILTIN_HASATTR),
+                    int(PythonIdentity.BUILTIN_DELATTR),
+                }
+            )
             and not node.keywords
             and not any(isinstance(arg, ast.Starred) for arg in node.args)
-            and len(node.args)
-            in ((2, 3) if callee == int(PythonIdentity.BUILTIN_GETATTR) else (2,))
+            and len(node.args) in ((2, 3) if may_getattr else (2,))
             and (member := _literal_string(node.args[1])) is not None
         ):
             # Literal selection uses the same member source graph as obj.member,
             # including package __getattr__. Only the receiver is a borrow:
             # getattr's default can become the result.
-            if callee != int(PythonIdentity.BUILTIN_DELATTR):
+            if exact and callee != int(PythonIdentity.BUILTIN_DELATTR):
                 borrowed_module_operand = 0
             owner = argument_results[0]
             # The literal's real source site distinguishes member projection
             # from a joined replacement callee's ordinary call-result site.
             selected = self._node_key(node.args[1])
-            source_result_projected = True
+            source_result_projected = exact
             previous = self.transfer.source_attributes.get(selected)
             self.transfer.source_attributes[selected] = (
                 member,
                 owner.source_origins | (previous[1] if previous else frozenset()),
             )
-            argument_protocol_indices = frozenset()
-            effects |= READS_OBJECT_STATE | INVOKES_DESCRIPTOR | RAISES
+            if exact:
+                argument_protocol_indices = frozenset()
+                effects |= READS_OBJECT_STATE | INVOKES_DESCRIPTOR | RAISES
+            else:
+                effects |= UNKNOWN_EFFECTS
             selected_deferred = self._attribute_dispatch(owner, effects)
-            if callee == int(PythonIdentity.BUILTIN_GETATTR):
+            if may_getattr:
                 selected_deferred |= frozenset({DeferredExecution(selected, "read")})
-                result = self._member_value(state_id, owner.identities, member, owner)
+                if exact:
+                    result = self._member_value(
+                        state_id, owner.identities, member, owner
+                    )
                 result_fact = StaticExpressionResult(
                     source_origins=frozenset({selected}), evaluation_required=True
                 )
@@ -6117,7 +6123,8 @@ class _Analyzer:
                     ),
                 )
                 result_override = replace(
-                    result_override, source_origins=frozenset({call_source})
+                    result_override,
+                    source_origins=result_override.source_origins | {call_source},
                 )
             if callee_result.identities & int(PythonIdentity.BUILTIN_SUPER):
                 receiver_origins = self._super_receiver_origins(
