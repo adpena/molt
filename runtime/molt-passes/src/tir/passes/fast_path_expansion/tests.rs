@@ -2335,3 +2335,87 @@ fn checked_static_recursion_refusal_leaves_an_independent_poll_on_the_admitted_p
         Terminator::Unwind
     ));
 }
+
+#[test]
+fn packed_access_keeps_the_residual_before_the_observation() {
+    for (entry, count, opcode, materialization) in [
+        (
+            RuntimeFn::Buffer2dGet,
+            3,
+            OpCode::TryBuffer2dLoadI64,
+            OpCode::BoxVal,
+        ),
+        (
+            RuntimeFn::Buffer2dSet,
+            4,
+            OpCode::TryBuffer2dStoreI64,
+            OpCode::ConstNone,
+        ),
+    ] {
+        check_packed_continuation(entry, count, opcode, materialization);
+    }
+}
+
+fn check_packed_continuation(
+    entry: RuntimeFn,
+    count: usize,
+    opcode: OpCode,
+    materialization: OpCode,
+) {
+    let operands = &["owner", "row", "col", "value"][..count];
+    let ir: molt_ir::FunctionIR = serde_json::from_value(serde_json::json!({
+        "name": "access", "return_abi": "value", "execution_context": "local",
+        "params": operands,
+        "param_types": vec!["Any"; count],
+        "ops": [
+            {"kind": "call", "s_value": entry.symbol(),
+             "args": operands, "out": "out"},
+            {"kind": "check_exception", "exception_edge": "origin", "value": 73},
+            {"kind": "ret", "args": ["out"]},
+            {"kind": "label", "value": 73},
+            {"kind": "ret_void", "unwind": true}
+        ]
+    }))
+    .unwrap();
+    let mut func = crate::tir::lower_from_simple::lower_to_tir(&ir);
+    let (observer, original) = {
+        let block = &func.blocks[&func.entry_block];
+        (block.ops[1].clone(), block.ops[0].results[0])
+    };
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    let [(source, access)] = ops(&func, opcode).try_into().unwrap();
+    let Terminator::CondBranch {
+        cond,
+        then_block,
+        else_block,
+        ..
+    } = func.blocks[&source].terminator
+    else {
+        panic!("the access must branch on success")
+    };
+    assert_eq!(access.results.last(), Some(&cond));
+    let [result] = func.blocks[&then_block].ops.as_slice() else {
+        panic!("one result materialization")
+    };
+    assert_eq!(result.opcode, materialization);
+    assert_eq!(result.operands, access.results[..access.results.len() - 1]);
+    let [residual] = func.blocks[&else_block].ops.as_slice() else {
+        panic!("one residual call")
+    };
+    assert_eq!(residual.runtime, Some(entry));
+    assert_eq!(residual.operands, access.operands);
+    let join = |id: BlockId| match func.blocks[&id].terminator {
+        Terminator::Branch { target, .. } => target,
+        _ => panic!("ordinary continuation"),
+    };
+    assert_eq!(join(then_block), join(else_block));
+    let continuation = &func.blocks[&join(then_block)];
+    assert_eq!(continuation.args[0].id, original);
+    let [check] = continuation.ops.as_slice() else {
+        panic!("one exception observation");
+    };
+    assert_eq!(check.opcode, observer.opcode);
+    assert_eq!(check.attrs, observer.attrs);
+    assert_eq!(check.operands, observer.operands);
+}

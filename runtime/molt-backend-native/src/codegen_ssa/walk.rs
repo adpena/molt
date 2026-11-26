@@ -192,6 +192,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             | OpCode::CheckedAdd
             | OpCode::CheckedMul
             | OpCode::TryBuffer2dLoadI64
+            | OpCode::TryBuffer2dStoreI64
             | OpCode::Neg
             | OpCode::Pos
             | OpCode::Not
@@ -875,7 +876,13 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             at.op_index = index_in_block;
             if index_in_block + 1 == block.ops.len()
                 && let Some(branch) = packed_branches.get(&id)
-                && cx.try_buffer_branch(b, op, blocks[&branch.hit], blocks[&branch.miss])
+                && cx.try_buffer_branch(
+                    b,
+                    op,
+                    blocks[&branch.hit],
+                    blocks[&branch.miss],
+                    branch.raw,
+                )
             {
                 continue 'block;
             }

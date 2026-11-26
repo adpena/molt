@@ -13,6 +13,7 @@ use crate::tir::values::ValueId;
 pub(super) struct CheckedBranch {
     pub(super) hit: BlockId,
     pub(super) miss: BlockId,
+    pub(super) raw: Option<ValueId>,
 }
 
 #[derive(Clone, Copy)]
@@ -45,11 +46,17 @@ impl CheckedBranch {
                 else {
                     return None;
                 };
-                let [raw, flag] = op.results[..] else {
+                let (&flag, values) = op.results.split_last()?;
+                let raw = if op.opcode == OpCode::TryBuffer2dLoadI64
+                    && let [value] = values
+                {
+                    Some(*value)
+                } else if op.opcode == OpCode::TryBuffer2dStoreI64 && values.is_empty() {
+                    None
+                } else {
                     return None;
                 };
-                (op.opcode == OpCode::TryBuffer2dLoadI64
-                    && flag == *cond
+                (flag == *cond
                     && then_args.is_empty()
                     && else_args.is_empty()
                     && then_block != else_block
@@ -65,8 +72,8 @@ impl CheckedBranch {
                         Self {
                             hit: *then_block,
                             miss: *else_block,
+                            raw,
                         },
-                        raw,
                         flag,
                     ),
                 ))
@@ -79,7 +86,7 @@ impl CheckedBranch {
         let predecessors = build_pred_map(func);
         // The predecessor map deduplicates edges. A transfer from an earlier
         // exception observer in the same block would bypass the load as well.
-        candidates.retain(|source, (branch, _, _)| {
+        candidates.retain(|source, (branch, _)| {
             predecessors[&branch.hit].as_slice() == [*source]
                 && func.blocks[source]
                     .ops
@@ -93,11 +100,12 @@ impl CheckedBranch {
         let dominators = compute_dominator_tree(func, &predecessors);
         let uses: HashMap<ValueId, _> = candidates
             .iter()
-            .flat_map(|(&source, &(branch, raw, flag))| {
-                [
-                    (raw, (source, UseScope::Success(branch.hit))),
-                    (flag, (source, UseScope::BranchFlag)),
-                ]
+            .flat_map(|(&source, &(branch, flag))| {
+                std::iter::once((flag, (source, UseScope::BranchFlag))).chain(
+                    branch
+                        .raw
+                        .map(|raw| (raw, (source, UseScope::Success(branch.hit)))),
+                )
             })
             .collect();
         for &reader in order {
@@ -122,7 +130,7 @@ impl CheckedBranch {
         }
         candidates
             .into_iter()
-            .map(|(source, (branch, _, _))| (source, branch))
+            .map(|(source, (branch, _))| (source, branch))
             .collect()
     }
 }
