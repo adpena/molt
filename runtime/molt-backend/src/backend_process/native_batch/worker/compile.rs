@@ -64,7 +64,7 @@ fn compile_native_batch_object_job(
     }
     job.codegen_environment.validate_current()?;
     let mut backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
-    backend.skip_ir_passes = true;
+    backend.program_scope = molt_backend::NativeProgramScope::ObjectConstituent;
     backend.skip_shared_stdlib_partition = true;
     backend.emit_app_callable_resolver = job.emit_app_callable_resolver;
     backend.app_callable_manifest = job.app_callable_manifest;

@@ -12,6 +12,10 @@ pub enum ReturnAvailability {
     #[default]
     EveryExit,
     SuccessOnly,
+    /// Minted after this object validates a digest-bound private entry. Serialized
+    /// jobs can request validation but cannot supply the resulting capability.
+    #[serde(skip)]
+    CertifiedProgramEntry,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -34,7 +38,11 @@ pub struct NativeFunctionLinkageAbi {
 
 impl NativeFunctionLinkageAbi {
     pub fn checked_raw_return(&self) -> bool {
-        self.return_availability == ReturnAvailability::SuccessOnly
+        self.return_availability != ReturnAvailability::EveryExit
+    }
+
+    pub fn certified_program_entry(&self) -> bool {
+        self.return_availability == ReturnAvailability::CertifiedProgramEntry
     }
 
     pub fn set_checked_raw_return(&mut self, carrier: crate::tir::types::TirType) {

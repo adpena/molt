@@ -60,7 +60,7 @@ fn closed_refcount_cfg_emits_identical_object_bytes() {
         let mut backend = SimpleBackend::new();
         // Reusable stdlib workers consume an already-owned body through this
         // path. Fresh backend/fact maps must not change its object identity.
-        backend.skip_ir_passes = true;
+        backend.program_scope = NativeProgramScope::ObjectConstituent;
         let bytes = backend
             .compile(SimpleIR {
                 functions: vec![function.clone()],

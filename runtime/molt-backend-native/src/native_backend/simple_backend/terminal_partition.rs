@@ -3,6 +3,49 @@ use super::backend_selection::NativeCodegenBackend;
 use super::compile_driver::{NativeCodegenProgram, backend_timing_enabled};
 use super::*;
 use molt_ir::FunctionId;
+use molt_ir::content_digest::{CompilationCacheKey, bytes_to_lower_hex};
+use molt_ir::linkage_abi::{NativeFunctionLinkageAbi, ReturnAvailability};
+
+/// The same commitment names the provider's hidden definition and every import.
+/// Its fields are in the independently content-addressed object inputs.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckedProvider {
+    origin: String,
+    body: [u8; 32],
+    entry: [u8; 32],
+}
+
+impl CheckedProvider {
+    fn body_digest(wire: &[u8]) -> [u8; 32] {
+        let mut key = CompilationCacheKey::new(b"native-checked-body-v1");
+        key.field(b"tir", wire);
+        key.finish_bytes()
+    }
+
+    fn entry_digest(
+        target: &[u8],
+        origin: &str,
+        clone: &str,
+        body: &[u8; 32],
+        abi: &NativeFunctionLinkageAbi,
+    ) -> [u8; 32] {
+        let mut key = CompilationCacheKey::new(b"native-private-checked-provider-v1");
+        key.field(b"target", target);
+        key.field(b"origin", origin.as_bytes());
+        key.field(b"clone", clone.as_bytes());
+        key.field(b"body", body);
+        key.field(
+            b"abi",
+            &serde_json::to_vec(abi).expect("serializable linkage"),
+        );
+        key.finish_bytes()
+    }
+
+    fn symbol(&self) -> String {
+        format!("__molt_checked_{}", bytes_to_lower_hex(&self.entry))
+    }
+}
 
 pub struct TerminalObjectRow {
     id: FunctionId,
@@ -17,6 +60,7 @@ struct TerminalBody {
 pub struct NativeTerminalArchive {
     target: Vec<u8>,
     externs: Vec<FunctionIR>,
+    checked: BTreeMap<FunctionId, CheckedProvider>,
     bodies: Vec<Option<TerminalBody>>,
     pub definitions: Vec<TerminalObjectRow>,
     pub linkage: NativeBackendModuleContext,
@@ -30,6 +74,7 @@ pub struct NativeTerminalArchive {
 pub struct NativeTerminalObject {
     target: Vec<u8>,
     pub declarations: Vec<FunctionIR>,
+    checked: Vec<(FunctionId, CheckedProvider)>,
     bodies: Vec<Option<Vec<u8>>>,
 }
 
@@ -53,9 +98,13 @@ impl NativeTerminalArchive {
         }
         let mut declarations = Vec::with_capacity(locals.len() + imports.len());
         let mut bodies = Vec::with_capacity(locals.len() + imports.len());
+        let mut checked = Vec::new();
         for row in &definitions {
             let mut header = self.externs[row.id.index()].clone();
             header.is_extern = false;
+            if let Some(provider) = self.checked.get(&row.id) {
+                checked.push((FunctionId::from_index(declarations.len()), provider.clone()));
+            }
             declarations.push(header);
         }
         for id in imports {
@@ -64,7 +113,9 @@ impl NativeTerminalArchive {
                 .linkage
                 .function_linkage_abi(&header.name)
                 .ok_or_else(|| format!("terminal import `{}` has no provider ABI", header.name))?;
-            if abi.checked_raw_return() {
+            if let Some(provider) = self.checked.get(&id) {
+                checked.push((FunctionId::from_index(declarations.len()), provider.clone()));
+            } else if abi.checked_raw_return() {
                 return Err(format!(
                     "terminal import `{}` requires a program-private checked provider",
                     header.name
@@ -82,6 +133,7 @@ impl NativeTerminalArchive {
         bodies.resize_with(declarations.len(), || None);
         Ok(NativeTerminalObject {
             target: self.target.clone(),
+            checked,
             declarations,
             bodies,
         })
@@ -116,9 +168,25 @@ impl SimpleBackend {
         let functions = program.final_functions;
         let table = molt_ir::FunctionTable::of(&functions.ir().functions);
         let mut externs = Vec::with_capacity(table.len());
+        let mut origins = BTreeMap::new();
+        let target = self.terminal_object_target();
         for id in table.ids() {
             let declaration = &functions.ir().functions[id.index()];
             externs.push(declaration.extern_declaration()?);
+            if let Some(origin) = functions.private_origin(id) {
+                if linkage.function_linkage_abi(&declaration.name).is_some()
+                    || program
+                        .app_callable_manifest
+                        .compiled_bodies
+                        .contains(&declaration.name)
+                {
+                    return Err(format!(
+                        "checked clone conflicts with published entry {}",
+                        declaration.name
+                    ));
+                }
+                origins.insert(id, origin.to_owned());
+            }
             if linkage.function_linkage_abi(&declaration.name).is_none() {
                 let abi = functions.linkage(id, None);
                 linkage
@@ -127,9 +195,28 @@ impl SimpleBackend {
             }
         }
         let mut definitions = Vec::new();
+        let mut checked = BTreeMap::new();
         let mut bodies: Vec<_> = (0..table.len()).map(|_| None).collect();
         for (id, body) in functions.into_local_functions() {
             let wire = molt_ir::tir::serialize::serialize_tir_function(&body.tir, &table)?;
+            if let Some(origin) = origins.remove(&id) {
+                let clone = table.symbol(id);
+                let abi = linkage
+                    .function_linkage_abi(clone)
+                    .expect("private clone linkage");
+                let body_digest = CheckedProvider::body_digest(&wire);
+                let entry =
+                    CheckedProvider::entry_digest(&target, &origin, clone, &body_digest, abi);
+                let provider = CheckedProvider {
+                    origin,
+                    body: body_digest,
+                    entry,
+                };
+                if linkage.function_linkage_abi(&provider.symbol()).is_some() {
+                    return Err("private physical symbol conflicts with a source provider".into());
+                }
+                checked.insert(id, provider);
+            }
             let mut declaration = externs[id.index()].clone();
             declaration.is_extern = false;
             let references = body
@@ -147,7 +234,8 @@ impl SimpleBackend {
             });
         }
         Ok(NativeTerminalArchive {
-            target: self.terminal_object_target(),
+            target,
+            checked,
             externs,
             bodies,
             definitions,
@@ -164,27 +252,77 @@ impl SimpleBackend {
             return Err("terminal object target differs from the compiling worker".into());
         }
         let backend: NativeCodegenBackend = self.selected_object_backend();
-        let final_functions = NativeFinalFunctions::from_terminal_wire(
+        let context = self
+            .module_context
+            .as_mut()
+            .ok_or("terminal object has no provider linkage")?;
+        let mut bindings = BTreeMap::new();
+        let mut claims = BTreeSet::new();
+        for (id, provider) in object.checked {
+            let header = object
+                .declarations
+                .get(id.index())
+                .ok_or("private provider row is absent")?;
+            let abi = context
+                .function_linkage_abi(&header.name)
+                .ok_or("missing private provider ABI")?;
+            let wire = object
+                .bodies
+                .get(id.index())
+                .ok_or("private provider body row is absent")?;
+            if abi.return_availability != ReturnAvailability::SuccessOnly
+                || provider.origin == header.name
+                || self
+                    .app_callable_manifest
+                    .as_ref()
+                    .is_some_and(|manifest| manifest.compiled_bodies.contains(&header.name))
+                || wire
+                    .as_ref()
+                    .is_some_and(|wire| CheckedProvider::body_digest(wire) != provider.body)
+                || CheckedProvider::entry_digest(
+                    &object.target,
+                    &provider.origin,
+                    &header.name,
+                    &provider.body,
+                    abi,
+                ) != provider.entry
+            {
+                return Err(format!(
+                    "invalid private provider commitment for {}",
+                    header.name
+                ));
+            }
+            let symbol = provider.symbol();
+            if context.function_linkage_abi(&symbol).is_some()
+                || !claims.insert(header.name.clone())
+            {
+                return Err("private provider collides with another declaration".into());
+            }
+            bindings.insert(id, (symbol, abi.clone()));
+        }
+        if context
+            .function_linkage_abis
+            .iter()
+            .any(|(name, abi)| abi.checked_raw_return() && !claims.contains(name))
+        {
+            return Err("terminal object has an uncertified checked entry".into());
+        }
+        let mut final_functions = NativeFinalFunctions::from_terminal_wire(
             SimpleIR {
                 functions: object.declarations,
                 profile: None,
             },
             object.bodies,
         )?;
-        let context = self
-            .module_context
-            .as_ref()
-            .ok_or("terminal object has no provider linkage")?;
-        context.validate_function_linkage_abis(&final_functions.ir().functions)?;
-        // The source-archive ABI carries every-exit entries. A success-only
-        // claim needs independent private-provider provenance at this boundary.
-        if context
-            .function_linkage_abis
-            .values()
-            .any(|abi| abi.checked_raw_return())
-        {
-            return Err("terminal object has an uncertified checked entry".into());
+        final_functions.bind_checked_providers(&bindings)?;
+        for (_, (symbol, mut abi)) in bindings {
+            abi.return_availability = ReturnAvailability::CertifiedProgramEntry;
+            context.function_linkage_abis.insert(symbol, abi);
         }
+        for name in claims {
+            context.function_linkage_abis.remove(&name);
+        }
+        context.validate_function_linkage_abis(&final_functions.ir().functions)?;
         final_functions.validate_extern_calls()?;
         if let Some(bindings) = &self.code_slots {
             bindings

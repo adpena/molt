@@ -240,7 +240,7 @@ impl SimpleBackend {
         Self {
             module,
             import_ids: RuntimeImportIds::default(),
-            skip_ir_passes: false,
+            program_scope: NativeProgramScope::WholeProgram,
             skip_shared_stdlib_partition: false,
             tir_cache: crate::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
             emit_app_callable_resolver: true,

@@ -172,6 +172,7 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
     },
     {"return_abi": "value",
       "name": "helper",
+      "codegen_partition": true,
       "params": [],
       "ops": [
         {"kind": "const", "value": 2, "out": "y"},

@@ -56,6 +56,15 @@ pub use jit::{
     probe_jit_execution,
 };
 
+/// The archive parent receives source rows whose reachability is already closed.
+/// It owns module specialization, while reusable stdlib constituents own only drops.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NativeProgramScope {
+    WholeProgram,
+    ApplicationArchive,
+    ObjectConstituent,
+}
+
 /// Output of a native compilation pass.
 ///
 /// Separating bytes from diagnostics lets callers handle warnings
@@ -73,7 +82,7 @@ pub struct SimpleBackend {
     pub(crate) module: CodeOwner,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     pub(crate) import_ids: RuntimeImportIds,
-    pub skip_ir_passes: bool,
+    pub program_scope: NativeProgramScope,
     pub skip_shared_stdlib_partition: bool,
     /// Where the persistent TIR cache lives: the backend process's own root,
     /// unless the caller names one (the JIT runner names its image's).

@@ -41,7 +41,13 @@ impl SimpleBackend {
                 let abi = functions.linkage(id, self.module_context.as_ref());
                 rows.insert(name.to_owned(), abi.clone());
                 let signature = super::super::codegen_builder::linkage_signature(&self.module, abi);
-                let linkage = if abi.checked_raw_return() {
+                let linkage = if abi.certified_program_entry() {
+                    if definition {
+                        Linkage::Hidden
+                    } else {
+                        Linkage::Import
+                    }
+                } else if abi.checked_raw_return() {
                     assert!(
                         definition,
                         "checked return entry must be defined in this object"
