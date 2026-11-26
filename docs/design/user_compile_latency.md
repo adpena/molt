@@ -160,7 +160,7 @@ tens of seconds every time, the shape Molt's WASM no-op had.
 - The store roots add no work: they remove recorded inputs.
 - Emitted programs are byte-identical.
 
-## Not done
+## Current status
 
 The Mach-O link plan now gives the runtime archive to the linker once and
 lets Clang provide libSystem. A release relink of the retained installed
@@ -168,7 +168,10 @@ regex workload with the macOS system linker emitted zero stderr and matched
 the original binary and CPython's stdout. Explicit ld64.lld still warns that
 it does not implement `-stack_size`.
 
-JSON WASM requests still run the pipeline because they need a typed WASM
-result to replay. The edit and cold costs belong to HF-26, HF-371 and the
-stdlib content seed. The source-record store's growth in finding 7 still
-needs a retention decision.
+Default Wasm builds replay structured results for linked, split and combined
+outputs. Eligibility and final-link product custody follow the [build record
+contract](build_early_cutoff.md). Measurements and remaining release evidence
+live in [the Version 1.0 ledger](../agent/V1_HANDOFF_FINDINGS.md), HF-250.
+
+The edit and cold costs belong to HF-26, HF-371 and the stdlib content seed.
+The source-record store's growth in finding 7 still needs a retention decision.

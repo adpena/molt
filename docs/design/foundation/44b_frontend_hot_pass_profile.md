@@ -124,6 +124,19 @@ cover discovery alone. An exact two-parent chunk identity and epoch census on
 asyncio found recurrence in under 6% of nonshared pairs with a 256-entry LRU,
 so this change adds no join memo and retains the 32-slot chunk geometry.
 
+## Source identity
+
+AST admission streams the declared fields through the source spelling authority.
+Ordinary nodes read their fields directly, and nodes with private name metadata
+use the same spelling and edit checks as individual field reads. A scalar's
+encoding carries its field-presence marker in the same write. The v3 digest
+bytes and stack-space bound are preserved.
+
+Nine alternating CPU samples on Linux arm64 and CPython 3.12.16 hashed the
+merged, canonicalized 117-source closure of the asyncio and unittest discovery
+workloads. Median digest time fell from 576.6 to 505.7 ms against
+`ebf4a5cea`. All 117 digests agreed in a separate equality pass.
+
 Historical note: the following measurements and optimization proposals describe
 the Python optimizer retired by HF-773 slice E. They do not describe the current
 frontend or authorize a second optimizer.
