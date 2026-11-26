@@ -22,6 +22,7 @@ import re
 import stat
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, get_args
@@ -49,6 +50,10 @@ _INDEX_ROW_LIMIT: Final = max(map(len, _KINDS)) + 2 + 64 + 64 + 3 + 64 + 16 + 1
 # An operation saves its queued index entries at most this many at a time.
 _PENDING_INDEX_ENTRIES: Final = 4096
 _PACK_BYTES: Final = 4 * 1024 * 1024
+# Small builds seek directly. Repeated lookups can retain raw rows without
+# decoding every key, keeping the aggregate below a fixed memory budget.
+_RESIDENT_AFTER_LOOKUPS: Final = 16
+_RESIDENT_INDEX_BYTES: Final = 8 * 1024 * 1024
 _EXTENT: Final = re.compile(r"[0-9a-f]{8}")
 _READ_FLAGS: Final = (
     os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -169,8 +174,36 @@ def _index_paths(directory: Path) -> tuple[Path, ...]:
     return tuple(directory / name for _, name in sorted(files, reverse=True))
 
 
-def _seek_index(path: Path, prefix: bytes) -> _RecordLocation | None:
+def _index_location(
+    read_at: Callable[[int, int], bytes], size: int, prefix: bytes
+) -> _RecordLocation | None:
     """Read at most two rows per step, even for a damaged index."""
+    lower, upper = len(_INDEX_HEADER), size
+    while lower < upper:
+        middle = (lower + upper) // 2
+        base = max(lower, middle - _INDEX_ROW_LIMIT)
+        window = read_at(base, min(upper - base, 2 * _INDEX_ROW_LIMIT))
+        offset = middle - base
+        prior = window.rfind(b"\n", 0, offset)
+        end = window.find(b"\n", offset)
+        if end < 0 or (prior < 0 and base != lower):
+            return None
+        row = window[prior + 1 : end]
+        if len(row) >= _INDEX_ROW_LIMIT:
+            return None
+        if row.startswith(prefix):
+            try:
+                return _RecordLocation.parse(row[len(prefix) :].decode("ascii"))
+            except UnicodeDecodeError:
+                return None
+        if row < prefix:
+            lower = base + end + 1
+        else:
+            upper = base + prior + 1
+    return None
+
+
+def _seek_index(path: Path, prefix: bytes) -> _RecordLocation | None:
     try:
         with open(
             path, "rb", opener=lambda name, _: os.open(name, _READ_FLAGS)
@@ -180,29 +213,35 @@ def _seek_index(path: Path, prefix: bytes) -> _RecordLocation | None:
                 return None
             if stream.read(len(_INDEX_HEADER)) != _INDEX_HEADER:
                 return None
-            lower, upper = len(_INDEX_HEADER), metadata.st_size
-            while lower < upper:
-                middle = (lower + upper) // 2
-                base = max(lower, middle - _INDEX_ROW_LIMIT)
-                stream.seek(base)
-                window = stream.read(min(upper - base, 2 * _INDEX_ROW_LIMIT))
-                offset = middle - base
-                prior = window.rfind(b"\n", 0, offset)
-                end = window.find(b"\n", offset)
-                if end < 0 or (prior < 0 and base != lower):
-                    return None
-                row = window[prior + 1 : end]
-                if len(row) >= _INDEX_ROW_LIMIT:
-                    return None
-                if row.startswith(prefix):
-                    return _RecordLocation.parse(row[len(prefix) :].decode("ascii"))
-                if row < prefix:
-                    lower = base + end + 1
-                else:
-                    upper = base + prior + 1
-    except (OSError, UnicodeError):
+
+            def read_at(offset: int, length: int) -> bytes:
+                stream.seek(offset)
+                return stream.read(length)
+
+            return _index_location(read_at, metadata.st_size, prefix)
+    except OSError:
         return None
-    return None
+
+
+def _verified_index_snapshot(path: Path, budget: int) -> bytes | None:
+    """Retain only complete bytes sealed by the immutable filename."""
+    try:
+        with open(
+            path, "rb", opener=lambda name, _: os.open(name, _READ_FLAGS)
+        ) as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > budget:
+                return None
+            data = stream.read(metadata.st_size + 1)
+    except OSError:
+        return None
+    if (
+        len(data) != metadata.st_size
+        or not data.startswith(_INDEX_HEADER)
+        or record_digest(data) != path.stem
+    ):
+        return None
+    return data
 
 
 # After repeated exhausted searches in a fragmented store, remember which
@@ -278,6 +317,8 @@ class FrontendRecordFiles:
         self._lookups: dict[tuple[str, str], _RecordLocation | None] = {}
         self._indices: tuple[Path, ...] = ()
         self._index_generation: tuple[int, int, int] | None = None
+        self._index_snapshots: dict[Path, bytes | None] = {}
+        self._index_snapshot_budget = _RESIDENT_INDEX_BYTES
         self._key_prefixes: bytearray | None = None
         self._exhausted_searches = 0
         self._pending: _RecordIndex = {}
@@ -347,6 +388,8 @@ class FrontendRecordFiles:
         if generation != self._index_generation:
             self._indices = _index_paths(self._index)
             self._lookups.clear()
+            self._index_snapshots.clear()
+            self._index_snapshot_budget = _RESIDENT_INDEX_BYTES
             self._key_prefixes = None
             self._exhausted_searches = 0
             self._index_generation = generation
@@ -367,11 +410,16 @@ class FrontendRecordFiles:
             if not self._key_prefixes[prefix_bits >> 3] & (1 << (prefix_bits & 7)):
                 return None
         prefix = f"{kind} {key} ".encode("ascii")
+        reader = (
+            self._seek_resident_index
+            if len(self._lookups) >= _RESIDENT_AFTER_LOOKUPS
+            else _seek_index
+        )
         location = next(
             (
                 found
                 for index in self._indices
-                if (found := _seek_index(index, prefix)) is not None
+                if (found := reader(index, prefix)) is not None
             ),
             None,
         )
@@ -379,6 +427,25 @@ class FrontendRecordFiles:
         if location is None:
             self._exhausted_searches += 1
         return location
+
+    def _seek_resident_index(self, path: Path, prefix: bytes) -> _RecordLocation | None:
+        if path not in self._index_snapshots:
+            snapshot = (
+                _verified_index_snapshot(path, self._index_snapshot_budget)
+                if self._index_snapshot_budget
+                else None
+            )
+            self._index_snapshots[path] = snapshot
+            if snapshot is not None:
+                self._index_snapshot_budget -= len(snapshot)
+        snapshot = self._index_snapshots[path]
+        if snapshot is None:
+            return _seek_index(path, prefix)
+        return _index_location(
+            lambda offset, length: snapshot[offset : offset + length],
+            len(snapshot),
+            prefix,
+        )
 
     def addresses(self) -> dict[tuple[str, str], str]:
         """Explicit inventory of every address, including this view's writes."""
