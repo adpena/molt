@@ -417,6 +417,14 @@ and keep original identities; a retracting incremental engine adds no benefit to
 this operation. Changed source bytes fail custody and start a fresh operation.
 All of this is compiler-side analysis; emitted programs perform none of it.
 
+Import metadata flow carries each disjunction as an immutable set of
+alternatives through expressions and completion edges. Each join applies the
+existing alternative limit before the flow continues. Unknown callback results
+are reusable within one projection.
+The solver publishes each distinct disjunction in stable order after it
+finishes, with explicit empty entries for sites it proved unreachable.
+This keeps the work to order published facts out of the fixed point.
+
 Runtime-import support is a projection of that same reached execution walk.
 The import visitor records ordinary import statements and possible canonical
 import or `find_spec` calls after its reachability check, before static-target,
