@@ -267,7 +267,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 73
+_ANALYSIS_SCHEMA: Final = 74
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -6299,19 +6299,25 @@ class _Analyzer:
                 # parameter of each function it selects, as a call binds an
                 # argument to its formal; the source demands escape it only
                 # where that selection is incomplete. Contents stay escaped.
+                method_source = (
+                    self._node_key(node.func)
+                    if isinstance(node.func, ast.Attribute)
+                    and receiver_result.source_origins
+                    else None
+                )
                 bound_receivers = (
                     receiver_result.source_origins
-                    if isinstance(node.func, ast.Attribute)
-                    and self._node_key(node.func) in self.transfer.source_attributes
+                    if method_source in self.transfer.source_attributes
                     else frozenset()
                 )
                 deferred_execution |= frozenset(
-                    DeferredExecution(
-                        ref.source,
-                        "method"
-                        if ref.source in bound_receivers and ref.source[-1] != "Module"
-                        else "escape",
+                    DeferredExecution(method_source, "method")
+                    if (
+                        method_source is not None
+                        and ref.source in bound_receivers
+                        and ref.source[-1] != "Module"
                     )
+                    else DeferredExecution(ref.source, "escape")
                     for ref in receiver_result.exposed_deferred
                 )
             if callee_result.identities == int(

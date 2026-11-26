@@ -3258,6 +3258,9 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
     ("access", "operation", "needs_finder"),
     [
         ("fn.__builtins__", "ns.get('len')", False),
+        ("fn.__builtins__", "ns.get('__import__')", False),
+        ("fn.__builtins__", "ns.get('__import__')('math')", True),
+        ("fn.__builtins__", "ns.get(key)('math')", True),
         ("getattr(fn, '__builtins__')", "ns['len'] = fn", False),
         ("fn.__builtins__", "ns['__import__'] = fn", True),
         ("getattr(builtins, '__dict__')", "del ns['__import__']", True),

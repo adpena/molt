@@ -356,10 +356,6 @@ class PythonSourceDemands:
             phases.add(incidence)
             self.pending_phases.setdefault(value, set()).add(incidence)
             self.queue_value(value)
-            if phase == "method":
-                # Each attribute of the value now owes its receiver proof.
-                for user in self.value_users.get(value, ()):
-                    self.queue_value(user)
 
     def watch(self, origin: SourceValue, user: SourceValue) -> set[SourceCandidate]:
         self.value_users.setdefault(origin, set()).add(user)
@@ -698,7 +694,12 @@ class PythonSourceDemands:
         receivers: Iterable[SourceCandidate],
     ) -> None:
         for value in receivers:
-            if value.source is not None or value.contained or value.kind != "value":
+            if (
+                value.source is not None
+                or value.identity is not None
+                or value.contained
+                or value.kind != "value"
+            ):
                 continue
             for write in writes:
                 incidence = (writer, value.module, write)
@@ -956,9 +957,10 @@ class PythonSourceDemands:
         instance receiver, and escape a method receiver it cannot bind."""
         element = self.elements.get(owner_value)
         strict = element is not None and element.protocol is PythonElementProtocol.SUPER
-        method = any(
-            incidence.phase == "method"
-            for incidence in self.value_phases.get(owner_value, ())
+        methods = tuple(
+            incidence
+            for incidence in self.value_phases.get(user, ())
+            if incidence.phase == "method"
         )
         # The attribute is a store target (`x.name = v`, `setattr`).
         stored = any(
@@ -1021,14 +1023,21 @@ class PythonSourceDemands:
                         )
                     )
                 )
+            ):
+                self.activate(candidate, "escape")
+            # A modeled mapping method carries the receiver through its
+            # selected key or view. An opaque method may expose the mapping.
+            if methods and not (
+                (candidate.kind == "namespace" and members)
                 or (
-                    method
-                    and not self._receiver_binding_complete(
+                    source_class
+                    and self._receiver_binding_complete(
                         candidate, name, user, strict=strict
                     )
                 )
             ):
-                self.activate(candidate, "escape")
+                for incidence in methods:
+                    self.activate(candidate, "escape", consumer=incidence.consumer)
         # The callable can remain the same while it gains a receiver.
         if binding_changed:
             for dependent in self.candidate_users.get(user, ()):
@@ -1404,10 +1413,7 @@ class PythonSourceDemands:
     ) -> None:
         module_name, owner = origin.value
         if phase == "method":
-            # A source class or instance receiver is bound where its attribute
-            # is selected (`_select_attribute`); any other receiver escapes.
-            if not self._source_class_candidate(origin):
-                self.activate(origin, "escape", arguments)
+            # The attribute projection owns the receiver obligation.
             return
         if origin.kind.startswith("namespace"):
             if phase in {"escape", "expose"}:
