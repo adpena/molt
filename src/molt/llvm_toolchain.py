@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from collections.abc import Mapping, MutableMapping
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -63,7 +63,7 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-from molt.toolchain_facts import capture_probe_tool
+from molt.toolchain_facts import ProbeTool, capture_probe_tool
 
 if TYPE_CHECKING:
     from molt.cargo_resource_selection import CargoResourceRoot
@@ -200,6 +200,26 @@ class LlvmReleaseManifest:
     digest: str
 
 
+@dataclass(frozen=True, slots=True)
+class LlvmSdkLinkProbe:
+    """The exact SDK command and caller environment, required before a source build."""
+
+    prefix: Path
+    driver: ProbeTool
+    linker: ProbeTool
+    closure: tuple[str, ...]
+    environment: ProcessEnvironment = field(repr=False)
+
+    def run(self) -> None:
+        with (
+            self.driver.fenced(label="LLVM SDK probe driver") as driver,
+            self.linker.fenced(label="LLVM SDK probe linker") as linker,
+        ):
+            _compile_link_probe(
+                self.prefix, driver, linker, self.closure, environ=self.environment
+            )
+
+
 @dataclass(frozen=True)
 class LlvmPrefixVerification:
     prefix: Path
@@ -215,6 +235,7 @@ class LlvmPrefixVerification:
     link_closure: tuple[str, ...]
     link_probe: tuple[str, ...]
     release: LlvmRelease | None
+    deferred_link_probe: LlvmSdkLinkProbe | None = None
 
 
 @dataclass(frozen=True)
@@ -2053,6 +2074,7 @@ def verify_llvm_toolchain_prefix(
     require_attestation: bool = False,
     llvm_config_override: Path | None = None,
     content_policy: Literal["cached", "full"] = "cached",
+    defer_link_probe: bool = False,
     environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     probe_timeout: Callable[[float], float] | None = None,
@@ -2147,7 +2169,14 @@ def verify_llvm_toolchain_prefix(
         )
         host_linker_path = tools[3][1]
         link_probe = _link_probe_identity(resolved, host_linker_path, link_closure)
-        if not (require_attestation and content_policy == "cached"):
+        needs_link_probe = not (require_attestation and content_policy == "cached")
+        probe_on_source_build = (
+            needs_link_probe
+            and defer_link_probe
+            and content_policy == "cached"
+            and probe_timeout is None
+        )
+        if needs_link_probe and not probe_on_source_build:
             link_probe = _compile_link_probe(
                 resolved,
                 tools[2][1],
@@ -2195,9 +2224,11 @@ def verify_llvm_toolchain_prefix(
             if fact.path in library_names
         )
 
-        def inspect_tool(item: tuple[str, Path]) -> LlvmToolVersionFact:
+        def inspect_tool(
+            item: tuple[str, Path],
+        ) -> tuple[LlvmToolVersionFact, StableRegularFileIdentity]:
             role, path = item
-            return _tool_version_fact(
+            return _tool_version_fact_and_identity(
                 resolved,
                 role,
                 path,
@@ -2207,7 +2238,17 @@ def verify_llvm_toolchain_prefix(
             )
 
         with ThreadPoolExecutor(max_workers=len(tools)) as executor:
-            tool_versions = tuple(executor.map(inspect_tool, tools))
+            observed_tools = tuple(executor.map(inspect_tool, tools))
+        tool_versions = tuple(fact for fact, _identity in observed_tools)
+        deferred_link_probe = None
+        if probe_on_source_build:
+            deferred_link_probe = LlvmSdkLinkProbe(
+                resolved,
+                ProbeTool.from_identity(tools[2][1], observed_tools[2][1]),
+                ProbeTool.from_identity(host_linker_path, observed_tools[3][1]),
+                link_closure,
+                ProcessEnvironment(os.environ if environ is None else environ),
+            )
 
         def asset_identity(path: Path) -> str:
             try:
@@ -2359,6 +2400,7 @@ def verify_llvm_toolchain_prefix(
             link_closure=link_closure,
             link_probe=link_probe,
             release=release,
+            deferred_link_probe=deferred_link_probe,
         )
 
 
@@ -2372,6 +2414,8 @@ def write_llvm_toolchain_attestation(
 ) -> Path:
     """Atomically publish proof for a completely verified managed prefix."""
 
+    if verification.deferred_link_probe is not None:
+        raise LlvmToolchainConfigError("cannot attest an unprobed LLVM/MLIR prefix")
     from molt.checkout_state import toolchain_state_use
 
     with toolchain_state_use((verification.prefix,)):
@@ -2591,6 +2635,7 @@ def verify_available_llvm_toolchain(
     environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     content_policy: Literal["cached", "full"] = "cached",
+    defer_link_probe: bool = False,
     probe_timeout: Callable[[float], float] | None = None,
 ) -> LlvmPrefixVerification | None:
     """Discover and verify the complete host LLVM/MLIR/LLD/Polly SDK."""
@@ -2617,6 +2662,7 @@ def verify_available_llvm_toolchain(
         require_attestation=managed,
         llvm_config_override=discovery.llvm_config,
         content_policy=content_policy,
+        defer_link_probe=defer_link_probe,
         environ=environ,
         cwd=cwd,
         probe_timeout=probe_timeout,

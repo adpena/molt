@@ -721,6 +721,11 @@ which removed the artifact store.
    build) reuse the ledger to prove by stat that nothing changed.
    Their source half comes from Cargo's own per-unit outputs
    ([Cargo input authority](cargo_input_authority.md)).
+   Developer LLVM backend admission captures the SDK resources and their live
+   generations before selecting a stored compiler. A stored compiler uses its
+   own artifact and capability receipts. A source build runs any deferred SDK
+   compile-link probe before starting Cargo and checks the plan again afterward.
+   Full SDK verification and release attestation keep their existing proof.
 4. Runtime tables use pinned Unicode data selected by the target Python version;
    native errno uses target headers with CPython's conditional publication
    policy. Rust artifacts have no build-Python dependency; explicit source

@@ -2131,8 +2131,9 @@ def test_windows_llvm_config_link_closure_preserves_quoted_absolute_paths(
     assert paths == (library.resolve(),)
 
 
+@pytest.mark.parametrize("defer", [False, True])
 def test_complete_prefix_verifier_requires_real_compile_link_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defer: bool
 ) -> None:
     prefix = tmp_path / "llvm"
     _write_complete_llvm_prefix(prefix)
@@ -2158,12 +2159,31 @@ def test_complete_prefix_verifier_requires_real_compile_link_probe(
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
     install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
-    with pytest.raises(LlvmToolchainConfigError, match="compile and link together"):
-        verify_llvm_toolchain_prefix(
+    if defer:
+        verification = verify_llvm_toolchain_prefix(
             ROOT,
             prefix,
             expected_targets=("X86", "WebAssembly"),
+            defer_link_probe=True,
         )
+        with pytest.raises(LlvmToolchainConfigError, match="unprobed LLVM/MLIR prefix"):
+            llvm_toolchain.write_llvm_toolchain_attestation(
+                ROOT, verification, projects=()
+            )
+        probe = verification.deferred_link_probe
+        assert probe is not None
+        with pytest.raises(LlvmToolchainConfigError, match="compile and link together"):
+            probe.run()
+        Path(probe.linker.content_path).write_bytes(b"changed linker")
+        with pytest.raises(ValueError, match="changed"):
+            probe.run()
+    else:
+        with pytest.raises(LlvmToolchainConfigError, match="compile and link together"):
+            verify_llvm_toolchain_prefix(
+                ROOT,
+                prefix,
+                expected_targets=("X86", "WebAssembly"),
+            )
 
 
 def test_canonical_prefix_requires_exact_manifest_patch_release(

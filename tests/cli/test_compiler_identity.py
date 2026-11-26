@@ -557,12 +557,17 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
     monkeypatch.setattr(
         llvm_toolchain,
         "verify_available_llvm_toolchain",
-        lambda root, **kw: SimpleNamespace(
+        lambda root, **kw: llvm_toolchain.LlvmPrefixVerification(
             prefix=prefix,
             llvm_config=llvm_config,
             version="22.1.8",
             host_target="x86_64-unknown-linux-gnu",
+            targets=("X86",),
+            assets=(),
             link_closure=("lib/libLLVM.a",),
+            link_probe=(),
+            content_digest=None,
+            release=None,
             tool_versions=(
                 llvm_toolchain.LlvmToolVersionFact(
                     "clang++",
