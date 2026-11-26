@@ -15,6 +15,7 @@ from molt.compiler_analysis.python_binding_facts import (
 )
 
 from collections import deque
+from dataclasses import dataclass, field
 from enum import StrEnum
 from collections.abc import Callable, Mapping
 from typing import Literal, NamedTuple, assert_never, cast
@@ -161,6 +162,53 @@ class SourceDemand(NamedTuple):
     consumer: str
 
 
+type SourceActivation = tuple[
+    SourceCandidate, SourceDemandPhase, tuple[str, ...], int | None, str
+]
+
+
+@dataclass(slots=True)
+class _SourceNamespace:
+    members: dict[str, frozenset[PythonSourceKey]] = field(default_factory=dict)
+    named_origins: set[PythonSourceKey] = field(default_factory=set)
+    exposure: frozenset[PythonSourceKey] = frozenset()
+
+    def add(
+        self,
+        names: tuple[tuple[str, frozenset[PythonSourceKey]], ...],
+        exposure: frozenset[PythonSourceKey],
+    ) -> tuple[bool, set[PythonSourceKey]]:
+        """Publish member deltas and return newly reachable origins once."""
+        changed = not exposure.issubset(self.exposure)
+        added = set(exposure.difference(self.exposure, self.named_origins))
+        if changed:
+            self.exposure |= exposure
+        for name, origins in names:
+            previous = self.members.get(name)
+            if previous is not None and origins.issubset(previous):
+                continue
+            self.members[name] = origins if previous is None else previous | origins
+            added.update(origins.difference(self.named_origins, self.exposure))
+            self.named_origins.update(origins)
+            changed = True
+        return changed, added
+
+    def origins(
+        self, key: str | None = None
+    ) -> set[PythonSourceKey] | frozenset[PythonSourceKey]:
+        if key is None:
+            return (
+                self.named_origins | self.exposure
+                if self.exposure
+                else self.named_origins
+            )
+        members = self.members.get(key, frozenset())
+        return members | self.exposure if self.exposure else members
+
+
+_EMPTY_NAMESPACE = _SourceNamespace()
+
+
 class PythonSourceDemands:
     """One incremental source-value activation worklist for import discovery.
 
@@ -255,10 +303,7 @@ class PythonSourceDemands:
         self._direct_entries: set[SourceValue] = set()
         self.star_aliases: dict[str, set[PythonSourceKey]] = {}
         self.escaped_modules: dict[str, set[SourceDemand]] = {}
-        self.namespaces: dict[
-            SourceValue,
-            tuple[dict[str, frozenset[PythonSourceKey]], frozenset[PythonSourceKey]],
-        ] = {}
+        self.namespaces: dict[SourceValue, _SourceNamespace] = {}
         self.bases: dict[SourceValue, frozenset[PythonSourceKey]] = {}
         self.attributes: dict[SourceValue, tuple[str, frozenset[PythonSourceKey]]] = {}
         self.import_bindings: dict[SourceValue, _SourceImportBinding] = {}
@@ -267,15 +312,8 @@ class PythonSourceDemands:
         # activated each body, so a changed parameter fact re-maps them.
         self.body_jobs: dict[SourceValue, set[tuple[str, ...]]] = {}
         self.body_activations: dict[SourceValue, set[tuple[str, ...]]] = {}
-        self.activated: set[
-            tuple[
-                SourceCandidate,
-                SourceDemandPhase,
-                tuple[str, ...],
-                int | None,
-                str,
-            ]
-        ] = set()
+        self.activated: set[SourceActivation] = set()
+        self.native_activations: dict[SourceValue, set[SourceActivation]] = {}
         self.queue: deque[SourceValue] = deque()
         self.exports: dict[str, SourceAllExports] = {}
 
@@ -360,15 +398,13 @@ class PythonSourceDemands:
         )
         for owner, names, exposure in scan.source_values.namespaces:
             value = (module_name, None if owner[-1] == "Module" else owner)
-            previous, previous_exposure = self.namespaces.get(value, ({}, frozenset()))
-            namespace = dict(previous)
-            for name, origins in names:
-                namespace[name] = namespace.get(name, frozenset()) | origins
-            if self._publish(
-                self.namespaces, value, (namespace, previous_exposure | exposure)
-            ):
-                old_origins = previous_exposure.union(*previous.values())
-                added = exposure.union(*namespace.values()) - old_origins
+            namespace = self.namespaces.get(value)
+            new = namespace is None
+            if namespace is None:
+                namespace = self.namespaces[value] = _SourceNamespace()
+            changed, added = namespace.add(names, exposure)
+            if new or changed:
+                self._invalidate_value(value)
                 for incidence in tuple(self.value_phases.get(value, ())):
                     if incidence.phase in {
                         "escape",
@@ -811,7 +847,7 @@ class PythonSourceDemands:
             if info is None or not info.plain_metaclass:
                 return False
             if not (strict and owner == receiver.value):
-                namespace, _exposure = self.namespaces.get(owner, ({}, frozenset()))
+                namespace = self.namespaces.get(owner, _EMPTY_NAMESPACE).members
                 for origin in namespace.get(name, ()):
                     member_value = (owner[0], origin)
                     members = self.watch(member_value, user)
@@ -1095,7 +1131,7 @@ class PythonSourceDemands:
             )
         ):
             return result
-        namespace, _exposure = self.namespaces.get(owner.value, ({}, frozenset()))
+        namespace = self.namespaces.get(owner.value, _EMPTY_NAMESPACE).members
         if (
             owner_source is not None
             and owner_source[-1] == "ClassDef"
@@ -1209,12 +1245,8 @@ class PythonSourceDemands:
             return set()
         visiting = visiting | {owner.value}
         self.watch(owner.value, user)
-        namespace, exposure = self.namespaces.get(owner.value, ({}, frozenset()))
-        sources = (
-            exposure.union(*namespace.values())
-            if key is None
-            else exposure | namespace.get(key, frozenset())
-        )
+        namespace = self.namespaces.get(owner.value, _EMPTY_NAMESPACE)
+        sources = namespace.origins(key)
         result = set()
         for source in sources:
             result.update(self.watch((owner.module, source), user))
@@ -1222,7 +1254,7 @@ class PythonSourceDemands:
             owner.source is not None
             and owner.source[-1] == "ClassDef"
             and (key is None or key == "__init__")
-            and not namespace.get("__init__")
+            and not namespace.members.get("__init__")
         ):
             result.update(
                 self.select_member(owner._replace(kind="value"), "__init__", user)
@@ -1271,9 +1303,14 @@ class PythonSourceDemands:
             ):
                 self.read_callables.setdefault(origin.module, set()).add(origin.source)
             return
-        if incidence in self.activated:
+        activated = (
+            self.native_activations.setdefault(origin.value, set())
+            if origin.kind in {"native_initializer", "bound_native_initializer"}
+            else self.activated
+        )
+        if incidence in activated:
             return
-        self.activated.add(incidence)
+        activated.add(incidence)
         if (
             phase in {"escape", "expose"}
             and origin.identity is None
@@ -1513,11 +1550,9 @@ class PythonSourceDemands:
             if owner is not None and owner[-1] == "ClassDef":
                 # Descriptor-valued attributes can execute their own hooks;
                 # ordinary methods stored here are values, not implicit calls.
-                namespace, _exposure = self.namespaces.get(
-                    origin.value, ({}, frozenset())
-                )
-                for source in _exposure.union(
-                    self.bases.get(origin.value, ()), *namespace.values()
+                namespace = self.namespaces.get(origin.value, _EMPTY_NAMESPACE)
+                for source in namespace.origins() | self.bases.get(
+                    origin.value, frozenset()
                 ):
                     self.demand((module_name, source), phase, arguments)
             return
@@ -1538,10 +1573,8 @@ class PythonSourceDemands:
                     # truth slot may run. Escape also retains effects on the
                     # result, such as length conversion through __index__.
                     self.demand((module_name, SourceMember(origin, method)), "escape")
-                namespace, exposure = self.namespaces.get(
-                    origin.value, ({}, frozenset())
-                )
-                for value in sorted(exposure - frozenset().union(*namespace.values())):
+                namespace = self.namespaces.get(origin.value, _EMPTY_NAMESPACE)
+                for value in sorted(namespace.exposure - namespace.named_origins):
                     self.demand((module_name, value), "escape")
                 return
             phase = "protocol"
@@ -1559,7 +1592,7 @@ class PythonSourceDemands:
         if module_name not in self.modules:
             return
         if owner is None or owner[-1] in {"Module", "ClassDef"}:
-            namespace, exposure = self.namespaces.get(origin.value, ({}, frozenset()))
+            namespace = self.namespaces.get(origin.value, _EMPTY_NAMESPACE)
             if owner is not None and owner[-1] == "ClassDef" and phase == "call":
                 names = (
                     ("__call__",)
@@ -1576,8 +1609,8 @@ class PythonSourceDemands:
                 "escape" if phase in {"escape", "protocol"} else "expose"
             )
             self.demand(origin.value, namespace_phase, arguments)
-            for value in exposure.union(
-                self.bases.get(origin.value, ()), *namespace.values()
+            for value in namespace.origins() | self.bases.get(
+                origin.value, frozenset()
             ):
                 self.demand((module_name, value), namespace_phase)
             if owner is None:
@@ -1713,13 +1746,10 @@ class PythonSourceDemands:
             # Member aliases retain receiver and consumer contexts. A late
             # publication replays the actual incidences, even if the alias's
             # candidate set did not change.
-            for candidate, phase, args, count, consumer in tuple(self.activated):
-                if (
-                    candidate.value == value
-                    and candidate.kind
-                    in {"native_initializer", "bound_native_initializer"}
-                    and phase in {"call", "escape", "expose"}
-                ):
+            for candidate, phase, args, count, consumer in tuple(
+                self.native_activations.get(value, ())
+            ):
+                if phase in {"call", "escape", "expose"}:
                     previous_consumer = self._consumer
                     self._consumer = consumer
                     try:
@@ -2229,18 +2259,18 @@ class PythonSourceDemands:
         )
         for receiver in tuple(receivers):
             info = self.classes.get(receiver.value)
-            namespace, exposure = self.namespaces.get(receiver.value, ({}, frozenset()))
+            namespace = self.namespaces.get(receiver.value, _EMPTY_NAMESPACE)
             store_names = None if rows is None else {row[0] for row in rows}
             custom_store = (
                 info is None
                 or not info.plain_metaclass
                 or bool(self.bases.get(receiver.value))
-                or bool(exposure)
-                or bool(namespace.get("__setattr__"))
+                or bool(namespace.exposure)
+                or bool(namespace.members.get("__setattr__"))
                 or store_names is None
                 or None in store_names
                 or any(
-                    name in namespace and name not in info.plain_attributes
+                    name in namespace.members and name not in info.plain_attributes
                     for name in store_names
                 )
             )
