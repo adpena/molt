@@ -59,6 +59,24 @@ class PythonSourceProjection(StrEnum):
     DECORATOR_APPLY = "Decorator.apply"
 
 
+def guarded_declaration_origin(
+    origins: frozenset[PythonSourceKey],
+) -> PythonSourceKey | None:
+    """Find one declaration to try against the live callable's runtime guard.
+
+    Decorator results are additional value-flow origins. They can change the
+    callable without erasing the guarded code candidate from its declaration.
+    """
+    declaration = None
+    for origin in origins:
+        if origin[-1] == PythonSourceProjection.DECORATOR_APPLY:
+            continue
+        if declaration is not None:
+            return None
+        declaration = origin
+    return declaration
+
+
 def python_source_projection_key(
     node: ast.expr, projection: PythonSourceProjection
 ) -> PythonSourceKey:

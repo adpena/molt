@@ -3534,6 +3534,29 @@ def test_global_function_read_calls_through_identity_guard(
     assert retained(6 if stable_binding else -3) == (8 if stable_binding else 4)
 
 
+def test_decorated_function_candidate_retains_the_live_callable() -> None:
+    gen = SimpleTIRGenerator(module_name="app")
+    gen.visit(
+        ast.parse("""def decorate(original):
+    def replacement(value):
+        return value + 1
+    return replacement
+
+@decorate
+def source(value):
+    return value + 2
+
+def probe(value):
+    return source(value)
+""")
+    )
+    ops = gen.funcs_map["py.app.probe"]["ops"]
+    (lookup,) = (op for op in ops if op.kind == "MODULE_GET_GLOBAL")
+    (call,) = (op for op in ops if op.kind == "CALL_GUARDED")
+    assert call.args[0] == lookup.result
+    assert call.metadata["target"] == "py.app.source"
+
+
 def test_stdlib_direct_call_requires_lowered_target_module() -> None:
     gen = SimpleTIRGenerator(
         namespace_premise=WHOLE_PROGRAM,

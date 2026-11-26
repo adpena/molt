@@ -13,7 +13,10 @@ from molt import compiled_symbols
 from molt.python_private_names import python_definition_name
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import CallableId, GeneratedCallableId
-from molt.compiler_analysis.python_source_keys import python_node_source_key
+from molt.compiler_analysis.python_source_keys import (
+    guarded_declaration_origin,
+    python_node_source_key,
+)
 from molt.compiler_analysis.python_lexical_scope import function_contains_yield
 from molt.compiler_analysis.source_function_symbols import (
     module_level_function_definitions,
@@ -43,9 +46,9 @@ class SymbolNamingMixin(GeneratorMixinBase):
         fact = index.expression_fact(node) if index is not None else None
         if fact is None or not fact.identities & int(PythonIdentity.USER_FUNCTION):
             return None
-        if len(fact.result.source_origins) != 1:
+        source = guarded_declaration_origin(fact.result.source_origins)
+        if source is None:
             return None
-        (source,) = fact.result.source_origins
         return self.source_callable_symbols.get(CallableId(self.module_name, source))
 
     def _local_symbol(self, local: str) -> str:

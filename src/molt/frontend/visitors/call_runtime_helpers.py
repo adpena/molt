@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_source_keys import guarded_declaration_origin
 from molt.frontend.class_model import guarded_initializer_candidate
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
@@ -329,12 +330,12 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
             and self.python_binding_index is not None
             and (fact := self.python_binding_index.expression_fact(node.func))
             is not None
-            and len(fact.result.source_origins) == 1
+            and (origin := guarded_declaration_origin(fact.result.source_origins))
+            is not None
         ):
             # An exposed read can still name the originating statement while
             # evaluating to a replacement. Only the runtime guard may identify
             # the actual captured callable or its installed initializer.
-            (origin,) = fact.result.source_origins
             owner = self._class_index.definitions.get(origin)
             if owner is not None and (view := self.classes.get(owner)) is not None:
                 candidate = guarded_initializer_candidate(view)
