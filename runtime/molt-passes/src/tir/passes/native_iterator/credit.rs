@@ -53,6 +53,20 @@ fn single_forward(block: &TirBlock) -> Option<BlockId> {
     }
 }
 
+/// Borrow the original credit on the observation's normal side. A release
+/// attached directly to that credit would also hold it across exceptional
+/// unwinding, changing its rank relative to other abandoned owners. The
+/// distinct normal-only owner preserves ordinary SSA liveness on the check.
+fn last_normal_use(func: &mut TirFunction, owner: ValueId, span: Option<(u32, u32)>) -> [TirOp; 2] {
+    let end = func.fresh_value();
+    func.value_types
+        .insert(end, crate::tir::types::TirType::DynBox);
+    [
+        owned_alias(owner, end, span),
+        TirOp::new(OpCode::DecRef, vec![end], vec![]),
+    ]
+}
+
 impl Read {
     fn prove(func: &TirFunction, item: ValueId) -> Option<Self> {
         let mut defs = HashMap::default();
@@ -268,12 +282,12 @@ impl Read {
 
     fn apply(self, func: &mut TirFunction) {
         // Keep the constructor's original owner up to the first header edge.
-        let end = |id| TirOp::new(OpCode::DelBoundary, vec![id], vec![]);
+        let initial_end = last_normal_use(func, self.initial, None);
         func.blocks
             .get_mut(&self.first_edge)
             .unwrap()
             .ops
-            .push(end(self.initial));
+            .extend(initial_end);
         let reload = func
             .blocks
             .get_mut(&self.reload_site.0)
@@ -292,9 +306,10 @@ impl Read {
             .unwrap()
             .args
             .remove(self.position);
+        let service_end = last_normal_use(func, self.reload, reload.source_span);
         let service = func.blocks.get_mut(&self.service).unwrap();
         service.ops.insert(0, reload);
-        service.ops.push(end(self.reload));
+        service.ops.extend(service_end);
 
         let cold = func.fresh_block();
         let pending = func.fresh_value();
@@ -318,16 +333,14 @@ impl Read {
         // The routing check has confirmed a pending exception on this thread.
         // A retain of the independently owned native iterator cannot clear it.
         // Keep the original owner id for normal and exceptional retirement.
+        let mut observed = vec![owned_alias(self.saved, self.iterator, span), origin];
+        observed.extend(last_normal_use(func, self.iterator, span));
         func.blocks.insert(
             cold,
             TirBlock {
                 id: cold,
                 args: vec![],
-                ops: vec![
-                    owned_alias(self.saved, self.iterator, span),
-                    origin,
-                    end(self.iterator),
-                ],
+                ops: observed,
                 // Preserve the authored normal successor even on this cold arm.
                 // Its full original live set is also required at Origin.
                 terminator: Terminator::Branch {

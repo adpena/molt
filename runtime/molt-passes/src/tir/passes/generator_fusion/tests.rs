@@ -1040,7 +1040,10 @@ fn a_spliced_latch_requires_a_marked_poll_without_an_intervening_guest_operation
     let mut retain = op(OpCode::Copy, vec![ValueId(3)], vec![ValueId(4)]);
     retain.origin = Some(molt_ir::OpKind::BindingAlias);
     credited.insert(0, retain);
-    credited.push(op(OpCode::DelBoundary, vec![ValueId(4)], vec![]));
+    let mut close = op(OpCode::Copy, vec![ValueId(4)], vec![ValueId(5)]);
+    close.origin = Some(molt_ir::OpKind::BindingAlias);
+    credited.push(close);
+    credited.push(op(OpCode::DecRef, vec![ValueId(5)], vec![]));
     assert!(super::super::spliced_frame::poll_service(&credited).is_some());
     let mut interrupted_credit = credited.clone();
     interrupted_credit.insert(1, op(OpCode::Call, vec![], vec![]));
