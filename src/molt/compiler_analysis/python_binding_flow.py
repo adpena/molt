@@ -3149,7 +3149,7 @@ class _Analyzer:
         self._foreign_universe = policy.foreign_namespace_universe
         self._foreign_reads: set[str] | None = None
         self._foreign_slot_bounds = (0, 0)
-        self._appended_foreign_slots: tuple[int, int] | None = None
+        self._appended_foreign_slots: tuple[int, ...] = ()
         self._foreign_tainted_at_exit = False
         self._module_getattr_may_be_bound = False
         self._has_empty_module_expiry = False
@@ -10080,8 +10080,8 @@ class _Analyzer:
             slot_names=tuple(self.slot_names),
         )
         declaration_end, callback_end = self._foreign_slot_bounds
-        if self._appended_foreign_slots is not None:
-            appended_start, appended_end = self._appended_foreign_slots
+        if self._appended_foreign_slots:
+            appended = frozenset(self._appended_foreign_slots)
             slots = facts.slot_names
             facts = _project_binding_slots(
                 facts,
@@ -10090,14 +10090,17 @@ class _Analyzer:
                     *sorted(
                         (
                             *slots[declaration_end:callback_end],
-                            *slots[appended_start:appended_end],
+                            *(slots[slot] for slot in self._appended_foreign_slots),
                         )
                     ),
-                    *slots[callback_end:appended_start],
-                    *slots[appended_end:],
+                    *(
+                        slots[slot]
+                        for slot in range(callback_end, len(slots))
+                        if slot not in appended
+                    ),
                 ),
             )
-            callback_end += appended_end - appended_start
+            callback_end += len(appended)
         return _BindingAnalysis(
             facts,
             # Source demand proofs may require a projection even when strict
@@ -10522,96 +10525,9 @@ class _RebasableInitializer:
         )
 
     def revise(self, requested: _Analyzer) -> _Analyzer | None:
-        prefix = self.prefix
-        before, policy = prefix.policy, requested.policy
-        active = requested._opaque_activation_sources
-        former, current = (
-            before.foreign_namespace_writes,
-            policy.foreign_namespace_writes,
-        )
-        if active is None or former is None or current is None:
+        work = _rebase_binding_namespace(self.prefix, requested, self.reads)
+        if work is None:
             return None
-        if any(
-            holds == owners.isdisjoint(active)
-            for owners, holds in prefix._opaque_activation_reads.items()
-        ):
-            return None
-        exposed = frame_locals_exposed(policy.target_python, policy.frame_locals_writer)
-        formerly_exposed = frame_locals_exposed(
-            before.target_python, before.frame_locals_writer
-        )
-        if exposed != formerly_exposed and (
-            self.reads.frame_borrows
-            or any(
-                scope.kind not in ("module", "class") and scope.slots
-                for scope in prefix.scopes
-            )
-        ):
-            return None
-        additions = frozenset(current).difference(former)
-        if prefix._callback_module_names is None:
-            # Both premises supply concrete foreign writes, so source-owned
-            # reflection kept the callback domain open. The explicit
-            # __builtins__ writer still participates in pristine lookup.
-            if ("__builtins__" in former) != ("__builtins__" in current):
-                return None
-        else:
-            if not frozenset(former).issubset(current):
-                return None
-            if not additions.isdisjoint(self.reads.names) or (
-                additions and prefix._has_empty_module_expiry
-            ):
-                return None
-            assert prefix.module_scope is not None
-            existing = additions.intersection(prefix.module_scope.slots)
-            if existing and any(state.taint_epoch for state in prefix.states._states):
-                return None
-        work = prefix._fork_at_deferred_boundary()
-        work.policy = policy
-        work._opaque_activation_sources = active
-        work._activation_argument_values = requested._activation_argument_values.copy()
-        if work._callback_module_names is None:
-            return work
-        assert work._foreign_reads is not None
-        work._callback_module_names |= additions
-        appended_start = len(work.slot_names)
-        for name in sorted(additions):
-            slot = work._ensure_module_slot(name)
-            work.callback_module_slot_mask |= 1 << slot
-        work.states.set_taint_domain(work._callback_taint_domain())
-        for (state, scope), expected in self.reads.metadata.items():
-            if (
-                work._module_metadata_borrowing_snapshot(state, work.scopes[scope])
-                != expected
-            ):
-                return None
-        appended_end = len(work.slot_names)
-        if not additions.isdisjoint(self.reads.deferred_names):
-            if prefix._deferred_queue_generation != len(prefix.function_jobs):
-                return None
-            for job in work.function_jobs:
-                module, lexical = work._activation_slot_bindings(
-                    job.node,
-                    job.parent_scope,
-                    job.outer_state_id,
-                    annotation_scope=job.annotation_scope,
-                )
-                if lexical != job.lexical_base_bindings:
-                    return None
-                job.module_base_bindings = module
-            if (
-                len(work.slot_names) != appended_end
-                or work.callback_slot_mask != prefix.callback_slot_mask
-                or work.states._callback_deletion_mask
-                != prefix.states._callback_deletion_mask
-            ):
-                return None
-        if appended_end != appended_start:
-            # Body histories keep their physical slot coordinates. The final
-            # immutable layout puts newly named slots back in callback order.
-            work._appended_foreign_slots = (appended_start, appended_end)
-            if work._foreign_tainted_at_exit and "__getattr__" in additions:
-                work._module_getattr_may_be_bound = True
         if self.continuation is not None:
             entry = self.continuation.completion.normal
             assert entry is not None
@@ -10627,10 +10543,144 @@ class _RebasableInitializer:
         return work
 
 
+def _binding_activation_reads_agree(
+    prefix: _Analyzer, active: frozenset[PythonSourceKey]
+) -> bool:
+    return all(
+        answer != owners.isdisjoint(active)
+        for owners, answer in prefix._opaque_activation_reads.items()
+    )
+
+
+def _rebase_binding_namespace(
+    prefix: _Analyzer, requested: _Analyzer, reads: _InitializerPremiseReads
+) -> _Analyzer | None:
+    """Keep valid physical coordinates when a source gains foreign writers."""
+    before, policy = prefix.policy, requested.policy
+    active = requested._opaque_activation_sources
+    former, current = (
+        before.foreign_namespace_writes,
+        policy.foreign_namespace_writes,
+    )
+    if active is None or former is None or current is None:
+        return None
+    if not _binding_activation_reads_agree(prefix, active):
+        return None
+    exposed = frame_locals_exposed(policy.target_python, policy.frame_locals_writer)
+    formerly_exposed = frame_locals_exposed(
+        before.target_python, before.frame_locals_writer
+    )
+    if exposed != formerly_exposed and (
+        reads.frame_borrows
+        or any(
+            scope.kind not in ("module", "class") and scope.slots
+            for scope in prefix.scopes
+        )
+    ):
+        return None
+    additions = frozenset(current).difference(former)
+    if prefix._callback_module_names is None:
+        # Both premises supply concrete foreign writes, so source-owned
+        # reflection kept the callback domain open. The explicit
+        # __builtins__ writer still participates in pristine lookup.
+        if ("__builtins__" in former) != ("__builtins__" in current):
+            return None
+    else:
+        if not frozenset(former).issubset(current):
+            return None
+        if not additions.isdisjoint(reads.names) or (
+            additions and prefix._has_empty_module_expiry
+        ):
+            return None
+        assert prefix.module_scope is not None
+        existing = additions.intersection(prefix.module_scope.slots)
+        if existing and any(state.taint_epoch for state in prefix.states._states):
+            return None
+    work = prefix._fork_at_deferred_boundary()
+    work.policy = policy
+    work._opaque_activation_sources = active
+    work._activation_argument_values = requested._activation_argument_values.copy()
+    if work._callback_module_names is None:
+        return work
+    assert work._foreign_reads is not None
+    work._callback_module_names |= additions
+    appended_start = len(work.slot_names)
+    for name in sorted(additions):
+        slot = work._ensure_module_slot(name)
+        work.callback_module_slot_mask |= 1 << slot
+    work.states.set_taint_domain(work._callback_taint_domain())
+    for (state, scope), expected in reads.metadata.items():
+        if (
+            work._module_metadata_borrowing_snapshot(state, work.scopes[scope])
+            != expected
+        ):
+            return None
+    appended_end = len(work.slot_names)
+    if not additions.isdisjoint(reads.deferred_names):
+        if prefix._deferred_queue_generation != len(prefix.function_jobs):
+            return None
+        for job in work.function_jobs:
+            module, lexical = work._activation_slot_bindings(
+                job.node,
+                job.parent_scope,
+                job.outer_state_id,
+                annotation_scope=job.annotation_scope,
+            )
+            if lexical != job.lexical_base_bindings:
+                return None
+            job.module_base_bindings = module
+        if (
+            len(work.slot_names) != appended_end
+            or work.callback_slot_mask != prefix.callback_slot_mask
+            or work.states._callback_deletion_mask
+            != prefix.states._callback_deletion_mask
+        ):
+            return None
+    if appended_end != appended_start:
+        # Body histories keep their physical slot coordinates. The final
+        # immutable layout puts newly named slots back in callback order.
+        work._appended_foreign_slots += tuple(range(appended_start, appended_end))
+        if work._foreign_tainted_at_exit and "__getattr__" in additions:
+            work._module_getattr_may_be_bound = True
+    return work
+
+
 @dataclass(frozen=True, slots=True)
 class _BindingCheckpoint:
     completed_jobs: int
     prefix: _Analyzer
+
+    def agrees_with_activations(self, requested: _Analyzer) -> bool:
+        prefix = self.prefix
+        active = requested._opaque_activation_sources
+        assert active is not None
+        if not _binding_activation_reads_agree(prefix, active):
+            return False
+        previous = prefix._activation_argument_values
+        current = requested._activation_argument_values
+        if previous == current:
+            return True
+        changed = {
+            parameter
+            for parameter in previous.keys() | current.keys()
+            if previous.get(parameter) != current.get(parameter)
+        }
+        return not any(
+            prefix._node_key(parameter) in changed
+            for owner in prefix.transfer.executed_function_nodes.values()
+            for parameter in function_parameter_nodes(owner.args)
+        )
+
+    def rebase_namespace(self, requested: _Analyzer) -> _Analyzer | None:
+        names = self.prefix._foreign_reads
+        if names is None or not self.agrees_with_activations(requested):
+            return None
+        # A drained body prefix owns both its executed reads and the entry
+        # bindings it assembled for scheduled bodies. Unlike an initializer
+        # continuation, those observations must all survive unchanged.
+        return _rebase_binding_namespace(
+            self.prefix, requested, _InitializerPremiseReads(names=frozenset(names))
+        )
 
 
 def _binding_checkpoint_size(analyzer: _Analyzer) -> int:
@@ -10683,30 +10733,14 @@ class _BindingRevisions:
             prior = self._recent.get(key, ())
             recorded = self._recorded.get(key)
             initializers = self._initializers.get(initializer_key, ())
-        accepted: _BindingCheckpoint | None = None
-        for checkpoint in reversed(prior):
-            prefix = checkpoint.prefix
-            previous_arguments = prefix._activation_argument_values
-            if previous_arguments != arguments:
-                changed_arguments = {
-                    parameter
-                    for parameter in previous_arguments.keys() | arguments.keys()
-                    if previous_arguments.get(parameter) != arguments.get(parameter)
-                }
-                # The completed jobs own the only reads of activation
-                # arguments. A revised parameter in a pending job is safe.
-                if any(
-                    prefix._node_key(parameter) in changed_arguments
-                    for owner in prefix.transfer.executed_function_nodes.values()
-                    for parameter in function_parameter_nodes(owner.args)
-                ):
-                    continue
-            if all(
-                answer == (not owners.isdisjoint(active))
-                for owners, answer in prefix._opaque_activation_reads.items()
-            ):
-                accepted = checkpoint
-                break
+        accepted = next(
+            (
+                item
+                for item in reversed(prior)
+                if item.agrees_with_activations(analyzer)
+            ),
+            None,
+        )
         if recorded is not None:
             # Compare the recorded leaves with the newest proven prefix before
             # either strategy forks an analyzer. Ties keep the contiguous suffix.
@@ -10732,6 +10766,31 @@ class _BindingRevisions:
             cursor = accepted.completed_jobs
             checkpoints.extend(item for item in prior if item.completed_jobs <= cursor)
         else:
+            namespace_key = replace(key[1], foreign_namespace_writes=())
+            with self._lock:
+                namespace_candidates = [
+                    item
+                    for (digest, former), retained in self._recent.items()
+                    if digest == key[0]
+                    and former != key[1]
+                    and replace(former, foreign_namespace_writes=()) == namespace_key
+                    for item in retained
+                    if item.completed_jobs > 0
+                ]
+            for checkpoint in sorted(
+                namespace_candidates, key=lambda item: -item.completed_jobs
+            ):
+                rebased = checkpoint.rebase_namespace(analyzer)
+                if rebased is not None:
+                    analyzer = rebased
+                    cursor = checkpoint.completed_jobs
+                    checkpoints.append(
+                        _BindingCheckpoint(
+                            cursor, analyzer._fork_at_deferred_boundary()
+                        )
+                    )
+                    break
+        if cursor == 0 and accepted is None:
             for initializer in reversed(initializers):
                 rebased = initializer.revise(analyzer)
                 if rebased is not None:
@@ -10781,9 +10840,7 @@ class _BindingRevisions:
             size = _binding_checkpoint_size(owner)
             if size > 32768:
                 return
-            if 0 < completed_jobs < 64 and (
-                not checkpoints or checkpoints[0].completed_jobs != 0 or size > 1200
-            ):
+            if 0 < completed_jobs < 64 and (not checkpoints or size > 1200):
                 return
             checkpoints.append(
                 _BindingCheckpoint(completed_jobs, owner._fork_at_deferred_boundary())
