@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import ast
 import contextvars
-from bisect import bisect_left
-from operator import attrgetter
 from collections.abc import Callable
 from molt.python_private_names import (
     python_import_binding,
@@ -54,8 +52,6 @@ from molt.compiler_analysis.static_truth import (
 )
 from molt.compiler_analysis.python_binding_facts import (
     EnclosingBindingDeclarations,
-    PythonFunctionResult,
-    PythonSourceCallableDeclaration,
     PythonParameterRef,
     PythonStringAlternatives,
 )
@@ -862,21 +858,6 @@ def _scan_nodes_for_import_mode(
     )
 
 
-_publication_owner = attrgetter("owner")
-
-
-def _publication_at[
-    T: (
-        PythonFunctionResult,
-        PythonSourceCallableDeclaration,
-    )
-](rows: tuple[T, ...], owner: PythonSourceKey) -> tuple[T, ...]:
-    index = bisect_left(rows, owner, key=_publication_owner)
-    if index < len(rows) and rows[index].owner == owner:
-        return rows[index : index + 1]
-    return ()
-
-
 def _collect_imports(
     tree: ast.AST,
     module_name: str | None = None,
@@ -976,14 +957,12 @@ def _collect_imports(
         assert source_owner is not None
         # A body outcome becomes available at activation. Its own declaration
         # keeps the persisted body scan independently decodable.
+        declaration = binding_index.source_callable_declaration_at(source_owner)
+        result = binding_index.source_function_result_at(source_owner)
         _source_values.append(
             _SourceValueSummary(
-                declarations=_publication_at(
-                    binding_index.source_callable_declarations, source_owner
-                ),
-                functions=_publication_at(
-                    binding_index.source_function_results, source_owner
-                ),
+                declarations=() if declaration is None else (declaration,),
+                functions=() if result is None else (result,),
             )
         )
 
@@ -996,7 +975,6 @@ def _collect_imports(
     conditional_call_cache: dict[
         tuple[PythonSourceKey, PythonImportCallable], tuple[SourceImportCall, ...]
     ] = {}
-    source_call_keys = {call.owner for call in binding_index.source_calls}
     cache_writes = []
     cache_reads = []
     empty_receiver_origins = frozenset()
@@ -1548,10 +1526,7 @@ def _collect_imports(
 
     def _conditional_import_call_plans(node: ast.Call) -> None:
         """Publish source-only transfers; candidate activation owns graph edges."""
-        if (
-            _source_values is None
-            or python_node_source_key(node) not in source_call_keys
-        ):
+        if _source_values is None or not binding_index.has_source_call(node):
             return
         call = binding_index.call_fact(node)
         closed_identities = (

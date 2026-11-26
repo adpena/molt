@@ -10,8 +10,10 @@ from __future__ import annotations
 from molt.compiler_analysis.python_function_kind import FunctionKind
 
 import ast
+from bisect import bisect_left
 from dataclasses import dataclass, field, fields
 from enum import IntFlag, StrEnum
+from operator import attrgetter
 from types import MappingProxyType
 from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Final, Literal, Mapping, NamedTuple, TypeAlias
@@ -882,6 +884,19 @@ class PythonBindingTelemetry:
     observation_fold_rebuilds: int = 0
 
 
+_source_publication_owner = attrgetter("owner")
+
+
+def _source_publication_at[
+    T: (PythonSourceCall, PythonSourceCallableDeclaration, PythonFunctionResult)
+](rows: tuple[T, ...], owner: PythonSourceKey) -> T | None:
+    # Binding analysis publishes each table once in source-key order.
+    index = bisect_left(rows, owner, key=_source_publication_owner)
+    if index < len(rows) and rows[index].owner == owner:
+        return rows[index]
+    return None
+
+
 @dataclass(frozen=True, slots=True, weakref_slot=True)
 class PythonBindingFacts:
     """Context-independent immutable facts and their shared query mappings."""
@@ -1093,6 +1108,22 @@ class PythonBindingFacts:
         else:
             fact = self.expression_fact(node)
         return fact is None or fact.module_namespace_observable
+
+    def has_source_call(self, node: ast.Call) -> bool:
+        return (
+            _source_publication_at(self.source_calls, python_node_source_key(node))
+            is not None
+        )
+
+    def source_callable_declaration_at(
+        self, owner: PythonSourceKey
+    ) -> PythonSourceCallableDeclaration | None:
+        return _source_publication_at(self.source_callable_declarations, owner)
+
+    def source_function_result_at(
+        self, owner: PythonSourceKey
+    ) -> PythonFunctionResult | None:
+        return _source_publication_at(self.source_function_results, owner)
 
     def call_fact(self, node: ast.Call) -> PythonCallSiteFact | None:
         return self._call_lookup.get(python_node_source_key(node))

@@ -3525,6 +3525,76 @@ def test_early_cutoff_alias_serves_the_equal_scan_for_its_source_only(
     assert read(widened, changed) is None
 
 
+def test_deferred_scan_depends_only_on_its_source_publications(tmp_path: Path) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.cli.runtime_features import runtime_normal_none_intrinsics
+    from molt.compilation_target import TargetKind
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        NO_INVALID_MEMBERS,
+    )
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.compiler_analysis.python_source_keys import PythonSourceKey
+
+    source = (
+        "from _intrinsics import require_intrinsic\n"
+        "probe = require_intrinsic('molt_importlib_zip_archive_path')\n"
+        "def selected():\n"
+        "    return __import__('common')\n"
+        "if probe('example.zip') is not None:\n"
+        "    def sibling():\n"
+        "        return __import__('profile_dependency')\n"
+    )
+    path = tmp_path / "module.py"
+    path.write_text(source, encoding="utf-8")
+    _, _, selected, branch = ast.parse(source).body
+    assert isinstance(branch, ast.If)
+    selected_owner = python_node_source_key(selected)
+    sibling_owner = python_node_source_key(branch.body[0])
+    before = PythonNamespacePremise(
+        (),
+        NO_INVALID_MEMBERS,
+        NO_INVALID_MEMBERS,
+        (),
+        opaque_activation_sources=(selected_owner, sibling_owner),
+    )
+    after = replace(
+        before,
+        normal_none_intrinsics=runtime_normal_none_intrinsics(
+            TargetKind.NATIVE, "micro"
+        ),
+    )
+
+    def scan(
+        owner: PythonSourceKey, premise: PythonNamespacePremise
+    ) -> module_graph_discovery._LoadedModuleImportScan:
+        return module_graph_discovery._load_module_import_scan(
+            path,
+            module_name="module",
+            is_package=False,
+            project_root=tmp_path,
+            resolution_cache=_ModuleResolutionCache(),
+            source=source,
+            namespace_premise=premise,
+            source_owner=owner,
+            import_scan_mode="module_init",
+            purpose=SourceImportPurpose.EXECUTION,
+            record_premise_reads=True,
+        )
+
+    selected_before = scan(selected_owner, before)
+    sibling_before = scan(sibling_owner, before)
+    assert selected_before.premise_reads is not None
+    assert sibling_before.premise_reads is not None
+    assert selected_before.premise_reads.unchanged_under(after)
+    assert not sibling_before.premise_reads.unchanged_under(after)
+    selected_after = scan(selected_owner, after)
+    sibling_after = scan(sibling_owner, after)
+    assert selected_before.scan.source_requests == selected_after.scan.source_requests
+    assert selected_after.scan.source_requests.imports == ("common",)
+    assert sibling_before.scan.source_requests.imports == ("profile_dependency",)
+    assert sibling_after.scan.source_requests.imports == ()
+
+
 @pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     ("profile", "replace_provider", "possible"),
