@@ -2394,6 +2394,7 @@ def test_context_projections_share_complete_facts_and_preserve_import_flow(
             ),
             lambda: ast.parse(source),
             include_import_discovery=context.include_import_discovery,
+            ast_digest_admission=None,
         )
         assert index == expected
     assert flow.python_binding_core_computations() == 1

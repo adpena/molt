@@ -69,7 +69,10 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     PythonTargetProperty,
     UNBOUND_IDENTITY,
 )
-from molt.compiler_analysis.python_call_arguments import call_argument_schedule
+from molt.compiler_analysis.python_call_arguments import (
+    CallArgumentPlan,
+    call_argument_plan,
+)
 from molt.compiler_analysis.python_parameter_classes import (
     CallEvidence,
 )
@@ -3125,6 +3128,9 @@ class _Analyzer:
     def __init__(self, policy: PythonBindingFlowPolicy, source_digest: str) -> None:
         self.policy = policy
         self._activation_argument_values = dict(policy.activation_argument_values)
+        self._call_argument_plan: Callable[
+            [ast.Call | ast.ClassDef], CallArgumentPlan
+        ] = call_argument_plan
         self._opaque_activation_sources = (
             None
             if policy.opaque_activation_sources is None
@@ -6847,63 +6853,67 @@ class _Analyzer:
     ]:
         effects = NO_EFFECTS
         keys = AccumulatedKeyEffects()
-        evaluated: dict[int, StaticExpressionResult] = {}
-        retained: list[tuple[int, ast.expr, StaticExpressionResult]] = []
-        crossed_boundaries: set[int] = set()
-        # Retained slots before this cursor have crossed an exposure boundary;
-        # later slots still have uninterrupted source-name owner custody.
+        plan = self._call_argument_plan(node)
+        # Evaluation always visits consecutive operand indices. Assembly may
+        # consume them later, but custody and results share those indices.
+        evaluated: list[StaticExpressionResult] = []
+        published_release = False
+        pending_release = False
+        # Release effects already contributed to the surrounding observation.
+        release_observed = 0
+        # Publication observes every already evaluated operand as one prefix.
         publication_cursor = 0
 
         def record_exceptional_cleanup(boundary: EffectMask) -> None:
-            nonlocal effects, publication_cursor
+            nonlocal effects, publication_cursor, published_release, pending_release
+            nonlocal release_observed
             publishes = bool(boundary & _CALLEE_ELISION_FORBIDDEN_EFFECTS)
-            if not retained or not (boundary & RAISES or publishes):
+            if not evaluated or not (boundary & RAISES or publishes):
                 return
             if publishes:
-                for retained_index in range(publication_cursor, len(retained)):
-                    index, expression, result = retained[retained_index]
-                    result = expression_result_without_mutable_contents(result)
-                    retained[retained_index] = (index, expression, result)
+                # Reconsider operands only when publication widens their
+                # facts. Each value crosses this prefix boundary once.
+                release_observed = min(release_observed, publication_cursor)
+                for index in range(publication_cursor, len(evaluated)):
+                    result = expression_result_without_mutable_contents(
+                        evaluated[index]
+                    )
                     evaluated[index] = result
-                    crossed_boundaries.add(index)
-                publication_cursor = len(retained)
+                    published_release |= result.release_may_call
+                publication_cursor = len(evaluated)
+                pending_release = False
             if boundary & RAISES:
                 cleanup = RELEASES_REFERENCE
-                if any(
-                    result.release_may_call
-                    and not (
-                        isinstance(expression, ast.Name)
-                        and retained_index >= publication_cursor
-                        and not boundary & _CALLEE_ELISION_FORBIDDEN_EFFECTS
-                    )
-                    for retained_index, (_index, expression, result) in enumerate(
-                        retained
-                    )
-                ):
+                if published_release or pending_release:
                     cleanup |= _RELEASE_CALLBACK_EFFECTS
                 effects |= cleanup
                 if cleanup & _RELEASE_CALLBACK_EFFECTS:
                     # This state is reachable only if the current argument step
                     # fails, but statement exception flow must still observe
                     # callbacks triggered while releasing earlier temporaries.
-                    self._record_operation_execution(
-                        scope,
-                        _operand_dispatch_deferred(
-                            cleanup,
-                            *(result for _index, _expression, result in retained),
-                            reaches_contents=True,
-                        ),
-                    )
+                    if release_observed < len(evaluated):
+                        self._record_operation_execution(
+                            scope,
+                            _operand_dispatch_deferred(
+                                cleanup,
+                                *evaluated[release_observed:],
+                                reaches_contents=True,
+                            ),
+                        )
+                        release_observed = len(evaluated)
                     self._record_state(self._apply_effects(state_id, cleanup))
 
-        for step in call_argument_schedule(node):
+        for step in plan.steps:
             if step.action == "evaluate":
                 result = self.eval_expr(step.expression, state_id, scope)
                 state_id = result.state_id
                 record_exceptional_cleanup(result.effects)
                 effects |= result.effects
-                evaluated[step.index] = result.result
-                retained.append((step.index, step.expression, result.result))
+                evaluated.append(result.result)
+                pending_release |= (
+                    result.result.release_may_call
+                    and not plan.name_operands[step.index]
+                )
             elif step.action == "kw":
                 boundary = keys.add(StaticExpressionResult.scalar(step.name))
                 record_exceptional_cleanup(boundary)
@@ -6918,9 +6928,7 @@ class _Analyzer:
                 boundary = unpack(
                     step.expression, fact_result=self._known_expression_result
                 )
-                arguments = node.bases if isinstance(node, ast.ClassDef) else node.args
-                argument_nodes = (*arguments, *node.keywords)
-                iteration_key = self._node_key(argument_nodes[step.index])
+                iteration_key = self._node_key(plan.operands[step.index])
                 iteration = PythonIterationFact.from_result(
                     evaluated[step.index], boundary
                 )
@@ -6948,8 +6956,8 @@ class _Analyzer:
         return (
             state_id,
             effects,
-            tuple(evaluated[index] for index in sorted(evaluated)),
-            tuple(index in crossed_boundaries for index in sorted(evaluated)),
+            tuple(evaluated),
+            tuple(index < publication_cursor for index in range(len(evaluated))),
         )
 
     def _eval_arguments(
@@ -9781,6 +9789,8 @@ class _Analyzer:
                 tree, target_python=self.policy.target_python
             )
         )
+        if ast_digest_admission is not None:
+            self._call_argument_plan = ast_digest_admission.call_argument_plan
         self._future_annotations = lexical.authority.future_annotations
         self._dependency_authority = lexical.authority
         self._star_import_origins = lexical.star_import_origins
@@ -10866,6 +10876,7 @@ def _project_binding_index(
     tree: Callable[[], ast.Module],
     *,
     include_import_discovery: bool,
+    ast_digest_admission: _PythonAstDigestAdmission | None,
 ) -> PythonBindingIndex:
     from molt.compiler_analysis.python_imports import (
         ModuleImportFlow,
@@ -10874,13 +10885,22 @@ def _project_binding_index(
     )
 
     facts = analysis.facts
+    argument_plan = (
+        call_argument_plan
+        if ast_digest_admission is None
+        else ast_digest_admission.call_argument_plan
+    )
     if include_import_discovery:
         # This dependency is acyclic: the strict projection never requests a
         # discovery projection. Both keys share the core's bounded single flight.
         strict = analysis.projections.get_or_compute(
             (context, False),
             lambda: _project_binding_index(
-                analysis, context, tree, include_import_discovery=False
+                analysis,
+                context,
+                tree,
+                include_import_discovery=False,
+                ast_digest_admission=ast_digest_admission,
             ),
         )
         flow = strict.module_import_flow
@@ -10893,6 +10913,7 @@ def _project_binding_index(
             expression_facts=facts._expression_lookup,
             assignment_effects=analysis.assignment_effects,
             call_facts=facts._call_lookup,
+            argument_plan=argument_plan,
             callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
         )
     else:
@@ -10912,6 +10933,7 @@ def _project_binding_index(
             expression_facts=facts._expression_lookup,
             assignment_effects=analysis.assignment_effects,
             call_facts=facts._call_lookup,
+            argument_plan=argument_plan,
             source_discovery=True,
             callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
         )
@@ -11090,7 +11112,11 @@ def _cached_binding_index(
     return analysis.projections.get_or_compute(
         (context, include_import_discovery),
         lambda: _project_binding_index(
-            analysis, context, tree, include_import_discovery=include_import_discovery
+            analysis,
+            context,
+            tree,
+            include_import_discovery=include_import_discovery,
+            ast_digest_admission=ast_digest_admission,
         ),
     )
 

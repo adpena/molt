@@ -436,6 +436,15 @@ the form, so the compiler records it:
 
 Compiler-synthesized calls record no form and bind as CALL.
 
+The compiler's call argument plan gives each operand one ordinal. The
+schedule pairs source evaluation with the separate steps that consume
+operands, so grouped keyword merges and a deferred sole star retain their
+CPython order. Binding and import analysis share plans for the same admitted
+source. Binding tracks already evaluated and published prefixes and adds
+exceptional release provenance when operands arrive or their facts widen.
+Every exceptional state is still observed. Lowering uses the same ordinals
+for temporary SSA values and creates the builder at its first push.
+
 **Custody.** The consuming call decides custody once, from its original callee,
 before any redispatch. A plain Python function gets an inlined frame that takes
 the arguments over (frame custody); under CALL, so does a bound method of one.

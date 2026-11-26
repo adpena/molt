@@ -244,6 +244,7 @@ def test_shared_loop_finalizes_exhaustion_before_else_and_other_exits_once() -> 
 def test_imports_in_else_observe_iterator_release_fact() -> None:
     from dataclasses import replace
     from molt.compiler_analysis.python_binding_facts import PythonNodeKey
+    from molt.compiler_analysis.python_call_arguments import call_argument_plan
     from molt.compiler_analysis.python_effects_generated import RUNS_FINALIZER
     from molt.compiler_analysis.python_imports import (
         _analyze_module_import_flow_uncached,
@@ -267,6 +268,7 @@ def test_imports_in_else_observe_iterator_release_fact() -> None:
         expression_facts={fact.node: fact for fact in index.expressions},
         assignment_effects={},
         call_facts={},
+        argument_plan=call_argument_plan,
     )
     site = tree.body[0].orelse[0]
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
