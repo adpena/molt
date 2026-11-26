@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import arg_helpers
@@ -98,8 +99,12 @@ def test_build_scope_owns_cached_managed_target_and_control(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("materialize", [False, True])
 def test_checkout_target_claim_records_first_materialization(
-    tmp_path, monkeypatch, developer_host_context, unbound_checkout_family, materialize
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    developer_host_context: None,
+    unbound_checkout_family: None,
+    materialize: bool,
+) -> None:
     from molt import build_record, checkout_state, dx
     from molt.cli import runtime_paths
 
