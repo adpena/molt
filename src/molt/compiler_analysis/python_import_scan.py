@@ -64,7 +64,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 from molt.compiler_analysis.python_namespace_writes import (
     python_namespace_summary,
     PythonNamespaceSummary,
-    refine_namespace_cache_writes,
+    refine_namespace_writes,
     python_package_name,
 )
 from molt.compiler_analysis.python_identity_catalog_generated import (
@@ -991,6 +991,7 @@ def _collect_imports(
         )
 
     native_cache_operands: set[int] | None = None
+    native_read_receivers: set[int] = set()
 
     def exposed_import_dictionary(node: ast.expr) -> bool:
         # A value that may be, but is not proven to be, the import dictionary
@@ -2183,8 +2184,10 @@ def _collect_imports(
                     and cache_keys(target.slice) is not None
                 ):
                     native_receiver_origins |= cache_receiver_origins(target.value)
-        if isinstance(node, ast.expr) and (
-            exact_import_dictionary(node) or exposed_import_dictionary(node)
+        if (
+            isinstance(node, ast.expr)
+            and id(node) not in native_read_receivers
+            and (exact_import_dictionary(node) or exposed_import_dictionary(node))
         ):
             # As a value this is a container; native item access/store does not
             # execute its contents. Opaque consumers can inspect all values.
@@ -2196,6 +2199,10 @@ def _collect_imports(
             and isinstance(node.ctx, ast.Load)
             and exact_import_dictionary(node.value)
         ):
+            # The visitor reaches this operation before its child receiver.
+            # Only the keyed result is a value of this read. Publishing a
+            # second, whole-dictionary origin would expose unrelated modules.
+            native_read_receivers.add(id(node.value))
             keys = cache_keys(node.slice)
             cache_reads.append(
                 (python_node_source_key(node), keys, frozenset(), frozenset(), False)
@@ -2216,6 +2223,8 @@ def _collect_imports(
                 if method in {"get", "__getitem__", "pop", "setdefault"} and len(
                     node.args
                 ) <= (1 if method == "__getitem__" else 2):
+                    if method in {"get", "__getitem__"}:
+                        native_read_receivers.add(id(node.func.value))
                     keys = cache_keys(node.args[0])
                     default, default_contents = (
                         cache_origins(node.args[1])
@@ -2573,7 +2582,7 @@ def _collect_imports(
             cache_reads=tuple(dict.fromkeys(cache_reads)),
         )
     if _namespace_summary is not None:
-        _namespace_summary[0] = refine_namespace_cache_writes(
+        _namespace_summary[0] = refine_namespace_writes(
             _namespace_summary[0], cache_writes, binding_index
         )
     if _runtime_import_protocol is not None:

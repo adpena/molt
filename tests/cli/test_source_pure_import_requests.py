@@ -3907,7 +3907,9 @@ def test_joined_activation_uses_existing_finite_cache_write_projection(
         target_python=TargetPythonVersion(3, 15, 0),
         module_name="sample",
         namespace_premise=replace(
-            WHOLE_PROGRAM, opaque_activation_sources=() if closed else None
+            WHOLE_PROGRAM,
+            opaque_activation_sources=() if closed else None,
+            code_rebinding=not closed,
         ),
         activation_argument_values=(
             (python_node_source_key(owner.args.args[0]), domain),
@@ -3929,7 +3931,9 @@ def test_joined_activation_uses_existing_finite_cache_write_projection(
         source_owner=python_node_source_key(owner),
         import_scan_mode="module_init",
         namespace_premise=replace(
-            WHOLE_PROGRAM, opaque_activation_sources=() if closed else None
+            WHOLE_PROGRAM,
+            opaque_activation_sources=() if closed else None,
+            code_rebinding=not closed,
         ),
         target_python=TargetPythonVersion(3, 15, 0),
     )
