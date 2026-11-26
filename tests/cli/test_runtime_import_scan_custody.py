@@ -672,6 +672,20 @@ def test_real_asyncio_graph_projection_retains_static_and_relative_discovery() -
     assert "asyncio.sslproto" in projection.dynamic_relative_import_candidates
     assert "asyncio.exceptions" not in projection.imports
 
+    sealed = _collect_imports_for_graph(
+        tree,
+        "asyncio",
+        purpose=SourceImportPurpose.INVENTORY,
+        is_package=True,
+        import_scan_mode="module_init",
+        namespace_premise=WHOLE_PROGRAM,
+        target_sys_platform="wasi",
+    )
+    assert not sealed.requires_runtime_package_anchor
+    assert not sealed.dynamic_relative_import_candidates
+    assert {"asyncio.exceptions", "asyncio.sslproto"} <= set(sealed.imports)
+    assert "asyncio.windows_events" not in sealed.imports
+
     provider = owner.with_name("sslproto.py")
     tls = _collect_imports_for_graph(
         ast.parse(provider.read_text(encoding="utf-8")),

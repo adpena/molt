@@ -760,376 +760,376 @@ async def _io_wait(fd: int, events: int, timeout: float | None = None) -> Any:
     io_wait = _require_io_wait_new()
     return await _require_asyncio_intrinsic(io_wait, "io_wait_new")(fd, events, timeout)
 
-_molt_io_wait_new = _intrinsic_require("molt_io_wait_new", globals())
-_molt_pending = _intrinsic_require("molt_pending", globals())
-_molt_async_sleep = _intrinsic_require("molt_async_sleep", globals())
-_molt_spawn = _intrinsic_require("molt_spawn", globals())
-_molt_cancel_token_new = _intrinsic_require("molt_cancel_token_new", globals())
-_molt_cancel_token_clone = _intrinsic_require("molt_cancel_token_clone", globals())
-_molt_cancel_token_drop = _intrinsic_require("molt_cancel_token_drop", globals())
-_molt_cancel_token_cancel = _intrinsic_require("molt_cancel_token_cancel", globals())
+_molt_io_wait_new = _intrinsic_require("molt_io_wait_new")
+_molt_pending = _intrinsic_require("molt_pending")
+_molt_async_sleep = _intrinsic_require("molt_async_sleep")
+_molt_spawn = _intrinsic_require("molt_spawn")
+_molt_cancel_token_new = _intrinsic_require("molt_cancel_token_new")
+_molt_cancel_token_clone = _intrinsic_require("molt_cancel_token_clone")
+_molt_cancel_token_drop = _intrinsic_require("molt_cancel_token_drop")
+_molt_cancel_token_cancel = _intrinsic_require("molt_cancel_token_cancel")
 _molt_cancel_token_is_cancelled = _intrinsic_require(
-    "molt_cancel_token_is_cancelled", globals()
+    "molt_cancel_token_is_cancelled"
 )
 _molt_cancel_token_set_current = _intrinsic_require(
-    "molt_cancel_token_set_current", globals()
+    "molt_cancel_token_set_current"
 )
 _molt_cancel_token_get_current = _intrinsic_require(
-    "molt_cancel_token_get_current", globals()
+    "molt_cancel_token_get_current"
 )
-_molt_promise_new = _intrinsic_require("molt_promise_new", globals())
-_molt_promise_set_result = _intrinsic_require("molt_promise_set_result", globals())
+_molt_promise_new = _intrinsic_require("molt_promise_new")
+_molt_promise_set_result = _intrinsic_require("molt_promise_set_result")
 _molt_task_register_execution = _intrinsic_require(
-    "molt_task_register_execution", globals()
+    "molt_task_register_execution"
 )
 _molt_asyncio_cancel_pending = _intrinsic_require(
-    "molt_asyncio_cancel_pending", globals()
+    "molt_asyncio_cancel_pending"
 )
 _molt_asyncio_waiters_notify = _intrinsic_require(
-    "molt_asyncio_waiters_notify", globals()
+    "molt_asyncio_waiters_notify"
 )
 _molt_asyncio_waiters_notify_exception = _intrinsic_require(
-    "molt_asyncio_waiters_notify_exception", globals()
+    "molt_asyncio_waiters_notify_exception"
 )
 _molt_asyncio_waiters_remove = _intrinsic_require(
-    "molt_asyncio_waiters_remove", globals()
+    "molt_asyncio_waiters_remove"
 )
 _molt_asyncio_barrier_release = _intrinsic_require(
-    "molt_asyncio_barrier_release", globals()
+    "molt_asyncio_barrier_release"
 )
 _molt_asyncio_condition_wait_for_step = _intrinsic_require(
-    "molt_asyncio_condition_wait_for_step", globals()
+    "molt_asyncio_condition_wait_for_step"
 )
 _molt_asyncio_future_transfer = _intrinsic_require(
-    "molt_asyncio_future_transfer", globals()
+    "molt_asyncio_future_transfer"
 )
 _molt_asyncio_event_waiters_cleanup = _intrinsic_require(
-    "molt_asyncio_event_waiters_cleanup", globals()
+    "molt_asyncio_event_waiters_cleanup"
 )
 _molt_asyncio_task_registry_set = _intrinsic_require(
-    "molt_asyncio_task_registry_set", globals()
+    "molt_asyncio_task_registry_set"
 )
 _molt_asyncio_task_registry_get = _intrinsic_require(
-    "molt_asyncio_task_registry_get", globals()
+    "molt_asyncio_task_registry_get"
 )
 _molt_asyncio_task_registry_contains = _intrinsic_require(
-    "molt_asyncio_task_registry_contains", globals()
+    "molt_asyncio_task_registry_contains"
 )
 _molt_asyncio_task_registry_current = _intrinsic_require(
-    "molt_asyncio_task_registry_current", globals()
+    "molt_asyncio_task_registry_current"
 )
 _molt_asyncio_task_registry_current_for_loop = _intrinsic_require(
-    "molt_asyncio_task_registry_current_for_loop", globals()
+    "molt_asyncio_task_registry_current_for_loop"
 )
 _molt_asyncio_task_registry_pop = _intrinsic_require(
-    "molt_asyncio_task_registry_pop", globals()
+    "molt_asyncio_task_registry_pop"
 )
 _molt_asyncio_task_last_exception_clear = _intrinsic_require(
-    "molt_asyncio_task_last_exception_clear", globals()
+    "molt_asyncio_task_last_exception_clear"
 )
 _molt_asyncio_task_registry_move = _intrinsic_require(
-    "molt_asyncio_task_registry_move", globals()
+    "molt_asyncio_task_registry_move"
 )
 _molt_asyncio_task_registry_values = _intrinsic_require(
-    "molt_asyncio_task_registry_values", globals()
+    "molt_asyncio_task_registry_values"
 )
 _molt_asyncio_task_registry_live_set = _intrinsic_require(
-    "molt_asyncio_task_registry_live_set", globals()
+    "molt_asyncio_task_registry_live_set"
 )
 _molt_asyncio_event_waiters_register = _intrinsic_require(
-    "molt_asyncio_event_waiters_register", globals()
+    "molt_asyncio_event_waiters_register"
 )
 _molt_asyncio_event_waiters_unregister = _intrinsic_require(
-    "molt_asyncio_event_waiters_unregister", globals()
+    "molt_asyncio_event_waiters_unregister"
 )
 _molt_asyncio_event_waiters_cleanup_token = _intrinsic_require(
-    "molt_asyncio_event_waiters_cleanup_token", globals()
+    "molt_asyncio_event_waiters_cleanup_token"
 )
 _molt_asyncio_child_watcher_add = _intrinsic_require(
-    "molt_asyncio_child_watcher_add", globals()
+    "molt_asyncio_child_watcher_add"
 )
 _molt_asyncio_child_watcher_remove = _intrinsic_require(
-    "molt_asyncio_child_watcher_remove", globals()
+    "molt_asyncio_child_watcher_remove"
 )
 _molt_asyncio_child_watcher_clear = _intrinsic_require(
-    "molt_asyncio_child_watcher_clear", globals()
+    "molt_asyncio_child_watcher_clear"
 )
 _molt_asyncio_child_watcher_pop = _intrinsic_require(
-    "molt_asyncio_child_watcher_pop", globals()
+    "molt_asyncio_child_watcher_pop"
 )
 _molt_asyncio_ssl_transport_orchestrate = _intrinsic_require(
-    "molt_asyncio_ssl_transport_orchestrate", globals()
+    "molt_asyncio_ssl_transport_orchestrate"
 )
 _molt_asyncio_tls_client_connect_new = _intrinsic_require(
-    "molt_asyncio_tls_client_connect_new", globals()
+    "molt_asyncio_tls_client_connect_new"
 )
 _molt_asyncio_tls_client_from_fd_new = _intrinsic_require(
-    "molt_asyncio_tls_client_from_fd_new", globals()
+    "molt_asyncio_tls_client_from_fd_new"
 )
 _molt_asyncio_tls_server_payload = _intrinsic_require(
-    "molt_asyncio_tls_server_payload", globals()
+    "molt_asyncio_tls_server_payload"
 )
 _molt_asyncio_tls_server_from_fd_new = _intrinsic_require(
-    "molt_asyncio_tls_server_from_fd_new", globals()
+    "molt_asyncio_tls_server_from_fd_new"
 )
 _molt_asyncio_require_unix_socket_support = _intrinsic_require(
-    "molt_asyncio_require_unix_socket_support", globals()
+    "molt_asyncio_require_unix_socket_support"
 )
 _molt_asyncio_require_child_watcher_support = _intrinsic_require(
-    "molt_asyncio_require_child_watcher_support", globals()
+    "molt_asyncio_require_child_watcher_support"
 )
 _molt_asyncio_running_loop_get = _intrinsic_require(
-    "molt_asyncio_running_loop_get", globals()
+    "molt_asyncio_running_loop_get"
 )
 _molt_asyncio_running_loop_set = _intrinsic_require(
-    "molt_asyncio_running_loop_set", globals()
+    "molt_asyncio_running_loop_set"
 )
 _molt_asyncio_event_loop_get_current = _intrinsic_require(
-    "molt_asyncio_event_loop_get_current", globals()
+    "molt_asyncio_event_loop_get_current"
 )
 _molt_asyncio_event_loop_set = _intrinsic_require(
-    "molt_asyncio_event_loop_set", globals()
+    "molt_asyncio_event_loop_set"
 )
 _molt_asyncio_event_loop_policy_get = _intrinsic_require(
-    "molt_asyncio_event_loop_policy_get", globals()
+    "molt_asyncio_event_loop_policy_get"
 )
 _molt_asyncio_event_loop_policy_set = _intrinsic_require(
-    "molt_asyncio_event_loop_policy_set", globals()
+    "molt_asyncio_event_loop_policy_set"
 )
 _molt_asyncio_tasks_add_done_callback = _intrinsic_require(
-    "molt_asyncio_tasks_add_done_callback", globals()
+    "molt_asyncio_tasks_add_done_callback"
 )
 _molt_asyncio_task_cancel_apply = _intrinsic_require(
-    "molt_asyncio_task_cancel_apply", globals()
+    "molt_asyncio_task_cancel_apply"
 )
 _molt_asyncio_task_uncancel_apply = _intrinsic_require(
-    "molt_asyncio_task_uncancel_apply", globals()
+    "molt_asyncio_task_uncancel_apply"
 )
 _molt_asyncio_event_set_waiters = _intrinsic_require(
-    "molt_asyncio_event_set_waiters", globals()
+    "molt_asyncio_event_set_waiters"
 )
 _molt_asyncio_fd_watcher_register = _intrinsic_require(
-    "molt_asyncio_fd_watcher_register", globals()
+    "molt_asyncio_fd_watcher_register"
 )
 _molt_asyncio_fd_watcher_unregister = _intrinsic_require(
-    "molt_asyncio_fd_watcher_unregister", globals()
+    "molt_asyncio_fd_watcher_unregister"
 )
 # --- Event loop Rust handle intrinsics (RT2 core, 28 total) ---
-_molt_event_loop_spawn = _intrinsic_require("molt_event_loop_spawn", globals())
-_molt_event_loop_new = _intrinsic_require("molt_event_loop_new", globals())
-_molt_event_loop_call_soon = _intrinsic_require("molt_event_loop_call_soon", globals())
-_molt_event_loop_call_at = _intrinsic_require("molt_event_loop_call_at", globals())
+_molt_event_loop_spawn = _intrinsic_require("molt_event_loop_spawn")
+_molt_event_loop_new = _intrinsic_require("molt_event_loop_new")
+_molt_event_loop_call_soon = _intrinsic_require("molt_event_loop_call_soon")
+_molt_event_loop_call_at = _intrinsic_require("molt_event_loop_call_at")
 _molt_event_loop_cancel_timer = _intrinsic_require(
-    "molt_event_loop_cancel_timer", globals()
+    "molt_event_loop_cancel_timer"
 )
-_molt_event_loop_add_reader = _intrinsic_require("molt_event_loop_add_reader", globals())
+_molt_event_loop_add_reader = _intrinsic_require("molt_event_loop_add_reader")
 _molt_event_loop_remove_reader = _intrinsic_require(
-    "molt_event_loop_remove_reader", globals()
+    "molt_event_loop_remove_reader"
 )
-_molt_event_loop_add_writer = _intrinsic_require("molt_event_loop_add_writer", globals())
+_molt_event_loop_add_writer = _intrinsic_require("molt_event_loop_add_writer")
 _molt_event_loop_remove_writer = _intrinsic_require(
-    "molt_event_loop_remove_writer", globals()
+    "molt_event_loop_remove_writer"
 )
-_molt_event_loop_run_once = _intrinsic_require("molt_event_loop_run_once", globals())
-_molt_event_loop_time = _intrinsic_require("molt_event_loop_time", globals())
-_molt_event_loop_wait = _intrinsic_require("molt_event_loop_wait", globals())
-_molt_event_loop_wake = _intrinsic_require("molt_event_loop_wake", globals())
-_molt_event_loop_start = _intrinsic_require("molt_event_loop_start", globals())
-_molt_event_loop_stop = _intrinsic_require("molt_event_loop_stop", globals())
-_molt_event_loop_is_running = _intrinsic_require("molt_event_loop_is_running", globals())
-_molt_event_loop_is_closed = _intrinsic_require("molt_event_loop_is_closed", globals())
-_molt_event_loop_close = _intrinsic_require("molt_event_loop_close", globals())
-_molt_event_loop_drop = _intrinsic_require("molt_event_loop_drop", globals())
-_molt_event_loop_set_debug = _intrinsic_require("molt_event_loop_set_debug", globals())
-_molt_event_loop_get_debug = _intrinsic_require("molt_event_loop_get_debug", globals())
+_molt_event_loop_run_once = _intrinsic_require("molt_event_loop_run_once")
+_molt_event_loop_time = _intrinsic_require("molt_event_loop_time")
+_molt_event_loop_wait = _intrinsic_require("molt_event_loop_wait")
+_molt_event_loop_wake = _intrinsic_require("molt_event_loop_wake")
+_molt_event_loop_start = _intrinsic_require("molt_event_loop_start")
+_molt_event_loop_stop = _intrinsic_require("molt_event_loop_stop")
+_molt_event_loop_is_running = _intrinsic_require("molt_event_loop_is_running")
+_molt_event_loop_is_closed = _intrinsic_require("molt_event_loop_is_closed")
+_molt_event_loop_close = _intrinsic_require("molt_event_loop_close")
+_molt_event_loop_drop = _intrinsic_require("molt_event_loop_drop")
+_molt_event_loop_set_debug = _intrinsic_require("molt_event_loop_set_debug")
+_molt_event_loop_get_debug = _intrinsic_require("molt_event_loop_get_debug")
 _molt_event_loop_set_exception_handler = _intrinsic_require(
-    "molt_event_loop_set_exception_handler", globals()
+    "molt_event_loop_set_exception_handler"
 )
 _molt_event_loop_get_exception_handler = _intrinsic_require(
-    "molt_event_loop_get_exception_handler", globals()
+    "molt_event_loop_get_exception_handler"
 )
 _molt_event_loop_set_task_factory = _intrinsic_require(
-    "molt_event_loop_set_task_factory", globals()
+    "molt_event_loop_set_task_factory"
 )
 _molt_event_loop_get_task_factory = _intrinsic_require(
-    "molt_event_loop_get_task_factory", globals()
+    "molt_event_loop_get_task_factory"
 )
 _molt_event_loop_notify_reader_ready = _intrinsic_require(
-    "molt_event_loop_notify_reader_ready", globals()
+    "molt_event_loop_notify_reader_ready"
 )
 _molt_event_loop_notify_writer_ready = _intrinsic_require(
-    "molt_event_loop_notify_writer_ready", globals()
+    "molt_event_loop_notify_writer_ready"
 )
-_molt_pipe_transport_new = _intrinsic_require("molt_pipe_transport_new", globals())
-_molt_pipe_transport_get_fd = _intrinsic_require("molt_pipe_transport_get_fd", globals())
+_molt_pipe_transport_new = _intrinsic_require("molt_pipe_transport_new")
+_molt_pipe_transport_get_fd = _intrinsic_require("molt_pipe_transport_get_fd")
 _molt_pipe_transport_is_closing = _intrinsic_require(
-    "molt_pipe_transport_is_closing", globals()
+    "molt_pipe_transport_is_closing"
 )
-_molt_pipe_transport_close = _intrinsic_require("molt_pipe_transport_close", globals())
+_molt_pipe_transport_close = _intrinsic_require("molt_pipe_transport_close")
 _molt_pipe_transport_pause_reading = _intrinsic_require(
-    "molt_pipe_transport_pause_reading", globals()
+    "molt_pipe_transport_pause_reading"
 )
 _molt_pipe_transport_resume_reading = _intrinsic_require(
-    "molt_pipe_transport_resume_reading", globals()
+    "molt_pipe_transport_resume_reading"
 )
-_molt_pipe_transport_write = _intrinsic_require("molt_pipe_transport_write", globals())
+_molt_pipe_transport_write = _intrinsic_require("molt_pipe_transport_write")
 _molt_pipe_transport_get_write_buffer_size = _intrinsic_require(
-    "molt_pipe_transport_get_write_buffer_size", globals()
+    "molt_pipe_transport_get_write_buffer_size"
 )
-_molt_pipe_transport_drop = _intrinsic_require("molt_pipe_transport_drop", globals())
+_molt_pipe_transport_drop = _intrinsic_require("molt_pipe_transport_drop")
 _molt_asyncio_subprocess_stdio_normalize = _intrinsic_require(
-    "molt_asyncio_subprocess_stdio_normalize", globals()
+    "molt_asyncio_subprocess_stdio_normalize"
 )
 _molt_asyncio_server_accept_loop_new = _intrinsic_require(
-    "molt_asyncio_server_accept_loop_new", globals()
+    "molt_asyncio_server_accept_loop_new"
 )
 _molt_asyncio_stream_reader_read_new = _intrinsic_require(
-    "molt_asyncio_stream_reader_read_new", globals()
+    "molt_asyncio_stream_reader_read_new"
 )
 _molt_asyncio_stream_reader_readline_new = _intrinsic_require(
-    "molt_asyncio_stream_reader_readline_new", globals()
+    "molt_asyncio_stream_reader_readline_new"
 )
 _molt_asyncio_stream_send_all_new = _intrinsic_require(
-    "molt_asyncio_stream_send_all_new", globals()
+    "molt_asyncio_stream_send_all_new"
 )
 _molt_asyncio_stream_buffer_snapshot = _intrinsic_require(
-    "molt_asyncio_stream_buffer_snapshot", globals()
+    "molt_asyncio_stream_buffer_snapshot"
 )
 _molt_asyncio_stream_buffer_consume = _intrinsic_require(
-    "molt_asyncio_stream_buffer_consume", globals()
+    "molt_asyncio_stream_buffer_consume"
 )
 _molt_asyncio_socket_reader_read_new = _intrinsic_require(
-    "molt_asyncio_socket_reader_read_new", globals()
+    "molt_asyncio_socket_reader_read_new"
 )
 _molt_asyncio_socket_reader_readline_new = _intrinsic_require(
-    "molt_asyncio_socket_reader_readline_new", globals()
+    "molt_asyncio_socket_reader_readline_new"
 )
-_molt_asyncio_sock_recv_new = _intrinsic_require("molt_asyncio_sock_recv_new", globals())
+_molt_asyncio_sock_recv_new = _intrinsic_require("molt_asyncio_sock_recv_new")
 _molt_asyncio_sock_connect_new = _intrinsic_require(
-    "molt_asyncio_sock_connect_new", globals()
+    "molt_asyncio_sock_connect_new"
 )
 _molt_asyncio_sock_accept_new = _intrinsic_require(
-    "molt_asyncio_sock_accept_new", globals()
+    "molt_asyncio_sock_accept_new"
 )
 _molt_asyncio_sock_recv_into_new = _intrinsic_require(
-    "molt_asyncio_sock_recv_into_new", globals()
+    "molt_asyncio_sock_recv_into_new"
 )
 _molt_asyncio_sock_sendall_new = _intrinsic_require(
-    "molt_asyncio_sock_sendall_new", globals()
+    "molt_asyncio_sock_sendall_new"
 )
 _molt_asyncio_sock_recvfrom_new = _intrinsic_require(
-    "molt_asyncio_sock_recvfrom_new", globals()
+    "molt_asyncio_sock_recvfrom_new"
 )
 _molt_asyncio_sock_recvfrom_into_new = _intrinsic_require(
-    "molt_asyncio_sock_recvfrom_into_new", globals()
+    "molt_asyncio_sock_recvfrom_into_new"
 )
 _molt_asyncio_sock_sendto_new = _intrinsic_require(
-    "molt_asyncio_sock_sendto_new", globals()
+    "molt_asyncio_sock_sendto_new"
 )
-_molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
+_molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new")
 
-_molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
-_molt_process_spawn = _intrinsic_require("molt_process_spawn", globals())
-_molt_process_wait_future = _intrinsic_require("molt_process_wait_future", globals())
-_molt_process_pid = _intrinsic_require("molt_process_pid", globals())
-_molt_process_returncode = _intrinsic_require("molt_process_returncode", globals())
-_molt_process_kill = _intrinsic_require("molt_process_kill", globals())
-_molt_process_terminate = _intrinsic_require("molt_process_terminate", globals())
-_molt_process_stdin = _intrinsic_require("molt_process_stdin", globals())
-_molt_process_stdout = _intrinsic_require("molt_process_stdout", globals())
-_molt_process_stderr = _intrinsic_require("molt_process_stderr", globals())
-_molt_process_drop = _intrinsic_require("molt_process_drop", globals())
-_molt_stream_close = _intrinsic_require("molt_stream_close", globals())
-_molt_stream_reader_new = _intrinsic_require("molt_stream_reader_new", globals())
-_molt_stream_reader_at_eof = _intrinsic_require("molt_stream_reader_at_eof", globals())
-_molt_stream_reader_drop = _intrinsic_require("molt_stream_reader_drop", globals())
-_molt_socket_reader_new = _intrinsic_require("molt_socket_reader_new", globals())
-_molt_socket_reader_at_eof = _intrinsic_require("molt_socket_reader_at_eof", globals())
-_molt_socket_reader_drop = _intrinsic_require("molt_socket_reader_drop", globals())
+_molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin")
+_molt_process_spawn = _intrinsic_require("molt_process_spawn")
+_molt_process_wait_future = _intrinsic_require("molt_process_wait_future")
+_molt_process_pid = _intrinsic_require("molt_process_pid")
+_molt_process_returncode = _intrinsic_require("molt_process_returncode")
+_molt_process_kill = _intrinsic_require("molt_process_kill")
+_molt_process_terminate = _intrinsic_require("molt_process_terminate")
+_molt_process_stdin = _intrinsic_require("molt_process_stdin")
+_molt_process_stdout = _intrinsic_require("molt_process_stdout")
+_molt_process_stderr = _intrinsic_require("molt_process_stderr")
+_molt_process_drop = _intrinsic_require("molt_process_drop")
+_molt_stream_close = _intrinsic_require("molt_stream_close")
+_molt_stream_reader_new = _intrinsic_require("molt_stream_reader_new")
+_molt_stream_reader_at_eof = _intrinsic_require("molt_stream_reader_at_eof")
+_molt_stream_reader_drop = _intrinsic_require("molt_stream_reader_drop")
+_molt_socket_reader_new = _intrinsic_require("molt_socket_reader_new")
+_molt_socket_reader_at_eof = _intrinsic_require("molt_socket_reader_at_eof")
+_molt_socket_reader_drop = _intrinsic_require("molt_socket_reader_drop")
 
 # Handle-based state machine intrinsics -- Future
-_molt_asyncio_future_new = _intrinsic_require("molt_asyncio_future_new", globals())
-_molt_asyncio_future_result = _intrinsic_require("molt_asyncio_future_result", globals())
+_molt_asyncio_future_new = _intrinsic_require("molt_asyncio_future_new")
+_molt_asyncio_future_result = _intrinsic_require("molt_asyncio_future_result")
 _molt_asyncio_future_exception = _intrinsic_require(
-    "molt_asyncio_future_exception", globals()
+    "molt_asyncio_future_exception"
 )
 _molt_asyncio_future_set_result_fast = _intrinsic_require(
-    "molt_asyncio_future_set_result_fast", globals()
+    "molt_asyncio_future_set_result_fast"
 )
 _molt_asyncio_future_set_exception_fast = _intrinsic_require(
-    "molt_asyncio_future_set_exception_fast", globals()
+    "molt_asyncio_future_set_exception_fast"
 )
 _molt_asyncio_future_cancel_fast = _intrinsic_require(
-    "molt_asyncio_future_cancel_fast", globals()
+    "molt_asyncio_future_cancel_fast"
 )
-_molt_asyncio_future_done = _intrinsic_require("molt_asyncio_future_done", globals())
+_molt_asyncio_future_done = _intrinsic_require("molt_asyncio_future_done")
 _molt_asyncio_future_cancelled = _intrinsic_require(
-    "molt_asyncio_future_cancelled", globals()
+    "molt_asyncio_future_cancelled"
 )
-_molt_asyncio_future_drop = _intrinsic_require("molt_asyncio_future_drop", globals())
+_molt_asyncio_future_drop = _intrinsic_require("molt_asyncio_future_drop")
 
 # Handle-based state machine intrinsics -- Event
-_molt_asyncio_event_new = _intrinsic_require("molt_asyncio_event_new", globals())
-_molt_asyncio_event_is_set = _intrinsic_require("molt_asyncio_event_is_set", globals())
+_molt_asyncio_event_new = _intrinsic_require("molt_asyncio_event_new")
+_molt_asyncio_event_is_set = _intrinsic_require("molt_asyncio_event_is_set")
 _molt_asyncio_event_set_fast = _intrinsic_require(
-    "molt_asyncio_event_set_fast", globals()
+    "molt_asyncio_event_set_fast"
 )
 _molt_asyncio_event_clear_handle = _intrinsic_require(
-    "molt_asyncio_event_clear", globals()
+    "molt_asyncio_event_clear"
 )
-_molt_asyncio_event_drop = _intrinsic_require("molt_asyncio_event_drop", globals())
+_molt_asyncio_event_drop = _intrinsic_require("molt_asyncio_event_drop")
 
 # Handle-based state machine intrinsics -- Lock
-_molt_asyncio_lock_new = _intrinsic_require("molt_asyncio_lock_new", globals())
-_molt_asyncio_lock_locked = _intrinsic_require("molt_asyncio_lock_locked", globals())
+_molt_asyncio_lock_new = _intrinsic_require("molt_asyncio_lock_new")
+_molt_asyncio_lock_locked = _intrinsic_require("molt_asyncio_lock_locked")
 _molt_asyncio_lock_acquire_fast = _intrinsic_require(
-    "molt_asyncio_lock_acquire_fast", globals()
+    "molt_asyncio_lock_acquire_fast"
 )
 _molt_asyncio_lock_release_fast = _intrinsic_require(
-    "molt_asyncio_lock_release_fast", globals()
+    "molt_asyncio_lock_release_fast"
 )
-_molt_asyncio_lock_drop = _intrinsic_require("molt_asyncio_lock_drop", globals())
+_molt_asyncio_lock_drop = _intrinsic_require("molt_asyncio_lock_drop")
 
 # Handle-based state machine intrinsics -- Semaphore
-_molt_asyncio_semaphore_new = _intrinsic_require("molt_asyncio_semaphore_new", globals())
+_molt_asyncio_semaphore_new = _intrinsic_require("molt_asyncio_semaphore_new")
 _molt_asyncio_semaphore_acquire_fast = _intrinsic_require(
-    "molt_asyncio_semaphore_acquire_fast", globals()
+    "molt_asyncio_semaphore_acquire_fast"
 )
 _molt_asyncio_semaphore_release_fast = _intrinsic_require(
-    "molt_asyncio_semaphore_release_fast", globals()
+    "molt_asyncio_semaphore_release_fast"
 )
 _molt_asyncio_semaphore_value = _intrinsic_require(
-    "molt_asyncio_semaphore_value", globals()
+    "molt_asyncio_semaphore_value"
 )
 _molt_asyncio_semaphore_drop = _intrinsic_require(
-    "molt_asyncio_semaphore_drop", globals()
+    "molt_asyncio_semaphore_drop"
 )
 
 # Handle-based state machine intrinsics -- Queue
-_molt_asyncio_queue_new = _intrinsic_require("molt_asyncio_queue_new", globals())
+_molt_asyncio_queue_new = _intrinsic_require("molt_asyncio_queue_new")
 _molt_asyncio_queue_put_nowait = _intrinsic_require(
-    "molt_asyncio_queue_put_nowait", globals()
+    "molt_asyncio_queue_put_nowait"
 )
 _molt_asyncio_queue_get_nowait = _intrinsic_require(
-    "molt_asyncio_queue_get_nowait", globals()
+    "molt_asyncio_queue_get_nowait"
 )
-_molt_asyncio_queue_qsize = _intrinsic_require("molt_asyncio_queue_qsize", globals())
-_molt_asyncio_queue_maxsize = _intrinsic_require("molt_asyncio_queue_maxsize", globals())
-_molt_asyncio_queue_empty = _intrinsic_require("molt_asyncio_queue_empty", globals())
-_molt_asyncio_queue_full = _intrinsic_require("molt_asyncio_queue_full", globals())
+_molt_asyncio_queue_qsize = _intrinsic_require("molt_asyncio_queue_qsize")
+_molt_asyncio_queue_maxsize = _intrinsic_require("molt_asyncio_queue_maxsize")
+_molt_asyncio_queue_empty = _intrinsic_require("molt_asyncio_queue_empty")
+_molt_asyncio_queue_full = _intrinsic_require("molt_asyncio_queue_full")
 _molt_asyncio_queue_task_done = _intrinsic_require(
-    "molt_asyncio_queue_task_done", globals()
+    "molt_asyncio_queue_task_done"
 )
 _molt_asyncio_queue_unfinished_tasks = _intrinsic_require(
-    "molt_asyncio_queue_unfinished_tasks", globals()
+    "molt_asyncio_queue_unfinished_tasks"
 )
 _molt_asyncio_queue_shutdown = _intrinsic_require(
-    "molt_asyncio_queue_shutdown", globals()
+    "molt_asyncio_queue_shutdown"
 )
 _molt_asyncio_queue_is_shutdown = _intrinsic_require(
-    "molt_asyncio_queue_is_shutdown", globals()
+    "molt_asyncio_queue_is_shutdown"
 )
-_molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop", globals())
+_molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop")
 
 _PENDING_SENTINEL: Any | None = None
 
