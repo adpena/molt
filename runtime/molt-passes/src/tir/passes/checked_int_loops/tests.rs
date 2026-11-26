@@ -413,6 +413,77 @@ fn packed_buffer_load_enters_before_the_original_call_on_miss() {
 }
 
 #[test]
+fn packed_buffer_store_commits_once_before_the_original_observation() {
+    use crate::tir::op_kinds_generated::ExceptionEdgeKind;
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+
+    let Fixture { mut func, .. } = branching_loop(false);
+    let owner = func.blocks[&func.entry_block].args[0].id;
+    let fail = func.fresh_block();
+    let label = 170;
+    func.label_id_map.insert(fail.0, label);
+    func.blocks
+        .insert(fail, block(fail, vec![], vec![], Terminator::Unreachable));
+    let result = func.fresh_value();
+    func.value_types.insert(result, TirType::None);
+    let body = func
+        .blocks
+        .values_mut()
+        .find(|block| block.ops.iter().any(|op| op.opcode == OpCode::InplaceAdd))
+        .unwrap();
+    let index = body.ops[0].operands[1];
+    let total = body.ops[0].results[0];
+    let mut call = op(OpCode::Call, vec![owner, index, index, total], vec![result]);
+    call.runtime = Some(RuntimeFn::Buffer2dSet);
+    call.origin = Some(OpKind::Call);
+    call.attrs.insert(
+        "s_value".into(),
+        AttrValue::Str(RuntimeFn::Buffer2dSet.symbol().into()),
+    );
+    let mut check = op(OpCode::CheckException, vec![], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(label));
+    check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+    check.mark_async_work_poll();
+    body.ops.splice(1..1, [call, check]);
+
+    verify_function(&func).unwrap();
+    run(&mut func, &mut AnalysisManager::new(), true);
+    verify_function(&func).unwrap();
+
+    let probe = func
+        .blocks
+        .values()
+        .find(|block| {
+            block
+                .ops
+                .last()
+                .is_some_and(|op| op.opcode == OpCode::TryBuffer2dStoreI64)
+        })
+        .expect("the numeric version includes the store");
+    let store = probe.ops.last().unwrap();
+    assert_eq!(store.operands, [owner, index, index, total]);
+    let Terminator::CondBranch {
+        cond,
+        then_block,
+        else_block,
+        ..
+    } = probe.terminator
+    else {
+        panic!("a store needs a pre-commit miss continuation");
+    };
+    assert_eq!(store.results, [cond]);
+    let hit = &func.blocks[&then_block].ops;
+    let miss = &func.blocks[&else_block].ops;
+    assert_eq!(hit[0].opcode, OpCode::ConstNone);
+    assert_eq!(hit[0].results, [result]);
+    assert_eq!(miss[0].runtime, Some(RuntimeFn::Buffer2dSet));
+    for check in [&hit[1], &miss[1]] {
+        assert!(check.is_async_work_poll());
+        assert_eq!(check.attrs.get("value"), Some(&AttrValue::Int(label)));
+    }
+}
+
+#[test]
 fn packed_numeric_demand_crosses_only_transparent_normal_continuations() {
     use molt_ir::runtime_fn_generated::RuntimeFn;
     for observer in [None, Some(OpKind::BindingAlias), Some(OpKind::StoreVar)] {
