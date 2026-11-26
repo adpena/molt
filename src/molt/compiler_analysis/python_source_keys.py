@@ -15,6 +15,7 @@ from types import MappingProxyType
 from collections.abc import Mapping
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_call_arguments import CallArgumentPlan
     from molt.compiler_analysis.python_lexical_scope import PythonModuleLexicalPlan
     from molt.compiler_analysis.python_imports import SourceAllExports
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
@@ -292,7 +293,10 @@ class _PythonAstDigestAdmission:
     _lexical_plans: dict[tuple[int, int], PythonModuleLexicalPlan] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
-    _lexical_plan_lock: Lock = field(
+    _argument_plans: dict[ast.Call | ast.ClassDef, CallArgumentPlan] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _syntax_plan_lock: Lock = field(
         default_factory=Lock, init=False, repr=False, compare=False
     )
     _canonical: bool = field(default=False, init=False, repr=False, compare=False)
@@ -303,11 +307,23 @@ class _PythonAstDigestAdmission:
         from molt.compiler_analysis.python_lexical_scope import PythonModuleLexicalPlan
 
         self.canonical_tree(tree)
-        with self._lexical_plan_lock:
+        with self._syntax_plan_lock:
             plan = self._lexical_plans.get(target_python)
             if plan is None:
                 plan = PythonModuleLexicalPlan.build(tree, target_python=target_python)
                 self._lexical_plans[target_python] = plan
+            return plan
+
+    def call_argument_plan(self, node: ast.Call | ast.ClassDef) -> CallArgumentPlan:
+        with self._syntax_plan_lock:
+            plan = self._argument_plans.get(node)
+            if plan is None:
+                from molt.compiler_analysis.python_call_arguments import (
+                    call_argument_plan,
+                )
+
+                plan = call_argument_plan(node)
+                self._argument_plans[node] = plan
             return plan
 
     def canonical_tree(self, tree: ast.Module) -> ast.Module:

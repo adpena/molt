@@ -11,7 +11,7 @@ import ast
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.python_call_arguments import (
     CallForm,
-    call_argument_schedule,
+    call_argument_plan,
     call_form,
 )
 from molt.frontend._types import (
@@ -160,11 +160,10 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
     ) -> MoltValue:
         # Guarded dispatch shares argument assembly without revisiting source
         # expressions. Pre-evaluation is valid only for flat calls: expansions
-        # have interleaved observable work owned by call_argument_schedule.
+        # have interleaved observable work owned by the argument plan.
+        plan = call_argument_plan(node)
         if evaluated is not None and (
-            len(evaluated) != len(node.args) + len(node.keywords)
-            or any(isinstance(argument, ast.Starred) for argument in node.args)
-            or any(keyword.arg is None for keyword in node.keywords)
+            len(evaluated) != len(plan.operands) or plan.has_expansion
         ):
             raise AssertionError("pre-evaluated call requires flat argument syntax")
         if self._sema is None:
@@ -181,20 +180,20 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         # builder's keyword mapping before them, as CPython unwinds its kwargs
         # dictionary before the operands beneath it.
         callargs = initial
-        pending: dict[int, MoltValue] = {}
-        for step in call_argument_schedule(node):
+        values: list[MoltValue] = []
+        for step in plan.steps:
             if step.action == "evaluate":
-                if evaluated is not None:
-                    pending[step.index] = evaluated[step.index]
-                    continue
-                value = self.visit(step.expression)
-                if value is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE, "Unsupported call argument"
-                    )
-                pending[step.index] = value
+                if evaluated is None:
+                    value = self.visit(step.expression)
+                    if value is None:
+                        raise FrontendRejection(
+                            Diagnostic.OPERAND_VALUE, "Unsupported call argument"
+                        )
+                    values.append(value)
                 continue
-            value = pending.pop(step.index)
+            value = (
+                evaluated[step.index] if evaluated is not None else values[step.index]
+            )
             if step.materialization == "tuple":
                 # CALL_FUNCTION_EX consumes a tuple, unlike list accumulation
                 # for mixed stars. The runtime tuple authority owns versioned
@@ -222,8 +221,6 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                     result=MoltValue(self.next_var(), type_hint="None"),
                 )
             )
-        if pending:
-            raise AssertionError("call argument schedule left unconsumed values")
         return callargs if callargs is not None else self._new_call_args_builder(form)
 
     def _emit_tuple_from_iter(self, iterable: MoltValue) -> MoltValue:

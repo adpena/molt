@@ -21,7 +21,7 @@ from typing import Literal
 from molt.compiler_analysis.native_support_slice import import_bound_names
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallArgumentStep:
     action: Literal["evaluate", "pos", "star", "kw", "kwstar"]
     index: int
@@ -30,15 +30,26 @@ class CallArgumentStep:
     materialization: Literal["tuple"] | None = None
 
 
-def call_argument_schedule(
-    node: ast.Call | ast.ClassDef,
-) -> tuple[CallArgumentStep, ...]:
+@dataclass(frozen=True, slots=True)
+class CallArgumentPlan:
+    operands: tuple[ast.expr | ast.keyword, ...]
+    steps: tuple[CallArgumentStep, ...]
+    name_operands: tuple[bool, ...]
+    has_expansion: bool
+
+
+def call_argument_plan(node: ast.Call | ast.ClassDef) -> CallArgumentPlan:
     arguments = node.bases if isinstance(node, ast.ClassDef) else node.args
+    operands = (*arguments, *node.keywords)
+    name_operands: list[bool] = []
+    has_expansion = False
     steps: list[CallArgumentStep] = []
     deferred: CallArgumentStep | None = None
     for index, argument in enumerate(arguments):
         starred = isinstance(argument, ast.Starred)
+        has_expansion |= starred
         expression = argument.value if starred else argument
+        name_operands.append(isinstance(expression, ast.Name))
         steps.append(CallArgumentStep("evaluate", index, expression))
         # __build_class__ always has the body function and class name before
         # source bases, so even one starred base expands before keywords.
@@ -52,7 +63,9 @@ def call_argument_schedule(
             )
     group: list[CallArgumentStep] = []
     for index, keyword in enumerate(node.keywords, len(arguments)):
+        name_operands.append(isinstance(keyword.value, ast.Name))
         if keyword.arg is None:
+            has_expansion = True
             steps.extend(group)
             group.clear()
             steps.append(CallArgumentStep("evaluate", index, keyword.value))
@@ -63,7 +76,7 @@ def call_argument_schedule(
     steps.extend(group)
     if deferred is not None:
         steps.append(deferred)
-    return tuple(steps)
+    return CallArgumentPlan(operands, tuple(steps), tuple(name_operands), has_expansion)
 
 
 CallForm = Literal["stack", "expanded"]

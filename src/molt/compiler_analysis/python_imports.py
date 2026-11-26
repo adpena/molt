@@ -37,7 +37,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     PythonImportBehavior,
     PythonImportCallable,
 )
-from molt.compiler_analysis.python_call_arguments import call_argument_schedule
+from molt.compiler_analysis.python_call_arguments import CallArgumentPlan
 from molt.compiler_analysis.python_effects import (
     expression_evaluation_children,
 )
@@ -969,6 +969,7 @@ def _analyze_module_import_flow_uncached(
     expression_facts: Mapping[PythonNodeKey, PythonExpressionFact],
     assignment_effects: Mapping[PythonNodeKey, int],
     call_facts: Mapping[PythonNodeKey, PythonCallSiteFact],
+    argument_plan: Callable[[ast.Call | ast.ClassDef], CallArgumentPlan],
     source_discovery: bool = False,
     callbacks_rewrite_metadata: bool = True,
 ) -> ModuleImportFlow:
@@ -1443,13 +1444,13 @@ def _analyze_module_import_flow_uncached(
             return _merge_states(*outcomes)
         if isinstance(expression, ast.Call):
             current = transfer(expression.func, current)
-            arguments = (*expression.args, *expression.keywords)
-            for step in call_argument_schedule(expression):
+            plan = argument_plan(expression)
+            for step in plan.steps:
                 if step.action == "evaluate":
                     current = transfer(step.expression, current)
                 elif step.action in {"star", "kwstar"}:
                     iteration = iteration_facts.get(
-                        PythonNodeKey.from_node(arguments[step.index])
+                        PythonNodeKey.from_node(plan.operands[step.index])
                     )
                     if (
                         iteration is None
