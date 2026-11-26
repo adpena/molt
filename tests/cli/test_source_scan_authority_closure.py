@@ -139,7 +139,7 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
         policy = scanner._module_graph_needs_runtime_import_support(
             module_graph=graph,
             scan_authority=authority,
-            namespace_writes={},
+            reached_writes=(),
         )
         assert policy.needs_runtime_import_support is activated
 
@@ -445,7 +445,7 @@ def test_builtin_namespace_import_requires_execution(
         scanner._module_graph_needs_runtime_import_support(
             module_graph=result.graph,
             scan_authority=result.scan_authority,
-            namespace_writes={},
+            reached_writes=(),
         ).needs_runtime_import_support
         is requires_runtime_import
     )

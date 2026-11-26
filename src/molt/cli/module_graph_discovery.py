@@ -16,7 +16,14 @@ import ast
 import contextlib
 import re
 from dataclasses import dataclass, field, replace
-from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from pathlib import Path
 from functools import cached_property
 from typing import Final, NamedTuple
@@ -221,6 +228,18 @@ class _ModuleGraphDiscovery:
         self.package_children: dict[tuple[Path, ...], frozenset[str]] = {}
         self.demands: PythonSourceDemands | None = None
 
+    def reached_namespace_writes(self) -> Iterator[tuple[str, PythonNamespaceWrite]]:
+        """Project the inventoried writes whose execution has graph custody."""
+        for module, writes in self.namespace_writes.items():
+            owners = self.active_owners.get(module, ())
+            scan = self.scan_outputs.get(_SourceScanJob(module, None))
+            catalog = (
+                scan is not None and scan.source_requests.runtime_catalog is not None
+            )
+            for write in writes:
+                if catalog or write.source_owner in owners:
+                    yield module, write
+
     def validate_sources(self, modules: Collection[str] | None = None) -> None:
         for module_name in self.source_generations if modules is None else modules:
             generation = self.source_generations.get(module_name)
@@ -248,18 +267,14 @@ def _ready_namespace_revisions(
             if receiver in state.graph and (admitted := producers & state.graph.keys()):
                 writers[receiver] = admitted
     writers_with_unknown_receivers: set[str] = set()
-    for writer, writes in state.namespace_writes.items():
-        active = state.active_owners.get(writer, ())
-        for write in writes:
-            if write.source_owner not in active:
-                continue
-            if write.module is None:
-                if writer in dirty:
-                    writers_with_unknown_receivers.add(writer)
-            elif (target := state.graph.get(write.module)) is not None:
-                for name in state.modules_by_source[target]:
-                    if writer != name:
-                        writers.setdefault(name, set()).add(writer)
+    for writer, write in state.reached_namespace_writes():
+        if write.module is None:
+            if writer in dirty:
+                writers_with_unknown_receivers.add(writer)
+        elif (target := state.graph.get(write.module)) is not None:
+            for name in state.modules_by_source[target]:
+                if writer != name:
+                    writers.setdefault(name, set()).add(writer)
     pending: list[Collection[str]] = []
     if writers_with_unknown_receivers:
         # Every receiver depends on every dirty unknown writer. All unknown

@@ -1240,7 +1240,7 @@ def _finalize_runtime_import_closure(
         policy = _module_import_scanner._module_graph_needs_runtime_import_support(
             module_graph=module_graph,
             scan_authority=_ModuleGraphScanAuthority(tuple(scan_authorities.values())),
-            namespace_writes=discovery.namespace_writes,
+            reached_writes=discovery.reached_namespace_writes(),
         )
         machinery_roots = (
             _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES

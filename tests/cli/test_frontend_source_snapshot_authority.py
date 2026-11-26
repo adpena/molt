@@ -142,7 +142,7 @@ def test_runtime_import_policy_fences_complete_source_generation(
     options = dict(
         module_graph=graph.graph,
         scan_authority=graph.scan_authority,
-        namespace_writes={},
+        reached_writes=(),
     )
     # The decision reads the scans' bits: the entry calls ``__import__``.
     baseline = module_import_scanner._module_graph_needs_runtime_import_support(

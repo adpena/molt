@@ -3223,6 +3223,35 @@ def test_prepare_entry_module_graph_serves_source_import_syntax_from_the_registr
     assert "importlib.machinery" not in prepared.module_graph
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
+@pytest.mark.parametrize("called", [False, True])
+def test_import_state_write_requires_a_reached_owner(
+    tmp_path: Path, called: bool
+) -> None:
+    entry = tmp_path / "demo.py"
+    source = "import sys\ndef write():\n    sys.modules['absent'] = None\n" + (
+        "write()\n" if called else ""
+    )
+    entry.write_text(source, encoding="utf-8")
+    prepared, error = cli_module_graph._prepare_entry_module_graph(
+        source_path=entry,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=ast.parse(source, filename=str(entry)),
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target=admit_target("native"),
+        target_sys_platform=None,
+    )
+    assert error is None
+    assert prepared is not None
+    assert prepared.runtime_import_support_policy.needs_runtime_import_support is called
+    assert ("importlib.machinery" in prepared.module_graph) is called
+
+
 def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_supported(
     tmp_path: Path,
 ) -> None:
