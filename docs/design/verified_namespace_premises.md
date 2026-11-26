@@ -148,6 +148,12 @@ receiver behavior.
    repeatedly computing an outer-unit analysis from inner-unit requests can make
    compile time quadratic. Molt's source generation is the owner here; a new or
    mutable AST cannot reuse an old generation's facts.
+   A successful parsed source is identified by its resolved source path, exact
+   text and target version. Diagnostic filenames are absent from the AST, so
+   discovery's physical path and analysis's logical path share that read-only
+   admission. Parse refusals retain their requested diagnostic filename;
+   mutating lowering still parses its own tree, and an unretained miss adds no
+   retained generation.
    **Read-side facts (static module cells, call_anatomy.md 4.5a).** The same traversal records
    every use of a namespace mapping by identity, read or write, as a `reflection` row (schema 11):
    `M.__dict__`, `vars(M)`, `getattr(M, "__dict__")` and a `sys.modules` entry's `__dict__` name
