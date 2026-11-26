@@ -164,6 +164,9 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     } else {
         lower_prepared_function(&tmp_ir)
     };
+    if target_info.is_some_and(|target| target.lowering.module_global_slots) {
+        super::passes::global_slot_sites::canonicalize_initialized_reads(&mut tir_func);
+    }
     if let Some(FrameLayout {
         spill_base,
         frame_size,

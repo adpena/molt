@@ -56,6 +56,29 @@ use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
+/// Publish an initialized cell's operand-free load before scalar
+/// optimization, so the inliner sees the executable body without obsolete
+/// by-name operands and their exception checks.
+pub(crate) fn canonicalize_initialized_reads(func: &mut TirFunction) {
+    for op in func.blocks.values_mut().flat_map(|block| &mut block.ops) {
+        canonicalize_initialized_read(op);
+    }
+}
+
+fn canonicalize_initialized_read(op: &mut TirOp) -> bool {
+    if op.opcode != OpCode::ModuleGetGlobal
+        || !op
+            .global_slot()
+            .is_some_and(|slot| slot.cell && slot.init_once)
+    {
+        return false;
+    }
+    op.origin = None;
+    op.opcode = OpCode::StaticCellLoad;
+    op.operands.clear();
+    true
+}
+
 /// Rewrite every stamped site of `func`. Requires: the module phase is done
 /// (promotion has already read these ops by their slot) and drops are not
 /// inserted.
@@ -82,7 +105,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     for block_id in block_ids {
         let ops = std::mem::take(&mut func.blocks.get_mut(&block_id).unwrap().ops);
         let mut rewritten = Vec::with_capacity(ops.len());
-        for op in ops {
+        for mut op in ops {
+            if canonicalize_initialized_read(&mut op) {
+                rewritten.push(op);
+                stats.values_changed += 1;
+                continue;
+            }
             let Some(slot) = op.global_slot() else {
                 rewritten.push(op);
                 continue;
@@ -109,18 +137,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 continue;
             }
             let span = op.source_span;
-            if slot.cell && slot.init_once && site_kind == Site::Read {
-                // An init-dominated read (HF-846): the cell is bound and never
-                // written again, so the read is one load with no operands; its
-                // name and module operands die here.
-                let mut load = op;
-                load.origin = None;
-                load.opcode = OpCode::StaticCellLoad;
-                load.operands.clear();
-                rewritten.push(load);
-                stats.values_changed += 1;
-                continue;
-            }
             if slot.cell {
                 // A static cell (call_anatomy.md 4.5a): the block's address
                 // is a link-time constant, and a store is the shared
