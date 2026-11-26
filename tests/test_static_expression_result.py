@@ -1044,16 +1044,22 @@ def test_widening_reuse_cannot_preserve_exact_or_dispatch_facts(
         PythonIdentity,
     )
     from molt.compiler_analysis.static_truth import (
+        DeferredExecution,
         expression_result_without_value_facts,
     )
 
+    source = (1, 0, 1, 8, "Lambda")
     expected = StaticExpressionResult(
-        identities=OTHER_IDENTITY | int(PythonIdentity.BUILTINS_IMPORT)
+        identities=OTHER_IDENTITY | int(PythonIdentity.BUILTINS_IMPORT),
+        exposes_module_globals=True,
+        source_origins=frozenset({source}),
+        deferred=frozenset({DeferredExecution(source, "call")}),
     )
     current = replace(expected, **changed)
     expired = expression_result_without_value_facts(current)
     assert expired is not current
     assert expired == expected
+    assert expired.value is None
     assert expression_result_without_value_facts(expired) is expired
     owner = StaticExpressionResult(element_result=current)
     expired_owner = expression_result_without_value_facts(owner)
