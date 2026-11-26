@@ -307,6 +307,7 @@ def test_discovery_tree_is_reused_readonly_by_unretained_analysis(
     result = _analyze(
         helper,
         module_name="helper",
+        logical_source_path="/__molt__/stdlib/helper.py",
         project_root=None,
         resolution_cache=cache,
         retain_source=False,
@@ -325,7 +326,7 @@ def test_discovery_tree_is_reused_readonly_by_unretained_analysis(
         assert ast.dump(record.tree, include_attributes=True) == before
 
 
-@pytest.mark.parametrize("changed", ["source", "filename", "target", "path"])
+@pytest.mark.parametrize("changed", ["source", "target", "path"])
 def test_unretained_parse_reuses_only_identical_source_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
 ) -> None:
@@ -354,8 +355,6 @@ def test_unretained_parse_reuses_only_identical_source_authority(
     assert len(calls) == 1
     if changed == "source":
         source = "VALUE = 2\n"
-    elif changed == "filename":
-        filename = "display/app.py"
     elif changed == "target":
         target = TargetPythonVersion(3, 13, 0)
     else:
@@ -374,6 +373,34 @@ def test_unretained_parse_reuses_only_identical_source_authority(
     assert len(cache.ast_cache) == 1
     assert calls[-1] == (Path(filename), source, target.tag)
     assert ast.dump(second.tree) == ast.dump(ast.parse(source))
+
+
+@pytest.mark.parametrize("retain", [False, True])
+def test_successful_parse_shares_source_but_errors_keep_diagnostic_filename(
+    tmp_path: Path, retain: bool
+) -> None:
+    path = tmp_path / "app.py"
+    source = "class Private:\n    __value = 2\n    def get(self): return self.__value\n"
+    cache = _ModuleResolutionCache()
+    first = cache.parse_module_ast(path, source, filename=str(path))
+    logical_name = "/__molt__/stdlib/app.py"
+    second = cache.parse_module_ast(path, source, filename=logical_name, retain=retain)
+    assert second is first
+    assert cache.source_parse_count == 1
+    assert len(cache.ast_cache) == 1
+    assert ast.dump(second.tree, include_attributes=True) == ast.dump(
+        ast.parse(source, filename=logical_name), include_attributes=True
+    )
+    # Failed grammar admission carries the requested display name; a prior
+    # failure for this source cannot supply another name's diagnostic.
+    for filename in (str(path), logical_name):
+        with pytest.raises(SyntaxError) as caught:
+            cache.parse_module_ast(
+                path, "def invalid(\n", filename=filename, retain=retain
+            )
+        assert caught.value.filename == filename
+    assert len(cache.ast_cache) == 1
+    assert len(cache.ast_error_cache) == (2 if retain else 0)
 
 
 def test_unretained_cold_parse_and_error_do_not_populate_caches(tmp_path: Path) -> None:

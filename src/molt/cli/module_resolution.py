@@ -561,7 +561,7 @@ class _ModuleResolutionCache:
         default_factory=dict
     )
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
-    ast_cache: dict[tuple[Path, str, str, str], _ParsedModuleAst] = field(
+    ast_cache: dict[tuple[Path, str, str], _ParsedModuleAst] = field(
         default_factory=dict
     )
     ast_error_cache: dict[tuple[Path, str, str, str], SyntaxError] = field(
@@ -852,13 +852,14 @@ class _ModuleResolutionCache:
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         retain: bool = True,
     ) -> _ParsedModuleAst:
-        cache_key = (self.resolved_path(path), filename, target_python.tag, source)
+        cache_key = (self.resolved_path(path), target_python.tag, source)
         tree = self.ast_cache.get(cache_key)
         if tree is not None:
             return tree
         # Analysis may borrow discovery's read-only tree without retaining a
-        # newly parsed miss. Content, diagnostic filename and target still bind
-        # every reuse; mutating lowering owns its separate parsed tree.
+        # newly parsed miss. A successful AST has no diagnostic filename;
+        # physical discovery and logical analysis names share the same source
+        # generation and target. Mutating lowering owns its separate tree.
         if not retain:
             self.source_parse_count += 1
             return _ParsedModuleAst(
@@ -868,7 +869,8 @@ class _ModuleResolutionCache:
                     target_python=target_python,
                 )
             )
-        cached_error = self.ast_error_cache.get(cache_key)
+        error_key = (cache_key[0], filename, target_python.tag, source)
+        cached_error = self.ast_error_cache.get(error_key)
         if cached_error is not None:
             raise cached_error
         try:
@@ -881,7 +883,7 @@ class _ModuleResolutionCache:
                 )
             )
         except SyntaxError as exc:
-            self.ast_error_cache[cache_key] = exc
+            self.ast_error_cache[error_key] = exc
             raise
         self.ast_cache[cache_key] = tree
         return tree
