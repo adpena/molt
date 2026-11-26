@@ -58,6 +58,7 @@ fn emit(job: &[u8], name: &str, output: &std::path::Path) -> io::Result<NativeWo
 
 #[test]
 fn failed_archive_retains_verified_constituents_and_retry_compiles_only_the_missing_job() {
+    let _scope = molt_ir::backend_environment::enter(std::sync::Arc::default());
     let directory = std::env::temp_dir().join(format!(
         "molt-incremental-stdlib-publication-{}-{}",
         std::process::id(),
