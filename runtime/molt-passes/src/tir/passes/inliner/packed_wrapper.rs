@@ -201,7 +201,12 @@ fn forwards_exception(func: &TirFunction, check: &Check) -> bool {
         match &block.terminator {
             Terminator::Branch { target, args } if args.is_empty() => current = *target,
             Terminator::Unwind => return exited,
-            _ => return false,
+            Terminator::Branch { .. }
+            | Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Unreachable => return false,
         }
     }
     false
@@ -461,7 +466,12 @@ fn trace<'a>(
                     returned: *sources.get(&v)?,
                 });
             }
-            _ => return None,
+            Terminator::CondBranch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Unwind
+            | Terminator::Unreachable => return None,
         };
         let params = &func.blocks.get(&next)?.args;
         if params.len() != args.len() {

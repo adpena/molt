@@ -282,7 +282,10 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
                     retirement: retirement?,
                 });
             }
-            _ => return None,
+            Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Unwind
+            | Terminator::Unreachable => return None,
         };
         let params = &func.blocks.get(&next)?.args;
         if params.len() != args.len() {
