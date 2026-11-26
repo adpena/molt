@@ -107,6 +107,22 @@ pub(crate) fn unbox_value<B: CodegenBuilder>(b: &mut B, value: B::Value, ty: &Ti
     }
 }
 
+/// Truth of a particular SSA value. A completion word can enter arbitrary
+/// boxed uses unchanged; only the true singleton takes its true branch.
+pub(crate) fn value_truth<B: CodegenBuilder>(
+    b: &mut B,
+    values: &super::value_table::ValueTable<B::Value>,
+    id: crate::tir::values::ValueId,
+    value: B::Value,
+) -> B::Predicate {
+    if values.is_boxed_bool_or_none(id) {
+        let actual = b.expect_word(value);
+        let boxed_true = b.constant(nanbox::box_bool_bits(1) as u64);
+        return b.compare(WordComparison::Equal, actual, boxed_true);
+    }
+    truth(b, value, values.repr(id).unwrap_or(HeldCarrier::Boxed))
+}
+
 /// The truth of `value`, held as `carrier`. A raw bool, integer or float is
 /// tested inline; a boxed word asks the runtime (the late lowering stage
 /// expands the bool and integer words inline before codegen).
@@ -1312,6 +1328,38 @@ pub(crate) mod tests {
         let run = both(&words, &[Value::Address(0x2000), Value::Narrow(7)]);
         assert_eq!(run.results, [Value::Word(0x2000), Value::Word(7)]);
         assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn iterator_completion_truth_preserves_the_failure_word_and_unknown_merges() {
+        use crate::codegen_ssa::value_table::ValueTable;
+        use crate::tir::values::ValueId;
+
+        let evaluate = kernel!(; |b, inputs| -> () {
+            let mut values = ValueTable::with_capacity(2);
+            let done = ValueId(0);
+            values.bind_iterator_completion(done, inputs[0]);
+            let condition = value_truth(b, &values, done, inputs[0]);
+            let original = values.value(done).unwrap();
+            // A join with an arbitrary boxed value has its own SSA id.
+            let join = ValueId(1);
+            values.set_value(join, inputs[1]);
+            values.set_repr(join, HeldCarrier::Boxed);
+            let joined = value_truth(b, &values, join, inputs[1]);
+            ((), vec![original, b.bit_value(condition), b.bit_value(joined)])
+        });
+        for (word, expected) in [
+            (QUIET_NAN | BOOL_TAG, false),
+            (QUIET_NAN | BOOL_TAG | 1, true),
+            (NONE_WORD, false),
+        ] {
+            let run = both(&evaluate, &[Value::Word(word), Value::Word(HEAP_INT)]);
+            assert_eq!(
+                run.results,
+                [Value::Word(word), Value::Bit(expected), Value::Bit(true)]
+            );
+            assert_eq!(run.runtime_calls, [RuntimeFn::IsTruthy]);
+        }
     }
 
     #[test]

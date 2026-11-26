@@ -131,6 +131,71 @@ fn exceptional_check_rejects_mixed_origin_and_unwind_predecessors() {
     );
 }
 
+#[test]
+fn immediate_exception_test_clears_only_its_false_edge() {
+    for (intervening_call, checked_true, expect_conflict) in [
+        (false, false, false),
+        (false, true, true),
+        (true, false, true),
+    ] {
+        let mut func = TirFunction::new(
+            "pending_branch".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let yes = func.fresh_block();
+        let no = func.fresh_block();
+        let exit = func.fresh_block();
+        func.label_id_map.insert(exit.0, 9);
+        let pending = func.fresh_value();
+        let source = || {
+            let mut call = op(OpCode::Call);
+            call.attrs
+                .insert("callee".into(), AttrValue::Str("source_operation".into()));
+            call
+        };
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block.ops.push(source());
+        block
+            .ops
+            .push(TirOp::new(OpCode::ExceptionPending, vec![], vec![pending]));
+        if intervening_call {
+            block.ops.push(source());
+        }
+        block.terminator = Terminator::CondBranch {
+            cond: pending,
+            then_block: yes,
+            then_args: vec![],
+            else_block: no,
+            else_args: vec![],
+        };
+        for id in [yes, no, exit] {
+            func.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![],
+                    ops: if id == if checked_true { yes } else { no } {
+                        vec![raise_transport_check(9)]
+                    } else {
+                        vec![]
+                    },
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+        }
+        let diagnostics = verify_exception_regions(&func).err().unwrap_or_default();
+        assert_eq!(
+            diagnostics
+                .iter()
+                .any(|d| d.kind == ExceptionRegionDiagnosticKind::AmbiguousEventSource),
+            expect_conflict,
+            "{diagnostics:?}"
+        );
+    }
+}
+
 fn const_int(result: ValueId, value: i64) -> TirOp {
     let mut op = op(OpCode::ConstInt);
     op.results = vec![result];

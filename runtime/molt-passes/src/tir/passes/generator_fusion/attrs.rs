@@ -1,4 +1,4 @@
-use super::super::super::ops::{AttrValue, OpCode, TirOp};
+use super::super::super::ops::{AttrValue, TirOp};
 
 /// Read an op's integer `value` attr (slot offset / next-state id).
 pub(in crate::tir::passes::generator_fusion) fn attr_value_int(op: &TirOp) -> Option<i64> {
@@ -29,13 +29,4 @@ pub(in crate::tir::passes::generator_fusion) fn attr_original_kind(
     op: &TirOp,
 ) -> Option<molt_ir::OpKind> {
     op.origin
-}
-
-/// True if `op` is the consumer's `GetIter` over a value — either the
-/// first-class [`OpCode::GetIter`] or the runtime `iter` op (lowered as a
-/// `Copy` carrying `origin == "iter"`, the form the frontend emits for
-/// `for x in <expr>`).
-pub(in crate::tir::passes::generator_fusion) fn is_get_iter_op(op: &TirOp) -> bool {
-    op.opcode == OpCode::GetIter
-        || (op.opcode == OpCode::Copy && attr_original_kind(op) == Some(molt_ir::OpKind::Iter))
 }

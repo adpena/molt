@@ -115,6 +115,7 @@ fn iter_next_unboxed_value_result_root_is_conditionally_valid_without_finalizers
 fn iter_next_region(
     branch_on_done: bool,
     body_has_exception_entry: bool,
+    split: bool,
 ) -> (Option<BlockId>, BlockId) {
     let mut f = func();
     let iter = f.fresh_value();
@@ -140,9 +141,32 @@ fn iter_next_region(
             else_args: vec![],
         };
     }
+    let test_block = if split {
+        let id = f.fresh_block();
+        let head = f.blocks.get_mut(&entry).unwrap();
+        let test = std::mem::replace(
+            &mut head.terminator,
+            Terminator::Branch {
+                target: id,
+                args: vec![],
+            },
+        );
+        f.blocks.insert(
+            id,
+            crate::tir::blocks::TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator: test,
+            },
+        );
+        id
+    } else {
+        body
+    };
     let mut exit_ops = Vec::new();
     if body_has_exception_entry {
-        f.label_id_map.insert(body.0, 5);
+        f.label_id_map.insert(test_block.0, 5);
         let mut check = op(OpCode::CheckException, vec![], vec![]);
         check.attrs.insert("value".into(), AttrValue::Int(5));
         exit_ops.push(check);
@@ -160,23 +184,91 @@ fn iter_next_region(
     }
     let aliases = build_alias_union_find(&f);
     let facts = OwnershipRootFacts::compute(&f, &aliases);
-    (facts.conditionally_valid_region(aliases.root(value)), body)
+    let ownership_region = facts.conditionally_valid_region(aliases.root(value));
+    if !split {
+        return (ownership_region, body);
+    }
+    // A representation projection does not change the runtime drop contract.
+    assert_eq!(ownership_region, None);
+    let regions = conditionally_valid_regions(&f, &aliases, CompletionPath::ExclusiveEmptyBlocks);
+    (regions.get(&aliases.root(value)).copied(), body)
 }
 
 #[test]
 fn iter_next_unboxed_value_region_is_its_sole_not_done_successor() {
-    let (region, body) = iter_next_region(true, false);
+    let (region, body) = iter_next_region(true, false, false);
     assert_eq!(region, Some(body), "the not-done arm initializes the value");
-    let (region, _) = iter_next_region(true, true);
+    let (region, _) = iter_next_region(true, true, false);
     assert_eq!(
         region, None,
         "a second entry into the not-done target can bypass initialization"
     );
-    let (region, _) = iter_next_region(false, false);
+    let (region, _) = iter_next_region(false, false, false);
     assert_eq!(
         region, None,
         "a branch on another flag says nothing about initialization"
     );
+}
+
+#[test]
+fn split_completion_test_requires_exclusive_entry() {
+    let (region, body) = iter_next_region(true, false, true);
+    assert_eq!(region, Some(body));
+    assert_eq!(iter_next_region(true, true, true).0, None);
+    assert_eq!(iter_next_region(false, false, true).0, None);
+}
+
+#[test]
+fn pending_step_projection_refuses_a_handler_using_the_item_before_another_step() {
+    let mut f = func();
+    let iter = crate::fixture_support::append_parameter(&mut f, TirType::DynBox);
+    let item = f.fresh_value();
+    let done = f.fresh_value();
+    let pending = f.fresh_value();
+    let cold = f.fresh_block();
+    let test = f.fresh_block();
+    let exit = f.fresh_block();
+    let success = f.fresh_block();
+    for id in [cold, test, exit, success] {
+        f.blocks.insert(
+            id,
+            crate::tir::blocks::TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    let branch = |cond, then_block, else_block| Terminator::CondBranch {
+        cond,
+        then_block,
+        then_args: vec![],
+        else_block,
+        else_args: vec![],
+    };
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry
+        .ops
+        .push(op(OpCode::IterNextUnboxed, vec![iter], vec![item, done]));
+    entry
+        .ops
+        .push(op(OpCode::ExceptionPending, vec![], vec![pending]));
+    entry.terminator = branch(pending, cold, test);
+    f.blocks.get_mut(&test).unwrap().terminator = branch(done, exit, success);
+    let region = |f: &TirFunction| {
+        let aliases = build_alias_union_find(f);
+        conditionally_valid_regions(f, &aliases, CompletionPath::ExclusiveEmptyBlocks)
+            .get(&aliases.root(item))
+            .copied()
+    };
+    assert_eq!(region(&f), Some(success));
+    f.blocks.get_mut(&cold).unwrap().terminator = Terminator::Branch {
+        target: exit,
+        args: vec![],
+    };
+    f.blocks.get_mut(&exit).unwrap().terminator = Terminator::Return { values: vec![item] };
+    assert_eq!(region(&f), None);
 }
 
 #[test]

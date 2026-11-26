@@ -29,9 +29,9 @@ def test_stats_use_median_and_preserve_samples() -> None:
 
 def test_runtime_phase_parser_reports_median_deltas() -> None:
     records = [
-        {"stderr": "[molt runtime_init] +10us (d4us) state_allocated\n"},
-        {"stderr": "[molt runtime_init] +12us (d6us) state_allocated\n"},
-        {"stderr": "[molt runtime_init] +11us (d5us) state_allocated\n"},
+        {"stderr": "[molt runtime_init] +    10us (d    4us) state_allocated\n"},
+        {"stderr": "[molt runtime_init] +    12us (d    6us) state_allocated\n"},
+        {"stderr": "[molt runtime_init] +    11us (d    5us) state_allocated\n"},
     ]
     assert startup_bench._runtime_phases(records) == {
         "phase_median_ms": {"state_allocated": 0.005},

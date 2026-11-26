@@ -155,6 +155,8 @@ fn compute_seeded(
         result.record_global_range(success, range);
     }
 
+    super::native_iterator::seed_projection_ranges(func, &mut result);
+
     // ---- constants + container lengths --------------------------------------
     collect_constants_and_lengths(func, &mut result);
 

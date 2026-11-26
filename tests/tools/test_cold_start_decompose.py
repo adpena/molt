@@ -80,8 +80,8 @@ def test_build_noop_c_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_runtime_init_phases_reject_trace_from_failed_sample(monkeypatch):
-    phase = cold_start_decompose.RUNTIME_INIT_PHASES[0]
-    trace = f"[molt runtime_init] +9000us (d9000us) {phase}\n"
+    phase = "cpython_abi_hooks"
+    trace = f"[molt runtime_init] +  9000us (d 9000us) {phase}\n"
     results = iter([(None, trace), (0.01, trace.replace("9000", "1000"))])
     monkeypatch.setattr(
         cold_start_decompose, "_safe_run_elapsed", lambda *a, **kw: next(results)

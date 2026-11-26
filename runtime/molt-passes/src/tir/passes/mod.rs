@@ -40,6 +40,7 @@ pub mod memory_ssa;
 pub mod method_sites;
 pub mod module_slot_promotion;
 pub mod native_call_expansion;
+mod native_iterator;
 pub mod ownership_lattice_min;
 pub mod pair_unpack;
 pub mod poll_strip_mining;

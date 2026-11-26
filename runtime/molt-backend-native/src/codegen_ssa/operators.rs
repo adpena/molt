@@ -250,7 +250,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let operands = self.operands();
         let condition = {
             let value = operands.resolve(b, op.operands[0]);
-            scalar::truth(b, value, operands.held(op.operands[0]))
+            scalar::value_truth(b, self.values, op.operands[0], value)
         };
         // `a and b` is `b` when `a` is truthy; `a or b` is `a`.
         let (name, when_true, when_false) = if op.opcode == OpCode::And {
@@ -305,7 +305,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     pub(crate) fn bool_op(&mut self, b: &mut B, op: &TirOp) {
         let operands = self.operands();
         let value = operands.resolve(b, op.operands[0]);
-        let bit = scalar::truth(b, value, operands.held(op.operands[0]));
+        let bit = scalar::value_truth(b, self.values, op.operands[0], value);
         let bit = b.bit_value(bit);
         self.bind(op.results[0], bit, HeldCarrier::RawBool);
     }

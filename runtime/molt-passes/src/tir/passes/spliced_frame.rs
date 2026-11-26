@@ -365,6 +365,29 @@ fn poll_and_unlink(ops: &[TirOp]) -> bool {
 /// The complete cold service arm built by generator frame elision. Nothing
 /// else may run between the pending-work test and the delivery of that work.
 pub(super) fn poll_service(ops: &[TirOp]) -> Option<&TirOp> {
+    // A deferred slot-read credit may cover the entire publication. Retaining
+    // the already-held slot cannot call Python, and its matching retirement
+    // follows the original service and unlink.
+    let ops = if let [retain, bracket @ .., close, retire] = ops
+        && retain.opcode == OpCode::Copy
+        && retain.origin == Some(molt_ir::OpKind::BindingAlias)
+        && retain.operands.len() == 1
+        && retain.results.len() == 1
+        && retire.opcode == OpCode::DecRef
+        && close.opcode == OpCode::Copy
+        && close.origin == Some(molt_ir::OpKind::BindingAlias)
+        && close.operands == retain.results
+        && close.results.len() == 1
+        && retire.operands == close.results
+        && retire.results.is_empty()
+        && bracket.iter().any(|op| {
+            op.runtime == Some(RuntimeFn::SplicedFrameBind)
+                && op.operands.get(2) == retain.operands.first()
+        }) {
+        bracket
+    } else {
+        ops
+    };
     let [setup @ .., poll, _unlink] = ops else {
         return None;
     };
@@ -418,7 +441,9 @@ pub(super) fn starts_with_poll_bracket(ops: &[TirOp]) -> bool {
 /// prove the covered operation callback-free (an integer multiply once its
 /// operand is the loop counter).
 pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
-    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let plan = crate::tir::type_refine::ExactScalarPlan::new(func);
+    let native_steps = super::native_iterator::callback_free_steps(func, &plan);
+    let exact = crate::tir::type_refine::exact_scalar_map_from_plan(plan);
     let snapshots: HashMap<_, _> = func
         .blocks
         .iter()
@@ -473,7 +498,16 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
             let bracketed = !covered
                 .iter()
                 .any(|op| is_spliced_frame_call(op) || op.opcode == OpCode::CheckException);
-            if bracketed && !covered.iter().any(|op| may_observe_frames(op, &exact)) {
+            if bracketed
+                && !covered.iter().any(|op| {
+                    may_observe_frames(op, &exact)
+                        && !(op.opcode == OpCode::IterNextUnboxed
+                            && op
+                                .results
+                                .first()
+                                .is_some_and(|item| native_steps.contains(item)))
+                })
+            {
                 dead.extend(start..end);
                 dead.push(close);
                 pruned += 1;
@@ -545,6 +579,7 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
         });
     }
     if pruned != 0 {
+        super::native_iterator::project_successful_items(func, &native_steps);
         let retained = super::reachability::metadata_preserving_reachable_blocks(func);
         func.retain_blocks(&retained)
             .expect("pruning splice snapshots preserves live edges");

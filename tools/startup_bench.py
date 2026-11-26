@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import platform
-import re
 import shutil
 import statistics
 import sys
@@ -35,7 +34,7 @@ DEFAULT_BUDGET = ROOT / "bench" / "scoreboard" / "startup_budget.json"
 
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
-from tools.perf_schema import PhaseTimingStats  # noqa: E402
+from tools.perf_schema import PhaseTimingStats, RUNTIME_INIT_TRACE  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.python_interpreter import (  # noqa: E402
     PythonInterpreter,
@@ -59,7 +58,6 @@ PROBES = {
     "hello": 'print("hello startup")\n',
     "small_compute": "total = 0\nfor value in range(1_000_000):\n    total += value\nprint(total)\n",
 }
-TRACE_RE = re.compile(r"\[molt runtime_init\] \+(\d+)us \(d(\d+)us\) (\S+)")
 PHASE_MARKER = "molt_startup_phases="
 
 
@@ -132,7 +130,7 @@ def _measure(
 def _runtime_phases(records: list[dict[str, Any]]) -> dict[str, Any]:
     phases: dict[str, list[float]] = {}
     for record in records:
-        for match in TRACE_RE.finditer(str(record.get("stderr", ""))):
+        for match in RUNTIME_INIT_TRACE.finditer(str(record.get("stderr", ""))):
             phases.setdefault(match.group(3), []).append(int(match.group(2)) / 1000.0)
     medians = {
         name: round(statistics.median(values), 4) for name, values in phases.items()
