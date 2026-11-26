@@ -9,7 +9,6 @@ if TYPE_CHECKING:
         PythonCallSiteFact,
         PythonExpressionFact,
         PythonIterationFact,
-        PythonNodeKey,
         PythonModuleMetadataProof,
         PythonStatementFact,
         PythonFunctionResult,
@@ -85,7 +84,6 @@ StaticValueKind = Literal["known", "none", "absent", "invalid", "unknown"]
 ImportOperationKind = Literal["statement", "import_module", "dunder_import"]
 ModuleExecutionKind = Literal["imported", "module", "script"]
 ModuleSourceRole = Literal["user", "stdlib"]
-ImportNodeKey = PythonSourceKey
 ImportResolutionError = Literal[
     "no_parent",
     "beyond_top",
@@ -308,11 +306,11 @@ class UnresolvedStaticImportError(ValueError):
 class ModuleImportFlow:
     """Execution metadata and opt-in source candidates at import/call sites."""
 
-    states_by_node: Mapping[ImportNodeKey, tuple[ModuleImportState, ...]]
+    states_by_node: Mapping[PythonSourceKey, tuple[ModuleImportState, ...]]
     final_states: tuple[ModuleImportState, ...]
     all_states: tuple[ModuleImportState, ...]
     source_states_by_node: (
-        Mapping[ImportNodeKey, tuple[ModuleImportState, ...]] | None
+        Mapping[PythonSourceKey, tuple[ModuleImportState, ...]] | None
     ) = None
     source_all_states: tuple[ModuleImportState, ...] = ()
 
@@ -402,7 +400,6 @@ def parse_module_spec_parent(
 ) -> StaticMetadataValue:
     """Evaluate a statically known, CPython-valid ModuleSpec parent."""
 
-    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
     from molt.compiler_analysis.python_value_identity import (
         identity_fact_is_exact,
     )
@@ -418,7 +415,7 @@ def parse_module_spec_parent(
     if (
         not isinstance(value, ast.Call)
         or call_fact is None
-        or call_fact.node != PythonNodeKey.from_node(value)
+        or call_fact.node != python_node_source_key(value)
         or not call_fact.callee_is(PythonIdentity.MODULE_SPEC_CLASS)
         or not identity_fact_is_exact(
             call_fact.result_identities, PythonIdentity.MODULE_SPEC_INSTANCE
@@ -992,12 +989,13 @@ def _analyze_module_import_flow_uncached(
     tree: ast.AST,
     context: ModuleImportContext,
     *,
-    statement_facts: Mapping[PythonNodeKey, PythonStatementFact],
-    iteration_facts: Mapping[PythonNodeKey, PythonIterationFact],
-    expression_facts: Mapping[PythonNodeKey, PythonExpressionFact],
-    assignment_effects: Mapping[PythonNodeKey, int],
-    call_facts: Mapping[PythonNodeKey, PythonCallSiteFact],
+    statement_facts: Mapping[PythonSourceKey, PythonStatementFact],
+    iteration_facts: Mapping[PythonSourceKey, PythonIterationFact],
+    expression_facts: Mapping[PythonSourceKey, PythonExpressionFact],
+    assignment_effects: Mapping[PythonSourceKey, int],
+    call_facts: Mapping[PythonSourceKey, PythonCallSiteFact],
     argument_plan: Callable[[ast.Call | ast.ClassDef], CallArgumentPlan],
+    source_key: Callable[[ast.AST], PythonSourceKey],
     source_discovery: bool = False,
     callbacks_rewrite_metadata: bool = True,
 ) -> ModuleImportFlow:
@@ -1014,7 +1012,6 @@ def _analyze_module_import_flow_uncached(
     from molt.compiler_analysis.python_binding_facts import (
         PythonCompletion,
         PythonCompletionFlow,
-        PythonNodeKey,
         globals_mutation_call_identity,
     )
     from molt.compiler_analysis.python_identity_catalog_generated import (
@@ -1028,11 +1025,11 @@ def _analyze_module_import_flow_uncached(
     )
 
     initial = frozenset({context_import_state(context)})
-    by_node: dict[ImportNodeKey, _ImportStates] = {}
+    by_node: dict[PythonSourceKey, _ImportStates] = {}
     all_states: set[ModuleImportState] = set(initial)
-    deferred_bodies: dict[ImportNodeKey, Sequence[ast.stmt]] = {}
-    pending_bodies: deque[ImportNodeKey] = deque()
-    deferred_expressions: dict[ImportNodeKey, ast.expr] = {}
+    deferred_bodies: dict[PythonSourceKey, Sequence[ast.stmt]] = {}
+    pending_bodies: deque[PythonSourceKey] = deque()
+    deferred_expressions: dict[PythonSourceKey, ast.expr] = {}
     future_annotations = any(
         isinstance(statement, ast.ImportFrom)
         and statement.module == "__future__"
@@ -1055,7 +1052,7 @@ def _analyze_module_import_flow_uncached(
                 # demand point. This covers imports/getters/calls, truth and
                 # release callbacks, and deferred activation without another
                 # syntax/effect classifier or a per-query tree walk.
-                node_key = PythonNodeKey.from_node(node)
+                node_key = source_key(node)
                 proof = None
                 requires_proof = True
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -1078,12 +1075,12 @@ def _analyze_module_import_flow_uncached(
                     proof is None or not proof.admits_current_namespace
                 ):
                     states = _join_import_states(states, unknown_states(states))
-            key = python_node_source_key(node)
+            key = source_key(node)
             previous = by_node.get(key, _EMPTY_IMPORT_STATES)
             by_node[key] = _join_import_states(previous, states)
 
     def expression_result(node: ast.expr) -> StaticExpressionResult:
-        fact = expression_facts.get(PythonNodeKey.from_node(node))
+        fact = expression_facts.get(source_key(node))
         return UNKNOWN_EXPRESSION_RESULT if fact is None else fact.result
 
     def metadata_assignment(
@@ -1094,7 +1091,7 @@ def _analyze_module_import_flow_uncached(
                 state,
                 target,
                 value,
-                call_facts.get(PythonNodeKey.from_node(value)),
+                call_facts.get(source_key(value)),
                 fact_result=expression_result,
             )
             for state in states
@@ -1154,7 +1151,7 @@ def _analyze_module_import_flow_uncached(
         states: _ImportStates,
         direct_metadata_names: Collection[str],
     ) -> _ImportStates:
-        key = PythonNodeKey.from_node(target)
+        key = source_key(target)
         effects = assignment_effects.get(key, UNKNOWN_EFFECTS)
         iteration = iteration_facts.get(key)
         if (
@@ -1265,7 +1262,7 @@ def _analyze_module_import_flow_uncached(
             direct_metadata_names=direct_metadata_names,
             raised_states=raised_states,
         )
-        fact = expression_facts.get(PythonNodeKey.from_node(expression))
+        fact = expression_facts.get(source_key(expression))
         if (
             not isinstance(expression, ast.Call)
             and fact is not None
@@ -1312,7 +1309,7 @@ def _analyze_module_import_flow_uncached(
         ) -> PythonCompletionFlow[_ImportStates]:
             generator = expression.generators[index]
             entry = evaluate(generator.iter, incoming) if index else incoming
-            iteration = iteration_facts.get(PythonNodeKey.from_node(generator))
+            iteration = iteration_facts.get(source_key(generator))
 
             def filters(
                 condition_index: int, current: _ImportStates
@@ -1415,10 +1412,8 @@ def _analyze_module_import_flow_uncached(
             if isinstance(expression, ast.GeneratorExp):
                 # Only first-iterator acquisition runs at creation. Its body is
                 # projected with the existing deferred-expression worklist.
-                deferred_expressions[python_node_source_key(expression)] = expression
-                iteration = iteration_facts.get(
-                    PythonNodeKey.from_node(expression.generators[0])
-                )
+                deferred_expressions[source_key(expression)] = expression
+                iteration = iteration_facts.get(source_key(expression.generators[0]))
                 if iteration is None or (
                     iteration.effects | iteration.module_metadata_effects
                 ) & (NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | WRITES_MODULE_METADATA):
@@ -1478,7 +1473,7 @@ def _analyze_module_import_flow_uncached(
                     current = transfer(step.expression, current)
                 elif step.action in {"star", "kwstar"}:
                     iteration = iteration_facts.get(
-                        PythonNodeKey.from_node(plan.operands[step.index])
+                        source_key(plan.operands[step.index])
                     )
                     if (
                         iteration is None
@@ -1500,7 +1495,7 @@ def _analyze_module_import_flow_uncached(
                 raised_states=raised_states,
             )
             return current
-        call = call_facts.get(PythonNodeKey.from_node(expression))
+        call = call_facts.get(source_key(expression))
         if (
             isinstance(expression, ast.Call)
             and call is not None
@@ -1515,12 +1510,10 @@ def _analyze_module_import_flow_uncached(
             # Shared binding authority owns possible identity and argument shape.
             # Only execution transfer requires an exact callable; source transfer
             # retains the possible publication beside an unknown alternative.
-            effects = assignment_effects.get(
-                PythonNodeKey.from_node(expression), UNKNOWN_EFFECTS
-            )
+            effects = assignment_effects.get(source_key(expression), UNKNOWN_EFFECTS)
             if not source_discovery and effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS:
                 return unknown_states(current)
-            key_fact = expression_facts.get(PythonNodeKey.from_node(expression.args[0]))
+            key_fact = expression_facts.get(source_key(expression.args[0]))
             name = None if key_fact is None else key_fact.static_value
             if not isinstance(name, str):
                 if effects & WRITES_MODULE_METADATA:
@@ -1542,7 +1535,7 @@ def _analyze_module_import_flow_uncached(
             ):
                 current = callback_states(current)
             return current
-        fact = expression_facts.get(PythonNodeKey.from_node(expression))
+        fact = expression_facts.get(source_key(expression))
         if fact is not None and fact.module_metadata_effects & WRITES_MODULE_METADATA:
             return callback_states(current)
         # Ordinary foreign code has its own global mapping. Completed binding
@@ -1557,7 +1550,7 @@ def _analyze_module_import_flow_uncached(
             if isinstance(child, (ast.Import, ast.ImportFrom)):
                 require_python_syntax_target(child, context.target_python)
             if isinstance(child, (ast.stmt, ast.Call)):
-                by_node.setdefault(python_node_source_key(child), _EMPTY_IMPORT_STATES)
+                by_node.setdefault(source_key(child), _EMPTY_IMPORT_STATES)
 
     def unreachable_block(
         statements: Sequence[ast.stmt],
@@ -1567,7 +1560,7 @@ def _analyze_module_import_flow_uncached(
         return PythonCompletionFlow()
 
     def expression_truth(node: ast.expr) -> bool | None:
-        fact = expression_facts.get(PythonNodeKey.from_node(node))
+        fact = expression_facts.get(source_key(node))
         return None if fact is None else fact.result.truth
 
     def flow_statements(
@@ -1599,7 +1592,7 @@ def _analyze_module_import_flow_uncached(
                 continue
             before = current
             # Statement identity is also an explicit reachability projection.
-            key = python_node_source_key(statement)
+            key = source_key(statement)
             by_node[key] = _join_import_states(
                 by_node.get(key, _EMPTY_IMPORT_STATES), current
             )
@@ -1688,7 +1681,7 @@ def _analyze_module_import_flow_uncached(
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
                 if not isinstance(statement, ast.While):
                     current = evaluate(statement.iter, current)
-                loop_fact = statement_facts.get(PythonNodeKey.from_node(statement))
+                loop_fact = statement_facts.get(source_key(statement))
                 iteration = None if loop_fact is None else loop_fact.iteration
 
                 def advance(
@@ -1734,7 +1727,7 @@ def _analyze_module_import_flow_uncached(
                             statement.target, body_entry, direct_metadata_names
                         )
                         target_effects = assignment_effects.get(
-                            PythonNodeKey.from_node(statement.target), UNKNOWN_EFFECTS
+                            source_key(statement.target), UNKNOWN_EFFECTS
                         )
                         if target_effects & RAISES:
                             raised.append(_join_import_states(tested, body_entry))
@@ -1812,7 +1805,7 @@ def _analyze_module_import_flow_uncached(
                         annotations.append(statement.returns)
                     for expression in annotations:
                         current = evaluate(expression, current)
-                deferred_key = python_node_source_key(statement)
+                deferred_key = source_key(statement)
                 if deferred_key not in deferred_bodies:
                     pending_bodies.append(deferred_key)
                 deferred_bodies[deferred_key] = statement.body
@@ -1837,14 +1830,12 @@ def _analyze_module_import_flow_uncached(
                     # after a normally completed class body.
                     pending_expression_raises.append(outcome.normal)
             elif isinstance(statement, getattr(ast, "TypeAlias", ())):
-                deferred_expressions[python_node_source_key(statement.value)] = (
-                    statement.value
-                )
+                deferred_expressions[source_key(statement.value)] = statement.value
                 for type_param in statement.type_params:
                     for attribute in ("bound", "default_value"):
                         value = getattr(type_param, attribute, None)
                         if isinstance(value, ast.expr):
-                            deferred_expressions[python_node_source_key(value)] = value
+                            deferred_expressions[source_key(value)] = value
             elif isinstance(statement, (ast.With, ast.AsyncWith)):
 
                 def enter_context(
@@ -2087,7 +2078,7 @@ def _analyze_module_import_flow_uncached(
             else:
                 record(statement, current)
                 current = evaluate(statement, current)
-            fact = statement_facts.get(PythonNodeKey.from_node(statement))
+            fact = statement_facts.get(source_key(statement))
             if (
                 fact is not None
                 and fact.module_metadata_effects & WRITES_MODULE_METADATA

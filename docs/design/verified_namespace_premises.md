@@ -417,6 +417,13 @@ and keep original identities; a retracting incremental engine adds no benefit to
 this operation. Changed source bytes fail custody and start a fresh operation.
 All of this is compiler-side analysis; emitted programs perform none of it.
 
+The admitted AST owns its source coordinates together with its other syntax
+facts. The binding transfer and both import metadata projections read one
+five-field source key. Binding facts hold stable keys across reparses without
+retaining syntax through the published index. A deferred fork shares its
+read-only admission. Nodes synthesized during transfer compute their
+coordinates from their own positions.
+
 Import metadata flow carries each disjunction as an immutable set of
 alternatives through expressions and completion edges. Each join applies the
 existing alternative limit before the flow continues. Unknown callback results

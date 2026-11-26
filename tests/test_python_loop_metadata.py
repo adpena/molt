@@ -243,7 +243,9 @@ def test_shared_loop_finalizes_exhaustion_before_else_and_other_exits_once() -> 
 
 def test_imports_in_else_observe_iterator_release_fact() -> None:
     from dataclasses import replace
-    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
+    from molt.compiler_analysis.python_source_keys import (
+        python_node_source_key,
+    )
     from molt.compiler_analysis.python_call_arguments import call_argument_plan
     from molt.compiler_analysis.python_effects_generated import RUNS_FINALIZER
     from molt.compiler_analysis.python_imports import (
@@ -253,7 +255,7 @@ def test_imports_in_else_observe_iterator_release_fact() -> None:
     tree = ast.parse("for key in []:\n    pass\nelse:\n    from .child import value\n")
     index = analyze_python_bindings(tree, source_digest=python_ast_digest(tree))
     statements = {fact.node: fact for fact in index.statements}
-    loop_key = PythonNodeKey.from_node(tree.body[0])
+    loop_key = python_node_source_key(tree.body[0])
     loop = statements[loop_key]
     assert loop.iteration is not None
     statements[loop_key] = replace(
@@ -269,6 +271,7 @@ def test_imports_in_else_observe_iterator_release_fact() -> None:
         assignment_effects={},
         call_facts={},
         argument_plan=call_argument_plan,
+        source_key=python_node_source_key,
     )
     site = tree.body[0].orelse[0]
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):

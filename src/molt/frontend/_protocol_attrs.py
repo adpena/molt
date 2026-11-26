@@ -46,13 +46,13 @@ if TYPE_CHECKING:
     from molt.frontend.lowering.builtin_guards import GuardArmKind
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
-    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
+    from molt.compiler_analysis.python_source_keys import PythonSourceKey
     from molt.frontend.sema import SemaResult
 
 
 class _GeneratorProtocolAttrs(Protocol):
     _VECTOR_REDUCTION_OPS: dict[str, FrontendOpKind]
-    _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonNodeKey]] | None
+    _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonSourceKey]] | None
     _class_body_depth: int
     _class_exports: dict[tuple[str, str], ClassId]
     _class_index: ClassDefinitionIndex | None

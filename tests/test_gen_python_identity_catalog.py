@@ -430,9 +430,7 @@ def test_real_acquisition_and_named_replacement_share_the_guard(
     # Source-line facts select actual attribute reads on either side of the
     # assignment. They do not query a rendered table to decide the answer.
     reads = {
-        fact.node.lineno: fact
-        for fact in index.expressions
-        if fact.node.kind == "Attribute"
+        fact.node[0]: fact for fact in index.expressions if fact.node[-1] == "Attribute"
     }
     assert reads[2].identities & int(identity)
     assert not reads[4].identities & int(identity)

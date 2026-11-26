@@ -110,7 +110,6 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonModuleMetadataProof,
     NO_MODULE_METADATA_PROOF,
     PythonNameLookup,
-    PythonNodeKey,
     PythonParameterRef,
     PythonScopeFact,
     PythonStatementFact,
@@ -547,7 +546,7 @@ def _project_binding_slots(
 @dataclass(frozen=True, slots=True)
 class _BindingAnalysis:
     facts: PythonBindingFacts
-    assignment_effects: Mapping[PythonNodeKey, EffectMask]
+    assignment_effects: Mapping[PythonSourceKey, EffectMask]
     module_import_flow_required: bool
     opaque_activation_reads: _OpaqueActivationReads | None
     foreign_namespace_reads: _ForeignNamespaceReads | None
@@ -2921,9 +2920,13 @@ class _ObservedBindingTable[K, V](dict[K, V]):
 class _BindingTransferFacts:
     """Source facts accumulated by the initializer and deferred jobs before projection."""
 
-    expressions: dict[PythonNodeKey, PythonExpressionFact] = field(default_factory=dict)
-    class_builder_reads: dict[PythonNodeKey, IdentityMask] = field(default_factory=dict)
-    decoration_annotation_heads: dict[PythonNodeKey, IdentityMask] = field(
+    expressions: dict[PythonSourceKey, PythonExpressionFact] = field(
+        default_factory=dict
+    )
+    class_builder_reads: dict[PythonSourceKey, IdentityMask] = field(
+        default_factory=dict
+    )
+    decoration_annotation_heads: dict[PythonSourceKey, IdentityMask] = field(
         default_factory=dict
     )
     source_attributes: dict[PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]] = (
@@ -2961,11 +2964,11 @@ class _BindingTransferFacts:
     source_namespace_exposure: dict[PythonSourceKey, frozenset[PythonSourceKey]] = (
         field(default_factory=dict)
     )
-    _builtin_guard_reads: dict[PythonNodeKey, str] = field(default_factory=dict)
-    statements: dict[PythonNodeKey, PythonStatementFact] = field(default_factory=dict)
-    iterations: dict[PythonNodeKey, PythonIterationFact] = field(default_factory=dict)
-    assignment_effects: dict[PythonNodeKey, EffectMask] = field(default_factory=dict)
-    calls: dict[PythonNodeKey, PythonCallSiteFact] = field(default_factory=dict)
+    _builtin_guard_reads: dict[PythonSourceKey, str] = field(default_factory=dict)
+    statements: dict[PythonSourceKey, PythonStatementFact] = field(default_factory=dict)
+    iterations: dict[PythonSourceKey, PythonIterationFact] = field(default_factory=dict)
+    assignment_effects: dict[PythonSourceKey, EffectMask] = field(default_factory=dict)
+    calls: dict[PythonSourceKey, PythonCallSiteFact] = field(default_factory=dict)
 
     def tables(self) -> tuple[dict[object, object], ...]:
         return tuple(getattr(self, item.name) for item in fields(self))
@@ -3179,10 +3182,10 @@ class _Analyzer:
         self._replaying_deferred = False
         self._deferred_scope_writes: tuple[int, set[int]] | None = None
         self._queued_function_jobs: dict[
-            tuple[PythonNodeKey, int, bool], _FunctionJob
+            tuple[PythonSourceKey, int, bool], _FunctionJob
         ] = {}
         self._source_scopes: dict[
-            tuple[PythonNodeKey, int | None, _ScopeKind], _Scope
+            tuple[PythonSourceKey, int | None, _ScopeKind], _Scope
         ] = {}
         self._active_lexical_history: list[int] | None = None
         self.module_scope: _Scope | None = None
@@ -3203,21 +3206,21 @@ class _Analyzer:
         # A store invalidates a borrow, not the value already evaluated from it.
         # These operation-local scopes use the same writes/effects as binding
         # analysis; no second AST walk or spelling-based walrus classifier.
-        self._binding_read_scopes: list[dict[int, set[PythonNodeKey]]] = []
-        # AST instances use identity equality/hash. Keeping the node itself as the
-        # key both avoids repeated source-key construction and retains synthetic
-        # nodes for the analysis lifetime, so CPython cannot recycle an id into a
-        # false cache hit.
-        self._node_keys: dict[ast.AST, PythonNodeKey] = {}
+        self._binding_read_scopes: list[dict[int, set[PythonSourceKey]]] = []
+        self._ast_admission: _PythonAstDigestAdmission | None = None
+        self._node_keys: dict[ast.AST, PythonSourceKey] = {}
 
     @property
     def _eager_annotations(self) -> bool:
         return self.policy.target_python < (3, 14) and not self._future_annotations
 
-    def _node_key(self, node: ast.AST) -> PythonNodeKey:
+    def _node_key(self, node: ast.AST) -> PythonSourceKey:
+        admission = self._ast_admission
+        if admission is not None:
+            return admission.source_key(node)
         key = self._node_keys.get(node)
         if key is None:
-            key = PythonNodeKey.from_node(node)
+            key = python_node_source_key(node)
             self._node_keys[node] = key
         return key
 
@@ -3244,7 +3247,7 @@ class _Analyzer:
         if (
             self.policy.declaration_only
             and not annotation_scope
-            and (python_node_source_key(node) in self.policy.declaration_only)
+            and (self._node_key(node) in self.policy.declaration_only)
         ):
             return
         if self._replaying_deferred:
@@ -3494,7 +3497,7 @@ class _Analyzer:
             return existing
         scope = _Scope(
             scope_id=len(self.scopes),
-            source=python_node_source_key(source_node),
+            source=self._node_key(source_node),
             parent=parent,
             kind=kind,
             name=name,
@@ -4183,7 +4186,7 @@ class _Analyzer:
             slot = self._enclosing_slot(scope, name, annotation_owner=None)
             if slot is not None and slot not in self.module_slots:
                 return None
-        owner = python_node_source_key(expression)
+        owner = self._node_key(expression)
         protocol = PythonElementProtocol(capture[1])
         previous = self.transfer.source_elements.get(owner)
         origins = function.source_origins | (
@@ -4279,7 +4282,7 @@ class _Analyzer:
             # Class-local mappings do not change the activation's globals type.
             result = replace(result, kind="dict")
         if isinstance(node, ast.Attribute) and result.source_origins:
-            source_key = python_node_source_key(node)
+            source_key = self._node_key(node)
             origins = self._known_expression_result(node.value).exposed_source_origins
             previous = self.transfer.source_attributes.get(source_key)
             self.transfer.source_attributes[source_key] = (
@@ -4290,7 +4293,7 @@ class _Analyzer:
         if callable_identities := identities & SOURCE_CALLABLE_IDENTITIES:
             # Canonical callable producers join the existing source-value graph.
             # This is positive provenance, never a proof that OTHER is absent.
-            source = python_node_source_key(node)
+            source = self._node_key(node)
             self.transfer.source_callables[source] = (
                 self.transfer.source_callables.get(source, NO_IDENTITIES)
                 | callable_identities
@@ -4345,7 +4348,7 @@ class _Analyzer:
                 # The read may find a star-bound name: it selects that name
                 # from the star-imported modules, as an attribute read would.
                 star_export_lookup = True
-                source_key = python_node_source_key(node)
+                source_key = self._node_key(node)
                 result = replace(
                     result, source_origins=result.source_origins | {source_key}
                 )
@@ -5342,7 +5345,7 @@ class _Analyzer:
             owner = argument_results[0]
             # The literal's real source site distinguishes member projection
             # from a joined replacement callee's ordinary call-result site.
-            selected = python_node_source_key(node.args[1])
+            selected = self._node_key(node.args[1])
             source_result_projected = True
             previous = self.transfer.source_attributes.get(selected)
             self.transfer.source_attributes[selected] = (
@@ -5448,7 +5451,7 @@ class _Analyzer:
                 )
                 if stored_member is not None and not callee_value.source_origins:
                     selected_deferred |= self._member_store_demand(
-                        python_node_source_key(node),
+                        self._node_key(node),
                         stored_member,
                         argument_results[0],
                     )
@@ -5670,15 +5673,13 @@ class _Analyzer:
             owner_identities = assignment_target.owner_identities
             result_override = StaticExpressionResult(
                 source_origins=(
-                    frozenset({python_node_source_key(node)})
+                    frozenset({self._node_key(node)})
                     if assignment_target.owner_result.exposed_source_origins
                     else frozenset()
                 ),
                 deferred=frozenset(
                     DeferredExecution(
-                        ref.source
-                        if ref.phase == "resume"
-                        else python_node_source_key(node),
+                        ref.source if ref.phase == "resume" else self._node_key(node),
                         ref.phase
                         if node.attr == "__call__"
                         else "factory"
@@ -5759,7 +5760,7 @@ class _Analyzer:
                     shape.result
                     if assignment_target.slice_parts is not None
                     else self._source_element_result(
-                        python_node_source_key(node),
+                        self._node_key(node),
                         assignment_target.owner_result,
                         shape.result,
                         protocol=PythonElementProtocol.SUBSCRIPT,
@@ -5973,7 +5974,7 @@ class _Analyzer:
             ):
                 # A call's value is not its callee. Retain the source relation
                 # while deferred jobs publish their actual return origins.
-                call_source = python_node_source_key(node)
+                call_source = self._node_key(node)
                 previous_call = self.transfer.source_calls.get(call_source)
                 first_starred = next(
                     (
@@ -6048,7 +6049,7 @@ class _Analyzer:
                     node, bool(callee_result.result.source_origins), state_id, scope
                 )
                 if receiver_origins:
-                    super_source = python_node_source_key(node)
+                    super_source = self._node_key(node)
                     previous_super = self.transfer.source_elements.get(super_source)
                     self.transfer.source_elements[super_source] = PythonSourceElement(
                         super_source,
@@ -6079,7 +6080,7 @@ class _Analyzer:
                 result_override = replace(
                     result_override,
                     source_origins=result_override.source_origins
-                    | {python_node_source_key(node)},
+                    | {self._node_key(node)},
                 )
             # Exact builtins follow their invocation effects: copying retains
             # deferred values; hashing/repr/index protocols can reach elements.
@@ -6154,13 +6155,12 @@ class _Analyzer:
                 and receiver_fact.name_lookup == "global"
                 and not receiver_fact.star_export_lookup
                 and not receiver_fact.binding_invalidated
-                and callee_result.result.source_origins
-                == {python_node_source_key(node.func)}
-                and python_node_source_key(node) in self.transfer.source_calls
+                and callee_result.result.source_origins == {self._node_key(node.func)}
+                and self._node_key(node) in self.transfer.source_calls
                 and not node.keywords
                 and not any(isinstance(arg, ast.Starred) for arg in node.args)
             ):
-                argument_call = python_node_source_key(node)
+                argument_call = self._node_key(node)
             for argument_index, argument in enumerate(
                 () if deferred_factory_only else argument_results
             ):
@@ -6210,8 +6210,7 @@ class _Analyzer:
                 bound_receivers = (
                     receiver_result.source_origins
                     if isinstance(node.func, ast.Attribute)
-                    and python_node_source_key(node.func)
-                    in self.transfer.source_attributes
+                    and self._node_key(node.func) in self.transfer.source_attributes
                     else frozenset()
                 )
                 deferred_execution |= frozenset(
@@ -6244,9 +6243,7 @@ class _Analyzer:
                 module_metadata_effects |= WRITES_MODULE_METADATA
             returned_deferred = frozenset(
                 DeferredExecution(
-                    ref.source
-                    if ref.phase == "factory"
-                    else python_node_source_key(node),
+                    ref.source if ref.phase == "factory" else self._node_key(node),
                     "resume" if ref.phase == "factory" else "escape",
                 )
                 for ref in callee_result.result.deferred
@@ -6602,9 +6599,9 @@ class _Analyzer:
                     static_expression_result(
                         node, fact_result=self._known_expression_result
                     ),
-                    source_origins=frozenset({python_node_source_key(node)}),
+                    source_origins=frozenset({self._node_key(node)}),
                     deferred=frozenset(
-                        {DeferredExecution(python_node_source_key(node), "resume")}
+                        {DeferredExecution(self._node_key(node), "resume")}
                     ),
                     deferred_complete=True,
                     attribute_hooks=frozenset(),
@@ -6737,7 +6734,7 @@ class _Analyzer:
                         )
                     )
                     if result.result.source_origins:
-                        source = python_node_source_key(node)
+                        source = self._node_key(node)
                         self.transfer.source_completions[source] = (
                             self.transfer.source_completions.get(source, frozenset())
                             | result.result.source_origins
@@ -7007,7 +7004,7 @@ class _Analyzer:
                 or self._dependency_authority.summary(node).contains_await
             ):
                 generator_kind = FunctionKind.ASYNC_GENERATOR
-            source = python_node_source_key(node)
+            source = self._node_key(node)
             self.transfer.source_callable_declarations[source] = (
                 PythonSourceCallableDeclaration(source, generator_kind)
             )
@@ -7053,7 +7050,7 @@ class _Analyzer:
             iteration = replace(
                 iteration,
                 element_result=self._source_element_result(
-                    python_node_source_key(generator.target),
+                    self._node_key(generator.target),
                     result,
                     iteration.element_result,
                     protocol=PythonElementProtocol.ASYNC_ITERATE
@@ -7109,7 +7106,7 @@ class _Analyzer:
                 if index == 0:
                     key_result = evaluated.result
             if isinstance(node, ast.GeneratorExp):
-                source = python_node_source_key(node)
+                source = self._node_key(node)
                 previous = self.transfer.source_function_results.get(
                     source,
                     PythonFunctionResult(
@@ -7472,7 +7469,7 @@ class _Analyzer:
                     for source in target.owner_result.source_origins
                 )
                 | self._member_store_demand(
-                    python_node_source_key(target.node),
+                    self._node_key(target.node),
                     target.node.attr,
                     target.owner_result,
                 ),
@@ -7667,7 +7664,7 @@ class _Analyzer:
                 for element, item_result in zip(target.elts, selected, strict=True):
                     if not isinstance(element, ast.Starred):
                         item_result = self._source_element_result(
-                            python_node_source_key(element),
+                            self._node_key(element),
                             result,
                             item_result,
                             protocol=PythonElementProtocol.ITERATE,
@@ -7697,7 +7694,7 @@ class _Analyzer:
                     state_id,
                     scope,
                     result=self._source_element_result(
-                        python_node_source_key(element),
+                        self._node_key(element),
                         result,
                         UNKNOWN_EXPRESSION_RESULT,
                         protocol=PythonElementProtocol.ITERATE,
@@ -8337,7 +8334,7 @@ class _Analyzer:
                     bound,
                     self._import_identity(identity_module, state_id),
                     result=StaticExpressionResult(
-                        source_origins=frozenset({python_node_source_key(alias)})
+                        source_origins=frozenset({self._node_key(alias)})
                     ),
                 )
                 effects |= bind_effects
@@ -8410,7 +8407,7 @@ class _Analyzer:
                         state_id,
                     ),
                     result=StaticExpressionResult(
-                        source_origins=frozenset({python_node_source_key(alias)})
+                        source_origins=frozenset({self._node_key(alias)})
                     ),
                 )
                 effects |= bind_effects
@@ -8615,10 +8612,10 @@ class _Analyzer:
                 _argument_crossed_boundaries,
             ) = self._eval_call_arguments(node, state_id, definition_scope)
             effects |= argument_effects
-            owner_key = python_node_source_key(node)
+            owner_key = self._node_key(node)
             base_results = tuple(
                 self._source_element_result(
-                    python_node_source_key(base),
+                    self._node_key(base),
                     self._known_expression_result(base.value),
                     PythonIterationFact.from_result(
                         self._known_expression_result(base.value), NO_EFFECTS
@@ -8747,7 +8744,7 @@ class _Analyzer:
                     for name, slot in class_scope.slots.items()
                     if self.states.binding(class_state, slot) != UNBOUND_IDENTITY
                 }
-                owner_key = python_node_source_key(node)
+                owner_key = self._node_key(node)
                 plain_attributes = tuple(
                     sorted(
                         name
@@ -8903,7 +8900,7 @@ class _Analyzer:
                     # A custom preparation mapping can replace constructor
                     # bindings while preserving source-owned alternatives.
                     constructors |= frozenset(
-                        {DeferredExecution(python_node_source_key(node), "escape")}
+                        {DeferredExecution(self._node_key(node), "escape")}
                     )
                 class_state, bind_effects = self._write_name(
                     class_state,
@@ -8911,11 +8908,9 @@ class _Analyzer:
                     node.name,
                     possible_identity(PythonIdentity.USER_CLASS),
                     result=StaticExpressionResult(
-                        source_origins=frozenset({python_node_source_key(node)}),
+                        source_origins=frozenset({self._node_key(node)}),
                         deferred=constructors
-                        | frozenset(
-                            {DeferredExecution(python_node_source_key(node), "class")}
-                        ),
+                        | frozenset({DeferredExecution(self._node_key(node), "class")}),
                         exposed_deferred=namespace_refs
                         | frozenset().union(
                             *(result.exposed_deferred for result in argument_results)
@@ -8952,7 +8947,7 @@ class _Analyzer:
                     node.name.id,
                     exact_identity(PythonIdentity.INERT_VALUE),
                     result=StaticExpressionResult(
-                        source_origins=frozenset({python_node_source_key(node)})
+                        source_origins=frozenset({self._node_key(node)})
                     ),
                 )
                 effects |= bind_effects
@@ -9047,7 +9042,7 @@ class _Analyzer:
         iteration: PythonIterationFact | None = None
         iterable_result = UNKNOWN_EXPRESSION_RESULT
         retained_boundary = NO_EFFECTS
-        iteration_key: PythonNodeKey | None = None
+        iteration_key: PythonSourceKey | None = None
         if isinstance(node, (ast.For, ast.AsyncFor)):
             iterable = self.eval_expr(node.iter, entry, scope)
             entry = iterable.state_id
@@ -9070,7 +9065,7 @@ class _Analyzer:
             iteration = replace(
                 iteration,
                 element_result=self._source_element_result(
-                    python_node_source_key(node.target),
+                    self._node_key(node.target),
                     iterable_result,
                     iteration.element_result,
                     protocol=PythonElementProtocol.ASYNC_ITERATE
@@ -9374,7 +9369,7 @@ class _Analyzer:
     def _declare_function(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
     ) -> PythonSourceCallableDeclaration:
-        owner = python_node_source_key(node)
+        owner = self._node_key(node)
         known = self.transfer.source_callable_declarations.get(owner)
         if known is not None:
             return known
@@ -9389,30 +9384,25 @@ class _Analyzer:
             owner,
             kind,
             tuple(
-                python_node_source_key(arg)
-                for arg in (*arguments.posonlyargs, *arguments.args)
+                self._node_key(arg) for arg in (*arguments.posonlyargs, *arguments.args)
             ),
-            python_node_source_key(arguments.vararg)
-            if arguments.vararg is not None
-            else None,
+            self._node_key(arguments.vararg) if arguments.vararg is not None else None,
             tuple(
-                (arg.arg, python_node_source_key(arg))
+                (arg.arg, self._node_key(arg))
                 for arg in (*arguments.args, *arguments.kwonlyargs)
             ),
-            python_node_source_key(arguments.kwarg)
-            if arguments.kwarg is not None
-            else None,
+            self._node_key(arguments.kwarg) if arguments.kwarg is not None else None,
         )
         self.transfer.source_callable_declarations[owner] = declaration
         return declaration
 
     def _call_evidence(self, call: ast.Call) -> CallEvidence | None:
-        fact = self.transfer.calls.get(PythonNodeKey.from_node(call))
+        fact = self.transfer.calls.get(self._node_key(call))
         if fact is None:
             return None
         return CallEvidence(
             fact.callee_identities,
-            python_node_source_key(call) in self.transfer.source_calls,
+            self._node_key(call) in self.transfer.source_calls,
         )
 
     def _analyze_function_job(self, job: _FunctionJob, outer_state: int) -> None:
@@ -9420,7 +9410,7 @@ class _Analyzer:
         arguments = node.args
         parameters = function_parameter_names(arguments)
         parameter_nodes = function_parameter_nodes(arguments)
-        source = python_node_source_key(node)
+        source = self._node_key(node)
         if not job.annotation_scope:
             self.transfer.executed_function_nodes[source] = node
         body = (
@@ -9467,7 +9457,7 @@ class _Analyzer:
                     parameter, UNKNOWN_EXPRESSION_RESULT
                 )
                 identities = OTHER_IDENTITY | default_result.identities
-                parameter_source = python_node_source_key(parameter_node)
+                parameter_source = self._node_key(parameter_node)
                 argument_value = (
                     None
                     if job.annotation_scope
@@ -9530,7 +9520,7 @@ class _Analyzer:
     ) -> tuple[
         tuple[PythonExpressionFact, ...],
         tuple[PythonStatementFact, ...],
-        tuple[tuple[PythonNodeKey, PythonIterationFact], ...],
+        tuple[tuple[PythonSourceKey, PythonIterationFact], ...],
         bool,
     ]:
         # Two finite summaries per existing lexical scope: direct execution,
@@ -9538,7 +9528,7 @@ class _Analyzer:
         # Build reverse edges once; each effect bit traverses each edge once.
         owners = {}
         for (key, _parent, _kind), scope in self._source_scopes.items():
-            owners.setdefault(key.source_key, []).append(scope.scope_id)
+            owners.setdefault(key, []).append(scope.scope_id)
         effects = [
             value
             for scope in self.scopes
@@ -9789,6 +9779,7 @@ class _Analyzer:
                 tree, target_python=self.policy.target_python
             )
         )
+        self._ast_admission = ast_digest_admission
         if ast_digest_admission is not None:
             self._call_argument_plan = ast_digest_admission.call_argument_plan
         self._future_annotations = lexical.authority.future_annotations
@@ -9802,7 +9793,7 @@ class _Analyzer:
             declarations=lexical.module_declarations,
         )
         self.module_scope = module
-        self._module_source = python_node_source_key(tree)
+        self._module_source = self._node_key(tree)
         self._module_tree = tree
         self._module_read_slots_prepared = False
         self.module_slots = set(module.slots.values())
@@ -10678,7 +10669,7 @@ class _BindingRevisions:
                 # The completed jobs own the only reads of activation
                 # arguments. A revised parameter in a pending job is safe.
                 if any(
-                    python_node_source_key(parameter) in changed_arguments
+                    prefix._node_key(parameter) in changed_arguments
                     for owner in prefix.transfer.executed_function_nodes.values()
                     for parameter in function_parameter_nodes(owner.args)
                 ):
@@ -10890,6 +10881,11 @@ def _project_binding_index(
         if ast_digest_admission is None
         else ast_digest_admission.call_argument_plan
     )
+    source_key = (
+        python_node_source_key
+        if ast_digest_admission is None
+        else ast_digest_admission.source_key
+    )
     if include_import_discovery:
         # This dependency is acyclic: the strict projection never requests a
         # discovery projection. Both keys share the core's bounded single flight.
@@ -10914,6 +10910,7 @@ def _project_binding_index(
             assignment_effects=analysis.assignment_effects,
             call_facts=facts._call_lookup,
             argument_plan=argument_plan,
+            source_key=source_key,
             callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
         )
     else:
@@ -10934,6 +10931,7 @@ def _project_binding_index(
             assignment_effects=analysis.assignment_effects,
             call_facts=facts._call_lookup,
             argument_plan=argument_plan,
+            source_key=source_key,
             source_discovery=True,
             callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
         )

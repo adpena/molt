@@ -299,6 +299,9 @@ class _PythonAstDigestAdmission:
     _syntax_plan_lock: Lock = field(
         default_factory=Lock, init=False, repr=False, compare=False
     )
+    _source_keys: Mapping[ast.AST, PythonSourceKey] = field(
+        init=False, repr=False, compare=False
+    )
     _canonical: bool = field(default=False, init=False, repr=False, compare=False)
 
     def lexical_plan(
@@ -355,27 +358,29 @@ class _PythonAstDigestAdmission:
                 )
             ),
         )
-        object.__setattr__(
-            self,
-            "deferred_nodes",
-            MappingProxyType(
-                {
-                    python_node_source_key(node): node
-                    for node in ast.walk(self.tree)
-                    if isinstance(
-                        node,
-                        (
-                            ast.FunctionDef,
-                            ast.AsyncFunctionDef,
-                            ast.ClassDef,
-                            ast.Lambda,
-                            ast.GeneratorExp,
-                            *([ast.TypeAlias] if hasattr(ast, "TypeAlias") else []),
-                        ),
-                    )
-                }
-            ),
+        deferred_kinds = (
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+            ast.Lambda,
+            ast.GeneratorExp,
+            *([ast.TypeAlias] if hasattr(ast, "TypeAlias") else []),
         )
+        coordinates: dict[ast.AST, PythonSourceKey] = {}
+        deferred: dict[PythonSourceKey, ast.AST] = {}
+        for node in ast.walk(self.tree):
+            if node in coordinates:
+                continue
+            key = coordinates[node] = python_node_source_key(node)
+            if isinstance(node, deferred_kinds):
+                deferred[key] = node
+        object.__setattr__(self, "_source_keys", MappingProxyType(coordinates))
+        object.__setattr__(self, "deferred_nodes", MappingProxyType(deferred))
+
+    def source_key(self, node: ast.AST) -> PythonSourceKey:
+        """Read admitted coordinates, or compute them for an analysis-local node."""
+        key = self._source_keys.get(node)
+        return python_node_source_key(node) if key is None else key
 
     @classmethod
     def for_tree(

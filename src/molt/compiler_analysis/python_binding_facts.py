@@ -324,31 +324,6 @@ def globals_mutation_call_identity(
     return None
 
 
-@dataclass(frozen=True, slots=True, order=True)
-class PythonNodeKey:
-    """Stable source key; unlike ``id(ast_node)`` it survives reparsing/cache hits."""
-
-    lineno: int
-    col_offset: int
-    end_lineno: int
-    end_col_offset: int
-    kind: str
-
-    @classmethod
-    def from_node(cls, node: ast.AST) -> PythonNodeKey:
-        return cls(*python_node_source_key(node))
-
-    @property
-    def source_key(self) -> PythonSourceKey:
-        return (
-            self.lineno,
-            self.col_offset,
-            self.end_lineno,
-            self.end_col_offset,
-            self.kind,
-        )
-
-
 PythonNameLookup: TypeAlias = Literal[
     "none", "lexical", "global", "class_lexical", "class_global"
 ]
@@ -393,7 +368,7 @@ class PythonExpressionFact:
     builtin names not enumerated in the capability identity vocabulary.
     """
 
-    node: PythonNodeKey
+    node: PythonSourceKey
     scope_id: int
     effects: EffectMask
     static_value: PythonStaticValue = field(default=None, compare=False)
@@ -479,8 +454,7 @@ class PythonExpressionFact:
             if origins and not self.identities & SOURCE_CALLABLE_IDENTITIES:
                 return None
         elif origins and not (
-            self.identities & SOURCE_CALLABLE_IDENTITIES
-            and origins == {self.node.source_key}
+            self.identities & SOURCE_CALLABLE_IDENTITIES and origins == {self.node}
         ):
             return None
         return BUILTIN_NAMES_BY_IDENTITY.get(self.identities)
@@ -784,7 +758,7 @@ class PythonCompletionFlow[T]:
 class PythonStatementFact:
     """Executed effects and successors, excluding deferred definition bodies."""
 
-    node: PythonNodeKey
+    node: PythonSourceKey
     scope_id: int
     effects: EffectMask
     module_namespace_observable: bool
@@ -797,7 +771,7 @@ class PythonStatementFact:
 
 @dataclass(frozen=True, slots=True)
 class PythonCallSiteFact:
-    node: PythonNodeKey
+    node: PythonSourceKey
     scope_id: int
     callee_identities: IdentityMask
     result_identities: IdentityMask
@@ -917,10 +891,10 @@ class PythonBindingFacts:
     target_sys_platform: str | None
     expressions: tuple[PythonExpressionFact, ...]
     statements: tuple[PythonStatementFact, ...]
-    iterations: tuple[tuple[PythonNodeKey, PythonIterationFact], ...]
+    iterations: tuple[tuple[PythonSourceKey, PythonIterationFact], ...]
     calls: tuple[PythonCallSiteFact, ...]
     scopes: tuple[PythonScopeFact, ...]
-    class_annotation_namespaces: frozenset[PythonNodeKey]
+    class_annotation_namespaces: frozenset[PythonSourceKey]
     state_count: int
     telemetry: PythonBindingTelemetry
     slot_names: tuple[str, ...]
@@ -946,10 +920,10 @@ class PythonBindingFacts:
     callbacks_rewrite_metadata: bool
     # LOAD_BUILD_CLASS reads only the executing frame's builtins, not any
     # lexical/global/class binding. Values join at this implicit source read.
-    class_builder_reads: Mapping[PythonNodeKey, IdentityMask]
+    class_builder_reads: Mapping[PythonSourceKey, IdentityMask]
     # A decorated class's top-level annotation heads, valued as its decorators
     # read them (``PythonBindingFacts.annotation_head_at_decoration``).
-    decoration_annotation_heads: Mapping[PythonNodeKey, IdentityMask]
+    decoration_annotation_heads: Mapping[PythonSourceKey, IdentityMask]
     source_elements: tuple[PythonSourceElement, ...]
     source_calls: tuple[PythonSourceCall, ...]
     source_native_initializers: tuple[PythonNativeInitializerSource, ...]
@@ -959,10 +933,10 @@ class PythonBindingFacts:
     source_callables: tuple[tuple[PythonSourceKey, IdentityMask], ...]
     source_function_results: tuple[PythonFunctionResult, ...]
     source_activation_partitions: tuple[PythonActivationPartition, ...]
-    _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
-    _statement_lookup: Mapping[PythonNodeKey, PythonStatementFact]
-    _iteration_lookup: Mapping[PythonNodeKey, PythonIterationFact]
-    _call_lookup: Mapping[PythonNodeKey, PythonCallSiteFact]
+    _expression_lookup: Mapping[PythonSourceKey, PythonExpressionFact]
+    _statement_lookup: Mapping[PythonSourceKey, PythonStatementFact]
+    _iteration_lookup: Mapping[PythonSourceKey, PythonIterationFact]
+    _call_lookup: Mapping[PythonSourceKey, PythonCallSiteFact]
 
     @classmethod
     def create(
@@ -973,10 +947,10 @@ class PythonBindingFacts:
         target_sys_platform: str | None,
         expressions: tuple[PythonExpressionFact, ...],
         statements: tuple[PythonStatementFact, ...],
-        iterations: tuple[tuple[PythonNodeKey, PythonIterationFact], ...],
+        iterations: tuple[tuple[PythonSourceKey, PythonIterationFact], ...],
         calls: tuple[PythonCallSiteFact, ...],
         scopes: tuple[PythonScopeFact, ...],
-        class_annotation_namespaces: frozenset[PythonNodeKey],
+        class_annotation_namespaces: frozenset[PythonSourceKey],
         state_count: int,
         telemetry: PythonBindingTelemetry,
         slot_names: tuple[str, ...],
@@ -996,8 +970,9 @@ class PythonBindingFacts:
         ] = (),
         module_getattr_may_be_bound: bool = False,
         callbacks_rewrite_metadata: bool = True,
-        class_builder_reads: Mapping[PythonNodeKey, IdentityMask] | None = None,
-        decoration_annotation_heads: Mapping[PythonNodeKey, IdentityMask] | None = None,
+        class_builder_reads: Mapping[PythonSourceKey, IdentityMask] | None = None,
+        decoration_annotation_heads: Mapping[PythonSourceKey, IdentityMask]
+        | None = None,
         source_elements: tuple[PythonSourceElement, ...] = (),
         source_calls: tuple[PythonSourceCall, ...] = (),
         source_native_initializers: tuple[PythonNativeInitializerSource, ...] = (),
@@ -1052,19 +1027,19 @@ class PythonBindingFacts:
         )
 
     def expression_fact(self, node: ast.AST) -> PythonExpressionFact | None:
-        return self._expression_lookup.get(PythonNodeKey.from_node(node))
+        return self._expression_lookup.get(python_node_source_key(node))
 
     def annotation_head_at_decoration(self, node: ast.expr) -> IdentityMask | None:
         """A class annotation head's value when the class's decorators run;
         None when its own evaluation fact is that value (an eager annotation)
         or the analysis recorded none."""
-        return self.decoration_annotation_heads.get(PythonNodeKey.from_node(node))
+        return self.decoration_annotation_heads.get(python_node_source_key(node))
 
     def class_builder_identity(self, node: ast.ClassDef) -> PythonIdentity | None:
         identity = PythonIdentity.BUILTIN_BUILD_CLASS
         return (
             identity
-            if self.class_builder_reads.get(PythonNodeKey.from_node(node))
+            if self.class_builder_reads.get(python_node_source_key(node))
             == int(identity)
             else None
         )
@@ -1080,10 +1055,10 @@ class PythonBindingFacts:
         This is a whole-body storage fact, not an allocation request at the
         first source use: that use may be conditional or execute repeatedly.
         """
-        return PythonNodeKey.from_node(node) in self.class_annotation_namespaces
+        return python_node_source_key(node) in self.class_annotation_namespaces
 
     def statement_fact(self, node: ast.stmt) -> PythonStatementFact | None:
-        return self._statement_lookup.get(PythonNodeKey.from_node(node))
+        return self._statement_lookup.get(python_node_source_key(node))
 
     @property
     def enclosing_binding_declarations(self) -> EnclosingBindingDeclarations:
@@ -1092,7 +1067,7 @@ class PythonBindingFacts:
     def iteration_fact(self, node: ast.AST) -> PythonIterationFact | None:
         """Return the canonical executed iterator/item fact for a loop clause."""
 
-        return self._iteration_lookup.get(PythonNodeKey.from_node(node))
+        return self._iteration_lookup.get(python_node_source_key(node))
 
     def statement_completions(self, node: ast.stmt) -> PythonCompletion | None:
         """None is absent analysis; NONE is proven absence of a successor."""
@@ -1120,7 +1095,7 @@ class PythonBindingFacts:
         return fact is None or fact.module_namespace_observable
 
     def call_fact(self, node: ast.Call) -> PythonCallSiteFact | None:
-        return self._call_lookup.get(PythonNodeKey.from_node(node))
+        return self._call_lookup.get(python_node_source_key(node))
 
     def expression_result(self, node: ast.expr) -> StaticExpressionResult:
         """Unknown source-point facts never authorize spelling-based constants."""
@@ -1131,7 +1106,7 @@ class PythonBindingFacts:
         return self.expression_result(node).truth
 
     def static_value(self, node: ast.expr) -> PythonStaticValue:
-        fact = self._expression_lookup.get(PythonNodeKey.from_node(node))
+        fact = self._expression_lookup.get(python_node_source_key(node))
         return None if fact is None else fact.static_value
 
 
@@ -1191,7 +1166,6 @@ __all__ = [
     "PythonCompletionFlow",
     "PythonExpressionFact",
     "PythonImportCallKind",
-    "PythonNodeKey",
     "PythonParameterRef",
     "PythonStaticValue",
     "PythonStatementFact",
