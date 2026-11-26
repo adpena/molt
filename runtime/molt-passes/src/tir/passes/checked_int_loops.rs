@@ -68,7 +68,7 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 use std::collections::BTreeMap;
 
-use crate::tir::analysis::{AnalysisManager, LoopForest};
+use crate::tir::analysis::{AnalysisManager, ExecReachable, LoopForest, PredMap};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::clone_support::clone_attrs_without_simple_names;
 use crate::tir::dominators::{exception_label_to_block, exception_transfer_target};
@@ -79,7 +79,7 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::passes::value_identity::{
-    ScalarFacts, copy_value_source, forwarded_python_value_source,
+    ScalarFacts, build_copy_map, copy_value_source, forwarded_python_value_source, resolve_copy,
 };
 use crate::tir::passes::value_range::ValueRange;
 use crate::tir::ssa_update::{self, RepairRefusal, Variable};
@@ -141,13 +141,32 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, final_tir: bool) ->
     headers.sort_by_key(|header| std::cmp::Reverse(forest.bodies[header].len()));
     let mut covered: HashSet<BlockId> = HashSet::default();
     let mut ranges = None;
+    let mut copies = None;
+    let labels = exception_label_to_block(func);
     for header in headers {
         if covered.contains(&header) {
             continue;
         }
         let body = &forest.bodies[&header];
-        let vr = ranges.get_or_insert_with(|| am.get::<ValueRange>(func).clone());
-        let outcome = try_version_loop(func, header, body, vr, final_tir);
+        let outcome = check_loop_shape(func, body, &labels).and_then(|()| {
+            let vr = ranges.get_or_insert_with(|| am.get::<ValueRange>(func).clone());
+            let entry = if final_tir {
+                am.get::<ExecReachable>(func);
+                am.get::<PredMap>(func);
+                let reachable = am.cached::<ExecReachable>().expect("reachability cached");
+                let preds = am.cached::<PredMap>().expect("predecessors cached");
+                plain_preheader(func, header, body, preds, reachable, &labels).map(|preheader| {
+                    GuardedEntry {
+                        preheader,
+                        header_preds: &preds[&header],
+                        copies: copies.get_or_insert_with(|| build_copy_map(func)),
+                    }
+                })
+            } else {
+                None
+            };
+            try_version_loop(func, header, body, vr, final_tir, entry)
+        });
         if let Ok(added) = outcome {
             stats.ops_added += added;
             // An exact proof alone adds no op: the attribute is the change.
@@ -157,6 +176,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, final_tir: bool) ->
             // loop instead of reading the cached result of the old function.
             am.invalidate_cfg();
             ranges = None;
+            copies = None;
         }
         if debug {
             report.push((header, outcome));
@@ -174,20 +194,18 @@ fn try_version_loop(
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
     final_tir: bool,
+    entry: Option<GuardedEntry<'_>>,
 ) -> Result<usize, Refusal> {
-    check_loop_shape(func, body)?;
-    if final_tir && let Some(ascii) = short_ascii::ShortAscii::admit(func, header, body, vr) {
+    if let Some(entry) = entry
+        && let Some(ascii) = short_ascii::ShortAscii::admit(func, header, body, vr, entry.preheader)
+    {
         return commit_version(func, |candidate| {
             version(candidate, body, &Selection::default(), None, Some(&ascii))
         });
     }
 
     let facts = ScalarFacts::new(func);
-    let guard = if final_tir {
-        invariant_guard(func, header, body, vr, &facts)
-    } else {
-        None
-    };
+    let guard = entry.and_then(|entry| invariant_guard(func, header, body, vr, &facts, entry));
     // Only a guard that has work to do needs a speculative analysis body.
     let selection = if let Some(guard) = &guard {
         let mut fast = func.clone();
@@ -378,8 +396,9 @@ fn invariant_guard(
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
     facts: &ScalarFacts<'_>,
+    entry: GuardedEntry<'_>,
 ) -> Option<InvariantGuard> {
-    let preheader = plain_preheader(func, header, body)?;
+    let preheader = entry.preheader;
     let mut defined: HashSet<ValueId> = HashSet::default();
     for bid in body {
         let block = &func.blocks[bid];
@@ -388,7 +407,7 @@ fn invariant_guard(
     }
     let exact = facts.types();
     let repr = std::cell::OnceCell::new();
-    let carried = header_invariants(func, header, body, preheader, &defined);
+    let carried = header_invariants(func, header, body, entry, &defined);
     let mut blocks: Vec<BlockId> = body.iter().copied().collect();
     blocks.sort_by_key(|block| block.0);
     // Each operand read as a payload, with the invariant the guard tests.
@@ -448,28 +467,38 @@ fn invariant_guard(
     })
 }
 
+/// A plain branch that dominates all executable entries into the loop.
+#[derive(Clone, Copy)]
+struct GuardedEntry<'cfg> {
+    preheader: BlockId,
+    header_preds: &'cfg [BlockId],
+    copies: &'cfg HashMap<ValueId, ValueId>,
+}
+
 fn plain_preheader(
     func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
+    preds: &HashMap<BlockId, Vec<BlockId>>,
+    reachable: &HashSet<BlockId>,
+    labels: &HashMap<i64, BlockId>,
 ) -> Option<BlockId> {
-    let labels = exception_label_to_block(func);
-    // The lift keeps unreachable `loop_end -> header` edges as loop metadata;
-    // only an executable edge enters the loop.
-    let reachable = crate::tir::dominators::executable_reachable_blocks(func);
-    let mut entries = func.blocks.values().filter(|block| {
-        reachable.contains(&block.id)
-            && !body.contains(&block.id)
-            && block.terminator.successors().contains(&header)
-    });
-    let preheader = entries.next()?;
-    if entries.next().is_some()
-        || !matches!(preheader.terminator, Terminator::Branch { target, .. } if target == header)
-        || crate::tir::dominators::exception_successors(preheader, &labels).contains(&header)
-    {
-        return None;
+    let mut preheader = None;
+    for &block in body {
+        for &pred in preds.get(&block)? {
+            // The lift can keep an unreachable loop-end marker as metadata.
+            if body.contains(&pred) || !reachable.contains(&pred) {
+                continue;
+            }
+            if block != header || preheader.replace(pred).is_some() {
+                return None;
+            }
+        }
     }
-    Some(preheader.id)
+    let block = &func.blocks[&preheader?];
+    (matches!(block.terminator, Terminator::Branch { target, .. } if target == header)
+        && !crate::tir::dominators::exception_successors(block, labels).contains(&header))
+    .then_some(block.id)
 }
 
 /// The header parameters that carry one value defined outside the loop
@@ -481,41 +510,19 @@ fn header_invariants(
     func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
-    preheader: BlockId,
+    guarded_entry: GuardedEntry<'_>,
     defined: &HashSet<ValueId>,
 ) -> HashMap<ValueId, ValueId> {
-    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::default();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if op.opcode == OpCode::Copy
-                && let ([source], [result]) = (op.operands.as_slice(), op.results.as_slice())
-            {
-                copy_of.insert(*result, *source);
-            }
-        }
-    }
-    let root = |mut value: ValueId| {
-        let mut steps = 0;
-        while let Some(&source) = copy_of.get(&value) {
-            value = source;
-            steps += 1;
-            if steps > 64 {
-                break;
-            }
-        }
-        value
-    };
+    let root = |value| resolve_copy(guarded_entry.copies, value);
     let params: Vec<ValueId> = func.blocks[&header].args.iter().map(|arg| arg.id).collect();
     let mut entry: Option<Vec<ValueId>> = None;
     let mut back: Vec<Vec<ValueId>> = Vec::new();
-    let mut blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
-    blocks.sort_unstable();
-    for bid in blocks {
+    for &bid in guarded_entry.header_preds {
         func.blocks[&bid].terminator.for_each_edge(|target, args| {
             if target != header {
                 return;
             }
-            if bid == preheader {
+            if bid == guarded_entry.preheader {
                 entry = Some(args.to_vec());
             } else if body.contains(&bid) {
                 back.push(args.to_vec());
@@ -544,8 +551,11 @@ fn header_invariants(
     carried
 }
 
-fn check_loop_shape(func: &TirFunction, body: &HashSet<BlockId>) -> Result<(), Refusal> {
-    let labels = exception_label_to_block(func);
+fn check_loop_shape(
+    func: &TirFunction,
+    body: &HashSet<BlockId>,
+    labels: &HashMap<i64, BlockId>,
+) -> Result<(), Refusal> {
     let mut ops = 0usize;
     for bid in body {
         let block = &func.blocks[bid];
@@ -557,7 +567,7 @@ fn check_loop_shape(func: &TirFunction, body: &HashSet<BlockId>) -> Result<(), R
             if opcode_is_state_machine_table(op.opcode) {
                 return Err(Refusal::Suspension);
             }
-            if exception_transfer_target(op, &labels).is_some_and(|target| body.contains(&target)) {
+            if exception_transfer_target(op, labels).is_some_and(|target| body.contains(&target)) {
                 return Err(Refusal::ExceptionEdgeIntoLoop);
             }
         }

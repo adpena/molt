@@ -64,9 +64,11 @@ def test_wasm_phase_diagnostic_measures_guarded_node_separately(
     guest_stderr = tmp_path / "guest-stderr.bin"
     guest_stderr.write_bytes(b"")
     script.write_text(
+        f"process.emit('molt:wasm:startup', '{mode}:execution:enter');\n"
         f"process.emit('molt:wasm:startup', '{mode}:guest:enter');\n"
         "process.stdout.write('42\\n');\n"
         f"process.emit('molt:wasm:startup', '{mode}:guest:completed');\n"
+        f"process.emit('molt:wasm:startup', '{mode}:execution:completed');\n"
         "process.emit('molt:wasm:startup', 'runMain:dispose:enter');\n"
         "process.emit('molt:wasm:startup', 'runMain:dispose:completed');\n",
         encoding="utf-8",
@@ -92,7 +94,9 @@ def test_wasm_phase_diagnostic_measures_guarded_node_separately(
     assert result["valid_samples"] == 2
     assert all(record["output_matches"] for record in result["records"])
     for name in (
+        f"runner:{mode}_runtime_entry_and_admission",
         f"runner:{mode}_guest_entry",
+        f"runner:{mode}_execution_return",
         "runner:host_dispose",
         "node_to_preload_ms",
     ):
@@ -123,11 +127,23 @@ def test_wasm_phase_diagnostic_measures_guarded_node_separately(
     payload = asdict(cell)
     assert schema.PerfCell.from_payload(payload).wasm_phases == result
     assert ps._cell_from_dict(payload).wasm_phases == result
+    assert result["schema_version"] == 2
+    assert result["guest_entry_scope"] == "module initialization and Python body"
+    historical: schema.WasmPhaseDiagnostics = {
+        **result,
+        "schema_version": 1,
+        "guest_entry_scope": "runtime initialization and Python body",
+    }
+    assert (
+        schema.PerfCell.from_payload({**payload, "wasm_phases": historical}).wasm_phases
+        == historical
+    )
     for invalid_scope in (
         {"diagnostic_only": False},
         {"schema_version": True},
         {"measurement_scope": "persistent_instance"},
         {"guest_entry_scope": "Python body only"},
+        {"schema_version": 1},
     ):
         with pytest.raises(ValueError, match="diagnostic fresh-process scope"):
             schema.PerfCell.from_payload(

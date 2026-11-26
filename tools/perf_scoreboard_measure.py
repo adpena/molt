@@ -140,10 +140,10 @@ def _measure_wasm_phases(
         if valid:
             accepted.append({"stderr": diagnostic_stderr})
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "diagnostic_only": True,
         "measurement_scope": "fresh_node_process_warm_files",
-        "guest_entry_scope": "runtime initialization and Python body",
+        "guest_entry_scope": "module initialization and Python body",
         "command": instrumented,
         "requested_samples": samples,
         "valid_samples": len(accepted),

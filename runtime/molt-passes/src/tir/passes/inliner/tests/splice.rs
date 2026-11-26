@@ -924,3 +924,149 @@ fn an_inlined_closure_keeps_its_temporary_callable_until_each_activation_exit() 
         "normal and implicit exceptional exits release the function"
     );
 }
+
+#[test]
+fn fresh_sequence_moves_one_reference_to_the_existing_frame_clear() {
+    use molt_ir::ParameterCustody;
+    // Each test uses the same ordinary leaf and the same checked call. Change
+    // only the independent evidence for the argument credit or its visibility.
+    #[derive(Clone, Copy, Debug)]
+    enum Argument {
+        List,
+        Tuple,
+        UnknownElement,
+        Published,
+        Escaping,
+        Transferred,
+        Observer,
+    }
+    for shape in [
+        Argument::List,
+        Argument::Tuple,
+        Argument::UnknownElement,
+        Argument::Published,
+        Argument::Escaping,
+        Argument::Transferred,
+        Argument::Observer,
+    ] {
+        let mut callee = TirFunction::new(
+            "predicate".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let none = callee.fresh_value();
+        let result = callee.fresh_value();
+        let entry = callee.blocks.get_mut(&callee.entry_block).unwrap();
+        entry
+            .ops
+            .push(TirOp::new(OpCode::ConstNone, vec![], vec![none]));
+        entry
+            .ops
+            .push(TirOp::new(OpCode::Is, vec![ValueId(0), none], vec![result]));
+        if matches!(shape, Argument::Observer) {
+            entry.ops.push(TirOp::new(OpCode::Call, vec![], vec![]));
+        }
+        entry.terminator = Terminator::Return {
+            values: vec![if matches!(shape, Argument::Escaping) {
+                ValueId(0)
+            } else {
+                result
+            }],
+        };
+        if matches!(shape, Argument::Transferred) {
+            callee.set_parameter_custody(&[ParameterCustody::Transferred]);
+        }
+        let mut caller = TirFunction::new(
+            "caller".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let item = caller.fresh_value();
+        let object = caller.fresh_value();
+        let output = caller.fresh_value();
+        let entry = caller.blocks.get_mut(&caller.entry_block).unwrap();
+        let mut literal = TirOp::new(OpCode::ConstInt, vec![], vec![item]);
+        literal.attrs.insert("value".into(), AttrValue::Int(9));
+        entry.ops.push(literal);
+        let element = if matches!(shape, Argument::UnknownElement) {
+            ValueId(0)
+        } else {
+            item
+        };
+        let kind = if matches!(shape, Argument::Tuple) {
+            OpCode::BuildTuple
+        } else {
+            OpCode::BuildList
+        };
+        entry
+            .ops
+            .push(TirOp::new(kind, vec![element], vec![object]));
+        if matches!(shape, Argument::Published) {
+            entry.ops.push(TirOp::new(
+                OpCode::StoreIndex,
+                vec![ValueId(0), item, object],
+                vec![],
+            ));
+        }
+        let mut call = TirOp::new(OpCode::Call, vec![object], vec![output]);
+        call.attrs
+            .insert("s_value".into(), AttrValue::Str("predicate".into()));
+        if matches!(shape, Argument::Transferred) {
+            call.set_argument_custody(&[ParameterCustody::Transferred]);
+        }
+        entry.ops.push(call);
+        entry.terminator = Terminator::Return {
+            values: vec![output],
+        };
+        let (mut caller, sites) = sites_in(caller, &["predicate"]);
+        assert!(
+            splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default())
+                .is_some()
+        );
+        let ops = caller.blocks.values().flat_map(|block| &block.ops);
+        let retained: Vec<_> = ops
+            .clone()
+            .filter(|op| {
+                op.origin == Some(molt_ir::OpKind::BindingAlias) && op.operands == [object]
+            })
+            .collect();
+        let moved = matches!(shape, Argument::List | Argument::Tuple);
+        assert_eq!(retained.len(), usize::from(!moved), "{shape:?}");
+        let target = retained.first().map_or(object, |op| op.results[0]);
+        assert_eq!(
+            ops.filter(|op| op.opcode == OpCode::DelBoundary && op.operands == [target])
+                .count(),
+            1,
+            "{shape:?}: one original frame clear"
+        );
+
+        if moved {
+            for tti in [
+                TargetInfo::native_release_fast(),
+                TargetInfo::llvm_release_fast(),
+            ] {
+                let mut finalized = caller.clone();
+                crate::tir::pass_manager::build_drop_pipeline(tti).run(&mut finalized);
+                crate::tir::verify::verify_function(&finalized).unwrap();
+                let ops = finalized.blocks.values().flat_map(|block| &block.ops);
+                assert!(
+                    ops.clone()
+                        .any(|op| op.opcode == kind && op.results == [object])
+                );
+                assert_eq!(
+                    ops.clone()
+                        .filter(|op| op.opcode == OpCode::IncRef && op.operands == [object])
+                        .count(),
+                    0
+                );
+                assert_eq!(
+                    ops.filter(|op| op.opcode == OpCode::DecRef && op.operands == [object])
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+}

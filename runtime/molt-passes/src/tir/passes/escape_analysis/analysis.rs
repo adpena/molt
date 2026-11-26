@@ -117,7 +117,7 @@ impl ParameterCapture {
     /// Only checked positional bindings to a locally owned callee can carry a
     /// body proof. The callable and transferred arguments retain their own call
     /// admission and destruction paths.
-    fn noncapturing_operand<'a>(
+    pub(in crate::tir::passes) fn noncapturing_operand<'a>(
         &mut self,
         op: &TirOp,
         operand: usize,
@@ -155,8 +155,8 @@ impl ParameterCapture {
 /// argument without naming it at the observation site. An activation owning a
 /// parameter can run a finalizer on implicit teardown.
 ///
-/// The caller uses this only to price an inline site. The call and the splice
-/// independently own admission, memory effects, and reference custody.
+/// The inliner also requires this proof before moving a separately proven
+/// single-use reference into its existing frame-clear plan.
 fn noncapturing_parameters(func: &TirFunction) -> Vec<bool> {
     use super::super::frame_elision::{op_observer, terminator_observer};
     use crate::tir::blocks::Terminator;

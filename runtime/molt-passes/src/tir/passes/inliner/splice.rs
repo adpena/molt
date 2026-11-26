@@ -176,8 +176,8 @@ pub(super) fn splice_call_site(
                 .get(position)
                 .filter(|ty| **ty != TirType::DynBox);
             match binding {
-                Binding::Direct if proven.is_none() => argument,
-                Binding::Direct => {
+                Binding::Direct | Binding::Move if proven.is_none() => argument,
+                Binding::Direct | Binding::Move => {
                     let bound = caller.fresh_value();
                     let mut op = TirOp::new(OpCode::Copy, vec![argument], vec![bound]);
                     op.source_span = call_span;

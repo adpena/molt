@@ -173,7 +173,6 @@ pub fn run_inliner(
     // Prepared activations serve every caller: a callee is final before any
     // caller splices it.
     let mut activations = Activations::default();
-    let mut parameter_capture = super::super::escape_analysis::ParameterCapture::default();
 
     // Walk bottom-up over the SCC condensation: callees before callers.
     for scc in call_graph.bottom_up_order() {
@@ -216,7 +215,7 @@ pub fn run_inliner(
                             let body = |id| inlinable.get(&id).map(|&(idx, _)| &module.functions[idx]);
                             uses.receives_split_field(op)
                                 || (within_hot_cap && (numeric && uses.numeric_consumer(op).is_some()
-                                    || uses.receives_noncaptured_allocation(op, caller, &mut parameter_capture, body)))
+                                    || uses.receives_noncaptured_allocation(op, caller, &mut activations.capture, body)))
                         }
                         None => false,
                     };

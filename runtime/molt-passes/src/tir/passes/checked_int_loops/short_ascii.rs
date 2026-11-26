@@ -16,6 +16,7 @@ impl ShortAscii {
         header: BlockId,
         body: &HashSet<BlockId>,
         vr: &crate::tir::ValueRangeResult,
+        preheader: BlockId,
     ) -> Option<Self> {
         if func.frame_locals_exposed() {
             return None;
@@ -63,23 +64,6 @@ impl ShortAscii {
         let repr = crate::representation_facts::repr_by_value_from(&facts, Some(vr));
         if repr.get(&owner) != Some(&molt_ir::repr::Repr::DynBox) {
             return None;
-        }
-        let preheader = plain_preheader(func, header, body)?;
-        let labels = exception_label_to_block(func);
-        // This setup must dominate every executable entry of the fast loop.
-        // LoopForest's natural backedges alone do not rule out side entries.
-        for block in func.blocks.values().filter(|b| !body.contains(&b.id)) {
-            if crate::tir::dominators::exception_successors(block, &labels)
-                .iter()
-                .any(|target| body.contains(target))
-                || block
-                    .terminator
-                    .successors()
-                    .iter()
-                    .any(|target| body.contains(target) && *target != header)
-            {
-                return None;
-            }
         }
         let preview = super::super::value_range::under_length_guard(
             &facts,

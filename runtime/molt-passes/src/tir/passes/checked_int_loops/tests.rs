@@ -47,6 +47,59 @@ fn arg(id: ValueId) -> TirValue {
     }
 }
 
+#[test]
+fn guarded_entry_refuses_a_reachable_exception_that_bypasses_the_preheader() {
+    let Fixture { mut func, .. } = branching_loop(false);
+    let entry = func.entry_block;
+    let preheader = func.fresh_block();
+    let retained = func.fresh_block();
+    let branch = std::mem::replace(
+        &mut func.blocks.get_mut(&entry).unwrap().terminator,
+        Terminator::Branch {
+            target: preheader,
+            args: vec![],
+        },
+    );
+    let Terminator::Branch {
+        target: header,
+        ref args,
+    } = branch
+    else {
+        unreachable!()
+    };
+    let mut check = op(OpCode::CheckException, args.clone(), vec![]);
+    let label = 70;
+    check.attrs.insert("value".into(), AttrValue::Int(label));
+    check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+    func.label_id_map.insert(header.0, label);
+    func.blocks.insert(
+        retained,
+        block(
+            retained,
+            vec![],
+            vec![check.clone()],
+            Terminator::Unreachable,
+        ),
+    );
+    func.blocks
+        .insert(preheader, block(preheader, vec![], vec![], branch));
+    let guarded_entry = |func: &TirFunction| {
+        use crate::tir::analysis::Analysis;
+        let forest = LoopForest::compute(func);
+        plain_preheader(
+            func,
+            header,
+            &forest.bodies[&header],
+            &PredMap::compute(func),
+            &ExecReachable::compute(func),
+            &exception_label_to_block(func),
+        )
+    };
+    assert_eq!(guarded_entry(&func), Some(preheader));
+    func.blocks.get_mut(&entry).unwrap().ops.push(check);
+    assert_eq!(guarded_entry(&func), None);
+}
+
 /// `total = 0; for i in range(1000): if i < 500: total += i; return total`
 /// in the shape the lift produces: entry -> header(total, i) -> guard ->
 /// body (branching) -> join -> latch -> header; guard exit returns total.

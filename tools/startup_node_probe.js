@@ -17,14 +17,19 @@ const runnerPhases = {
   linked_engine_compile: ['linked:instantiate:enter', 'linked:compile:completed'],
   linked_instantiate_and_abi: ['linked:compile:completed', 'linked:instantiate:completed'],
   linked_host_bootstrap: ['linked:bootstrap:enter', 'linked:bootstrap:completed'],
-  // The exported entry initializes the Molt runtime and calls the Python body.
+  // Execution entry initializes the runtime and acquires attached custody.
+  linked_runtime_entry_and_admission: ['linked:execution:enter', 'linked:guest:enter'],
+  // molt_main still initializes application modules before executing the body.
   linked_guest_entry: ['linked:guest:enter', 'linked:guest:completed'],
+  linked_execution_return: ['linked:guest:completed', 'linked:execution:completed'],
   direct_import_setup: ['runMain:init', 'direct:runtime_instantiate:enter'],
   direct_runtime_compile_and_instantiate: ['direct:runtime_instantiate:enter', 'direct:runtime_instantiate:completed'],
   direct_app_compile_and_import_setup: ['direct:runtime_instantiate:completed', 'direct:app_instantiate:enter'],
   direct_app_instantiate_and_abi: ['direct:app_instantiate:enter', 'direct:app_instantiate:completed'],
   direct_host_bootstrap: ['direct:bootstrap:enter', 'direct:bootstrap:completed'],
+  direct_runtime_entry_and_admission: ['direct:execution:enter', 'direct:guest:enter'],
   direct_guest_entry: ['direct:guest:enter', 'direct:guest:completed'],
+  direct_execution_return: ['direct:guest:completed', 'direct:execution:completed'],
   host_dispose: ['runMain:dispose:enter', 'runMain:dispose:completed'],
 };
 

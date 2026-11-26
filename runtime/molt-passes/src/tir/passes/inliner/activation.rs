@@ -41,8 +41,9 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::alias_analysis::{AliasUnionFind, build_alias_union_find};
 use crate::tir::passes::drop_insertion::{DROP_INSERTED_ATTR, frame_clear};
+use crate::tir::passes::escape_analysis::{ParameterCapture, op_result_defines_del};
 use crate::tir::passes::liveness::{TirLivenessResult, compute_liveness_in_domain};
-use crate::tir::passes::ownership_lattice_min::owned_alias;
+use crate::tir::passes::ownership_lattice_min::{OwnershipRootFacts, owned_alias};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -53,6 +54,9 @@ use super::call_sites::CallSite;
 pub(super) enum Binding {
     /// The parameter names the argument; the activation holds no reference.
     Direct,
+    /// This fresh temporary's existing reference supplies the activation's
+    /// binding. Its frame clear releases the original owner at the same exit.
+    Move,
     /// The parameter names an owned `binding_alias` of the argument, which the
     /// activation releases at its frame clear.
     Owned,
@@ -64,6 +68,7 @@ pub(super) enum Binding {
 #[derive(Default)]
 pub(super) struct Activations {
     caller: Option<CallerFacts>,
+    pub(super) capture: ParameterCapture,
     prepared: HashMap<(String, Vec<Binding>), Option<TirFunction>>,
 }
 
@@ -75,6 +80,7 @@ struct CallerFacts {
     liveness: TirLivenessResult,
     parameters: HashSet<ValueId>,
     checked_results: HashSet<ValueId>,
+    single_use_sequences: HashSet<ValueId>,
 }
 
 impl Activations {
@@ -107,13 +113,25 @@ impl Activations {
                 let root = facts.aliases.root(argument);
                 let outlives_the_call =
                     facts.parameters.contains(&root) || facts.read_after(caller, site, root);
-                if callee.parameter_custody(position) == ParameterCustody::Transferred
-                    || !outlives_the_call
-                {
-                    Binding::Owned
-                } else {
-                    Binding::Direct
+                if callee.parameter_custody(position) == ParameterCustody::Transferred {
+                    return Binding::Owned;
                 }
+                if outlives_the_call {
+                    return Binding::Direct;
+                }
+                if facts.single_use_sequences.contains(&argument) {
+                    let op = &caller.blocks[&site.block].ops[site.op_index];
+                    // The static site has already bound its positional arguments.
+                    // Locate the actual physical operand, including any callable.
+                    if let Some(index) = op.operands.iter().position(|&operand| operand == argument)
+                        && self.capture.noncapturing_operand(op, index, |id| {
+                            (id == site.callee).then_some(callee)
+                        })
+                    {
+                        return Binding::Move;
+                    }
+                }
+                Binding::Owned
             })
             .collect()
     }
@@ -125,9 +143,21 @@ impl Activations {
         callee: &TirFunction,
         bindings: &[Binding],
     ) -> Option<&TirFunction> {
+        // A moved credit and a retained one use the same prepared callee.
+        // Only the caller-side parameter binding emits a different operation.
+        let frame: Vec<_> = bindings
+            .iter()
+            .map(|&binding| {
+                if binding == Binding::Move {
+                    Binding::Owned
+                } else {
+                    binding
+                }
+            })
+            .collect();
         self.prepared
-            .entry((callee.name.clone(), bindings.to_vec()))
-            .or_insert_with(|| prepare_activation(callee, bindings))
+            .entry((callee.name.clone(), frame))
+            .or_insert_with_key(|(_, frame)| prepare_activation(callee, frame))
             .as_ref()
     }
 
@@ -147,6 +177,27 @@ impl CallerFacts {
         let aliases = build_alias_union_find(caller);
         let (carriers, checked_results) =
             crate::representation_facts::analyze_representations_and_checked_calls(caller);
+        let mut single_use_sequences = HashSet::default();
+        if !caller.frame_locals_exposed() && !caller.has_state_machine() {
+            for op in caller.blocks.values().flat_map(|block| &block.ops) {
+                if matches!(op.opcode, OpCode::BuildList | OpCode::BuildTuple)
+                    && let [result] = op.results[..]
+                    && !op_result_defines_del(op)
+                    && OwnershipRootFacts::result_holds_own_reference(op, result, &aliases)
+                    && op.operands.iter().all(|value| {
+                        carriers
+                            .get(value)
+                            .is_some_and(|carrier| carrier.boxed_refcount_is_noop())
+                    })
+                {
+                    single_use_sequences.insert(result);
+                }
+            }
+            if !single_use_sequences.is_empty() {
+                let uses = super::super::dce::build_use_counts(caller);
+                single_use_sequences.retain(|value| uses.get(value) == Some(&1));
+            }
+        }
         let raw = carriers
             .into_iter()
             .filter_map(|(id, carrier)| carrier.carrier_refcount_is_noop().then_some(id))
@@ -163,6 +214,7 @@ impl CallerFacts {
             liveness,
             parameters,
             checked_results,
+            single_use_sequences,
         }
     }
 

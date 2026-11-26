@@ -44,10 +44,14 @@ class WasmPhaseSample(TypedDict):
 
 
 class WasmPhaseDiagnostics(TypedDict):
-    schema_version: Literal[1]
+    # Version 1 is retained as recorded; version 2 names the actual ABI scope.
+    schema_version: Literal[1, 2]
     diagnostic_only: Literal[True]
     measurement_scope: Literal["fresh_node_process_warm_files"]
-    guest_entry_scope: Literal["runtime initialization and Python body"]
+    guest_entry_scope: Literal[
+        "runtime initialization and Python body",
+        "module initialization and Python body",
+    ]
     command: list[str]
     requested_samples: int
     valid_samples: int
@@ -61,10 +65,15 @@ def _optional_wasm_phases(value: object) -> WasmPhaseDiagnostics | None:
     if not isinstance(value, Mapping) or (
         set(value) != WasmPhaseDiagnostics.__required_keys__
         or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != 1
+        or value.get("schema_version") not in (1, 2)
         or value.get("diagnostic_only") is not True
         or value.get("measurement_scope") != "fresh_node_process_warm_files"
-        or value.get("guest_entry_scope") != "runtime initialization and Python body"
+        or value.get("guest_entry_scope")
+        != (
+            "runtime initialization and Python body"
+            if value.get("schema_version") == 1
+            else "module initialization and Python body"
+        )
     ):
         raise ValueError("WASM phases require the diagnostic fresh-process scope")
     return cast(WasmPhaseDiagnostics, value)

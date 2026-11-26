@@ -212,10 +212,18 @@ acceptance timing samples, output-parity counts, speedups or verdicts.
 
 The phase sample count follows `--samples`; it is independent of `--repeat`.
 The Node preload probe reports asset preparation, engine compilation,
-instantiation/ABI checks, host bootstrap, guest entry and host disposal. Linked
+instantiation/ABI checks, host bootstrap, runtime entry/admission, guest entry,
+execution return and host disposal. Linked
 and split deployments expose their applicable phases; split runtime compilation
-and instantiation share one interval. Guest entry includes runtime initialization
-and the Python body. These are warm-file fresh-process diagnostics, with no
+and instantiation share one interval. Runtime entry/admission includes runtime
+lifecycle initialization and attaching execution custody, bounded by the real
+execution ABI before its callback. Guest entry is the generated `molt_main`
+call, including module initialization and the Python body; it does not isolate
+the workload body from module setup. Execution return includes status checks
+and release of execution custody. Diagnostic payload schema 2 records this
+guest scope. Schema-1 receipts retain their original scope labels verbatim;
+reading them does not upgrade their attribution or add missing entry phases.
+These are warm-file fresh-process diagnostics, with no
 filesystem-cache eviction or persistent-instance execution implied. The normal
 WASM `warm_molt_s` remains a repeated fresh-process measurement including Node
 launch, module creation, guest execution and host cleanup; it is not guest time.
