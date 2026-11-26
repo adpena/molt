@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use super::super::super::config::{DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_STDLIB_BATCH_SIZE};
 use super::super::super::native_batch::{
     ExternalFunctionDeclarations, external_function_declarations, resolved_batch_op_budget_limit,
@@ -7,7 +5,6 @@ use super::super::super::native_batch::{
 };
 
 pub(super) struct StdlibBatchPlan {
-    pub(super) all_function_names: BTreeSet<String>,
     pub(super) external_function_declarations: ExternalFunctionDeclarations,
     pub(super) module_context: molt_backend::NativeBackendModuleContext,
     pub(super) batches: Vec<Vec<molt_backend::FunctionIR>>,
@@ -18,19 +15,17 @@ impl StdlibBatchPlan {
         stdlib_funcs: Vec<molt_backend::FunctionIR>,
         module_context: molt_backend::NativeBackendModuleContext,
     ) -> Self {
-        let all_function_names = stdlib_funcs.iter().map(|f| f.name.clone()).collect();
         let external_function_declarations = external_function_declarations(&stdlib_funcs);
         let body_functions = stdlib_funcs
             .into_iter()
             .filter(|func| !func.is_extern)
             .collect();
-        let batches = super::stable_batches::stable_stdlib_batches(
+        let batches = crate::backend_process::native_batch::stable_native_batches(
             body_functions,
             stdlib_batch_size(),
             stdlib_batch_ops_budget(),
         );
         Self {
-            all_function_names,
             external_function_declarations,
             module_context,
             batches,

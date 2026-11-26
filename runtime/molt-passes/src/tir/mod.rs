@@ -16,6 +16,7 @@ pub mod simple_value_names;
 pub mod ssa_update;
 pub mod translation_validator;
 pub mod type_refine;
+mod value_edges;
 
 pub use molt_ir::tir::{
     blocks, call_targets, cfg, clone_support, dominators, function, numeric_facts,

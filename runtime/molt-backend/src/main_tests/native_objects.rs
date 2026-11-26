@@ -1,90 +1,92 @@
 use super::*;
 
 #[test]
-fn partition_functions_for_batches_respects_op_budget() {
-    let funcs = vec![
-        FunctionIR {
-            module: None,
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "a".to_string(),
-            params: vec![],
-            ops: vec![OpIR::new(molt_ir::OpKind::Nop); 90],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            frame_locals_exposed: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
+fn application_body_edit_reuses_independent_objects_and_matches_fresh_archive() {
+    use crate::NativeObjectCache;
+    let _env = TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE", "MOLT_BACKEND_BATCH_OP_BUDGET"]);
+    let directory = native_artifact_test_directory("object-edit-reuse");
+    let _scope = calling_program_scope(&directory, serde_json::json!({}));
+    let manifest = serde_json::json!({
+        "schema":"stdlib-manifest-v2-archive", "artifact_kind":"archive",
+        "cache_key":"program", "cache_variant":"profile=test", "compiler_fingerprint":"test",
+        "target_triple":null
+    })
+    .to_string();
+    let options = |root: &std::path::Path| {
+        let mut options = native_artifact_test_options(NativeArtifactKind::Archive);
+        options.object_cache = NativeObjectCache::for_archive(
+            &root.join("stdlib.a"),
+            Some("program"),
+            Some(&manifest),
+            None,
+        )
+        .unwrap();
+        options
+    };
+    let mut source = native_artifact_test_ir();
+    source.functions[0].return_abi = molt_ir::FunctionReturnAbi::Void;
+    source.functions[0].source_file = Some("a_entry.py".into());
+    source.functions[1].source_file = Some("b_helper.py".into());
+    source.functions[1].ops = vec![
+        OpIR {
+            value: Some(41),
+            out: Some("answer".into()),
+            ..OpIR::new(molt_ir::OpKind::Const)
         },
-        FunctionIR {
-            module: None,
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "b".to_string(),
-            params: vec![],
-            ops: vec![OpIR::new(molt_ir::OpKind::Nop); 90],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            frame_locals_exposed: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        },
-        FunctionIR {
-            module: None,
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "c".to_string(),
-            params: vec![],
-            ops: vec![OpIR::new(molt_ir::OpKind::Nop); 10],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            frame_locals_exposed: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
+        OpIR {
+            args: Some(vec!["answer".into()]),
+            ..OpIR::new(molt_ir::OpKind::Ret)
         },
     ];
-
-    let batches = partition_functions_for_batches(funcs, 64, 100);
-    let names: Vec<Vec<String>> = batches
-        .into_iter()
-        .map(|batch| batch.into_iter().map(|f| f.name).collect())
-        .collect();
-
+    source.functions[0].ops[0].out = Some("result".into());
+    let run = |ir: SimpleIR, name: &str, root: &std::path::Path| {
+        let output = directory.join(name);
+        let result =
+            compile_native_application_artifact_to_path(ir, &output, options(root)).unwrap();
+        (result, std::fs::read(output).unwrap())
+    };
+    let (cold, _) = run(source.clone(), "cold.a", &directory);
     assert_eq!(
-        names,
-        vec![
-            vec!["a".to_string()],
-            vec!["b".to_string(), "c".to_string()],
-        ]
+        cold.batch_count, 2,
+        "source units apply even below the old single-batch limit"
     );
-}
-
-#[test]
-fn partition_functions_for_batches_respects_count_budget() {
-    let funcs = (0..5)
-        .map(|idx| FunctionIR {
-            module: None,
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: format!("f{idx}"),
-            params: vec![],
-            ops: vec![OpIR::new(molt_ir::OpKind::Nop); 1],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            frame_locals_exposed: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        })
-        .collect();
-
-    let batches = partition_functions_for_batches(funcs, 2, 1000);
-    let sizes: Vec<usize> = batches.into_iter().map(|batch| batch.len()).collect();
-
-    assert_eq!(sizes, vec![2, 2, 1]);
+    let (warm, _) = run(source.clone(), "warm.a", &directory);
+    assert_eq!(
+        cold.workers, warm.workers,
+        "a hit retains the actual original worker emission"
+    );
+    source.functions[1].ops[0].value = Some(42);
+    let (edited, edited_bytes) = run(source.clone(), "edited.a", &directory);
+    let old = cold.workers.as_ref().unwrap();
+    let new = edited.workers.as_ref().unwrap();
+    assert_eq!(
+        old[0], new[0],
+        "unchanged entry object retains its emission"
+    );
+    assert_ne!(
+        old[1].input, new[1].input,
+        "edited source must compile a new input"
+    );
+    let (_, fresh_bytes) = run(source, "fresh.a", &directory.join("fresh"));
+    assert_eq!(
+        edited_bytes, fresh_bytes,
+        "cached edit must equal fresh compilation"
+    );
+    let (metadata, metadata_bytes) = run(
+        SimpleIR {
+            functions: Vec::new(),
+            profile: None,
+        },
+        "metadata.a",
+        &directory,
+    );
+    assert_eq!(
+        metadata.batch_count, 1,
+        "metadata-only archives retain one owner object"
+    );
+    let archive = object::read::archive::ArchiveFile::parse(metadata_bytes.as_slice()).unwrap();
+    assert_eq!(archive.members().count(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -218,6 +220,7 @@ fn native_artifact_test_options(
     kind: NativeArtifactKind,
 ) -> NativeApplicationArtifactOptions<'static> {
     NativeApplicationArtifactOptions {
+        object_cache: None,
         code_slots: Default::default(),
         native_output_kind: kind,
         target_triple: None,
@@ -312,12 +315,6 @@ fn resolved_batch_size_and_op_budget_limits_default_and_zero_disable_caps() {
 
 #[test]
 fn batch_external_function_names_excludes_current_batch_symbols() {
-    let all_names = std::collections::BTreeSet::from([
-        "molt_main".to_string(),
-        "demo__module".to_string(),
-        "molt_isolate_bootstrap".to_string(),
-        "molt_isolate_import".to_string(),
-    ]);
     let batch_funcs = vec![
         FunctionIR {
             module: None,
@@ -349,14 +346,17 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
         },
     ];
 
-    let external_names = batch_external_function_names(&all_names, &batch_funcs);
+    let mut batch_funcs = batch_funcs;
+    batch_funcs.push(FunctionIR {
+        name: "referenced".into(),
+        is_extern: true,
+        ..Default::default()
+    });
+    let external_names = batch_external_function_names(&batch_funcs);
 
     assert_eq!(
         external_names,
-        std::collections::BTreeSet::from([
-            "molt_isolate_bootstrap".to_string(),
-            "molt_isolate_import".to_string(),
-        ])
+        std::collections::BTreeSet::from(["referenced".to_string(),])
     );
     assert!(!external_names.contains("molt_main"));
     assert!(!external_names.contains("demo__module"));

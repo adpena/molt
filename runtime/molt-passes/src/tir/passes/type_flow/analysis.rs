@@ -92,12 +92,12 @@ impl Inputs<'_> {
     /// The actual whose Python value this invocation returns on every successful exit.
     pub(super) fn forwarded_argument(&self, callee: usize, site: &Site<'_>) -> Option<ValueId> {
         let body = &self.module.functions[callee];
-        if !returns_value(body) || body.is_codegen_partition() {
+        let first = usize::from(body.has_closure_parameter());
+        if !returns_value(body) || body.is_codegen_partition() || body.param_names.len() <= first {
             return None;
         }
         let parameter = self.exact_plan(callee).forwarded_return_parameter()?;
-        site.parameter_arguments(usize::from(body.has_closure_parameter()))
-            .find_map(|(position, argument)| (position == parameter).then_some(argument))
+        site.argument_for(parameter, first)
     }
 
     pub(super) fn exact_plan(&self, body: usize) -> &ExactScalarPlan<'_> {

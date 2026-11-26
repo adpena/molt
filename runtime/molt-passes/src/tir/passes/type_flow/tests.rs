@@ -889,6 +889,82 @@ fn shared_return_preserves_the_supplied_argument_type_without_a_clone() {
 }
 
 #[test]
+fn shared_call_returns_the_same_formal_through_an_ssa_join_and_backedge() {
+    use crate::tir::blocks::TirBlock;
+    use crate::tir::values::TirValue;
+
+    let mut callee = function("preserve", 2);
+    let entry = callee.entry_block;
+    let x = callee.blocks[&entry].args[0].id;
+    let test = callee.blocks[&entry].args[1].id;
+    let loop_block = callee.fresh_block();
+    let exit = callee.fresh_block();
+    let carried = callee.fresh_value();
+    let result = callee.fresh_value();
+    callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+        target: loop_block,
+        args: vec![x],
+    };
+    callee.blocks.insert(
+        loop_block,
+        TirBlock {
+            id: loop_block,
+            args: vec![TirValue {
+                id: carried,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::CondBranch {
+                cond: test,
+                then_block: loop_block,
+                then_args: vec![carried],
+                else_block: exit,
+                else_args: vec![carried],
+            },
+        },
+    );
+    callee.blocks.insert(
+        exit,
+        TirBlock {
+            id: exit,
+            args: vec![TirValue {
+                id: result,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::Return {
+                values: vec![result],
+            },
+        },
+    );
+    let driver = caller(
+        "driver",
+        FunctionId(0),
+        &[Literal::Int(41), Literal::Int(0)],
+    );
+    let partitioned = HashSet::from_iter(["preserve".into()]);
+    for target in [llvm(), cranelift()] {
+        let mut module = TirModule::with_own_table("m", vec![callee.clone(), driver.clone()]);
+        let outcome = run(&mut module, &target, &partitioned, false);
+        assert!(outcome.clones.is_empty());
+        assert_eq!(
+            calls(body(&module, "driver"))[0].exact_result_proof(),
+            Some(TirType::I64)
+        );
+    }
+    let Terminator::CondBranch { then_args, .. } =
+        &mut callee.blocks.get_mut(&loop_block).unwrap().terminator
+    else {
+        unreachable!()
+    };
+    *then_args = vec![test];
+    assert_eq!(
+        crate::tir::type_refine::ExactScalarPlan::new(&callee).forwarded_return_parameter(),
+        None
+    );
+}
+
+#[test]
 fn an_unobserved_raise_can_be_cleared_before_an_empty_return() {
     use crate::tir::lower_from_simple::lower_to_tir;
     let ir: molt_ir::FunctionIR = serde_json::from_value(serde_json::json!({

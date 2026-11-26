@@ -1,4 +1,4 @@
-//! Constituent generations of the shared stdlib archive. The input identity
+//! Native object generations shared by application and stdlib archives. The input identity
 //! binds the exact self-contained job, admitted compiler/environment manifest,
 //! executing backend bytes and effective ISA. One atomic envelope owns both
 //! output digest and object bytes; there is no mixed object/sidecar generation.
@@ -25,7 +25,7 @@ const HEADER_SIZE: usize = 8 + 32 + 32 + 8 + 8;
 // The worker transport admits at most 16 KiB for its complete origin.
 const MAX_ORIGIN_BYTES: usize = 16_384;
 
-pub(crate) struct StdlibObjectCache {
+pub(crate) struct NativeObjectCache {
     /// The cache root that holds both constituent and archive generations.
     cache_root: PathBuf,
     authority: serde_json::Value,
@@ -109,7 +109,7 @@ impl Write for DigestWriter<'_> {
     }
 }
 
-impl StdlibObjectCache {
+impl NativeObjectCache {
     pub(crate) fn for_archive(
         archive: &Path,
         cache_key: Option<&str>,

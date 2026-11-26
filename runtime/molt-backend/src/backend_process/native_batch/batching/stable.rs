@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 /// splitting. An unrelated source cannot repack existing units. Missing source
 /// metadata forms one legitimate group; bounds and traversal ordering remain
 /// owned by the same radix splitter within every group.
-pub(super) fn stable_stdlib_batches(
+pub(crate) fn stable_native_batches(
     functions: Vec<FunctionIR>,
     max_functions: usize,
     max_ops: usize,
@@ -116,14 +116,14 @@ mod tests {
                 )
             })
             .collect();
-        let baseline = names(stable_stdlib_batches(functions.clone(), 128, 8000));
+        let baseline = names(stable_native_batches(functions.clone(), 128, 8000));
         let mut extended = functions;
         extended.extend(
             (0..14).map(|index| {
                 sourced_fixture(&format!("new_{index}"), Some("stdlib/unrelated.py"), 3)
             }),
         );
-        let after = names(stable_stdlib_batches(extended.clone(), 128, 8000));
+        let after = names(stable_native_batches(extended.clone(), 128, 8000));
         // Whole units, not just surviving symbols, must be reusable. A global
         // symbol bucket would add new bodies to the previous unit and fail.
         for unit in &baseline {
@@ -131,7 +131,7 @@ mod tests {
         }
         assert_eq!(after.len(), baseline.len() + 1);
         extended.reverse();
-        assert_eq!(after, names(stable_stdlib_batches(extended, 128, 8000)));
+        assert_eq!(after, names(stable_native_batches(extended, 128, 8000)));
     }
 
     #[test]
@@ -140,7 +140,7 @@ mod tests {
             .map(|index| sourced_fixture(&format!("large_{index}"), Some("large.py"), 3))
             .collect();
         for (count, ops) in [(4, 8000), (128, 10)] {
-            let batches = stable_stdlib_batches(functions.clone(), count, ops);
+            let batches = stable_native_batches(functions.clone(), count, ops);
             assert!(batches.len() > 1);
             assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), functions.len());
             for batch in &batches {
@@ -156,11 +156,11 @@ mod tests {
             reversed.reverse();
             assert_eq!(
                 names(batches),
-                names(stable_stdlib_batches(reversed, count, ops))
+                names(stable_native_batches(reversed, count, ops))
             );
         }
         let indivisible = sourced_fixture("indivisible", Some("large.py"), 11);
-        let batches = stable_stdlib_batches(vec![indivisible], 4, 10);
+        let batches = stable_native_batches(vec![indivisible], 4, 10);
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0][0].ops.len(), 11);
     }
@@ -173,7 +173,7 @@ mod tests {
             sourced_fixture("empty_path", Some(""), 1),
             sourced_fixture("named", Some("module.py"), 1),
         ];
-        let batches = names(stable_stdlib_batches(functions, 128, 8000));
+        let batches = names(stable_native_batches(functions, 128, 8000));
         assert_eq!(
             batches,
             vec![
@@ -182,7 +182,7 @@ mod tests {
                 vec!["named".to_owned()],
             ]
         );
-        let empty = stable_stdlib_batches(Vec::new(), 128, 8000);
+        let empty = stable_native_batches(Vec::new(), 128, 8000);
         assert_eq!(empty.len(), 1);
         assert!(empty[0].is_empty());
     }
@@ -192,10 +192,10 @@ mod tests {
         let functions: Vec<_> = (0..128)
             .map(|index| fixture(&format!("stdlib_{index}")))
             .collect();
-        let baseline = names(stable_stdlib_batches(functions.clone(), 4, 100));
+        let baseline = names(stable_native_batches(functions.clone(), 4, 100));
         let mut reversed = functions.clone();
         reversed.reverse();
-        assert_eq!(baseline, names(stable_stdlib_batches(reversed, 4, 100)));
+        assert_eq!(baseline, names(stable_native_batches(reversed, 4, 100)));
         let removed = &functions[0].name;
         let bucket = |name: &str| {
             let mut hash = Sha256::new();
@@ -209,7 +209,7 @@ mod tests {
                 .filter(|batch| bucket(&batch[0]) != bucket(removed))
                 .collect::<Vec<_>>()
         };
-        let after = names(stable_stdlib_batches(functions[1..].to_vec(), 4, 100));
+        let after = names(stable_native_batches(functions[1..].to_vec(), 4, 100));
         assert_eq!(unchanged(baseline), unchanged(after));
     }
 }

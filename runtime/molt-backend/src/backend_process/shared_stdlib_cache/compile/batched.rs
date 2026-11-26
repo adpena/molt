@@ -10,7 +10,7 @@ use super::super::super::native_batch::{
     create_native_batch_temp_dir, finish_native_batch_temp_dir,
     release_native_backend_batch_memory_to_os, run_native_batch_worker_with_failure_artifacts,
 };
-use super::super::publish::{StdlibArchiveProvenance, StdlibObjectCache};
+use super::super::publish::{NativeObjectCache, StdlibArchiveProvenance};
 use super::plan::{StdlibBatchPlan, log_stdlib_batch, stdlib_batch_ops_budget};
 use molt_ir::content_digest::bytes_to_lower_hex;
 
@@ -33,7 +33,7 @@ pub(super) fn plan_batched_stdlib_cache_archive(
     plan: StdlibBatchPlan,
     profile: Option<molt_backend::PgoProfileIR>,
     target_triple: Option<&str>,
-    cache: Option<&StdlibObjectCache>,
+    cache: Option<&NativeObjectCache>,
 ) -> io::Result<PlannedStdlibArchive> {
     // Batches are independent. Each one closes its job and hashes it on the
     // request's pool; results keep batch order.
@@ -44,12 +44,11 @@ pub(super) fn plan_batched_stdlib_cache_archive(
             functions: batch_funcs,
             profile: profile.clone(),
         };
-        let external_function_names =
-            batch_external_function_names(&plan.all_function_names, &ir.functions);
         append_referenced_external_declarations(
             &mut ir.functions,
             &plan.external_function_declarations,
         );
+        let external_function_names = batch_external_function_names(&ir.functions);
         let job = NativeBatchObjectJob {
             ir,
             code_slots: None,
@@ -74,7 +73,6 @@ pub(super) fn plan_batched_stdlib_cache_archive(
     .collect::<io::Result<Vec<_>>>()?;
     drop(plan.module_context);
     drop(plan.external_function_declarations);
-    drop(plan.all_function_names);
     Ok(PlannedStdlibArchive { batches })
 }
 
@@ -87,7 +85,7 @@ impl PlannedStdlibArchive {
             .iter()
             .map(|batch| batch.key)
             .collect::<Option<Vec<_>>>()?;
-        Some(StdlibObjectCache::archive_key(&keys))
+        Some(NativeObjectCache::archive_key(&keys))
     }
 
     /// Restore or compile every constituent and hand the ordered objects to
@@ -95,7 +93,7 @@ impl PlannedStdlibArchive {
     pub(crate) fn assemble(
         self,
         log_prefix: &str,
-        cache: Option<&StdlibObjectCache>,
+        cache: Option<&NativeObjectCache>,
         publish: impl FnOnce(&[MappedObject], &StdlibArchiveProvenance) -> io::Result<()>,
     ) -> io::Result<()> {
         if cache.is_none() {

@@ -36,7 +36,7 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
             options,
             batch_ops_budget,
         )?;
-        run::run_native_application_batches(output_path, &batch_specs, options.log_prefix)
+        run::run_native_application_batches(output_path, &batch_specs, options.log_prefix, options.object_cache.as_ref())
     })();
 
     let (output, workers) = super::super::finish_native_batch_temp_dir(

@@ -1,13 +1,10 @@
-use std::collections::BTreeSet;
-
 use molt_backend::{SimpleBackend, SimpleIR};
 
-use super::super::super::partition_functions_for_batches;
+use super::super::super::stable_native_batches;
 use super::super::super::{ExternalFunctionDeclarations, external_function_declarations};
 
 pub(super) struct NativeApplicationBatchPlan {
     pub(super) profile: Option<molt_backend::PgoProfileIR>,
-    pub(super) all_function_names: BTreeSet<String>,
     pub(super) external_function_declarations: ExternalFunctionDeclarations,
     pub(super) app_callable_manifest: molt_backend::passes::AppCallableManifest,
     pub(super) module_context: molt_backend::NativeBackendModuleContext,
@@ -26,7 +23,6 @@ impl NativeApplicationBatchPlan {
         let mut all_functions = ir.functions;
         let module_context = module_context
             .unwrap_or_else(|| SimpleBackend::prepare_module_context(&mut all_functions));
-        let all_function_names = all_functions.iter().map(|f| f.name.clone()).collect();
         let external_function_declarations = external_function_declarations(&all_functions);
         // Shared-stdlib partitioning has already removed bodies referenced by
         // application metadata. Its full-program manifest must travel with the
@@ -37,10 +33,9 @@ impl NativeApplicationBatchPlan {
             .into_iter()
             .filter(|func| !func.is_extern)
             .collect();
-        let batches = partition_functions_for_batches(body_functions, batch_size, batch_ops_budget);
+        let batches = stable_native_batches(body_functions, batch_size, batch_ops_budget);
         Self {
             profile,
-            all_function_names,
             external_function_declarations,
             app_callable_manifest,
             module_context,

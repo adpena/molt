@@ -6,7 +6,7 @@ use molt_backend::SimpleIR;
 
 use super::super::super::native_batch::write_native_archive_objects;
 use super::super::publish::{
-    ArchiveGeneration, ContentArchive, StdlibArchiveProvenance, StdlibObjectCache,
+    ArchiveGeneration, ContentArchive, NativeObjectCache, StdlibArchiveProvenance,
     hydrate_shared_stdlib_cache_archive,
 };
 use super::super::{plan_stdlib_cache_archive, publish_shared_stdlib_cache_archive};
@@ -42,7 +42,7 @@ pub(crate) fn materialize_stdlib_cache(
         stdlib_count,
         stdlib_path.display()
     );
-    let object_cache = StdlibObjectCache::for_archive(
+    let object_cache = NativeObjectCache::for_archive(
         stdlib_path,
         request.expected_cache_key,
         request.expected_cache_manifest,
@@ -143,8 +143,8 @@ pub(crate) fn materialize_stdlib_cache(
 
 /// Cache publication binds the backend executable; a build whose binary was
 /// replaced keeps its own outputs and caches none (HF-852).
-fn executable_unchanged(cache: Option<&StdlibObjectCache>) -> io::Result<bool> {
-    cache.map_or(Ok(true), StdlibObjectCache::executable_unchanged)
+fn executable_unchanged(cache: Option<&NativeObjectCache>) -> io::Result<bool> {
+    cache.map_or(Ok(true), NativeObjectCache::executable_unchanged)
 }
 
 fn content_generation(content: &ContentArchive) -> ArchiveGeneration<'_> {

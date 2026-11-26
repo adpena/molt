@@ -531,10 +531,11 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     assert!(
         warm_stderr.contains("incremental -- compiling")
             && warm_stderr.contains("2 stdlib extern from")
-            && warm_stderr.contains("compiling materialized batch 6/6")
+            && warm_stderr.contains("application object reuse: 6 hits, 0 misses")
+            && !warm_stderr.contains("compiling materialized batch")
             && warm_stderr.contains("6 functions, 6 batches")
             && !warm_stderr.contains("compiling 0 functions"),
-        "warm forced-batch run must reuse the cache and schedule body batches only; stderr:\n{warm_stderr}"
+        "warm forced-batch run must retain its application objects; stderr:\n{warm_stderr}"
     );
     assert!(
         warm_output_path

@@ -56,6 +56,12 @@ impl Site<'_> {
         (first_parameter..).zip(self.args.iter().copied())
     }
 
+    pub(super) fn argument_for(&self, parameter: usize, first_parameter: usize) -> Option<ValueId> {
+        self.args
+            .get(parameter.checked_sub(first_parameter)?)
+            .copied()
+    }
+
     pub(super) fn fixed_callee(&self) -> Option<FunctionId> {
         match self.kind {
             SiteKind::ProvenGuarded(id) | SiteKind::Internal(id) => Some(id),
@@ -172,17 +178,12 @@ fn static_site(
         Some(molt_ir::OpKind::CallInternal) => SiteKind::Internal(call.callee),
         _ => return None,
     };
-    let first_parameter = usize::from(body.has_closure_parameter());
-    if (first_parameter != 0 && call.callable.is_none())
-        || first_parameter + call.arguments.len() != body.param_names.len()
-    {
-        return None;
-    }
+    let arguments = call.bind(body)?;
     Some(Site {
         block,
         index,
         kind,
-        args: call.arguments.to_vec(),
+        args: arguments.positional.to_vec(),
         result: op.results[0],
         result_demanded: false,
     })

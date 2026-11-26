@@ -1,10 +1,9 @@
 mod batched;
 mod plan;
-mod stable_batches;
 
 use std::io;
 
-use super::publish::StdlibObjectCache;
+use super::publish::NativeObjectCache;
 pub(crate) use batched::PlannedStdlibArchive;
 
 /// Close and hash the constituent jobs of a stdlib archive in member order.
@@ -16,7 +15,7 @@ pub(crate) fn plan_stdlib_cache_archive(
     profile: Option<molt_backend::PgoProfileIR>,
     target_triple: Option<&str>,
     module_context: molt_backend::NativeBackendModuleContext,
-    cache: Option<&StdlibObjectCache>,
+    cache: Option<&NativeObjectCache>,
 ) -> io::Result<PlannedStdlibArchive> {
     let plan = plan::StdlibBatchPlan::from_functions(stdlib_funcs, module_context);
     batched::plan_batched_stdlib_cache_archive(plan, profile, target_triple, cache)

@@ -10,7 +10,7 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::deterministic_hash::HashSet;
 use rayon::prelude::*;
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::collections::BTreeMap;
 
 use crate::FunctionIR;
@@ -150,23 +150,25 @@ pub struct TirOwnedModulePipelineOptions<'a> {
     pub linkage: Option<&'a molt_ir::linkage_abi::FunctionSignatures>,
 }
 
-struct PreparedTirFunction {
-    function: FunctionIR,
+struct PreparedTirFunction<'a> {
+    function: Cow<'a, FunctionIR>,
     content_hash: String,
 }
 
-impl PreparedTirFunction {
+impl<'a> PreparedTirFunction<'a> {
     fn new<F>(
-        source: &FunctionIR,
+        source: &'a FunctionIR,
         table: &molt_ir::FunctionTable,
         cache_flavor: TirPipelineCacheFlavor,
         target_info: &TargetInfo,
         preprocess_before_lowering: &F,
     ) -> Self
     where
-        F: Fn(&mut FunctionIR) + ?Sized,
+        F: Fn(&mut Cow<'_, FunctionIR>) + ?Sized,
     {
-        let mut function = source.clone();
+        // Most preparations only inspect the source. Retain its admitted body
+        // on cache hits (and misses), copying only if preparation writes it.
+        let mut function = Cow::Borrowed(source);
         trace_tir_function_stage(&function.name, "start", function.ops.len());
         preprocess_before_lowering(&mut function);
         let content_hash = content_hash_for_function(&function, table, cache_flavor, target_info);
@@ -182,9 +184,9 @@ struct TirPreparationWorkItem {
     op_count: usize,
 }
 
-struct TirOptimizationInput {
+struct TirOptimizationInput<'a> {
     index: usize,
-    prepared_function: PreparedTirFunction,
+    prepared_function: PreparedTirFunction<'a>,
 }
 
 struct TirOptimizationOutput {
@@ -561,7 +563,7 @@ pub fn run_cached_tir_pipeline<F>(
     preprocess_before_lowering: F,
 ) -> TirPipelineRun
 where
-    F: Fn(&mut FunctionIR) + Sync,
+    F: Fn(&mut Cow<'_, FunctionIR>) + Sync,
 {
     // Reusing optimized TIR would suppress pass dumps, audits and instruments.
     let cache_reuse_allowed = !options.tir_dump
@@ -1089,6 +1091,38 @@ mod tests {
     }
 
     #[test]
+    fn body_edit_reuses_unchanged_tir_without_copying_prepared_sources() {
+        let cache_dir =
+            std::env::temp_dir().join(format!("molt-tir-borrowed-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache_dir);
+        let mut source = projection_fixture();
+        let run = |source: &[FunctionIR], directory: &std::path::Path| {
+            run_cached_tir_pipeline(source, projection_test_options(directory), |prepared| {
+                // Source identity is an allocation oracle: even a cache hit
+                // must reach preparation without materializing another body.
+                let authored = source.iter().find(|row| row.name == prepared.name).unwrap();
+                assert!(std::ptr::eq(prepared.as_ref(), authored));
+            })
+        };
+        let cold = run(&source, &cache_dir);
+        assert_eq!(cold.uncached_count, 2);
+        let cold_bytes = cached_body_bytes(&cold);
+        assert_eq!(run(&source, &cache_dir).uncached_count, 0);
+
+        source[0].ops[0].value = Some(42);
+        let edited = run(&source, &cache_dir);
+        assert_eq!(edited.uncached_count, 1);
+        let edited_bytes = cached_body_bytes(&edited);
+        assert_ne!(edited_bytes[0], cold_bytes[0]);
+        assert_eq!(edited_bytes[1], cold_bytes[1]);
+        // Fresh optimization is the semantic oracle for the changed program.
+        let fresh = run(&source, &cache_dir.join("fresh"));
+        assert_eq!(fresh.uncached_count, 2);
+        assert_eq!(edited_bytes, cached_body_bytes(&fresh));
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
     fn cold_and_warm_cache_return_identical_tir_and_preserve_source() {
         let cache_dir =
             std::env::temp_dir().join(format!("molt-tir-projection-{}", std::process::id()));
@@ -1214,8 +1248,8 @@ mod tests {
             let error = catch_unwind(AssertUnwindSafe(|| {
                 run_cached_tir_pipeline(&source, projection_test_options(&cache_dir), |function| {
                     if !cached {
-                        function.return_abi = molt_ir::FunctionReturnAbi::Value;
-                        function.ops = projection_fixture().remove(0).ops;
+                        function.to_mut().return_abi = molt_ir::FunctionReturnAbi::Value;
+                        function.to_mut().ops = projection_fixture().remove(0).ops;
                     }
                 })
             }))
@@ -1874,7 +1908,7 @@ mod tests {
             let functions = vec![base.clone()];
             run_cached_tir_pipeline(&functions, options(&cache_dir), |function| {
                 preprocessing_calls.fetch_add(1, Ordering::Relaxed);
-                function.source_file = Some(source_file.to_string());
+                function.to_mut().source_file = Some(source_file.to_string());
             })
         };
         let cached_source = |run: &TirPipelineRun| {
@@ -1920,7 +1954,7 @@ mod tests {
             let functions = vec![base.clone()];
             let diagnostic_run =
                 run_cached_tir_pipeline(&functions, diagnostic_options, |function| {
-                    function.source_file = Some("second.py".to_string())
+                    function.to_mut().source_file = Some("second.py".to_string())
                 });
             assert_eq!(
                 diagnostic_run.uncached_count, 1,

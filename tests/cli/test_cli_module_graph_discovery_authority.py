@@ -1407,6 +1407,44 @@ def test_writer_with_unknown_receiver_orders_revisions(
         assert ready == state.scan_revisions
 
 
+def test_multiple_unknown_writers_settle_the_last_writers_live_dependencies(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    # Both unknown writers order all other modules. The last writer (b)
+    # depends on z through a live edge. The separate path through a peeled
+    # earlier head (bridge) cannot wake y while b is still dirty.
+    for writer, receivers in (
+        ("a", (None,)),
+        ("b", (None, "ab_bridge")),
+        ("ab_bridge", ("b",)),
+        ("y", ("ab_bridge",)),
+        ("z", ("b",)),
+        ("unrelated", ()),
+    ):
+        path = state.graph[writer] = tmp_path / f"{writer}.py"
+        state.modules_by_source[path] = {writer}
+        state.active_owners[writer] = {None}
+        state.namespace_writes[writer] = {
+            PythonNamespaceWrite(receiver, "value", "namespace", 1)
+            for receiver in receivers
+        }
+        state.scan_revisions.add(discovery._SourceScanJob(writer, None))
+
+    for names in ({"z"}, {"b"}, {"a"}, {"y", "unrelated"}, {"ab_bridge"}):
+        ready = discovery._ready_namespace_revisions(state)
+        assert {job.module_name for job in ready} == names
+        state.scan_revisions.difference_update(ready)
+    assert not state.scan_revisions
+
+
 def test_opaque_activation_revision_follows_the_escaping_consumer(
     tmp_path: Path,
 ) -> None:

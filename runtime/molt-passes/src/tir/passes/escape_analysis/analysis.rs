@@ -8,6 +8,7 @@ use molt_ir::deterministic_hash::{HashMap, HashSet};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_has_local_only_operands_table;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::value_edges::ValueEdges;
 use crate::tir::values::ValueId;
 
 use super::classify::{EscapeState, is_alloc_site, is_pure_move_copy};
@@ -17,7 +18,6 @@ use super::classify::{EscapeState, is_alloc_site, is_pure_move_copy};
 /// containment in a local allocation owner. Neither implies storage placement.
 #[derive(Clone, Copy)]
 struct ValueFlow {
-    source: ValueId,
     target: ValueId,
     exact: bool,
 }
@@ -31,26 +31,30 @@ fn is_transparent_copy(op: &TirOp) -> bool {
 
 /// One transport projection for escape propagation, containment, and
 /// finalizer sensitivity. The terminator owns the complete CFG-edge vocabulary.
-fn value_flows(func: &TirFunction) -> Vec<ValueFlow> {
-    let mut flows = Vec::new();
+fn value_flows(func: &TirFunction) -> ValueEdges<ValueId, ValueFlow> {
+    let mut flows = ValueEdges::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if is_transparent_copy(op) {
-                flows.push(ValueFlow {
-                    source: op.operands[0],
-                    target: op.results[0],
-                    exact: true,
-                });
+                flows.add(
+                    op.operands[0],
+                    ValueFlow {
+                        target: op.results[0],
+                        exact: true,
+                    },
+                );
             }
         }
         block.terminator.for_each_edge(|target, args| {
             if let Some(destination) = func.blocks.get(&target) {
                 for (&source, parameter) in args.iter().zip(&destination.args) {
-                    flows.push(ValueFlow {
+                    flows.add(
                         source,
-                        target: parameter.id,
-                        exact: false,
-                    });
+                        ValueFlow {
+                            target: parameter.id,
+                            exact: false,
+                        },
+                    );
                 }
             }
         });
@@ -58,16 +62,17 @@ fn value_flows(func: &TirFunction) -> Vec<ValueFlow> {
     flows
 }
 
-fn extend_forward(values: &mut HashSet<ValueId>, flows: &[ValueFlow], exact_only: bool) {
-    loop {
-        let mut changed = false;
-        for flow in flows {
-            if (!exact_only || flow.exact) && values.contains(&flow.source) {
-                changed |= values.insert(flow.target);
+fn extend_forward(
+    values: &mut HashSet<ValueId>,
+    flows: &ValueEdges<ValueId, ValueFlow>,
+    exact_only: bool,
+) {
+    let mut pending: Vec<_> = values.iter().copied().collect();
+    while let Some(source) = pending.pop() {
+        for flow in flows.from(&source) {
+            if (!exact_only || flow.exact) && values.insert(flow.target) {
+                pending.push(flow.target);
             }
-        }
-        if !changed {
-            break;
         }
     }
 }
@@ -98,14 +103,16 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
         .collect();
     // Finalizers may resurrect their receiver and objects retained by it.
     // Their retained graph must remain externally observable to alias consumers.
-    for value in finalizer_alloc_roots(func) {
+    let mut finalizers = finalizer_seeds(func);
+    extend_forward(&mut finalizers, &flows, false);
+    for value in finalizers {
         if let Some(state) = escapes.get_mut(&value) {
             *state = EscapeState::GlobalEscape;
         }
     }
     // The parent can retain a child through an explicitly offset-keyed field.
     // Generic attribute/index stores may call Python and never enter this lane.
-    let mut retained = Vec::new();
+    let mut retained = ValueEdges::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if is_transparent_copy(op) || opcode_has_local_only_operands_table(op.opcode) {
@@ -115,7 +122,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 let value = op.operands[1];
                 if tracked.contains(&value) {
                     if local_owners.contains(&target) {
-                        retained.push((target, value));
+                        retained.add(target, value);
                     } else {
                         escapes.insert(value, EscapeState::GlobalEscape);
                     }
@@ -138,23 +145,29 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
             }
         });
     }
-    retained.extend(flows.iter().map(|flow| (flow.target, flow.source)));
-    // Escape is an object obligation, not a use-site property: if any alias
-    // escapes, none of its other aliases may have their reference counts cut.
-    retained.extend(flows.iter().map(|flow| (flow.source, flow.target)));
-    loop {
-        let mut changed = false;
-        for &(parent, child) in &retained {
-            if escapes.get(&parent) == Some(&EscapeState::GlobalEscape)
-                && let Some(state) = escapes.get_mut(&child)
+    let mut pending: Vec<_> = escapes
+        .iter()
+        .filter_map(|(&value, state)| (*state == EscapeState::GlobalEscape).then_some(value))
+        .collect();
+    if pending.is_empty() {
+        return escapes;
+    }
+    // Escape is an object obligation. An alias can carry it to the object
+    // or to any other alias, while containment only carries it to the child.
+    for &source in &tracked {
+        for flow in flows.from(&source) {
+            retained.add(source, flow.target);
+            retained.add(flow.target, source);
+        }
+    }
+    while let Some(parent) = pending.pop() {
+        for &child in retained.take_from(&parent) {
+            if let Some(state) = escapes.get_mut(&child)
                 && *state != EscapeState::GlobalEscape
             {
                 *state = EscapeState::GlobalEscape;
-                changed = true;
+                pending.push(child);
             }
-        }
-        if !changed {
-            break;
         }
     }
     escapes
@@ -190,16 +203,18 @@ pub(crate) fn op_result_defines_del(op: &TirOp) -> bool {
 /// The requirement flows forward through exact copies and every CFG edge, so
 /// it reaches every value that may name the finalizer-bearing object.
 pub(crate) fn finalizer_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
-    let mut del_required: HashSet<ValueId> = HashSet::default();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if op_result_defines_del(op) {
-                for &result in &op.results {
-                    del_required.insert(result);
-                }
-            }
-        }
+    let mut del_required = finalizer_seeds(func);
+    if !del_required.is_empty() {
+        extend_forward(&mut del_required, &value_flows(func), false);
     }
-    extend_forward(&mut del_required, &value_flows(func), false);
     del_required
+}
+
+fn finalizer_seeds(func: &TirFunction) -> HashSet<ValueId> {
+    func.blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op_result_defines_del(op))
+        .flat_map(|op| op.results.iter().copied())
+        .collect()
 }

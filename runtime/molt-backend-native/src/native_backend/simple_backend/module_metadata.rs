@@ -236,7 +236,11 @@ impl NativeFinalFunctions {
             .iter_mut()
             .enumerate()
             .map(|(index, function)| {
-                super::program_pipeline::preprocess_backend_tir_input(function);
+                let mut prepared = std::borrow::Cow::Borrowed(&*function);
+                super::program_pipeline::preprocess_backend_tir_input(&mut prepared);
+                if let std::borrow::Cow::Owned(prepared) = prepared {
+                    *function = prepared;
+                }
                 let mut body = crate::tir::lower_from_simple::lower_to_tir(function);
                 crate::tir::passes::fast_path_expansion::lower_static_call_arguments(
                     &mut body,

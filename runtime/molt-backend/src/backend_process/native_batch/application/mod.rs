@@ -34,7 +34,7 @@ pub(crate) fn compile_native_application_artifact_to_path(
     let batch_size = resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE);
     let batch_ops_budget = resolved_batch_op_budget_limit(DEFAULT_BACKEND_BATCH_OP_BUDGET);
     if options.native_output_kind == crate::backend_process::NativeArtifactKind::Object
-        || stats.fits_single_batch(batch_size, batch_ops_budget)
+        || (options.object_cache.is_none() && stats.fits_single_batch(batch_size, batch_ops_budget))
     {
         return single::compile_single_native_application_artifact_to_path(
             ir,

@@ -29,12 +29,11 @@ pub(super) fn materialize_native_application_batch_jobs(
             functions: batch_funcs,
             profile: plan.profile.clone(),
         };
-        let external_function_names =
-            batch_external_function_names(&plan.all_function_names, &batch_ir.functions);
         append_referenced_external_declarations(
             &mut batch_ir.functions,
             &plan.external_function_declarations,
         );
+        let external_function_names = batch_external_function_names(&batch_ir.functions);
         let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
         let job = NativeBatchObjectJob {
             ir: batch_ir,
@@ -58,9 +57,14 @@ pub(super) fn materialize_native_application_batch_jobs(
                 None
             },
         }
-        .close_dependencies(&plan.module_context)
-        .encode()?;
+        .close_dependencies(&plan.module_context);
+        let input_key = options
+            .object_cache
+            .as_ref()
+            .map(|cache| cache.input_key(&job))
+            .transpose()?;
         batch_specs.push(NativeBatchJobSpec {
+            input_key,
             job_name: format!("batch_{batch_idx}.json"),
             job,
             object_path: batch_path,

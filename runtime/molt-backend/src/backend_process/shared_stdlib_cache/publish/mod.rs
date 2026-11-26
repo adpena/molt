@@ -4,7 +4,7 @@ mod files;
 mod lock;
 mod objects;
 mod paths;
-pub(crate) use objects::{ContentArchive, StdlibObjectCache};
+pub(crate) use objects::{ContentArchive, NativeObjectCache};
 mod sidecars;
 pub(crate) use sidecars::{StdlibArchiveProvenance, read_stdlib_cache_partition_manifest};
 

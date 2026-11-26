@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 use molt_backend::{ModuleRegistryIR, NativeBackendModuleContext, SimpleIR};
 
 pub(crate) struct NativeApplicationArtifactOptions<'a> {
+    pub(crate) object_cache: Option<crate::backend_process::shared_stdlib_cache::NativeObjectCache>,
     pub(crate) code_slots: molt_ir::code_slots::CodeSlotBindings,
     pub(crate) native_output_kind: crate::backend_process::NativeArtifactKind,
     pub(crate) target_triple: Option<&'a str>,
@@ -70,11 +71,10 @@ impl NativeBatchObjectJob {
     }
 }
 
-/// A closed job encoded for its worker. The bytes stream to the worker's stdin
-/// and reach disk only when a failure preserves them for replay.
-#[derive(Debug, Clone)]
+/// A closed job whose worker transport is encoded only after cache admission misses.
 pub(crate) struct NativeBatchJobSpec {
+    pub(crate) input_key: Option<[u8; 32]>,
     pub(crate) job_name: String,
-    pub(crate) job: Vec<u8>,
+    pub(crate) job: NativeBatchObjectJob,
     pub(crate) object_path: PathBuf,
 }

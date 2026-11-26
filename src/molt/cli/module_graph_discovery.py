@@ -260,15 +260,32 @@ def _ready_namespace_revisions(
                 for name in state.modules_by_source[target]:
                     if writer != name:
                         writers.setdefault(name, set()).add(writer)
+    pending: list[Collection[str]] = []
     if writers_with_unknown_receivers:
-        for receiver in state.graph:
-            if dependencies := writers_with_unknown_receivers - {receiver}:
-                writers.setdefault(receiver, set()).update(dependencies)
-    if not writers:
+        # Every receiver depends on every dirty unknown writer. All unknown
+        # writers share one SCC, so that component blocks every other row.
+        # Peeling its sorted heads must reach its last unknown writer before
+        # any row can run: while that writer is in the interior it is dirty.
+        # At that point the SCC contains only this writer and the remaining
+        # known dependencies reachable without passing a peeled head. This
+        # avoids a Cartesian product of receivers and unknown writers.
+        head = max(writers_with_unknown_receivers)
+        known_dependencies: set[str] = set()
+        frontier = [head]
+        while frontier:
+            for dependency in writers.get(frontier.pop(), ()):
+                if dependency > head and dependency not in known_dependencies:
+                    known_dependencies.add(dependency)
+                    frontier.append(dependency)
+        if dirty.isdisjoint(known_dependencies):
+            return {job for job in state.scan_revisions if job.module_name == head}
+        pending.append(known_dependencies)
+    elif not writers:
         return state.scan_revisions.copy()
+    else:
+        pending.append(state.graph.keys())
 
     ready: set[str] = set()
-    pending: list[Collection[str]] = [state.graph.keys()]
     while pending:
         components = _module_dependency_authority._module_strongly_connected_components(
             pending.pop(), writers

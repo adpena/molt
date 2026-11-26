@@ -2565,8 +2565,8 @@ def test_binding_core_revisits_call_exposure_when_the_callee_becomes_opaque(
         (70, None, False),
         ("nested", None, False),
         ("nested-parent", 0, False),
-        (2, 2, True),
-        (70, 64, True),
+        (2, None, True),
+        (70, None, True),
     ],
 )
 def test_binding_revision_matches_fresh_facts_after_leaf_or_prefix_reuse(
@@ -7369,6 +7369,66 @@ def test_successive_opacity_revisions_match_each_fresh_transfer(
                 assert jobs == [first]
             if index == 2:
                 assert jobs == [other]
+            assert (
+                replace(
+                    actual,
+                    facts=replace(
+                        actual.facts,
+                        state_count=cold.facts.state_count,
+                        telemetry=cold.facts.telemetry,
+                    ),
+                )
+                == cold
+            )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "if value == 'left': return len([value])\n    return len([])",
+        "return [value for _ in (0,)]",
+        "def read(): return value\n    return read",
+        "if value == 'left':\n"
+        "        def read(): return value\n"
+        "        return read\n"
+        "    return len([])",
+    ],
+    ids=["branch", "comprehension", "closure", "changed-definition"],
+)
+def test_successive_argument_revisions_match_each_fresh_transfer(body: str) -> None:
+    flow = python_binding_flow
+    source = (
+        f"def first(value):\n    {body}\n"
+        "def other(value): return len([value])\n"
+        "def sibling(): return sorted(())\n"
+    )
+    tree = ast.parse(source)
+    digest = python_source_digest(source)
+    first, other = tree.body[:2]
+    parameter = python_node_source_key(first.args.args[0])
+    other_parameter = python_node_source_key(other.args.args[0])
+    base = PythonBindingFlowPolicy(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"len", "sorted"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+    )
+    policies = [
+        replace(base, activation_argument_values=arguments)
+        for arguments in (
+            (),
+            ((parameter, "left"),),
+            ((parameter, "right"),),
+            ((parameter, "right"), (other_parameter, "sibling")),
+            (),
+        )
+    ]
+    # Fresh transfers are the semantic oracle, including branch-dependent
+    # closures and definition queues that must refuse independent replay.
+    expected = [flow._Analyzer(policy, digest).analyze(tree) for policy in policies]
+    with flow.python_binding_revision_scope():
+        for policy, cold in zip(policies, expected, strict=True):
+            actual = flow._Analyzer(policy, digest).analyze(tree)
             assert (
                 replace(
                     actual,

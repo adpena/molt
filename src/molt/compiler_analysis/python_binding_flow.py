@@ -10207,6 +10207,17 @@ def _copy_analysis_containers[T](owner: T) -> T:
     return result
 
 
+def _changed_activation_parameters(
+    previous: Mapping[PythonSourceKey, str], current: Mapping[PythonSourceKey, str]
+) -> set[PythonSourceKey]:
+    # A missing fact changes the owning job just as a new literal does.
+    return {
+        key
+        for key in previous.keys() | current.keys()
+        if previous.get(key) != current.get(key)
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class _RecordedBindingTransfer:
     analyzer: _Analyzer
@@ -10224,12 +10235,18 @@ class _RecordedBindingTransfer:
         if (
             activation_sources is None
             or replace(
-                self.analyzer.policy, opaque_activation_sources=activation_sources
+                self.analyzer.policy,
+                opaque_activation_sources=activation_sources,
+                activation_argument_values=policy.activation_argument_values,
             )
             != policy
         ):
             return None
         active = frozenset(activation_sources)
+        arguments = dict(policy.activation_argument_values)
+        changed_arguments = _changed_activation_parameters(
+            self.analyzer._activation_argument_values, arguments
+        )
 
         def differs(group: frozenset[PythonSourceKey]) -> bool:
             return self.analyzer._opaque_activation_reads[group] != (
@@ -10242,6 +10259,15 @@ class _RecordedBindingTransfer:
             index
             for index, record in enumerate(self.jobs)
             if any(differs(group) for group in record.activation_groups)
+            or (
+                changed_arguments
+                and any(
+                    self.analyzer._node_key(parameter) in changed_arguments
+                    for parameter in function_parameter_nodes(
+                        self.analyzer.function_jobs[index].node.args
+                    )
+                )
+            )
         ]
         if (
             not changed
@@ -10252,6 +10278,7 @@ class _RecordedBindingTransfer:
         work = self.analyzer._fork_at_deferred_boundary()
         work.policy = policy
         work._opaque_activation_sources = active
+        work._activation_argument_values = arguments
         work._opaque_activation_reads = {
             group: not group.isdisjoint(active)
             for group in work._opaque_activation_reads

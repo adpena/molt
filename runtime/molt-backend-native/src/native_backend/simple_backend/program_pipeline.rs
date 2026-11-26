@@ -355,13 +355,57 @@ pub(super) fn rewritten_ir_text(function: &crate::tir::TirFunction) -> String {
     dump
 }
 
-pub(super) fn preprocess_backend_tir_input(tmp_func: &mut FunctionIR) {
+pub(super) fn preprocess_backend_tir_input(tmp_func: &mut std::borrow::Cow<'_, FunctionIR>) {
     if tmp_func.ops.iter().any(|op| op.kind == OpKind::Phi) {
-        rewrite_phi_to_store_load(&mut tmp_func.ops);
+        rewrite_phi_to_store_load(&mut tmp_func.to_mut().ops);
         crate::tir::pipeline_cache::trace_tir_function_stage(
             &tmp_func.name,
             "after_phi_rewrite",
             tmp_func.ops.len(),
         );
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    #[test]
+    fn preparation_borrows_ordinary_bodies_and_copies_only_phi_rewrites() {
+        let source = FunctionIR {
+            name: "unchanged".into(),
+            ops: vec![OpIR::new(OpKind::RetVoid)],
+            ..FunctionIR::default()
+        };
+        let mut prepared = Cow::Borrowed(&source);
+        preprocess_backend_tir_input(&mut prepared);
+        assert!(std::ptr::eq(prepared.as_ref(), &source));
+
+        let source = FunctionIR {
+            ops: serde_json::from_value(serde_json::json!([
+                {"kind":"if", "args":["condition"]},
+                {"kind":"else"},
+                {"kind":"end_if"},
+                {"kind":"phi", "args":["left", "right"], "out":"merged"},
+                {"kind":"ret", "args":["merged"]}
+            ]))
+            .unwrap(),
+            ..source
+        };
+        let source_bytes = serde_json::to_vec(&source).unwrap();
+        let mut prepared = Cow::Borrowed(&source);
+        preprocess_backend_tir_input(&mut prepared);
+        assert!(matches!(prepared, Cow::Owned(_)));
+        assert!(prepared.ops.iter().all(|op| op.kind != OpKind::Phi));
+        assert_eq!(
+            prepared
+                .ops
+                .iter()
+                .filter(|op| op.kind == OpKind::StoreVar)
+                .count(),
+            2
+        );
+        assert_eq!(serde_json::to_vec(&source).unwrap(), source_bytes);
     }
 }

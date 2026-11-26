@@ -238,39 +238,57 @@ impl<'a> ExactScalarPlan<'a> {
         {
             return None;
         }
-        let mut parameters: HashMap<ValueId, usize> = self.func.blocks[&entry]
+        let parameters: HashMap<ValueId, usize> = self.func.blocks[&entry]
             .args
             .iter()
             .take(self.func.param_names.len())
             .enumerate()
             .map(|(i, arg)| (arg.id, i))
             .collect();
+        let mut copies = HashMap::default();
+        let mut joins = HashMap::default();
         for id in self.order.iter() {
             let block = &self.func.blocks[id];
-            if let Terminator::Return { values } = &block.terminator {
-                match values.len() {
-                    1 => {}
-                    _ => return None,
+            if let Some(edges) = self.normal_incoming_edges(*id) {
+                for (position, arg) in block.args.iter().enumerate() {
+                    joins.insert(arg.id, (edges, position));
                 }
             }
             for op in &block.ops {
                 if op.has_valid_shape()
                     && let Some(source) = forwarded_python_value_source(op)
-                    && let Some(&parameter) = parameters.get(&source)
                 {
-                    parameters.insert(op.results[0], parameter);
+                    copies.insert(op.results[0], source);
                 }
             }
         }
-        let parameter = *parameters.get(self.returns.first()?)?;
-        if self
-            .returns
-            .iter()
-            .any(|value| parameters.get(value) != Some(&parameter))
-        {
-            return None;
+
+        // Every origin of every returned value must be the same formal.
+        // A loop phi can refer back to itself, so visit each SSA value once
+        // and require a real parameter seed on an executable incoming path.
+        let mut parameter = None;
+        let mut visited = HashSet::default();
+        let mut pending = self.returns.clone();
+        while let Some(value) = pending.pop() {
+            if !visited.insert(value) {
+                continue;
+            }
+            if let Some(&origin) = parameters.get(&value) {
+                if parameter.is_some_and(|current| current != origin) {
+                    return None;
+                }
+                parameter = Some(origin);
+            } else if let Some(&source) = copies.get(&value) {
+                pending.push(source);
+            } else if let Some(&(edges, position)) = joins.get(&value) {
+                for edge in edges {
+                    pending.push(*edge.get(position)?);
+                }
+            } else {
+                return None;
+            }
         }
-        Some(parameter)
+        parameter
     }
 
     pub(crate) fn return_values(&self) -> &[ValueId] {

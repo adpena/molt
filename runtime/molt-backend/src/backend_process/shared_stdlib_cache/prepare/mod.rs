@@ -33,6 +33,7 @@ pub(crate) fn prepare_native_application_artifact<'a>(
     )?;
     let mut module_context = None;
     let mut app_callable_manifest = None;
+    let mut object_cache = None;
     let module_registry_roots: std::collections::BTreeSet<String> = request
         .module_registry
         .as_ref()
@@ -41,6 +42,12 @@ pub(crate) fn prepare_native_application_artifact<'a>(
 
     if let Some(stdlib_path_str) = request.stdlib_archive_path {
         let stdlib_path = Path::new(stdlib_path_str);
+        object_cache = super::NativeObjectCache::for_archive(
+            stdlib_path,
+            request.expected_cache_key,
+            request.expected_cache_manifest,
+            request.target_triple,
+        )?;
         let mut prepared =
             partition::prepare_stdlib_partition(ir, &request, &module_registry_roots, stdlib_path)?;
         module_context = Some(prepared.module_context.clone());
@@ -87,6 +94,7 @@ pub(crate) fn prepare_native_application_artifact<'a>(
     }
 
     Ok(NativeApplicationArtifactOptions {
+        object_cache,
         native_output_kind: request.native_output_kind,
         target_triple: request.target_triple,
         stdlib_split_enabled: request.stdlib_archive_path.is_some(),

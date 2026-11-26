@@ -1,3 +1,4 @@
+use super::function::TirFunction;
 use super::op_kinds_generated::{SimpleIrCallTargetRole, simpleir_call_target_role};
 use super::ops::{AttrValue, OpCode, TirOp};
 use super::types::TirType;
@@ -226,6 +227,35 @@ pub struct StaticCall<'a> {
     /// The function object captured by a proven guarded call, when carried.
     pub callable: Option<super::values::ValueId>,
     pub arguments: &'a [super::values::ValueId],
+}
+
+/// The ABI binding of a proved invocation. The captured callable supplies
+/// an environment only when the callee has a hidden closure parameter.
+pub struct BoundCallArguments<'a> {
+    pub closure_callable: Option<super::values::ValueId>,
+    pub positional: &'a [super::values::ValueId],
+}
+
+impl BoundCallArguments<'_> {
+    pub fn first_positional(&self) -> usize {
+        usize::from(self.closure_callable.is_some())
+    }
+}
+
+impl<'a> StaticCall<'a> {
+    pub fn bind(self, callee: &TirFunction) -> Option<BoundCallArguments<'a>> {
+        let closure_callable = if callee.has_closure_parameter() {
+            Some(self.callable?)
+        } else {
+            None
+        };
+        let arguments = BoundCallArguments {
+            closure_callable,
+            positional: self.arguments,
+        };
+        (arguments.first_positional() + arguments.positional.len() == callee.param_types.len())
+            .then_some(arguments)
+    }
 }
 
 /// The static call `op` makes (HF-773 slice D): a direct call, whose operands

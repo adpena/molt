@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NONCE: AtomicU64 = AtomicU64::new(0);
 
-fn cache() -> StdlibObjectCache {
-    StdlibObjectCache {
+fn cache() -> NativeObjectCache {
+    NativeObjectCache {
         cache_root: std::env::temp_dir().join(format!(
             "molt-stdlib-objects-{}-{}",
             std::process::id(),
@@ -131,6 +131,39 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
     changed = roundtrip(&original);
     changed.external_function_names.clear();
     assert_ne!(original_key, cache.input_key(&changed).unwrap());
+    changed = roundtrip(&original);
+    changed.emit_app_callable_resolver = true;
+    changed.code_slots = Some(Default::default());
+    let metadata_key = cache.input_key(&changed).unwrap();
+    assert_ne!(original_key, metadata_key);
+    changed.code_slots = Some(serde_json::from_value(serde_json::json!({"reader":0})).unwrap());
+    assert_ne!(
+        metadata_key,
+        cache.input_key(&changed).unwrap(),
+        "program code slots own their object identity"
+    );
+    changed.module_registry = Some(molt_backend::ModuleRegistryIR {
+        blob: vec![0; 8],
+        rows: vec![molt_ir::ir::ModuleRegistryRowIR {
+            name: "package".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let registry_key = cache.input_key(&changed).unwrap();
+    changed.module_registry.as_mut().unwrap().blob[0] = 1;
+    assert_ne!(
+        registry_key,
+        cache.input_key(&changed).unwrap(),
+        "registry blob changes must reemit metadata"
+    );
+    let registry_key = cache.input_key(&changed).unwrap();
+    changed.module_registry.as_mut().unwrap().rows[0].static_cells = Some(2);
+    assert_ne!(
+        registry_key,
+        cache.input_key(&changed).unwrap(),
+        "layout changes must reemit metadata"
+    );
     for field in [
         "compiler_fingerprint",
         "cache_variant",
@@ -139,7 +172,7 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
     ] {
         let mut changed_authority = cache.authority.clone();
         changed_authority[field] = serde_json::json!("changed");
-        let other = StdlibObjectCache {
+        let other = NativeObjectCache {
             cache_root: cache.cache_root.clone(),
             authority: changed_authority,
             executable: cache.executable.clone(),
@@ -292,13 +325,13 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
 fn archive_key_binds_every_ordered_constituent_input() {
     let first = [1u8; 32];
     let second = [2u8; 32];
-    let key = StdlibObjectCache::archive_key(&[first, second]);
-    assert_eq!(key, StdlibObjectCache::archive_key(&[first, second]));
-    assert_ne!(key, StdlibObjectCache::archive_key(&[second, first]));
-    assert_ne!(key, StdlibObjectCache::archive_key(&[first]));
+    let key = NativeObjectCache::archive_key(&[first, second]);
+    assert_eq!(key, NativeObjectCache::archive_key(&[first, second]));
+    assert_ne!(key, NativeObjectCache::archive_key(&[second, first]));
+    assert_ne!(key, NativeObjectCache::archive_key(&[first]));
     assert_ne!(
         key,
-        StdlibObjectCache::archive_key(&[first, second, second])
+        NativeObjectCache::archive_key(&[first, second, second])
     );
     let cache = cache();
     let content = cache.content_archive(&key).unwrap();

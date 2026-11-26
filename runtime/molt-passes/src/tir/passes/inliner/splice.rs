@@ -56,51 +56,27 @@ pub(super) fn splice_call_site(
     let block_id = site.block;
     let op_index = site.op_index;
 
-    let (mut call_args, call_result, multi_result, call_span, callable) = {
+    let (mut call_args, call_result, call_span, closure_callable, first_parameter) = {
         let block = &caller.blocks[&block_id];
         let op = &block.ops[op_index];
-        if op.opcode != OpCode::Call {
+        if op.opcode != OpCode::Call || op.results.len() > 1 {
             return None;
         }
-        // A proven guarded call's operand 0 is the callee's function object,
-        // which the inlined activation does not read, except a closure
-        // callee's environment (below): only the arguments bind.
-        let call = crate::tir::call_targets::static_call(op)?;
+        // Bind the same typed ABI positions the call analysis sees. Only a
+        // closure callee reads the guarded call's captured function object.
+        let arguments = crate::tir::call_targets::static_call(op)?.bind(callee)?;
+        let first = arguments.first_positional();
+        if callee.blocks[&callee.entry_block].args.len() != first + arguments.positional.len() {
+            return None;
+        }
         (
-            call.arguments.to_vec(),
+            arguments.positional.to_vec(),
             op.results.first().copied(),
-            op.results.len() > 1,
             op.source_span,
-            call.callable,
+            arguments.closure_callable,
+            first,
         )
     };
-    if multi_result {
-        return None;
-    }
-
-    // A closure callee takes its environment first. Only a proven guarded
-    // call supplies it: its operand 0 is the callee's own function object,
-    // whose closure tuple is exactly what the runtime's binding would pass
-    // (design 78 5.10). Eligibility admits closure callees only on final-TIR
-    // targets, where `FunctionClosure` lowers. Any other call of a closure is
-    // refused here: its operands carry no environment, and binding the
-    // environment parameter to an argument would miscompile
-    // `__molt_closure__[i]`.
-    let closure_callable = if callee.has_closure_parameter() {
-        Some(callable?)
-    } else {
-        None
-    };
-    let first_parameter = usize::from(closure_callable.is_some());
-
-    // Arity must match (params bind 1:1 to args). A static call whose arg count
-    // disagrees with the callee's param count is a shape we will not splice
-    // (defensive - the frontend should keep these aligned, but a mismatch must
-    // not produce malformed SSA).
-    let callee_entry = &callee.blocks[&callee.entry_block];
-    if callee_entry.args.len() != call_args.len() + first_parameter {
-        return None;
-    }
 
     // REFCOUNT guard (invariant 2).
     if call_site_has_arg_incref(&caller.blocks[&block_id], op_index, &call_args) {

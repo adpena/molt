@@ -13,6 +13,7 @@ pub(crate) use partition::{
 #[cfg(test)]
 pub(crate) use prepare::MATERIALIZED as STDLIB_MATERIALIZED;
 pub(crate) use prepare::{NativeStdlibCachePrepare, prepare_native_application_artifact};
+pub(crate) use publish::NativeObjectCache;
 pub(crate) use publish::read_stdlib_cache_partition_manifest;
 #[cfg(any(unix, test))]
 pub(crate) use publish::shared_stdlib_cache_matches;
