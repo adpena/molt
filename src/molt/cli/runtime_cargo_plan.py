@@ -49,10 +49,10 @@ from molt.rust_toolchain import (
     resolve_rustup_proxy,
     rust_toolchain_library_environment,
 )
+from molt.cargo_resource_selection import CargoResourceRoot
 from molt.cli.cargo_resource_custody import (
     CargoExecutableCustody,
     CargoResourceCustody,
-    CargoResourceRoot,
 )
 from molt.cli.runtime_identity_schema import _freeze_json
 from molt.cli.runtime_c_resources import (
