@@ -1,20 +1,25 @@
-"""Build-record-owned replay of a source-backed, settled import graph."""
+"""Content-verified replay of a source-backed, settled import graph."""
 
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Sequence, TypeVar, cast
 
-from molt import build_record
 from molt.compilation_target import Target, target_name
 from molt.cli import module_graph_cache as codec
 from molt.cli.cache_fingerprints import (
-    _cache_tooling_fingerprint,
+    _frontend_semantic_tooling_fingerprint,
 )
-from molt.cli.frontend_record_files import frontend_record_files
+from molt.cli.frontend_record_files import (
+    frontend_record_files,
+    is_record_digest,
+    record_digest,
+)
 from molt.exact_json import decode_frontend_payload, encode_frontend_payload
 from molt.cli.models import (
     ImportScanEvidence,
@@ -57,6 +62,7 @@ from molt.target_python import TargetPythonVersion
 
 _MAX_BYTES = 16 * 1024 * 1024
 _SCHEMA = 5
+_KIND = "import-graph"
 _T = TypeVar("_T")
 
 
@@ -235,10 +241,22 @@ class ImportGraphContext:
     stdlib_profile: str
     include_modules: tuple[str, ...]
     runtime_machinery: RuntimeImportMachinery
+    stdlib_allowlist: frozenset[str]
+    normal_none_intrinsics: int
 
     def payload(self) -> dict[str, object]:
         assert self.entry.image_scope is not None
+        cpython_suite = os.environ.get("MOLT_REGRTEST_CPYTHON_DIR")
         return {
+            "host_python": sys.version,
+            "cpython_suite": str(Path(cpython_suite).resolve())
+            if cpython_suite
+            else None,
+            "aliases": [
+                (name, str(path)) for name, path in self.entry.module_root_aliases
+            ],
+            "stdlib_allowlist": sorted(self.stdlib_allowlist),
+            "normal_none_intrinsics": self.normal_none_intrinsics,
             "source": str(self.entry.source_path),
             "entry": self.entry.entry_module,
             "roots": [str(path) for path in self.entry.module_roots],
@@ -367,15 +385,9 @@ def publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> None
 
 
 def _publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> None:
-    if not build_record.recording_active() or plan.native_artifact_plan.artifacts:
+    if plan.native_artifact_plan.artifacts:
         return
     graph = plan.settled_graph
-    if graph.publication_payload is not None:
-        plan.import_query_closure.validate(plan.scan_authority)
-        digest = frontend_record_files().put_blob(graph.publication_payload)
-        if digest is not None:
-            build_record.record_import_graph(digest)
-        return
     if not _complete_observers(
         graph.scan_authority, plan.import_query_closure.observations
     ):
@@ -462,10 +474,11 @@ def _publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> Non
         row["namespace_premise"] = codec._namespace_premise_cache_identity(
             source.namespace_premise
         )
+    coordinate = context.payload()
     payload = {
         "schema": _SCHEMA,
-        "producer": _cache_tooling_fingerprint(),
-        "context": context.payload(),
+        "producer": _frontend_semantic_tooling_fingerprint(),
+        "context": coordinate,
         "contexts": contexts,
         "premises": premises,
         "queries": rows,
@@ -490,21 +503,12 @@ def _publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> Non
         "declared": sorted(graph.declared_root_modules),
         "allowlist": sorted(graph.stdlib_allowlist),
     }
-    encoded = _bytes(payload)
-    if len(encoded) > _MAX_BYTES:
-        return
-    plan.import_query_closure.validate(plan.scan_authority)
-    digest = frontend_record_files().put_blob(encoded)
-    if digest is not None:
-        build_record.record_import_graph(digest)
+    _store_import_graph(record_digest(_bytes(coordinate)), plan, payload)
 
 
 def replay_import_graph(context: ImportGraphContext) -> _ImportPlan | None:
-    digest = build_record.import_graph_candidate()
-    if digest is None:
-        return None
     try:
-        return _replay(digest, context)
+        return _replay(context)
     except (
         OSError,
         ValueError,
@@ -518,12 +522,23 @@ def replay_import_graph(context: ImportGraphContext) -> _ImportPlan | None:
         return None
 
 
-def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
+def _store_import_graph(
+    key: str, plan: _ImportPlan, payload: Mapping[str, object]
+) -> None:
+    encoded = _bytes(payload)
+    if len(encoded) <= _MAX_BYTES:
+        plan.import_query_closure.validate(plan.scan_authority)
+        frontend_record_files().put(_KIND, key, encoded)
+
+
+def _replay(context: ImportGraphContext) -> _ImportPlan | None:
     from molt.cli.module_graph import _assemble_import_plan
     from molt.cli.module_graph_discovery import _load_module_import_scan
     from molt.cli.external_native import _resolve_external_package_native_artifact_plan
 
-    record = frontend_record_files().get_blob(digest, max_bytes=_MAX_BYTES)
+    coordinate = _bytes(context.payload())
+    key = record_digest(coordinate)
+    record = frontend_record_files().get(_KIND, key, max_bytes=_MAX_BYTES)
     if record is None:
         return None
     value = _map(decode_frontend_payload(record.payload))
@@ -553,8 +568,8 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
         return None
     if (
         value.get("schema") != _SCHEMA
-        or value.get("producer") != _cache_tooling_fingerprint()
-        or _bytes(value["context"]) != _bytes(context.payload())
+        or value.get("producer") != _frontend_semantic_tooling_fingerprint()
+        or _bytes(value["context"]) != coordinate
     ):
         return None
     graph = {
@@ -579,6 +594,7 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
         target_sys_platform=context.target_sys_platform,
         import_topology=topology,
         module_root_aliases=context.entry.module_root_aliases,
+        normal_none_intrinsics=context.normal_none_intrinsics,
     )
     snapshots: dict[Path, PythonSourceSnapshot] = {}
     query_contexts = tuple(
@@ -590,7 +606,8 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
         for raw in _list(value["premises"])
     )
     name_universes: dict[Path, frozenset[str] | None] = {}
-    updated_queries = list(_list(value["queries"]))
+    updated_queries = _list(value["queries"])
+    changed_sources: set[Path] = set()
     digests = ImportResultDigests()
     for row_index, raw in enumerate(updated_queries):
         row = _map(raw)
@@ -613,7 +630,9 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
             raise ValueError("invalid graph scan mode")
         selection = ModuleBodySelection.from_payload(row["selection"])
         purpose = SourceImportPurpose(_text(row["purpose"]))
-        result_digest = build_record._record_digest(row["result_digest"])
+        result_digest = _text(row["result_digest"])
+        if not is_record_digest(result_digest):
+            return None
         query = ImportScanQuery(
             path,
             resolver.import_query_source_lease(snapshot),
@@ -660,6 +679,7 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
             )
             if digests.digest(query, loaded.scan) != result_digest:
                 return None
+            changed_sources.add(path)
             updated_queries[row_index] = {
                 **row,
                 "sha": snapshot.sha256,
@@ -668,15 +688,16 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
         else:
             resolver.observe_persisted_import_scan(query, result_digest)
     sources: list[_ModuleSourceScanAuthority] = []
-    updated_authority: list[object] = []
-    for raw in _list(value["authority"]):
+    updated_authority = _list(value["authority"])
+    for row_index, raw in enumerate(updated_authority):
         row = _map(raw)
         name = _text(row["module"])
         path = Path(_text(row["path"]))
         snapshot = snapshots.get(path)
         if snapshot is None or row["source_sha256"] is None:
             return None
-        updated_authority.append({**row, "source_sha256": snapshot.sha256})
+        if path in changed_sources:
+            updated_authority[row_index] = {**row, "source_sha256": snapshot.sha256}
         sources.append(
             _ModuleSourceScanAuthority(
                 name,
@@ -757,17 +778,21 @@ def _replay(digest: str, context: ImportGraphContext) -> _ImportPlan | None:
         stdlib_root=context.stdlib_root,
         entry_module=context.entry.entry_module,
     )
-    updated_payload = {
-        **value,
-        "queries": updated_queries,
-        "authority": updated_authority,
-        "topology": plan.import_query_closure.import_topology.record(),
-    }
-    encoded = _bytes(updated_payload)
-    if len(encoded) > _MAX_BYTES:
-        return None
-    plan = replace(
-        plan, settled_graph=replace(plan.settled_graph, publication_payload=encoded)
-    )
-    record.refresh()
+    if changed_sources:
+        try:
+            _store_import_graph(
+                key,
+                plan,
+                {
+                    **value,
+                    "queries": updated_queries,
+                    "authority": updated_authority,
+                    "topology": plan.import_query_closure.import_topology.record(),
+                },
+            )
+        except OSError:
+            # The admitted plan remains usable when a cache write fails.
+            pass
+    else:
+        record.refresh()
     return plan

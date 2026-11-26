@@ -24,21 +24,19 @@ from molt.cli import build_command
 from molt.cli.build_request import BuildRequest
 
 
-def test_exact_capture_cannot_inherit_an_outer_graph_candidate(tmp_path: Path) -> None:
+def test_graph_replay_eligibility_is_independent_of_binary_cutoff(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "entry.py"
     source.write_text("pass\n", encoding="utf-8")
 
-    def exact_build(request: BuildRequest) -> int:
-        assert request.capture_link_inputs
-        assert build_record.import_graph_candidate() is None
-        assert not build_record.recording_active()
-        return 0
-
-    with build_record.recording(tmp_path / "records") as ledger:
-        ledger.previous_import_graph = "a" * 64
-        request = BuildRequest(file_path=str(source), capture_link_inputs=True)
-        assert build_command._with_early_cutoff(exact_build)(request) == 0
-        assert build_record.import_graph_candidate() == "a" * 64
+    diagnostic = BuildRequest(file_path=str(source), diagnostics=True)
+    exact_capture = BuildRequest(file_path=str(source), capture_link_inputs=True)
+    no_cache = BuildRequest(file_path=str(source), cache=False)
+    assert build_command._early_cutoff_request(diagnostic) is None
+    assert build_command._admit_import_graph_reuse(diagnostic)
+    assert not build_command._admit_import_graph_reuse(exact_capture)
+    assert not build_command._admit_import_graph_reuse(no_cache)
 
 
 def _fake_build(

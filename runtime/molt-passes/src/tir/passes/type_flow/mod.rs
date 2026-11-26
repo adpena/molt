@@ -334,7 +334,7 @@ fn decide(
     analysis: &Analysis,
     context: ContextId,
     clone_of_context: &[Option<FunctionId>],
-    return_ranges: &[Option<IntRange>],
+    return_ranges: &[ranges::ContextRanges],
 ) -> Vec<SiteDecision> {
     let caller = analysis.context(context);
     inputs.sites[caller.body]
@@ -363,7 +363,11 @@ fn decide(
                     None
                 },
                 result,
-                range: target.and_then(|id| return_ranges[id.0]),
+                range: return_ranges[context.0]
+                    .forwarded
+                    .get(&position)
+                    .copied()
+                    .or_else(|| target.and_then(|id| return_ranges[id.0].returned)),
             }
         })
         .collect()

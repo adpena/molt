@@ -1905,18 +1905,23 @@ def _prepare_entry_module_graph(
     stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
     runtime_import_machinery: RuntimeImportMachinery = RuntimeImportMachinery.PYTHON,
     include_modules: tuple[str, ...] = (),
+    stdlib_allowlist: set[str] | None = None,
+    normal_none_intrinsics: int | None = None,
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
     """``stdlib_profile`` is the build's resolved intent (resolve_stdlib_profile);
     ``runtime_import_machinery`` is the target fact from
     ``RuntimeImportMachinery.for_build``; ``include_modules`` are the build's
     explicit roots (resolve_include_modules)."""
-    stdlib_allowlist = _module_stdlib_policy._stdlib_allowlist()
+    if stdlib_allowlist is None:
+        stdlib_allowlist = _module_stdlib_policy._stdlib_allowlist()
+    if normal_none_intrinsics is None:
+        normal_none_intrinsics = runtime_normal_none_intrinsics(target, stdlib_profile)
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _module_resolution._ModuleResolutionCache(
         target_sys_platform=target_sys_platform,
         import_topology=import_topology or _module_resolution.PythonImportTopology(),
         module_root_aliases=module_root_aliases,
-        normal_none_intrinsics=runtime_normal_none_intrinsics(target, stdlib_profile),
+        normal_none_intrinsics=normal_none_intrinsics,
     )
     try:
         module_resolution_cache.import_topology.validate()

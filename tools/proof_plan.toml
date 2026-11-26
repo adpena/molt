@@ -70,6 +70,7 @@ authority_inputs = [
   "tools/coordination_records.py",
   "tools/disk_guard.py",
   "tools/checkout_maintenance.py",
+  "tools/checkout_maintenance_launch.py",
   "tools/molt_dev_storage.py",
   "tools/molt_dev_common.py",
   "tools/controller_source.py",
@@ -4926,6 +4927,7 @@ globs = [
   "tools/command_execution.py",
   "tools/molt_dev.py",
   "tools/checkout_maintenance.py",
+  "tools/checkout_maintenance_launch.py",
   "tools/cache_maintenance.py",
   "tools/controller_source.py",
   "tools/detached_execution.py",
@@ -4966,6 +4968,7 @@ toolchains = ["python", "git"]
 description = "Published maintenance policy, captured reclaim scope and terminal error propagation."
 globs = [
   "tools/checkout_maintenance.py",
+  "tools/checkout_maintenance_launch.py",
   "tools/cache_maintenance.py",
   "tests/tools/test_checkout_maintenance.py",
   "src/molt/dx.py",

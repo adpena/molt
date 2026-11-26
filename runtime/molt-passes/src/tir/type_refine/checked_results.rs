@@ -259,20 +259,20 @@ impl CheckedResults {
             .collect()
     }
 
-    pub(crate) fn call_range_values(
+    pub(crate) fn checked_call_values<T>(
         &self,
         func: &TirFunction,
-        range_of: impl Fn(&TirOp) -> Option<crate::tir::numeric_facts::IntRange>,
-    ) -> Vec<(ValueId, crate::tir::numeric_facts::IntRange)> {
-        let range = |site: &Site| range_of(&func.blocks[&site.block].ops[site.call]);
+        fact_of: impl Fn(&TirOp) -> Option<T>,
+    ) -> Vec<(ValueId, T)> {
+        let fact = |site: &Site| fact_of(&func.blocks[&site.block].ops[site.call]);
         self.sites
             .iter()
             .filter(|(_, site)| site.compiled && !site.physical_use)
-            .filter_map(|(&word, site)| Some((word, range(site)?)))
+            .filter_map(|(&word, site)| Some((word, fact(site)?)))
             .chain(
                 self.projections
                     .iter()
-                    .filter_map(|(&success, word)| Some((success, range(&self.sites[word])?))),
+                    .filter_map(|(&success, word)| Some((success, fact(&self.sites[word])?))),
             )
             .collect()
     }

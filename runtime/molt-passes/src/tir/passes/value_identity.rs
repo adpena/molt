@@ -240,7 +240,7 @@ impl<'f> ScalarFacts<'f> {
         self.call_ranges.get_or_init(|| {
             self.checked_calls()
                 .1
-                .call_range_values(self.body, TirOp::exact_result_range)
+                .checked_call_values(self.body, TirOp::exact_result_range)
         })
     }
 

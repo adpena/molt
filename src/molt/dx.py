@@ -819,13 +819,13 @@ def _source_checkout_maintenance():  # noqa: ANN202 - source tools load lazily
     if installed_distribution_root(source) is not None:
         return None
     tools_dir = source / "tools"
-    if not (tools_dir / "checkout_maintenance.py").is_file():
+    if not (tools_dir / "checkout_maintenance_launch.py").is_file():
         return None
     if str(tools_dir.parent) not in sys.path:
         sys.path.insert(0, str(tools_dir.parent))
-    from tools import checkout_maintenance  # noqa: PLC0415 - lazy, development only
+    from tools import checkout_maintenance_launch  # noqa: PLC0415 - lazy, development only
 
-    return checkout_maintenance
+    return checkout_maintenance_launch
 
 
 def prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:

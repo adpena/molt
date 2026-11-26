@@ -383,7 +383,7 @@ def test_cli_build_applies_the_cache_budget_to_its_cache_once_a_day(
     tools = source / "tools"
     tools.mkdir(parents=True)
     (source / MANIFEST_NAME).write_bytes(b"{}")
-    for name in ("checkout_maintenance.py", "disk_guard.py"):
+    for name in ("checkout_maintenance_launch.py", "disk_guard.py"):
         (tools / name).write_bytes(b"raise AssertionError('development tool imported')")
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(source))
 

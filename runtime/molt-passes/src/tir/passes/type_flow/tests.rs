@@ -364,6 +364,72 @@ fn bounded_checked_returns_keep_the_python_hull_across_a_wrapper() {
 }
 
 #[test]
+fn checked_forwarders_preserve_each_actuals_range_on_success() {
+    use crate::tir::passes::value_identity::ScalarFacts;
+    use crate::tir::passes::value_range::compute_with_scalar_facts;
+
+    let mut identity = function("identity", 1);
+    let entry = identity.entry_block;
+    let arg = identity.blocks[&entry].args[0].id;
+    identity.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![arg] };
+
+    let mut driver = function("driver", 1);
+    let entry = driver.entry_block;
+    let external = driver.blocks[&entry].args[0].id;
+    let left = const_int(&mut driver, entry, -41);
+    let right = const_int(&mut driver, entry, 300);
+    let first = proven_call(&mut driver, entry, FunctionId(0), &[left]);
+    let nested = proven_call(&mut driver, entry, FunctionId(0), &[first]);
+    let distinct = proven_call(&mut driver, entry, FunctionId(0), &[right]);
+    let unknown = proven_call(&mut driver, entry, FunctionId(0), &[external]);
+    let rebound = proven_call(&mut driver, entry, FunctionId(0), &[right]);
+    driver
+        .blocks
+        .get_mut(&entry)
+        .unwrap()
+        .ops
+        .iter_mut()
+        .find(|op| op.results == [rebound])
+        .unwrap()
+        .set_proven_target(false);
+    let tuple = driver.fresh_value();
+    let mut pack = TirOp::new(
+        OpCode::BuildTuple,
+        vec![nested, distinct, unknown, rebound],
+        vec![tuple],
+    );
+    pack.origin = Some(molt_ir::OpKind::TupleNew);
+    push(&mut driver, entry, pack);
+    driver.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![tuple],
+    };
+
+    for target in [llvm(), cranelift()] {
+        let mut module = TirModule::with_own_table("m", vec![identity.clone(), driver.clone()]);
+        run(
+            &mut module,
+            &target,
+            &HashSet::from_iter(["identity".into()]),
+            false,
+        );
+        let driver = body(&module, "driver");
+        let calls = calls(driver);
+        let ranges = compute_with_scalar_facts(&ScalarFacts::new(driver));
+        let raw = crate::representation_facts::raw_i64_safe_values_for(driver, &ranges);
+        assert_eq!(calls.len(), 5);
+        for (call, expected) in calls
+            .iter()
+            .zip([Some(-41), Some(-41), Some(300), None, None])
+        {
+            let expected = expected.map(IntRange::point);
+            assert_eq!(call.exact_result_range(), expected);
+            assert_eq!(ranges.global_range_of(call.results[0]), expected);
+            assert_eq!(raw.contains(&call.results[0]), expected.is_some());
+        }
+    }
+}
+
+#[test]
 fn a_mixed_call_ranges_only_its_checked_success_value() {
     use crate::tir::passes::value_identity::ScalarFacts;
     use crate::tir::passes::value_range::compute_with_scalar_facts;

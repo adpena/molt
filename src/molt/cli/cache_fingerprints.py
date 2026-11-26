@@ -237,7 +237,6 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "stdlib/struct.py": _FrontendInputRole.REFERENCE,
         "__init__.py": _FrontendInputRole.PACKAGE,
         "cli/__init__.py": _FrontendInputRole.PACKAGE,
-        "build_record.py": _FrontendInputRole.IDENTITY,
         "cli/cache_fingerprints.py": _FrontendInputRole.IDENTITY,
         "cli/source_extension_input_custody.py": _FrontendInputRole.IDENTITY,
         "compiler_distribution.py": _FrontendInputRole.IDENTITY,

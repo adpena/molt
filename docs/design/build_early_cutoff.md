@@ -3,30 +3,33 @@
 Status: implemented, 2026-10-16 (HF-250); WASM product families 2026-10-29.
 Owner: frontend build speed.
 
-The v13 local build record also retains a digest of its settled import graph in
-the existing bounded frontend blob store. An ordinary record miss may replay
-that graph's complete typed queries for changed sources, validate its current
-producer, target, roots, native selection and semantic topology, and rebuild the
-active import plan through the same final assembler. A successful unchanged
-build neither loads nor decodes the graph blob. Proof-bearing and exact
-`capture_link_inputs` requests retain their existing exclusion; nested excluded
-requests cannot inherit an outer developer-cache candidate. These local cache
-observations do not constitute release used-byte evidence.
+The frontend record store keys a settled import graph by its resolved program
+inputs, stdlib policy, source-selection context, host interpreter and target.
+The graph has its own publication point after the frontend settles topology
+and validates the query closure. A codegen or link failure, an output-path
+change or a refused binary record can therefore reuse the graph in a later
+build. An ordinary replay reruns the typed queries of changed sources,
+validates the current producer, roots, native selection and live semantic
+topology, and uses the common import-plan assembler. A final binary record
+hit returns before opening the graph. Exact link capture, fact graph,
+audit-log requests and disabled-cache builds bypass graph replay and
+publication. Local cache observations grant no release used-byte evidence.
 
 The persisted query evidence stores a canonical semantic SHA for each observed
 result, with shared resolution contexts and namespace premises. Live capture
 retains its typed results. Replay computes actual results only for changed
 sources and carries unchanged digest witnesses through the common source and
 topology fences; it does not deserialize unchanged result bodies. Publication
-reuses the admitted source leases and, after replay, refreshes the changed query
-generations in the existing payload. The blob remains bounded at 16 MiB.
+refreshes the changed query generations in the admitted payload. An unchanged
+replay renews the existing record without encoding or publishing it again. The
+record remains bounded at 16 MiB.
 
 Replay currently refuses changes to a source's recorded name universe, missing
 body owners, incomplete source observers, native artifact plans, stale runtime
 custody, changed query outputs, malformed/oversized blobs and changed positive or
 negative import observations. The canonical solver handles a refused candidate.
-The graph pointer publishes with the successful full build record. The resolver
-records the paths, types, exact spellings and filtered name sets it used.
+The resolver records the paths, types, exact spellings and filtered name sets
+it used.
 Publication and lookup validate those facts through the same topology authority.
 On POSIX, a replayed child lookup uses the parent's resolved path from the same
 directory fence and reads the leaf kind once. The lexical lookup still uses the

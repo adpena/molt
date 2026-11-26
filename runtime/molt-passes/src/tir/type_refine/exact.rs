@@ -17,7 +17,6 @@ use molt_ir::deterministic_hash::{HashMap, HashSet};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators::executable_reverse_postorder;
 use crate::tir::function::TirFunction;
-use crate::tir::numeric_facts::IntRange;
 use crate::tir::op_kinds_generated::{
     comparison_scalar_domain, opcode_exact_scalar_result_tir_type,
 };
@@ -293,11 +292,11 @@ impl<'a> ExactScalarPlan<'a> {
         self.incoming.get(&block).map(Vec::as_slice)
     }
 
-    pub(crate) fn call_range_values(
+    pub(crate) fn checked_call_values<T>(
         &self,
-        range_of: impl Fn(&TirOp) -> Option<IntRange>,
-    ) -> Vec<(ValueId, IntRange)> {
-        self.checked.call_range_values(self.func, range_of)
+        fact_of: impl Fn(&TirOp) -> Option<T>,
+    ) -> Vec<(ValueId, T)> {
+        self.checked.checked_call_values(self.func, fact_of)
     }
 
     pub(crate) fn solve(&self, seeds: ExactSeeds<'_>) -> HashMap<ValueId, TirType> {

@@ -1988,7 +1988,6 @@ class _SettledImportGraph:
     operation_counts: Mapping[str, int]
     target: Target
     target_python: TargetPythonVersion
-    publication_payload: bytes | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,6 @@ import os
 import stat
 import threading
 import time
-from contextvars import ContextVar
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -45,7 +44,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v15"
+_SCHEMA = "molt-build-record-v16"
 _RECORD_NAMESPACE = _SCHEMA.removeprefix("molt-build-record-")
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
@@ -581,8 +580,6 @@ class InputLedger:
     products: BuildProducts | None = None
     result: NativeBuildResult | None = None
     claims: list[RecordedBuildClaim] = field(default_factory=list)
-    import_graph: str | None = None
-    previous_import_graph: str | None = None
     import_topologies: dict[int, ImportTopologyEvidence] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _reads: dict[ReadReceiptId, str | None] = field(default_factory=dict, repr=False)
@@ -771,36 +768,6 @@ class InputLedger:
 
 
 _BUILDS_LOCK = threading.Lock()
-_ACTIVE_LEDGER: ContextVar[InputLedger | None] = ContextVar(
-    "molt_build_record_ledger", default=None
-)
-
-
-def import_graph_candidate() -> str | None:
-    ledger = _ACTIVE_LEDGER.get()
-    return None if ledger is None else ledger.previous_import_graph
-
-
-def record_import_graph(digest: str) -> None:
-    ledger = _ACTIVE_LEDGER.get()
-    if ledger is not None:
-        ledger.import_graph = _record_digest(digest)
-
-
-def recording_active() -> bool:
-    return _ACTIVE_LEDGER.get() is not None
-
-
-@contextmanager
-def without_import_graph_recording() -> Generator[None]:
-    """Exact-capture and nested requests cannot inherit a developer candidate."""
-    token = _ACTIVE_LEDGER.set(None)
-    try:
-        yield
-    finally:
-        _ACTIVE_LEDGER.reset(token)
-
-
 _BUILDS_ENTERED = 0
 
 
@@ -827,7 +794,6 @@ def recording(
     transient_parent: Path,
     *,
     capture_result: bool = False,
-    previous_import_graph: str | None = None,
 ) -> Generator[InputLedger]:
     """Activate one ledger for the first build of this process.
 
@@ -850,7 +816,6 @@ def recording(
 
     started = current_process_started_ns()
     ledger = InputLedger(started if started is not None else time.time_ns())
-    ledger.previous_import_graph = previous_import_graph
     if started is None:
         ledger.refuse("process start time unavailable")
     transient_parent.mkdir(parents=True, exist_ok=True)
@@ -862,11 +827,9 @@ def recording(
         previous_temporary = tempfile.tempdir
         tempfile.tempdir = temporary
         input_report.install_sink(ledger, log_dir, capture_result=capture_result)
-        ledger_token = _ACTIVE_LEDGER.set(ledger)
         try:
             yield ledger
         finally:
-            _ACTIVE_LEDGER.reset(ledger_token)
             input_report.remove_sink()
             tempfile.tempdir = previous_temporary
             input_report.merge_worker_logs(ledger, log_dir)
@@ -1251,7 +1214,6 @@ def write_record(
         "directories": directories,
         "probes": probes,
         "import_topologies": import_topologies,
-        "import_graph": ledger.import_graph,
         "result": None if ledger.result is None else ledger.result.payload(),
         "claims": [claim.payload() for claim in ledger.claims]
         if ledger.result is not None
@@ -1285,7 +1247,6 @@ def check(
     claim: Callable[[RecordedBuildClaim], None] | None = None,
     require_result: bool = False,
     linked_output: str | None = None,
-    graph_candidate: Callable[[str], None] | None = None,
 ) -> BuildRecordHit | str:
     """The verified output when current, otherwise the first difference.
 
@@ -1300,8 +1261,6 @@ def check(
             return "unreadable record: expected a JSON object"
         if payload.get("schema") != _SCHEMA or payload.get("key") != key:
             return "no record for this request"
-        if graph_candidate is not None and payload.get("import_graph") is not None:
-            graph_candidate(_record_digest(payload["import_graph"]))
         result = (
             None
             if payload["result"] is None

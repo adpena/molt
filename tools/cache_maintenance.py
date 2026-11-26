@@ -16,7 +16,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.checkout_maintenance import maintenance_arguments  # noqa: E402
+from tools.checkout_maintenance_launch import maintenance_arguments  # noqa: E402
 from molt.cache_eviction import automatic_retention  # noqa: E402
 from molt.default_paths import CLI_CACHE_RETENTION_INTERVAL_SECONDS  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
