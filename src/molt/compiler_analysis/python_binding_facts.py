@@ -147,16 +147,18 @@ class PythonActivationPartition(NamedTuple):
     classes: tuple[frozenset[str] | None, ...]
 
 
+PythonSourceArgument: TypeAlias = tuple[
+    int | str | None, frozenset[PythonSourceKey], frozenset[PythonSourceKey]
+]
+
+
 class PythonSourceCall(NamedTuple):
     """Source call value transfer, with argument facts already bound by analysis."""
 
     owner: PythonSourceKey
     callees: frozenset[PythonSourceKey]
     intrinsic_result: IdentityMask
-    arguments: tuple[
-        tuple[int | str | None, frozenset[PythonSourceKey], frozenset[PythonSourceKey]],
-        ...,
-    ]
+    arguments: tuple[PythonSourceArgument, ...]
     argument_strings: tuple[str | None, ...] = ()
 
     def has_valid_source_form(self) -> bool:
@@ -237,6 +239,8 @@ class PythonElementProtocol(StrEnum):
     # instance; a class attribute load returns the property itself.
     PROPERTY = "property"
     SUBSCRIPT = "subscript"
+    REFLECTED_BUILTINS = "reflected_builtins"
+    MAPPING_WRITE = "mapping_write"
     # Zero-argument `super()` as an attribute receiver: the origins are the
     # enclosing function's first argument. An attribute of it selects from
     # the strict ancestors of the argument's class and binds the argument.

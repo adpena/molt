@@ -6,6 +6,7 @@ from molt.compiler_analysis.python_function_kind import (
 )
 from molt.compiler_analysis.python_binding_facts import (
     PythonFunctionResult,
+    PythonSourceArgument,
     PythonSourceCall,
     PythonSourceCallableDeclaration,
     PythonSourceElement,
@@ -20,6 +21,10 @@ from enum import StrEnum
 from collections.abc import Callable, Iterable, Mapping
 from typing import Literal, NamedTuple, assert_never, cast
 
+from molt.compiler_analysis.python_builtin_shapes import (
+    MappingWriteScope,
+    builtin_mapping_write_scope,
+)
 from molt.compiler_analysis.python_imports import (
     SourceAllExports,
     SourceDemandPhase,
@@ -30,14 +35,19 @@ from molt.compiler_analysis.python_imports import (
     SourceImportCall,
     normalize_stdlib_module_name,
 )
+from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.compiler_analysis.python_parameter_classes import representative_arguments
 from molt.compiler_analysis.python_identity_catalog_generated import (
     PythonIdentity,
     INTRINSIC_ACQUISITION_IDENTITIES,
+    INTRINSIC_RESULT_IDENTITIES,
+    NATIVE_ITERATOR_PAYLOADS,
+    PythonIteratorPayloadKind,
 )
 from molt.compiler_analysis.python_value_identity import (
     SOURCE_CALLABLE_IDENTITIES,
+    SOURCE_ITERATION_CALLABLES,
     possible_runtime_import_call_identities,
 )
 from molt.compiler_analysis.static_truth import (
@@ -72,6 +82,7 @@ class SourceCandidate(NamedTuple):
         "value",
         "instance",
         "resumable",
+        "iterator",
         "class_descriptor",
         "static_descriptor",
         "property_descriptor",
@@ -82,6 +93,8 @@ class SourceCandidate(NamedTuple):
         "namespace_remove",
         "namespace_popitem",
         "namespace_clear",
+        "namespace_write_descriptor",
+        "namespace_write_method",
         "namespace_copy_method",
         "namespace_values_method",
         "namespace_items_method",
@@ -94,6 +107,8 @@ class SourceCandidate(NamedTuple):
     identity: PythonIdentity | None = None
     receiver: tuple[str, PythonSourceKey | None] | None = None
     namespace_ownership: PythonNamespaceOwnership | None = None
+    namespace_mutation: MappingWriteScope | None = None
+    iterator_producer: PythonIdentity | None = None
 
     @property
     def value(self) -> tuple[str, PythonSourceKey | None]:
@@ -143,6 +158,11 @@ class SourceCallArguments(NamedTuple):
     site: PythonSourceKey
 
 
+class SourceIteratorItems(NamedTuple):
+    site: PythonSourceKey
+    producer: PythonIdentity
+
+
 class SourceAwait(NamedTuple):
     value: SourceValue
 
@@ -158,6 +178,7 @@ SourceValue = tuple[
     | SourceCacheItem
     | SourceReturn
     | SourceCallArguments
+    | SourceIteratorItems
     | SourceAwait
     | SourceGeneratorCompletion
     | None,
@@ -246,6 +267,7 @@ class PythonSourceDemands:
         self._opaque_activation_changes: set[str] = set()
         self._opaque_activation_producers: dict[str, set[str]] = {}
         self.modules: set[str] = set()
+        self.namespace_writes: dict[str, set[PythonNamespaceWrite]] = {}
         self.owner_demands: dict[
             tuple[str, PythonSourceKey],
             set[_SourceValueDemand],
@@ -1062,6 +1084,17 @@ class PythonSourceDemands:
         binding_owner=None,
     ):
         if owner.identity is not None:
+            if (
+                owner.identity is PythonIdentity.BUILTIN_DICT
+                and (mutation := builtin_mapping_write_scope(name)) is not None
+            ):
+                return {
+                    owner._replace(
+                        kind="namespace_write_descriptor",
+                        identity=None,
+                        namespace_mutation=mutation,
+                    )
+                }
             return set()
         owner_module, owner_source = owner.value
         result = set()
@@ -1085,21 +1118,36 @@ class PythonSourceDemands:
                             )
             return result
         if owner.kind == "namespace":
+            mutation = builtin_mapping_write_scope(name)
+            kind: Literal[
+                "namespace_get",
+                "namespace_remove",
+                "namespace_popitem",
+                "namespace_clear",
+                "namespace_copy_method",
+                "namespace_values_method",
+                "namespace_items_method",
+                "namespace_write_method",
+            ]
             if name in {"get", "__getitem__", "setdefault"}:
-                return {owner._replace(kind="namespace_get")}
-            if name == "pop":
-                return {owner._replace(kind="namespace_remove")}
-            if name == "popitem":
-                return {owner._replace(kind="namespace_popitem")}
-            if name in {"clear", "__delitem__"}:
-                return {owner._replace(kind="namespace_clear")}
-            if name == "copy":
-                return {owner._replace(kind="namespace_copy_method")}
-            if name == "values":
-                return {owner._replace(kind="namespace_values_method")}
-            if name == "items":
-                return {owner._replace(kind="namespace_items_method")}
-            return result
+                kind = "namespace_get"
+            elif name == "pop":
+                kind = "namespace_remove"
+            elif name == "popitem":
+                kind = "namespace_popitem"
+            elif name in {"clear", "__delitem__"}:
+                kind = "namespace_clear"
+            elif name == "copy":
+                kind = "namespace_copy_method"
+            elif name == "values":
+                kind = "namespace_values_method"
+            elif name == "items":
+                kind = "namespace_items_method"
+            elif mutation is not None:
+                kind = "namespace_write_method"
+            else:
+                return result
+            return {owner._replace(kind=kind, namespace_mutation=mutation)}
         binding_owner = owner if binding_owner is None else binding_owner
         if owner.kind == "property_descriptor":
             if name == "fget":
@@ -1401,11 +1449,11 @@ class PythonSourceDemands:
                 self.demand(origin.value, phase)
                 if origin.value == _INTERPRETER_BUILTINS.value:
                     self.activate(_INTERPRETER_IMPORT, phase)
-            elif phase == "call" and origin.kind in {
-                "namespace_clear",
-                "namespace_remove",
-                "namespace_popitem",
-            }:
+            elif (
+                phase == "call"
+                and origin.namespace_mutation is not None
+                and origin.kind not in {"namespace_get", "namespace_write_descriptor"}
+            ):
                 self.demand(origin.value, "release_contents")
             elif (
                 phase == "release"
@@ -1508,6 +1556,14 @@ class PythonSourceDemands:
                 self.demand(
                     (module_name, SourceAwait(returned)) if awaited else returned,
                     "iterate",
+                )
+            return
+        if origin.kind == "iterator":
+            assert owner is not None
+            if phase in {"escape", "expose", "iterate", "next"}:
+                self.demand(
+                    self._iterator_contents(origin),
+                    "escape" if phase in {"escape", "expose"} else "read",
                 )
             return
         if phase in {"iterate", "async_iterate", "get_iter", "get_async_iter"}:
@@ -1710,6 +1766,115 @@ class PythonSourceDemands:
             self._watch_attribute_write(module_name, write)
         self.queue_body(module_name, cast(PythonSourceKey, owner), arguments)
 
+    def _record_namespace_write(
+        self,
+        module: str,
+        site: PythonSourceKey,
+        receiver: SourceCandidate,
+        key: str | None,
+    ) -> None:
+        if (
+            receiver.source is None
+            and receiver.namespace_ownership is PythonNamespaceOwnership.BORROWED
+            and not receiver.contained
+        ):
+            self.namespace_writes.setdefault(module, set()).add(
+                PythonNamespaceWrite(
+                    receiver.module, key, "namespace", site[0], source_site=site
+                )
+            )
+
+    def _record_mapping_call(
+        self, value: SourceValue, call: PythonSourceCall, method: SourceCandidate
+    ) -> None:
+        scope = method.namespace_mutation
+        if scope is None:
+            return
+        module = value[0]
+        unbound = method.kind == "namespace_write_descriptor"
+        key_position = int(unbound)
+        key = (
+            call.argument_strings[key_position]
+            if scope is MappingWriteScope.KEY
+            and len(call.argument_strings) > key_position
+            and call.arguments[key_position][0] == key_position
+            else None
+        )
+        if not unbound:
+            self._record_namespace_write(module, call.owner, method, key)
+            return
+        for receiver in self._positional_candidates(call, value, 0):
+            if receiver.kind == "namespace":
+                self._record_namespace_write(module, call.owner, receiver, key)
+
+    def _positional_candidates(
+        self,
+        call: PythonSourceCall,
+        user: SourceValue,
+        position: int | None,
+        *,
+        include_contents: bool = False,
+        keyword: str | None = None,
+    ) -> set[SourceCandidate]:
+        selected: set[SourceCandidate] = set()
+        for argument in call.arguments:
+            name = argument[0]
+            if (
+                name is None
+                or name == position
+                or name == keyword
+                or (position is None and isinstance(name, int))
+            ):
+                selected.update(
+                    self._argument_candidates(argument, user, include_contents)
+                )
+        return selected
+
+    def _argument_candidates(
+        self, argument: PythonSourceArgument, user: SourceValue, include_contents: bool
+    ) -> set[SourceCandidate]:
+        name, direct, exposed = argument
+        selected: set[SourceCandidate] = set()
+        for origin in exposed if include_contents or name is None else direct:
+            for candidate in self.watch((user[0], origin), user):
+                # An expansion can move a contained value to an actual
+                # argument. Until its arity is known, keep that alternative.
+                contained = name is not None and (
+                    candidate.contained or origin not in direct
+                )
+                selected.add(candidate._replace(contained=contained))
+                if name is None and include_contents:
+                    selected.add(candidate._replace(contained=True))
+        return selected
+
+    def _activate_demand(
+        self, value: SourceValue, candidate: SourceCandidate, demand: SourceDemand
+    ) -> None:
+        module, source = value
+        if isinstance(source, SourceIteratorItems):
+            source = source.site
+        if (
+            demand.phase in {"escape", "expose"}
+            and (
+                candidate.kind == "namespace"
+                or candidate.namespace_mutation is not None
+            )
+            and type(source) is tuple
+            and len(source) == 5
+        ):
+            # The escaped capability can be exercised by code without a bound
+            # call site. Use the publication site, without inventing a key.
+            self._record_namespace_write(
+                module, source, candidate._replace(contained=False), None
+            )
+        self.activate(
+            candidate,
+            demand.phase,
+            demand.arguments,
+            argument_count=demand.argument_count,
+            consumer=demand.consumer,
+        )
+
     def process_value(self, value: SourceValue) -> None:
         self.value_jobs.discard(value)
         module_name, source = value
@@ -1751,6 +1916,8 @@ class PythonSourceDemands:
                     )
         elif isinstance(source, SourceCallArguments):
             self._route_call_arguments(module_name, source, value)
+        elif isinstance(source, SourceIteratorItems):
+            candidates.update(self._iterator_items(module_name, source, value))
         elif isinstance(source, SourceReturn):
             for callee in tuple(self.watch(source.callee, value)):
                 candidates.update(self._returned_values(callee, value))
@@ -1842,6 +2009,26 @@ class PythonSourceDemands:
                         # an attribute of it selects above the receiver's class.
                         if not candidate.contained:
                             candidates.add(candidate)
+                    elif element.protocol is PythonElementProtocol.MAPPING_WRITE:
+                        if candidate.kind == "namespace":
+                            self._record_namespace_write(
+                                module_name, element.owner, candidate, element.key
+                            )
+                    elif element.protocol is PythonElementProtocol.REFLECTED_BUILTINS:
+                        if (
+                            candidate.identity is PythonIdentity.CURRENT_FRAME
+                            and not candidate.contained
+                        ):
+                            candidates.add(_INTERPRETER_BUILTINS)
+                        elif not candidate.contained and (
+                            candidate.kind
+                            in {"native_initializer", "bound_native_initializer"}
+                            or candidate.value in self.declarations
+                        ):
+                            candidates.add(_INTERPRETER_BUILTINS)
+                            candidates.update(
+                                self.select_member(candidate, "__builtins__", value)
+                            )
                     elif candidate.contained:
                         # Exposed provenance is transitive may-containment, not
                         # an exact container depth. A selector can yield the
@@ -1885,6 +2072,8 @@ class PythonSourceDemands:
                                 | PythonElementProtocol.STATIC_METHOD
                                 | PythonElementProtocol.PROPERTY
                                 | PythonElementProtocol.SUPER
+                                | PythonElementProtocol.REFLECTED_BUILTINS
+                                | PythonElementProtocol.MAPPING_WRITE
                             ):
                                 raise AssertionError(
                                     "descriptor construction is handled before selection"
@@ -1908,9 +2097,22 @@ class PythonSourceDemands:
                     if candidate.contained:
                         continue
                     if candidate.kind.startswith("namespace"):
+                        self._record_mapping_call(value, call, candidate)
                         candidates.update(self._returned_values(candidate, value))
                         continue
                     if candidate.identity is not None:
+                        if candidate.identity in SOURCE_ITERATION_CALLABLES:
+                            candidates.update(
+                                self._iteration_call(candidate.identity, call, value)
+                            )
+                        if result_identity := INTRINSIC_RESULT_IDENTITIES.get(
+                            candidate.identity
+                        ):
+                            candidates.add(
+                                SourceCandidate(
+                                    module_name, call.owner, identity=result_identity
+                                )
+                            )
                         argument_count = (
                             None
                             if any(name is None for name, _, _ in call.arguments)
@@ -2038,23 +2240,11 @@ class PythonSourceDemands:
         old_phases = (self.value_phases.get(value, set()) - new_phases) if added else ()
         for candidate in added:
             for incidence in old_phases:
-                self.activate(
-                    candidate,
-                    incidence.phase,
-                    incidence.arguments,
-                    argument_count=incidence.argument_count,
-                    consumer=incidence.consumer,
-                )
+                self._activate_demand(value, candidate, incidence)
         if new_phases:
             for candidate in tuple(known):
                 for incidence in new_phases:
-                    self.activate(
-                        candidate,
-                        incidence.phase,
-                        incidence.arguments,
-                        argument_count=incidence.argument_count,
-                        consumer=incidence.consumer,
-                    )
+                    self._activate_demand(value, candidate, incidence)
 
     def _route_call_arguments(
         self, module: str, inputs: SourceCallArguments, user: SourceValue
@@ -2067,6 +2257,24 @@ class PythonSourceDemands:
         call = self.calls[site]
         seen: set[tuple[SourceValue, bool]] = set()
         actuals: dict[tuple[int, bool], set[SourceCandidate]] = {}
+        names = tuple(name for name, _, _ in call.arguments)
+
+        def values(index: int, packed: bool) -> set[SourceCandidate]:
+            key = (index, packed)
+            selected = actuals.get(key)
+            if selected is not None:
+                return selected
+            name, direct, exposed = call.arguments[index]
+            if name is None:
+                direct = exposed
+            selected = {
+                candidate._replace(contained=packed or source not in direct)
+                for source in exposed
+                for candidate in self._watch_candidates((user[0], source), user)
+            }
+            actuals[key] = selected
+            return selected
+
         for origin in call.callees:
             selection = (module, origin)
             for candidate in self._watch_candidates(selection, user):
@@ -2092,25 +2300,22 @@ class PythonSourceDemands:
                     route = (candidate.value, offset)
                     if route not in seen:
                         seen.add(route)
-                        self._bind_call_arguments(
-                            call, candidate.value, user, offset, actuals
-                        )
+                        self._bind_actuals(names, values, candidate.value, user, offset)
 
-    def _bind_call_arguments(
+    def _bind_actuals(
         self,
-        call: PythonSourceCall,
+        names: tuple[int | str | None, ...],
+        candidates: Callable[[int, bool], set[SourceCandidate]],
         callee: SourceValue,
         user: SourceValue,
         receiver_bound: bool,
-        actuals: dict[tuple[int, bool], set[SourceCandidate]],
     ) -> None:
-        """Transport argument origins through the existing formal-value worklist."""
         self.declaration_users.setdefault(callee, set()).add(user)
         parameters = self.declarations.get(callee)
         if parameters is None:
             return
         keywords = dict(parameters.keywords)
-        for index, (name, origins, exposed) in enumerate(call.arguments):
+        for index, name in enumerate(names):
             if isinstance(name, int):
                 if receiver_bound:
                     name += 1
@@ -2156,25 +2361,8 @@ class PythonSourceDemands:
                         )
                     )
                 )
-                origins = exposed
             for target, packed in targets:
-                # Each selection reads the same operand candidates. Project
-                # them once even when several formals accept that operand.
-                key = (index, packed)
-                values = actuals.get(key)
-                if values is None:
-                    values = set()
-                    for source in exposed:
-                        contained = packed or source not in origins
-                        values.update(
-                            candidate
-                            if candidate.contained == contained
-                            else candidate._replace(contained=contained)
-                            for candidate in self._watch_candidates(
-                                (user[0], source), user
-                            )
-                        )
-                    actuals[key] = values
+                values = candidates(index, packed)
                 if not values:
                     continue
                 formal = (callee[0], target)
@@ -2417,6 +2605,9 @@ class PythonSourceDemands:
         if callee.kind == "namespace_items_method":
             return {callee._replace(kind="namespace_items")}
         if callee.identity is not None or callee.kind in {
+            "namespace_clear",
+            "namespace_write_descriptor",
+            "namespace_write_method",
             "resumable",
             "class_descriptor",
             "property_descriptor",
@@ -2481,6 +2672,249 @@ class PythonSourceDemands:
             return self._function_values(generator, user)
         return set()
 
+    @staticmethod
+    def _iteration_arities(call: PythonSourceCall) -> tuple[bool, bool]:
+        names = tuple(name for name, _, _ in call.arguments)
+        if any(isinstance(name, str) for name in names):
+            return False, False
+        if None in names:
+            return True, True
+        return len(names) == 1, len(names) == 2
+
+    def _iteration_operands(
+        self,
+        identity: PythonIdentity,
+        call: PythonSourceCall,
+        user: SourceValue,
+        unary: bool,
+        *,
+        include_contents: bool,
+    ) -> dict[int | None, set[SourceCandidate]]:
+        if identity is PythonIdentity.BUILTIN_MAP:
+            # Build payload slots in one traversal. Expansions can supply any
+            # still-unbound formal and share a single unknown-position slot.
+            operands: dict[int | None, set[SourceCandidate]] = {}
+            for argument in call.arguments:
+                name = argument[0]
+                if name is None or isinstance(name, int) and name > 0:
+                    position = None if name is None else name - 1
+                    operands.setdefault(position, set()).update(
+                        self._argument_candidates(argument, user, include_contents)
+                    )
+            return operands
+        native_payload = NATIVE_ITERATOR_PAYLOADS.get(identity)
+        keyword = None
+        if native_payload is not None:
+            position, keyword, _kind = native_payload
+        elif identity is PythonIdentity.BUILTIN_ZIP:
+            position = None
+        elif identity is PythonIdentity.BUILTIN_FILTER:
+            position = 1
+        elif unary or identity is PythonIdentity.BUILTIN_ENUMERATE:
+            position = 0
+            if identity is PythonIdentity.BUILTIN_ENUMERATE:
+                keyword = "iterable"
+        else:
+            return {}
+        return {
+            0: self._positional_candidates(
+                call,
+                user,
+                position,
+                include_contents=include_contents,
+                keyword=keyword,
+            )
+        }
+
+    def _iteration_call(
+        self, identity: PythonIdentity, call: PythonSourceCall, user: SourceValue
+    ) -> set[SourceCandidate]:
+        unary, binary = self._iteration_arities(call)
+        module = user[0]
+        if identity is not PythonIdentity.BUILTIN_NEXT:
+            native_payload = NATIVE_ITERATOR_PAYLOADS.get(identity)
+            # Variadic chain acquires each input on advancement. A captured
+            # object (repeat) never uses the iteration protocol on that object.
+            captures_without_acquiring = native_payload is not None and (
+                native_payload.position is None
+                or native_payload.kind is PythonIteratorPayloadKind.VALUE
+            )
+            operands = (
+                {}
+                if captures_without_acquiring
+                else self._iteration_operands(
+                    identity, call, user, unary, include_contents=False
+                )
+            )
+            if not operands and not (
+                captures_without_acquiring
+                or binary
+                and identity is PythonIdentity.BUILTIN_ITER
+            ):
+                return set()
+            for argument in operands.values():
+                for receiver in argument:
+                    if identity is PythonIdentity.BUILTIN_REVERSED:
+                        if receiver.kind == "instance" and not receiver.contained:
+                            for method in ("__reversed__", "__len__"):
+                                self.demand(
+                                    (receiver.module, SourceMember(receiver, method)),
+                                    "call",
+                                )
+                    else:
+                        self.activate(receiver, "get_iter", consumer=module)
+            return {
+                SourceCandidate(
+                    module, call.owner, "iterator", iterator_producer=identity
+                )
+            }
+
+        if not (unary or binary):
+            return set()
+        result: set[SourceCandidate] = set()
+        for iterator in self._positional_candidates(call, user, 0):
+            self.activate(iterator, "next", consumer=module)
+            result.update(self._advanced_values(iterator, user, asynchronous=False))
+        if binary:
+            result.update(
+                self._positional_candidates(call, user, 1, include_contents=True)
+            )
+        return result
+
+    @staticmethod
+    def _iterator_contents(iterator: SourceCandidate) -> SourceValue:
+        assert iterator.source is not None and iterator.iterator_producer is not None
+        return (
+            iterator.module,
+            SourceIteratorItems(iterator.source, iterator.iterator_producer),
+        )
+
+    def _iterator_operand_values(
+        self,
+        identity: PythonIdentity,
+        owners: set[SourceCandidate],
+        user: SourceValue,
+    ) -> set[SourceCandidate]:
+        result: set[SourceCandidate] = set()
+        for owner in owners:
+            if owner.contained:
+                # An aggregate can hold or transitively contain this value.
+                result.add(owner)
+                result.add(owner._replace(contained=False))
+            elif identity is PythonIdentity.BUILTIN_REVERSED:
+                if owner.kind == "instance":
+                    # A custom reverse slot supplies an iterator. The fallback
+                    # reads sequence indices even when __iter__ exists.
+                    reverse = (owner.module, SourceMember(owner, "__reversed__"))
+                    returned = (owner.module, SourceReturn(reverse))
+                    self.demand(returned, "next")
+                    for iterator in self.watch(returned, user):
+                        result.update(
+                            self._advanced_values(iterator, user, asynchronous=False)
+                        )
+                    index = (owner.module, SourceMember(owner, "__getitem__"))
+                    self.demand(index, "call")
+                    result.update(self.watch((owner.module, SourceReturn(index)), user))
+            else:
+                self.activate(owner, "iterate", consumer=user[0])
+                result.update(self._iterated_values(owner, user, asynchronous=False))
+        return result
+
+    def _iterator_items(
+        self, module: str, items: SourceIteratorItems, user: SourceValue
+    ) -> set[SourceCandidate]:
+        origin = (module, items.site)
+        # Revisit a consumed iterator if its constructor learns new arguments.
+        self.watch(origin, user)
+        call = self.calls[origin]
+        unary, binary = self._iteration_arities(call)
+        inputs = self._iteration_operands(
+            items.producer, call, user, unary, include_contents=True
+        )
+        native_payload = NATIVE_ITERATOR_PAYLOADS.get(items.producer)
+        if (
+            native_payload is not None
+            and native_payload.kind is PythonIteratorPayloadKind.VALUE
+        ):
+            return set().union(*inputs.values())
+        operands = tuple(
+            self._iterator_operand_values(items.producer, argument, user)
+            for argument in inputs.values()
+        )
+        if items.producer in {
+            PythonIdentity.BUILTIN_MAP,
+            PythonIdentity.BUILTIN_FILTER,
+        }:
+            # These adapters invoke their callbacks at advancement. Reuse the formal
+            # binder as direct source calls and feed it the yielded operands.
+            def payload(index: int, packed: bool) -> set[SourceCandidate]:
+                return {
+                    candidate._replace(contained=packed or candidate.contained)
+                    for candidate in operands[index]
+                }
+
+            names = tuple(inputs)
+            count = len(names) if None not in names else None
+            result: set[SourceCandidate] = set()
+            for callback in self._positional_candidates(call, user, 0):
+                self._bind_actuals(
+                    names,
+                    payload,
+                    callback.value,
+                    user,
+                    callback.kind == "bound_class_method",
+                )
+                if callback.namespace_mutation is not None:
+                    if callback.kind == "namespace_write_descriptor":
+                        for receiver in operands[0] if operands else ():
+                            if receiver.kind == "namespace":
+                                self._record_namespace_write(
+                                    module, items.site, receiver, None
+                                )
+                    else:
+                        self._record_namespace_write(module, items.site, callback, None)
+                self.activate(callback, "call", argument_count=count, consumer=module)
+                if items.producer is PythonIdentity.BUILTIN_MAP:
+                    result.update(self._returned_values(callback, user))
+            if items.producer is PythonIdentity.BUILTIN_MAP:
+                return result
+            # Filter only returns elements from the original iterable.
+        result = set().union(*operands)
+        if (
+            native_payload is not None
+            and native_payload.kind is PythonIteratorPayloadKind.TUPLE
+            or items.producer
+            in {PythonIdentity.BUILTIN_ENUMERATE, PythonIdentity.BUILTIN_ZIP}
+        ):
+            return {item._replace(contained=True) for item in result}
+        if binary and items.producer is PythonIdentity.BUILTIN_ITER:
+            # iter(callable, sentinel) calls its producer only on advancement.
+            for callback in self._positional_candidates(call, user, 0):
+                self.activate(callback, "call", argument_count=0, consumer=module)
+                result.update(self._returned_values(callback, user))
+        return result
+
+    def _advanced_values(
+        self, iterator: SourceCandidate, user: SourceValue, *, asynchronous: bool
+    ) -> set[SourceCandidate]:
+        if iterator.contained:
+            return set()
+        if iterator.kind == "iterator" and not asynchronous:
+            return set(self.watch(self._iterator_contents(iterator), user))
+        expected = (
+            FunctionKind.ASYNC_GENERATOR if asynchronous else FunctionKind.GENERATOR
+        )
+        if iterator.kind == "resumable" and self._function_kind(iterator) == expected:
+            return self._function_values(iterator, user, yielded=True)
+        if iterator.kind == "instance":
+            name = "__anext__" if asynchronous else "__next__"
+            member = (iterator.module, SourceMember(iterator, name))
+            item = (iterator.module, SourceReturn(member))
+            if asynchronous:
+                item = (iterator.module, SourceAwait(item))
+            return set(self.watch(item, user))
+        return set()
+
     def _iterated_values(
         self, iterable: SourceCandidate, user: SourceValue, *, asynchronous: bool
     ) -> set[SourceCandidate]:
@@ -2489,40 +2923,19 @@ class PythonSourceDemands:
                 candidate._replace(contained=iterable.kind == "namespace_items")
                 for candidate in self._namespace_values(iterable, user)
             }
-        expected = (
-            FunctionKind.ASYNC_GENERATOR if asynchronous else FunctionKind.GENERATOR
+        if iterable.kind != "instance":
+            return self._advanced_values(iterable, user, asynchronous=asynchronous)
+        member = (
+            iterable.module,
+            SourceMember(iterable, "__aiter__" if asynchronous else "__iter__"),
         )
-        if iterable.kind == "resumable":
-            if self._function_kind(iterable) == expected:
-                return self._function_values(iterable, user, yielded=True)
-        elif iterable.kind == "instance":
-            member = (
-                iterable.module,
-                SourceMember(iterable, "__aiter__" if asynchronous else "__iter__"),
+        returned = (iterable.module, SourceReturn(member))
+        result: set[SourceCandidate] = set()
+        for iterator in tuple(self.watch(returned, user)):
+            result.update(
+                self._advanced_values(iterator, user, asynchronous=asynchronous)
             )
-            returned = (iterable.module, SourceReturn(member))
-            result: set[SourceCandidate] = set()
-            for iterator in tuple(self.watch(returned, user)):
-                if (
-                    iterator.kind == "resumable"
-                    and self._function_kind(iterator) == expected
-                ):
-                    result.update(self._function_values(iterator, user, yielded=True))
-                elif iterator.kind == "instance":
-                    advance = (
-                        iterator.module,
-                        SourceMember(
-                            iterator, "__anext__" if asynchronous else "__next__"
-                        ),
-                    )
-                    item = (iterator.module, SourceReturn(advance))
-                    if asynchronous:
-                        item = (iterator.module, SourceAwait(item))
-                    result.update(self.watch(item, user))
-            if not asynchronous:
-                sequence = (iterable.module, SourceMember(iterable, "__getitem__"))
-                result.update(
-                    self.watch((iterable.module, SourceReturn(sequence)), user)
-                )
-            return result
-        return set()
+        if not asynchronous:
+            sequence = (iterable.module, SourceMember(iterable, "__getitem__"))
+            result.update(self.watch((iterable.module, SourceReturn(sequence)), user))
+        return result
