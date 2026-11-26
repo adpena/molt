@@ -33,6 +33,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.compiler_analysis.python_effects_generated import EffectMask
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
+    PythonSourceProjection,
     python_node_source_key,
 )
 from molt.compiler_analysis.python_string_facts import PythonStringBound
@@ -128,6 +129,18 @@ class PythonSourceCall(NamedTuple):
         ...,
     ]
     argument_strings: tuple[str | None, ...] = ()
+
+    def has_valid_source_form(self) -> bool:
+        if self.owner[-1] == "Call":
+            return True
+        return (
+            self.owner[-1] == PythonSourceProjection.DECORATOR_APPLY
+            and bool(self.callees)
+            and self.intrinsic_result == 0
+            and len(self.arguments) == 1
+            and self.arguments[0][0] == 0
+            and self.argument_strings == (None,)
+        )
 
     def join(self, prior: PythonSourceCall) -> PythonSourceCall:
         return self._replace(

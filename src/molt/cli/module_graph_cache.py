@@ -1652,7 +1652,7 @@ def _decode_import_scan_payload(
         ):
             return None
         if (
-            any(item.owner[-1] != "Call" for item in values.calls)
+            any(not item.has_valid_source_form() for item in values.calls)
             or len({item.owner for item in values.calls}) != len(values.calls)
             or len({owner for owner, _ in values.callables}) != len(values.callables)
             or any(not identities for _, identities in values.callables)
