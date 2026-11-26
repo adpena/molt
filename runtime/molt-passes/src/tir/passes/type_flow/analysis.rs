@@ -76,11 +76,7 @@ impl Inputs<'_> {
         site: &Site<'_>,
         facts: &HashMap<ValueId, TirType>,
     ) -> Option<TirType> {
-        if self.specializable[callee]
-            || !site.result_demanded
-            || !returns_value(&self.module.functions[callee])
-            || self.module.functions[callee].is_codegen_partition()
-        {
+        if self.specializable[callee] || !site.result_demanded {
             return None;
         }
         let first = usize::from(self.module.functions[callee].has_closure_parameter());
@@ -90,11 +86,18 @@ impl Inputs<'_> {
         {
             return None;
         }
+        facts.get(&self.forwarded_argument(callee, site)?).cloned()
+    }
+
+    /// The actual whose Python value this invocation returns on every successful exit.
+    pub(super) fn forwarded_argument(&self, callee: usize, site: &Site<'_>) -> Option<ValueId> {
+        let body = &self.module.functions[callee];
+        if !returns_value(body) || body.is_codegen_partition() {
+            return None;
+        }
         let parameter = self.exact_plan(callee).forwarded_return_parameter()?;
-        let (_, argument) = site
-            .parameter_arguments(first)
-            .find(|(position, _)| *position == parameter)?;
-        facts.get(&argument).cloned()
+        site.parameter_arguments(usize::from(body.has_closure_parameter()))
+            .find_map(|(position, argument)| (position == parameter).then_some(argument))
     }
 
     pub(super) fn exact_plan(&self, body: usize) -> &ExactScalarPlan<'_> {

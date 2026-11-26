@@ -668,10 +668,11 @@ its result, and on demand with `tools/disk_guard.py --gc`.
 roots; resolving an environment or preparing a capsule never starts global
 collection. `molt.dx.collect_checkout_state_after_result` is the shared source-only
 scheduling boundary. It preserves the command's captured environment and result,
-and defers to an enclosing memory guard's completion. A due owner dispatches
-`tools/checkout_maintenance.py` through the existing detached supervisor; it
-returns after startup custody is acknowledged. The worker runs the one existing
-collector and publishes its own terminal result outside the originating lane.
+and defers to an enclosing memory guard's completion. A due owner uses
+`tools/checkout_maintenance_launch.py` to dispatch the pinned
+`tools/checkout_maintenance.py` worker through the detached supervisor. The
+launcher returns after startup custody is acknowledged. The worker loads the
+collector and publishes its terminal result outside the originating lane.
 
 The automatic owners are the CLI build scope after its artifact claims release
 (including a cached build), outer CLI source work after dispatch publication

@@ -14,7 +14,8 @@ import pytest
 from molt.checkout_state import GC_STAMP
 from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 from tests.test_molt_dev import _git as git_process
-from tools import checkout_maintenance as maintenance
+from tools import checkout_maintenance as worker
+from tools import checkout_maintenance_launch as maintenance
 from tools import controller_source as controllers
 from tools import detached_execution as detached
 
@@ -334,9 +335,7 @@ def test_worker_publishes_result_errors_as_nonzero(tmp_path, monkeypatch, capsys
     )
     monkeypatch.setattr(disk_guard, "collect_due", lambda **_kwargs: [result])
     retired = tmp_path / "retired"
-    assert (
-        maintenance.main(["--root", str(tmp_path), "--policy-cwd", str(retired)]) == 1
-    )
+    assert worker.main(["--root", str(tmp_path), "--policy-cwd", str(retired)]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["results"] == [{"errors": ["refused"]}]
     assert payload["policy_cwd"] == str(retired)
@@ -350,7 +349,7 @@ def test_worker_exception_remains_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(disk_guard, "collect_due", failure)
     with pytest.raises(RuntimeError, match="collector failed"):
-        maintenance.main(["--root", str(tmp_path), "--policy-cwd", str(tmp_path)])
+        worker.main(["--root", str(tmp_path), "--policy-cwd", str(tmp_path)])
 
 
 def test_cache_dispatch_refuses_old_published_worker_before_admission(

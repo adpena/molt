@@ -698,6 +698,7 @@ def _prepare_frontend_stage_state(
     profile: BuildProfile,
     stdlib_profile: str,
     include_modules: tuple[str, ...],
+    reuse_import_graph: bool,
 ) -> tuple[
     tuple[
         _ImportPlan,
@@ -754,22 +755,29 @@ def _prepare_frontend_stage_state(
     _progress.phase("module_graph")
     if diagnostics_enabled:
         phase_starts["module_graph"] = time.perf_counter()
-    from molt.cli.import_graph_record import ImportGraphContext, replay_import_graph
+    graph_context = None
+    replayed_plan = None
+    if reuse_import_graph:
+        from molt.cli.module_stdlib_policy import _stdlib_allowlist
+        from molt.cli.runtime_features import runtime_normal_none_intrinsics
+        from molt.cli.import_graph_record import ImportGraphContext, replay_import_graph
 
-    graph_context = ImportGraphContext(
-        resolved_build_entry,
-        import_admission_policy,
-        target,
-        prepared_build_config.target_python,
-        prepared_build_config.target_sys_platform,
-        stdlib_root,
-        stdlib_profile,
-        include_modules,
-        RuntimeImportMachinery.for_build(
-            target, prepared_build_config.codegen.wasm_profile
-        ),
-    )
-    replayed_plan = replay_import_graph(graph_context)
+        graph_context = ImportGraphContext(
+            resolved_build_entry,
+            import_admission_policy,
+            target,
+            prepared_build_config.target_python,
+            prepared_build_config.target_sys_platform,
+            stdlib_root,
+            stdlib_profile,
+            include_modules,
+            RuntimeImportMachinery.for_build(
+                target, prepared_build_config.codegen.wasm_profile
+            ),
+            frozenset(_stdlib_allowlist()),
+            runtime_normal_none_intrinsics(target, stdlib_profile),
+        )
+        replayed_plan = replay_import_graph(graph_context)
     prepared_module_graph: _PreparedEntryModuleGraph | _ImportPlan | None
     if replayed_plan is not None:
         prepared_module_graph = replayed_plan
@@ -804,6 +812,16 @@ def _prepare_frontend_stage_state(
                     target, prepared_build_config.codegen.wasm_profile
                 ),
                 include_modules=include_modules,
+                normal_none_intrinsics=(
+                    None
+                    if graph_context is None
+                    else graph_context.normal_none_intrinsics
+                ),
+                stdlib_allowlist=(
+                    None
+                    if graph_context is None
+                    else set(graph_context.stdlib_allowlist)
+                ),
             )
         )
         if prepared_module_graph_error is not None:
@@ -874,9 +892,10 @@ def _prepare_frontend_stage_state(
     if prepared_build_outputs_error is not None:
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
     assert prepared_build_outputs is not None
-    from molt.cli.import_graph_record import publish_import_graph
+    if graph_context is not None and replayed_plan is None:
+        from molt.cli.import_graph_record import publish_import_graph
 
-    publish_import_graph(prepared_build_outputs.import_plan, graph_context)
+        publish_import_graph(prepared_build_outputs.import_plan, graph_context)
     output_layout = prepared_build_outputs.output_layout
     target_triple = output_layout.target_triple
     # Object-only cross compilation does not build or link the Rust runtime.
@@ -1060,6 +1079,7 @@ def _prepare_frontend_pipeline(
     type_facts_path: str | None,
     stdlib_profile: str,
     include_modules: tuple[str, ...],
+    reuse_import_graph: bool = False,
 ) -> tuple[_PreparedFrontendPipelineBundle | None, _CliFailure | None]:
     if is_wasm_target(target) and split_runtime:
         from molt.browser_asset_closure import (
@@ -1104,6 +1124,7 @@ def _prepare_frontend_pipeline(
             profile=profile,
             stdlib_profile=stdlib_profile,
             include_modules=include_modules,
+            reuse_import_graph=reuse_import_graph,
         )
     )
     if prepared_frontend_stage_state_error is not None:

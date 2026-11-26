@@ -34,7 +34,7 @@ from molt.default_paths import (
 )
 from molt.file_publication import PublicationDurability, atomic_write_bytes
 
-FrontendRecordKind = Literal["import-scan", "module-analysis"]
+FrontendRecordKind = Literal["import-scan", "module-analysis", "import-graph"]
 _KINDS: Final = frozenset(get_args(FrontendRecordKind))
 _INDEX_HEADER: Final = b"molt-frontend-record-index v1\n"
 _DIGEST: Final = re.compile(r"[0-9a-f]{64}")
@@ -77,6 +77,10 @@ def record_digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def is_record_digest(value: str) -> bool:
+    return _DIGEST.fullmatch(value) is not None
+
+
 @dataclass(frozen=True, slots=True)
 class _PackedExtent:
     digest: str
@@ -98,13 +102,13 @@ class _RecordLocation:
     @classmethod
     def parse(cls, text: str) -> _RecordLocation | None:
         fields = text.split(":")
-        if _DIGEST.fullmatch(fields[0]) is None:
+        if not is_record_digest(fields[0]):
             return None
         if len(fields) == 1:
             return cls(fields[0])
         if (
             len(fields) != 4
-            or _DIGEST.fullmatch(fields[1]) is None
+            or not is_record_digest(fields[1])
             or _EXTENT.fullmatch(fields[2]) is None
             or _EXTENT.fullmatch(fields[3]) is None
         ):
@@ -324,12 +328,6 @@ class FrontendRecordFiles:
         if current is None or current == location:
             return None
         return self._read_blob(current, max_bytes)
-
-    def get_blob(self, digest: str, *, max_bytes: int) -> FrontendRecord | None:
-        """Read a bounded digest-addressed product owned by an external record."""
-        if self._pid != os.getpid() or _DIGEST.fullmatch(digest) is None:
-            return None
-        return self._read_blob(_RecordLocation(digest), max_bytes)
 
     def digest(self, kind: FrontendRecordKind, key: str) -> str | None:
         with self._lock:

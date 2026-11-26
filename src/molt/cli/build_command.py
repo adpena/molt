@@ -94,6 +94,15 @@ def _wasm_cutoff_request(request: BuildRequest) -> bool:
     )
 
 
+def _admit_import_graph_reuse(request: BuildRequest) -> bool:
+    return (
+        request.cache
+        and not request.capture_link_inputs
+        and request.fact_graph_request is None
+        and request.audit_log is None
+    )
+
+
 def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
     """(key, record path) when this request may reuse a recorded build.
 
@@ -318,16 +327,9 @@ def _with_early_cutoff(
         first = _build_record.enter_build()
         cutoff = _early_cutoff_request(request)
         if cutoff is None:
-            with _build_record.without_import_graph_recording():
-                return build_function(request)
+            return build_function(request)
         key, record = cutoff
         from molt.cli.build_output_layout import _replay_build_claim
-
-        previous_import_graph: str | None = None
-
-        def graph_candidate(digest: str) -> None:
-            nonlocal previous_import_graph
-            previous_import_graph = digest
 
         change = _build_record.check(
             record,
@@ -335,7 +337,6 @@ def _with_early_cutoff(
             claim=_replay_build_claim,
             require_result=request.json_output,
             linked_output=request.linked_output,
-            graph_candidate=graph_candidate,
         )
         if isinstance(change, _build_record.BuildRecordHit):
             if request.json_output:
@@ -353,12 +354,10 @@ def _with_early_cutoff(
         if verbose:
             print(f"Build record: {change}", file=sys.stderr)
         if not first:
-            with _build_record.without_import_graph_recording():
-                return build_function(request)
+            return build_function(request)
         with _build_record.recording(
             _build_record.transient_root(_default_molt_cache()),
             capture_result=request.json_output,
-            previous_import_graph=previous_import_graph,
         ) as ledger:
             result = build_function(request)
         if result == 0:
@@ -547,6 +546,7 @@ def build(request: BuildRequest) -> int:
                 type_facts_path=request.type_facts_path,
                 stdlib_profile=stdlib_profile,
                 include_modules=request.include_modules,
+                reuse_import_graph=_admit_import_graph_reuse(request),
             )
         )
         if prepared_frontend_pipeline_error is not None:
