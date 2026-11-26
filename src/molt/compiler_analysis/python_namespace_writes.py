@@ -580,32 +580,23 @@ def own_namespace_literal_delete(statement: ast.stmt) -> str | None:
     return _literal_string(call.args[0])
 
 
-def module_binds_name(tree: ast.Module, name: str) -> bool:
-    """Whether any scope of ``tree`` may bind ``name``: a store, ``del``,
-    definition, parameter, handler, pattern, import alias or star import."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            bound = node.id if not isinstance(node.ctx, ast.Load) else None
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bound = node.name
-        elif isinstance(node, ast.arg):
-            bound = node.arg
-        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
-            bound = node.name
-        elif isinstance(node, ast.MatchMapping):
-            bound = node.rest
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            if any(
-                alias.name == "*" or python_import_binding(alias) == name
-                for alias in node.names
-            ):
-                return True
-            continue
-        else:
-            continue
-        if bound == name:
-            return True
-    return False
+def module_binds_name(tree: ast.Module, name: str, *, eager_annotations: bool) -> bool:
+    """Whether lexical bindings can write this name in the module."""
+    declarations = python_scope_declarations(
+        tree.body, eager_annotations=eager_annotations
+    )
+    if name in declarations.bound:
+        return True
+    # A nested global directive can publish a module write. A star import
+    # has unknown exported names at this syntax boundary.
+    return any(
+        (isinstance(node, ast.Global) and name in node.names)
+        or (
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "*" for alias in node.names)
+        )
+        for node in ast.walk(tree)
+    )
 
 
 def _literal_module_name(node: ast.expr | None) -> str | None:
@@ -2116,7 +2107,8 @@ class _NamespaceWriteCollector:
     def _literal_own_delete(self, site: _Site) -> bool:
         """Whether this ``globals()`` call is the receiver of a module-scope
         ``globals().pop("name", <constant>)`` statement
-        (``own_namespace_literal_delete``) and no scope rebinds ``globals``."""
+        (``own_namespace_literal_delete``) with no lexical module binding for
+        ``globals``."""
         if not site.module_scope or site.callback_deferred:
             return False
         method = site.parent
@@ -2134,7 +2126,9 @@ class _NamespaceWriteCollector:
         ):
             return False
         if self.globals_rebound is None:
-            self.globals_rebound = module_binds_name(self.tree, "globals")
+            self.globals_rebound = module_binds_name(
+                self.tree, "globals", eager_annotations=self.eager_annotations
+            )
         return not self.globals_rebound
 
     @staticmethod

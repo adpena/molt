@@ -1656,10 +1656,19 @@ def test_code_object_reads_are_code_rows(source: str, rows: int) -> None:
         ("x = 1\ndef f():\n    globals().pop('x', None)\n", 3),
         ("x = 1\nclass C:\n    globals().pop('x', None)\n", 3),
         ("x = 1\nglobals().__delitem__('x')\n", 2),
-        # A rebinding of ``globals`` anywhere in the module defeats the proof.
+        # A possible module binding defeats the proof.
         ("x = 1\nglobals().pop('x', None)\nglobals = dict\n", 2),
         ("from m import *\nglobals().pop('x', None)\n", 2),
-        ("def f(globals):\n    pass\nglobals().pop('x', None)\n", 3),
+        ("def f(globals):\n    pass\nglobals().pop('x', None)\n", 0),
+        (
+            "for _ in [globals for globals in ()]:\n    pass\nglobals().pop('x', None)\n",
+            0,
+        ),
+        ("[(globals := f) for f in fs]\nglobals().pop('x', None)\n", 2),
+        (
+            "def f():\n    global globals\n    globals = dict\nf()\nglobals().pop('x', None)\n",
+            5,
+        ),
     ],
 )
 def test_own_namespace_reach_is_any_use(source: str, line: int) -> None:

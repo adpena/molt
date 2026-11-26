@@ -300,7 +300,11 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         self.module_elided_deleted_funcs = set(
             self._module_elidable_deleted_functions(node)
         )
-        self.module_globals_rebound = module_binds_name(node, "globals")
+        self.module_globals_rebound = module_binds_name(
+            node,
+            "globals",
+            eager_annotations=self.eager_annotations and not future_annotations,
+        )
         # F2b (doc 44): the static class graph, const environment, and top-level
         # function metadata are now computed once, pre-walk, by frontend/sema/ and
         # the existing god-object dicts are populated FROM the immutable SemaResult.
