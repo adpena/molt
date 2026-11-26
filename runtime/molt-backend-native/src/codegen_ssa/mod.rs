@@ -8,6 +8,7 @@ mod buffer;
 pub(crate) mod builder;
 pub(crate) mod callable;
 pub(crate) mod calls;
+mod checked_control;
 pub(crate) mod constants;
 pub(crate) mod containers;
 pub(crate) mod control;
