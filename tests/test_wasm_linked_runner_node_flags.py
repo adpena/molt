@@ -832,6 +832,8 @@ def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_extern
     assert output.exists()
     env = cast(dict[str, str], recorded["env"])
     assert Path(env["MOLT_EXT_ROOT"]).is_relative_to(root / "build" / "wasm")
+    assert Path(env["TMPDIR"]) == wasm_runner.scratch_root(root, env)
+    assert env["TMPDIR"] == env["TMP"] == env["TEMP"]
     # Test outputs move beside the build; the Cargo target stays the
     # checkout's own, where every other build of this checkout goes.
     assert Path(env["CARGO_TARGET_DIR"]) == root.resolve() / "target"

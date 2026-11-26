@@ -200,6 +200,7 @@ def wasm_test_build_env(
     linked: bool | None = None,
     session_prefix: str = "test-wasm",
     session_id: str | None = None,
+    artifact_root: Path | None = None,
     create_dirs: bool = True,
 ) -> ProcessEnvironmentBuilder:
     """Return shared WASM test policy without overriding Cargo/DX authority.
@@ -209,6 +210,13 @@ def wasm_test_build_env(
     """
     base = ProcessEnvironmentBuilder(os.environ if base_env is None else base_env)
     base["CARGO_TARGET_DIR"] = str(wasm_test_cargo_target_dir(root, base))
+    if artifact_root is not None:
+        base[ARTIFACT_ROOT_ENV] = str(artifact_root)
+        base["MOLT_HOME"] = str(artifact_root)
+        base["MOLT_CACHE"] = str(artifact_root / ".molt_cache")
+        # Let DX assign the child scratch path from this artifact root.
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            base.pop(key, None)
     inherited_session_id = base.get("MOLT_SESSION_ID", "").strip()
     if generated_session_id(base):
         inherited_session_id = ""
@@ -274,15 +282,10 @@ def wasm_linked_build_command(
         root,
         linked=True,
         session_id=f"test-wasm-{_wasm_test_lane()}-{entry_stem}-{out_dir.name}",
+        artifact_root=test_artifact_root,
     )
     if isinstance(src, ModuleEntry):
         env["MOLT_MODULE_ROOTS"] = str(src.root)
-    env[ARTIFACT_ROOT_ENV] = str(test_artifact_root)
-    tmp_root = scratch_root(root, env)
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    env["TMPDIR"] = str(tmp_root)
-    env["MOLT_HOME"] = str(test_artifact_root)
-    env["MOLT_CACHE"] = str(test_artifact_root / ".molt_cache")
     args = [
         sys.executable,
         "-m",
