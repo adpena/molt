@@ -49,7 +49,8 @@ impl SyncFrame {
         self.points.get(&block)?.get(index)?.as_ref()
     }
 
-    /// The composed path snapshots the original, singly assigned formal homes.
+    /// Snapshot the original, singly assigned homes in the function's SSA
+    /// coordinates. A consumer proves how to recover each view in its caller.
     pub(super) fn analyze(func: &TirFunction) -> Option<Self> {
         if func.execution_context != ExecutionContextPolicy::Local
             || func.frame_locals_exposed()
@@ -73,11 +74,6 @@ impl SyncFrame {
         if shape.entry_value() != *entry_value {
             return None;
         }
-        let params: HashSet<_> = func.blocks[&func.entry_block]
-            .args
-            .iter()
-            .map(|arg| arg.id)
-            .collect();
         let mut written = HashSet::default();
         let mut carriers = None;
         for (&id, block) in &func.blocks {
@@ -91,7 +87,6 @@ impl SyncFrame {
                         || op.opcode != OpCode::Copy
                         || op.operands.len() != 1
                         || op.results.len() != 1
-                        || !params.contains(&op.operands[0])
                         || !written.insert(slot)
                     {
                         return None;
