@@ -8,6 +8,7 @@ Two different programs whose entries share a file name once shared
 from __future__ import annotations
 
 from molt.compilation_target import admit_target
+from molt.backend_executable_names import CodegenBackend
 
 from concurrent.futures import ThreadPoolExecutor
 import os
@@ -23,12 +24,19 @@ from tests.process_guard_common import run_guarded_test_process
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _identity(project: Path, source: Path, target="native", profile="dev") -> str:
+def _identity(
+    project: Path,
+    source: Path,
+    target: str = "native",
+    profile: str = "dev",
+    backend: CodegenBackend = "cranelift",
+) -> str:
     return layout.artifacts_identity(
         project_root=project,
         source_path=source,
         target=admit_target(target),
         profile=profile,
+        backend=backend,
     )
 
 
@@ -50,9 +58,10 @@ def test_identity_names_the_program_and_its_configuration(tmp_path: Path) -> Non
                 _identity(tmp_path / "a", first),
                 _identity(tmp_path, first, target="wasm"),
                 _identity(tmp_path, first, profile="release"),
+                _identity(tmp_path, first, backend="llvm"),
             }
         )
-        == 5
+        == 6
     )
 
 

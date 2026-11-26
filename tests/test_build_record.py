@@ -2322,7 +2322,14 @@ def _native_result_fixture(tmp_path: Path):
     )
     result = build_record.NativeBuildResult(
         facts,
-        *(build_record.RecordedArtifact.capture(paths[name]) for name in paths),
+        build_record.RecordedArtifact.capture(paths["binary"]),
+        build_record.NativeResultInputs(
+            *(
+                build_record.RecordedArtifact.capture(paths[name])
+                for name in ("archive", "stub", "runtime")
+            ),
+        ),
+        build_record.RecordedArtifact.capture(paths["compiler"]),
         (),
         None,
         ("no-default-features", "stdlib_micro"),
@@ -2376,6 +2383,43 @@ def test_native_json_checks_every_promised_generation(
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     assert isinstance(
         build_record.check(record, KEY, claim=acquired.append, require_result=True), str
+    )
+
+
+def test_native_shared_image_replay_requires_its_generation_claim(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    paths, ledger, _record, result, artifacts_claim = _native_result_fixture(tmp_path)
+    store = tmp_path / "images"
+    generation = "a" * 64
+    image = store / generation / "runtime.so"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"original runtime image")
+    result = replace(
+        result,
+        inputs=replace(
+            result.inputs, runtime_image=build_record.RecordedArtifact.capture(image)
+        ),
+    )
+    ledger.result = result
+    _, refusal = _write(tmp_path, ledger, paths["binary"])
+    assert refusal is not None and "image product claim" in refusal
+
+    product_claim = build_record.RecordedBuildClaim.capture(
+        build_record.BuildClaimKind.PRODUCT, store, product_identity=generation
+    )
+    ledger.build_claim(product_claim.payload())
+    record, refusal = _write(tmp_path, ledger, paths["binary"])
+    assert refusal is None
+    claims = []
+    hit = build_record.check(record, KEY, claim=claims.append, require_result=True)
+    assert isinstance(hit, build_record.BuildRecordHit) and hit.result == result
+    assert claims == [artifacts_claim, product_claim]
+    image.write_bytes(b"changed runtime image!")
+    assert isinstance(
+        build_record.check(record, KEY, claim=claims.append, require_result=True), str
     )
 
 
@@ -2493,7 +2537,9 @@ def test_native_result_rejects_changed_bytes_despite_equal_public_token(
     cache = FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
     monkeypatch.setattr(toolchain_facts, "host_file_digest_cache", lambda: cache)
     paths, _ledger, record, result, _claim = _native_result_fixture(tmp_path)
-    expected = getattr(result, role)
+    expected = (
+        result.compiler if role == "compiler" else result.inputs.artifacts()[role]
+    )
     before = paths[role].stat()
     replacement = b"x" * before.st_size
     paths[role].write_bytes(replacement)

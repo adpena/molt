@@ -344,7 +344,12 @@ def test_input_custody_failure_prevents_success_result(
 
 def _native_record_fixture(tmp_path: Path):
     from dataclasses import replace
-    from molt.build_record import NativeBuildResult, RecordedArtifact, NativeBuildFacts
+    from molt.build_record import (
+        NativeBuildFacts,
+        NativeBuildResult,
+        NativeResultInputs,
+        RecordedArtifact,
+    )
     from molt.capability_policy import CapabilityPolicy, resolve_capability_policy
     from molt.backend_protocol import (
         BackendEmissionOrigin,
@@ -355,7 +360,15 @@ def _native_record_fixture(tmp_path: Path):
 
     paths = {
         name: tmp_path / name
-        for name in ("binary", "archive", "stub", "runtime", "compiler")
+        for name in (
+            "binary",
+            "archive",
+            "stub",
+            "runtime",
+            "compiler",
+            "runtime_image",
+            "stdlib_image",
+        )
     }
     for name, path in paths.items():
         path.write_text(f"owned {name}", encoding="utf-8")
@@ -374,7 +387,20 @@ def _native_record_fixture(tmp_path: Path):
             "generic",
             "default",
         ),
-        *(RecordedArtifact.capture(path) for path in paths.values()),
+        RecordedArtifact.capture(paths["binary"]),
+        NativeResultInputs(
+            *(
+                RecordedArtifact.capture(paths[name])
+                for name in (
+                    "archive",
+                    "stub",
+                    "runtime",
+                    "runtime_image",
+                    "stdlib_image",
+                )
+            )
+        ),
+        RecordedArtifact.capture(paths["compiler"]),
         (),
         None,
         ("no-default-features", "stdlib_micro"),
@@ -382,8 +408,8 @@ def _native_record_fixture(tmp_path: Path):
     origin = BackendEmissionOrigin(
         BackendEmissionProducer("daemon", 12345, None),
         BackendAddressedProgramInput("b" * 64, 17, ""),
-        result.archive.sha256,
-        result.archive.token.size,
+        result.inputs.archive.sha256,
+        result.inputs.archive.token.size,
         BackendCodegenOrigin(12345, ()),
     )
     result = replace(result, emission_origin=origin)
@@ -397,7 +423,14 @@ def _native_record_fixture(tmp_path: Path):
             "consumer_output": str(result.binary.path),
             "artifacts": {
                 name: str(paths[name])
-                for name in ("binary", "archive", "stub", "runtime")
+                for name in (
+                    "binary",
+                    "archive",
+                    "stub",
+                    "runtime",
+                    "runtime_image",
+                    "stdlib_image",
+                )
             },
             "observed_toolchain": build_results._observed_build_toolchain(
                 backend_bin=paths["compiler"],
@@ -426,7 +459,9 @@ def test_native_reuse_projects_current_facts_through_actual_consumers(
     )
     assert error is None and contract is not None
     assert contract.consumer_output == result.binary.path
-    assert set(contract.artifacts) == {"binary", "archive", "stub", "runtime"}
+    assert contract.artifacts == {
+        name: Path(path) for name, path in original["artifacts"].items()
+    }
     measured = _molt_build_artifact(
         stdout, result.binary.path, MoltMeasurement.ATTRIBUTION
     )
@@ -455,7 +490,9 @@ def test_native_reuse_projects_current_facts_through_actual_consumers(
     )
 
 
-@pytest.mark.parametrize("mutation", [None, "archive", "stub", "runtime"])
+@pytest.mark.parametrize(
+    "mutation", [None, "archive", "stub", "runtime", "runtime_image", "stdlib_image"]
+)
 def test_native_result_reporting_keeps_pre_link_expected_generation(
     tmp_path: Path, monkeypatch, mutation: str | None
 ) -> None:
@@ -464,7 +501,7 @@ def test_native_result_reporting_keeps_pre_link_expected_generation(
 
     result, data = _native_record_fixture(tmp_path)
     if mutation is not None:
-        getattr(result, mutation).path.write_text(
+        result.inputs.artifacts()[mutation].path.write_text(
             "replacement after link", encoding="utf-8"
         )
     ledger = build_record.InputLedger(time.time_ns())
@@ -472,7 +509,7 @@ def test_native_result_reporting_keeps_pre_link_expected_generation(
     monkeypatch.setattr(input_report, "_CAPTURE_RESULT", True)
     build_results._record_native_build_result(
         data=data,
-        result_inputs=(result.archive, result.stub, result.runtime),
+        result_inputs=result.inputs,
         warnings=(),
         diagnostics_error=None,
     )
@@ -509,7 +546,7 @@ def test_invocation_specific_native_results_are_not_recorded(
     monkeypatch.setattr(input_report, "_CAPTURE_RESULT", True)
     build_results._record_native_build_result(
         data=data,
-        result_inputs=(result.archive, result.stub, result.runtime),
+        result_inputs=result.inputs,
         warnings=warnings,
         diagnostics_error=None,
     )

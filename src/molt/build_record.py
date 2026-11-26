@@ -44,7 +44,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v16"
+_SCHEMA = "molt-build-record-v17"
 _RECORD_NAMESPACE = _SCHEMA.removeprefix("molt-build-record-")
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
@@ -389,12 +389,54 @@ class NativeBuildFacts:
 
 
 @dataclass(frozen=True, slots=True)
-class NativeBuildResult:
-    facts: NativeBuildFacts
-    binary: RecordedArtifact
+class NativeResultInputs:
+    """Files the native link prepared for its structured result."""
+
     archive: RecordedArtifact
     stub: RecordedArtifact
     runtime: RecordedArtifact
+    runtime_image: RecordedArtifact | None = None
+    stdlib_image: RecordedArtifact | None = None
+
+    def __post_init__(self) -> None:
+        if self.stdlib_image is not None and self.runtime_image is None:
+            raise ValueError("shared stdlib image requires a shared runtime image")
+
+    def artifacts(self) -> dict[str, RecordedArtifact]:
+        artifacts = {
+            "archive": self.archive,
+            "stub": self.stub,
+            "runtime": self.runtime,
+        }
+        if self.runtime_image is not None:
+            artifacts["runtime_image"] = self.runtime_image
+        if self.stdlib_image is not None:
+            artifacts["stdlib_image"] = self.stdlib_image
+        return artifacts
+
+    @classmethod
+    def from_payload(cls, value: object) -> NativeResultInputs:
+        if (
+            not isinstance(value, dict)
+            or not set(value).issubset(
+                {"archive", "stub", "runtime", "runtime_image", "stdlib_image"}
+            )
+            or not {"archive", "stub", "runtime"}.issubset(value)
+        ):
+            raise ValueError("invalid native result inputs")
+        return cls(
+            **{
+                name: RecordedArtifact.from_payload(item)
+                for name, item in value.items()
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NativeBuildResult:
+    facts: NativeBuildFacts
+    binary: RecordedArtifact
+    inputs: NativeResultInputs
     compiler: RecordedArtifact
     selected_profiles: tuple[tuple[str, str], ...]
     emission_origin: BackendEmissionOrigin | None
@@ -403,9 +445,7 @@ class NativeBuildResult:
     def verify_paths(self) -> None:
         for artifact in (
             self.binary,
-            self.archive,
-            self.stub,
-            self.runtime,
+            *self.inputs.artifacts().values(),
             self.compiler,
         ):
             artifact.verify_path()
@@ -417,9 +457,7 @@ class NativeBuildResult:
         digests = host_file_digest_cache()
         for artifact in (
             self.binary,
-            self.archive,
-            self.stub,
-            self.runtime,
+            *self.inputs.artifacts().values(),
             self.compiler,
         ):
             artifact.verify(digests=digests)
@@ -428,26 +466,39 @@ class NativeBuildResult:
         except sqlite3.Error as exc:
             raise ValueError(f"build result digest cache unavailable: {exc}") from exc
         if self.emission_origin is not None and (
-            self.emission_origin.output_size != self.archive.token.size
-            or self.emission_origin.output_sha256 != self.archive.sha256
+            self.emission_origin.output_size != self.inputs.archive.token.size
+            or self.emission_origin.output_sha256 != self.inputs.archive.sha256
         ):
             raise ValueError("build result archive differs from original emission")
 
     def verify_claims(self, claims: list[RecordedBuildClaim]) -> None:
         if not any(
             claim.kind is BuildClaimKind.ARTIFACTS
-            and self.archive.resolved_path.is_relative_to(claim.resolved_root)
-            and self.stub.resolved_path.is_relative_to(claim.resolved_root)
+            and self.inputs.archive.resolved_path.is_relative_to(claim.resolved_root)
+            and self.inputs.stub.resolved_path.is_relative_to(claim.resolved_root)
             for claim in claims
         ):
             raise ValueError("native JSON result lacks its producer artifacts claim")
+        for image in (self.inputs.runtime_image, self.inputs.stdlib_image):
+            if image is not None and not any(
+                claim.kind is BuildClaimKind.PRODUCT
+                and claim.product_identity is not None
+                and image.resolved_path.parent
+                == claim.resolved_root / claim.product_identity
+                for claim in claims
+            ):
+                raise ValueError(
+                    "native JSON result lacks its shared image product claim"
+                )
 
     def payload(self) -> dict[str, object]:
         return {
             "facts": self.facts.payload(),
-            **{
-                name: getattr(self, name).payload()
-                for name in ("binary", "archive", "stub", "runtime", "compiler")
+            "binary": self.binary.payload(),
+            "compiler": self.compiler.payload(),
+            "inputs": {
+                name: artifact.payload()
+                for name, artifact in self.inputs.artifacts().items()
             },
             "selected_profiles": dict(self.selected_profiles),
             "runtime_features": list(self.runtime_features),
@@ -464,9 +515,7 @@ class NativeBuildResult:
         if not isinstance(value, dict) or set(value) != {
             "facts",
             "binary",
-            "archive",
-            "stub",
-            "runtime",
+            "inputs",
             "compiler",
             "selected_profiles",
             "runtime_features",
@@ -485,9 +534,7 @@ class NativeBuildResult:
         return cls(
             facts=NativeBuildFacts.from_payload(value["facts"]),
             binary=RecordedArtifact.from_payload(value["binary"]),
-            archive=RecordedArtifact.from_payload(value["archive"]),
-            stub=RecordedArtifact.from_payload(value["stub"]),
-            runtime=RecordedArtifact.from_payload(value["runtime"]),
+            inputs=NativeResultInputs.from_payload(value["inputs"]),
             compiler=RecordedArtifact.from_payload(value["compiler"]),
             selected_profiles=tuple(sorted(profiles.items())),
             runtime_features=runtime_features,

@@ -863,6 +863,7 @@ def _prepare_frontend_stage_state(
             source_path=source_path,
             target=target,
             profile=profile,
+            backend=prepared_build_config.codegen.backend,
         ),
     )
     prepared_build_outputs, prepared_build_outputs_error = (

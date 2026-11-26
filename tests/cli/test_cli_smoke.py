@@ -295,6 +295,7 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
         source_path=tmp_path / "app.py",
         target=admit_target("native"),
         profile="dev",
+        backend="cranelift",
     )
     with cli_build_output_layout.build_scope():
         artifacts_root, bin_root, output_root = (

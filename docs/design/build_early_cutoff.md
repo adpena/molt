@@ -357,6 +357,14 @@ claims are created only by the existing build layout, never by record checking.
 This adds one small selection record and bounded path checks; the existing
 source, tool, environment, output-token and racy-input checks remain unchanged.
 Eligible native JSON requests retain their typed result through this same record.
+The native link captures the exact archive, stub and runtime generations before
+linking, including the runtime and stdlib images selected by a host dev build.
+The result reacquires the product claims for shared images and checks their
+identities before replaying the same artifact fields. The resolved codegen
+backend is part of the intermediates identity, so an LLVM build cannot replace
+the archive promised by a Cranelift result. If replay acquires the artifacts
+root before discovering an edit, the rebuild reports the held claim to its new
+record. Its first unchanged successor can then reuse that record.
 Diagnostic requests still execute the pipeline because they require fresh
 measurements; unsupported additional result families also retain that path.
 

@@ -39,6 +39,7 @@ from molt.default_paths import (
     _default_molt_cache,
 )
 from molt.process_environment import ProcessEnvironment
+from molt.backend_executable_names import CodegenBackend
 
 
 @dataclass(frozen=True)
@@ -120,18 +121,24 @@ def _artifacts_root_lock(root: Path) -> Path:
 
 
 def artifacts_identity(
-    *, project_root: Path, source_path: Path, target: Target, profile: str
+    *,
+    project_root: Path,
+    source_path: Path,
+    target: Target,
+    profile: str,
+    backend: CodegenBackend,
 ) -> str:
     """Name one build configuration's intermediates.
 
     Two builds share an artifacts root only when they build the same entry of
-    the same project for the same target and profile, as Bazel keys an output
+    the same project for the same target, profile and backend, as Bazel keys an output
     base by its workspace. An entry's file name alone is shared by unrelated
     programs, which then linked each other's objects.
     """
     material = json.dumps(
         {
             "profile": profile,
+            "backend": backend,
             "project": os.fspath(project_root.resolve()),
             "source": os.fspath(source_path.resolve()),
             "target": target_name(target),
@@ -216,33 +223,34 @@ def _claim_artifacts_root(root: Path) -> None:
     scope = _BUILD_SCOPE.get()
     if scope is None:
         raise RuntimeError("an artifacts root is claimed only inside build_scope()")
-    if root in scope.claimed:
-        return
-    from molt.file_locks import (
-        _acquire_file_lock,
-        _release_file_lock,
-        _try_acquire_file_lock,
-    )
+    if root not in scope.claimed:
+        from molt.file_locks import (
+            _acquire_file_lock,
+            _release_file_lock,
+            _try_acquire_file_lock,
+        )
 
-    lock_path = _artifacts_root_lock(root)
-    _mkdir_resilient(root.parent)
-    handle = _try_acquire_file_lock(lock_path)
-    if handle is None:
-        print(
-            f"molt: waiting for another build of this program to release {root}",
-            file=sys.stderr,
-        )
-        handle = _acquire_file_lock(
-            lock_path,
-            timeout_s=None,
-            timeout_message=f"artifacts root stayed claimed: {root}",
-        )
-    scope.claimed.add(root)
-    scope.stack.callback(_release_file_lock, handle)
-    _mkdir_resilient(root)
-    # A warm rebuild may rewrite no top-level entry; the pruner orders by the
-    # root's mtime, so the claim records the use.
-    os.utime(root)
+        lock_path = _artifacts_root_lock(root)
+        _mkdir_resilient(root.parent)
+        handle = _try_acquire_file_lock(lock_path)
+        if handle is None:
+            print(
+                f"molt: waiting for another build of this program to release {root}",
+                file=sys.stderr,
+            )
+            handle = _acquire_file_lock(
+                lock_path,
+                timeout_s=None,
+                timeout_message=f"artifacts root stayed claimed: {root}",
+            )
+        scope.claimed.add(root)
+        scope.stack.callback(_release_file_lock, handle)
+        _mkdir_resilient(root)
+        # A warm rebuild may rewrite no top-level entry; the pruner orders by the
+        # root's mtime, so the claim records the use.
+        os.utime(root)
+    # A replay miss can hold this lock before result recording starts. Report
+    # the selection to the new record even when acquisition was already done.
     if input_report.result_active():
         from molt.build_record import BuildClaimKind, RecordedBuildClaim
 

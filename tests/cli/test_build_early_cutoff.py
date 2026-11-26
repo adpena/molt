@@ -748,7 +748,11 @@ def test_json_cutoff_emits_a_current_result_without_running_compiler(
                 "generic",
                 "default",
             ),
-            *(build_record.RecordedArtifact.capture(path) for path in paths),
+            build_record.RecordedArtifact.capture(paths[0]),
+            build_record.NativeResultInputs(
+                *(build_record.RecordedArtifact.capture(path) for path in paths[1:4])
+            ),
+            build_record.RecordedArtifact.capture(paths[4]),
             (),
             None,
             ("no-default-features", "stdlib_micro"),
@@ -781,6 +785,14 @@ def test_json_cutoff_emits_a_current_result_without_running_compiler(
     build_record._BUILDS_ENTERED = 0
     assert build(request) == 0
     assert len(calls) == 2, "a missing promised stub must run the producer"
+    capsys.readouterr()
+    (project / "app.py").write_text("print('edited')\n", encoding="utf-8")
+    for _ in range(2):
+        build_record._BUILDS_ENTERED = 0
+        assert build(request) == 0
+        payload = json.loads(capsys.readouterr().out)
+    assert len(calls) == 3, "the first unchanged JSON build after an edit must replay"
+    assert payload["data"]["cache"]["hit_tier"] == "build-record"
 
 
 def _fake_wasm_build(calls: list[str], *, report_products: bool = True):

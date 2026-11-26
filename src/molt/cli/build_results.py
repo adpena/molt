@@ -19,7 +19,11 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from molt.build_record import NativeBuildResult, RecordedArtifact
+    from molt.build_record import (
+        NativeBuildResult,
+        NativeResultInputs,
+        RecordedArtifact,
+    )
 
 from molt.toolchain_identity import (
     executable_content_identity,
@@ -358,7 +362,7 @@ def _recorded_toolchain_artifact(
 def _record_native_build_result(
     *,
     data: Mapping[str, Any],
-    result_inputs: tuple[RecordedArtifact, RecordedArtifact, RecordedArtifact] | None,
+    result_inputs: NativeResultInputs | None,
     warnings: Sequence[str],
     diagnostics_error: str | None,
 ) -> None:
@@ -411,8 +415,9 @@ def _record_native_build_result(
         input_report.refuse("native JSON contains unclassified result fields")
         return
     try:
-        archive, stub, runtime = result_inputs
-        for artifact in result_inputs:
+        runtime = result_inputs.runtime
+        artifacts = result_inputs.artifacts()
+        for artifact in artifacts.values():
             artifact.verify()
         observed = data["observed_toolchain"]
         if (
@@ -451,9 +456,7 @@ def _record_native_build_result(
             data["artifacts"]
             != {
                 "binary": str(binary.path),
-                "archive": str(archive.path),
-                "stub": str(stub.path),
-                "runtime": str(runtime.path),
+                **{name: str(artifact.path) for name, artifact in artifacts.items()},
             }
             or Path(data["consumer_output"]).absolute() != binary.path
         ):
@@ -479,9 +482,7 @@ def _record_native_build_result(
         result = NativeBuildResult(
             facts,
             binary,
-            archive,
-            stub,
-            runtime,
+            result_inputs,
             compiler,
             tuple(sorted(profiles.items())),
             None if origin is None else BackendEmissionOrigin.from_payload(origin),
@@ -508,8 +509,11 @@ def _emit_reused_native_build_result(result: NativeBuildResult) -> int:
             "link": {"skipped": True},
             "messages": [f"Successfully built {output} (inputs unchanged)"],
             "artifacts": {
-                name: str(getattr(result, name).path)
-                for name in ("binary", "archive", "stub", "runtime")
+                "binary": output,
+                **{
+                    name: str(artifact.path)
+                    for name, artifact in result.inputs.artifacts().items()
+                },
             },
         }
     )
@@ -520,7 +524,7 @@ def _emit_reused_native_build_result(result: NativeBuildResult) -> int:
     }
     for name, artifact in (
         ("compiler", result.compiler),
-        ("runtime", result.runtime),
+        ("runtime", result.inputs.runtime),
         ("artifact", result.binary),
     ):
         observed[name] = _recorded_toolchain_artifact(
@@ -829,8 +833,7 @@ def _emit_native_link_result(
     validate_inputs: Callable[[], None] | None = None,
     emission_origin: BackendEmissionOrigin | None = None,
     link_input_observation: CompilationInputRecord | None = None,
-    result_inputs: tuple[RecordedArtifact, RecordedArtifact, RecordedArtifact]
-    | None = None,
+    result_inputs: NativeResultInputs | None = None,
     shared_images: tuple[Path, ...] = (),
 ) -> int:
     def emit_finalization_failure(message: str) -> int:

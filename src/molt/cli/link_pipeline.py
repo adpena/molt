@@ -13,7 +13,7 @@ from molt.cli.link_input_observation import (
 )
 from molt.toolchain_identity import stable_regular_file_content_identity
 from molt import input_report
-from molt.build_record import RecordedArtifact
+from molt.build_record import NativeResultInputs, RecordedArtifact
 from molt.cli.native_link_plan import NativeLinkerKind, image_generation_witness
 from molt.native_target import NativeObjectFormat
 
@@ -91,9 +91,7 @@ class _PreparedNativeLink:
     link_selection: tuple[Path, Path] | None = None
     link_input_artifacts: dict[str, tuple[Path, Path]] | None = None
     link_input_observation: CompilationInputRecord | None = None
-    result_inputs: (
-        tuple[RecordedArtifact, RecordedArtifact, RecordedArtifact] | None
-    ) = None
+    result_inputs: NativeResultInputs | None = None
 
 
 def _run_native_link_command(
@@ -275,12 +273,18 @@ def _prepare_native_link(
         and sysroot_path is None
     ):
         try:
-            result_inputs = (
+            result_inputs = NativeResultInputs(
                 RecordedArtifact.capture(output_obj),
                 RecordedArtifact.capture(stub_path),
                 RecordedArtifact.from_identity(
                     resolved_runtime_lib, runtime_codegen_binding.archive
                 ),
+                RecordedArtifact.capture(runtime_image)
+                if runtime_image is not None
+                else None,
+                RecordedArtifact.capture(stdlib_image.path)
+                if stdlib_image is not None
+                else None,
             )
         except (OSError, ValueError) as exc:
             input_report.refuse(f"native result inputs cannot be retained: {exc}")
