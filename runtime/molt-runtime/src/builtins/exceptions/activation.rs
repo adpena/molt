@@ -4,7 +4,7 @@
 //! (`gi_exc_state`): resuming links it onto the thread's `exc_info` chain,
 //! suspending unlinks it, and `sys.exception()` walks the chain to the first
 //! item that holds an exception (`_PyErr_GetTopmostException`). Molt keeps the
-//! thread's handler levels in `EXCEPTION_STACK` and the exception each level
+//! thread's handler levels in `EXCEPTION_HANDLER_DEPTH` and the exception each level
 //! handles in `ACTIVE_EXCEPTION_STACK`. A resumed activation moves its own
 //! levels in and moves them back out when it stops; the innermost exception
 //! its caller handles stays reachable below them on
@@ -16,7 +16,7 @@
 //! is the one resume protocol of every site that runs an activation body.
 
 use super::{
-    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, EXCEPTION_STACK_BASELINE,
+    ACTIVE_EXCEPTION_STACK, EXCEPTION_HANDLER_DEPTH, EXCEPTION_STACK_BASELINE,
     exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
     exception_stack_set_depth,
 };
@@ -60,7 +60,6 @@ impl ActivationKind {
 /// references; GC traversal and detachment reach them through the sidecar.
 #[derive(Default)]
 struct SavedExceptionState {
-    handlers: Vec<usize>,
     active: Vec<u64>,
     context: Vec<u64>,
     depth: usize,
@@ -69,7 +68,7 @@ struct SavedExceptionState {
 
 impl SavedExceptionState {
     fn holds_buffers(&self) -> bool {
-        self.handlers.capacity() != 0 || self.active.capacity() != 0 || self.context.capacity() != 0
+        self.active.capacity() != 0 || self.context.capacity() != 0
     }
 }
 
@@ -191,7 +190,6 @@ pub(crate) struct ActivationExceptionScope {
     spare: Option<Box<SavedExceptionState>>,
     caller_depth: usize,
     caller_baseline: usize,
-    caller_handlers: Vec<usize>,
     caller_active: Vec<u64>,
     caller_context: Vec<u64>,
     exited: bool,
@@ -202,21 +200,13 @@ impl ActivationExceptionScope {
     pub(crate) fn enter(py: &PyToken<'_>, owner: *mut u8, kind: ActivationKind) -> Self {
         crate::gil_assert();
         let (state, spare) = load_state(owner, kind);
-        let caller_depth = EXCEPTION_STACK.of(py).borrow().len();
+        let caller_depth = EXCEPTION_HANDLER_DEPTH.of(py).get();
         let caller_baseline = EXCEPTION_STACK_BASELINE.of(py).get();
         let caller_active = {
             let stack = ACTIVE_EXCEPTION_STACK.of(py);
             stack.replace(state.active)
         };
         exception_context_fallback_push(innermost_handled(&caller_active));
-        let caller_handlers = if kind.owns_handlers() {
-            {
-                let stack = EXCEPTION_STACK.of(py);
-                stack.replace(state.handlers)
-            }
-        } else {
-            Vec::new()
-        };
         let caller_context = if kind.owns_context() {
             crate::builtins::context::context_stack_replace(state.context)
         } else {
@@ -234,7 +224,6 @@ impl ActivationExceptionScope {
             spare,
             caller_depth,
             caller_baseline,
-            caller_handlers,
             caller_active,
             caller_context,
             exited: false,
@@ -246,7 +235,7 @@ impl ActivationExceptionScope {
         crate::gil_assert();
         self.exited = true;
         let kind = self.kind;
-        let depth = EXCEPTION_STACK.of(py).borrow().len();
+        let depth = EXCEPTION_HANDLER_DEPTH.of(py).get();
         exception_context_align_depth(py, depth);
         let baseline = if kind.owns_baseline() {
             let baseline = EXCEPTION_STACK_BASELINE.of(py).get();
@@ -255,15 +244,11 @@ impl ActivationExceptionScope {
         } else {
             None
         };
-        let handlers = if kind.owns_handlers() {
-            let caller = std::mem::take(&mut self.caller_handlers);
-            {
-                let stack = EXCEPTION_STACK.of(py);
-                stack.replace(caller)
-            }
-        } else {
-            Vec::new()
-        };
+        if kind.owns_handlers() {
+            // Restore the task caller's handler depth before releasing any
+            // fallback context: its finalizer can observe the caller here.
+            EXCEPTION_HANDLER_DEPTH.of(py).set(self.caller_depth);
+        }
         let caller_active = std::mem::take(&mut self.caller_active);
         let active = {
             let stack = ACTIVE_EXCEPTION_STACK.of(py);
@@ -279,7 +264,6 @@ impl ActivationExceptionScope {
         exception_stack_set_depth(py, self.caller_depth);
         exception_context_fallback_pop(py);
         let state = SavedExceptionState {
-            handlers,
             active,
             context,
             depth,
@@ -451,6 +435,45 @@ mod tests {
             assert_eq!(crate::object::aux_header::object_frame_exceptions(ptr), 0);
             assert_eq!(refcount(own), baseline);
             dec_ref_bits(py, own);
+            dec_ref_bits(py, bits);
+        });
+    }
+
+    #[test]
+    fn task_lexical_depth_survives_suspension_independently_of_active_roots() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let original = EXCEPTION_HANDLER_DEPTH.of(py).get();
+            let baseline = EXCEPTION_STACK_BASELINE.of(py).get();
+            let (bits, ptr) = coroutine(py);
+            let kind = ActivationKind::Task { own_baseline: true };
+            exception_stack_push();
+            let caller = EXCEPTION_HANDLER_DEPTH.of(py).get();
+            assert_eq!(caller, original + 1);
+            let scope = ActivationExceptionScope::enter(py, ptr, kind);
+            assert_eq!(EXCEPTION_HANDLER_DEPTH.of(py).get(), 0);
+            exception_stack_push();
+            exception_stack_push();
+            EXCEPTION_STACK_BASELINE.of(py).set(1);
+            exception_stack_pop(py);
+            exception_stack_pop(py);
+            assert_eq!(
+                EXCEPTION_HANDLER_DEPTH.of(py).get(),
+                1,
+                "baseline prevents the second pop"
+            );
+            scope.exit(py);
+            assert_eq!(EXCEPTION_HANDLER_DEPTH.of(py).get(), caller);
+            assert_eq!(EXCEPTION_STACK_BASELINE.of(py).get(), baseline);
+
+            let scope = ActivationExceptionScope::enter(py, ptr, kind);
+            assert_eq!(EXCEPTION_HANDLER_DEPTH.of(py).get(), 1);
+            assert_eq!(EXCEPTION_STACK_BASELINE.of(py).get(), 1);
+            scope.exit(py);
+            assert_eq!(EXCEPTION_HANDLER_DEPTH.of(py).get(), caller);
+            exception_stack_pop(py);
+            assert_eq!(EXCEPTION_HANDLER_DEPTH.of(py).get(), original);
+            activation_exception_state_drop(py, ptr);
             dec_ref_bits(py, bits);
         });
     }

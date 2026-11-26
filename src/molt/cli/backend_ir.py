@@ -437,36 +437,6 @@ def _build_isolate_import_ops(
     return import_ops
 
 
-def _isolate_import_module_order(
-    module_order: Sequence[str],
-    runtime_import_dispatch_roots: Collection[str],
-    native_module_order: Sequence[str] = (),
-) -> list[str]:
-    if not runtime_import_dispatch_roots:
-        return []
-    runtime_roots = frozenset(runtime_import_dispatch_roots)
-    import_roots: set[str] = set()
-    for module_name in runtime_roots:
-        parts = module_name.split(".")
-        import_roots.update(".".join(parts[:idx]) for idx in range(1, len(parts) + 1))
-    ordered = [
-        module_name for module_name in module_order if module_name in import_roots
-    ]
-    seen = set(ordered)
-    for module_name in native_module_order:
-        if module_name in seen:
-            continue
-        if module_name in import_roots or any(
-            root == module_name
-            or root.startswith(f"{module_name}.")
-            or module_name.startswith(f"{root}.")
-            for root in runtime_roots
-        ):
-            ordered.append(module_name)
-            seen.add(module_name)
-    return ordered
-
-
 _MODULE_ENSURE_SYMBOL = "molt_module_ensure"
 
 
@@ -507,14 +477,6 @@ def _build_module_registry(
     (invariant I11). A row is Fixed when ``import_redirects`` names no writer
     of it (bedrock §13 D1, M4): only then may the runtime set its ready word.
     """
-    native_module_order = [spec.module for spec in native_module_init_specs]
-    dispatchable = set(
-        _isolate_import_module_order(
-            module_order,
-            runtime_import_dispatch_roots,
-            native_module_order=native_module_order,
-        )
-    )
     # The entry module, __main__, and the spawn entry override are
     # ensure()-reached from generated code even when no explicit import names
     # them; they always own an init lane.
@@ -527,7 +489,9 @@ def _build_module_registry(
     for name in module_order:
         kind = runtime_builtin_kind(name)
         has_init = (
-            kind == "runtime_builtin" or name in dispatchable or name in forced_init
+            kind == "runtime_builtin"
+            or name in runtime_import_dispatch_roots
+            or name in forced_init
         )
         entries.append(
             ModuleRegistryEntry(
@@ -2620,10 +2584,6 @@ def _prepare_backend_ir(
             json_output,
             command="build",
         )
-    native_module_order = [spec.module for spec in native_module_init_specs]
-    native_runtime_import_dispatch_roots = set(runtime_import_dispatch_roots)
-    native_runtime_import_dispatch_roots.update(native_module_order)
-
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = compiled_symbols.module_init_symbol(entry_init_name)
     version_ops = _build_version_info_ops(
@@ -2718,7 +2678,7 @@ def _prepare_backend_ir(
                 namespace_portions_by_module=namespace_portions_by_module,
                 module_source_role_by_module=module_source_role_by_module,
                 module_order=module_order,
-                runtime_import_dispatch_roots=native_runtime_import_dispatch_roots,
+                runtime_import_dispatch_roots=runtime_import_dispatch_roots,
                 native_module_init_specs=native_module_init_specs,
                 generated_native_init_modules=generated_native_init_modules,
                 spawn_enabled=spawn_enabled,
@@ -2775,17 +2735,14 @@ def _prepare_backend_ir(
         binding_diagnostics.extend(
             lower_import_names(functions, None, integration_state.import_redirects)
         )
-        legacy_module_order = _isolate_import_module_order(
-            module_order,
-            native_runtime_import_dispatch_roots,
-            native_module_order=native_module_order,
-        )
+        native_dispatch = {spec.module: None for spec in native_module_init_specs}
         import_ops = _build_isolate_import_ops(
             code_slot_count=len(global_code_ids),
             version_ops=version_ops,
             module_init_symbols=tuple(
                 (name, compiled_symbols.module_init_symbol(name))
-                for name in legacy_module_order
+                for name in dict.fromkeys((*module_order, *native_dispatch))
+                if name in runtime_import_dispatch_roots or name in native_dispatch
             ),
         )
         functions.append(

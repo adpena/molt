@@ -41,29 +41,29 @@ _MP_SPAWN_ENV = "MOLT_MP_SPAWN"
 _MP_START_METHOD_ENV = "MOLT_MP_START_METHOD"
 _MP_ENTRY_OVERRIDE = "multiprocessing.spawn"
 
-_MOLT_PROCESS_SPAWN = _intrinsics_require("molt_process_ipc_spawn", globals())
-_MOLT_PROCESS_IPC_STREAMS = _intrinsics_require("molt_process_ipc_streams", globals())
-_MOLT_PROCESS_IPC_CHILD = _intrinsics_require("molt_process_ipc_child", globals())
-_MOLT_PROCESS_PID = _intrinsics_require("molt_process_pid", globals())
-_MOLT_PROCESS_RETURN = _intrinsics_require("molt_process_returncode", globals())
-_MOLT_PROCESS_KILL = _intrinsics_require("molt_process_kill", globals())
-_MOLT_PROCESS_TERM = _intrinsics_require("molt_process_terminate", globals())
-_MOLT_PROCESS_DROP = _intrinsics_require("molt_process_drop", globals())
-_MOLT_STREAM_SEND = _intrinsics_require("molt_stream_send_obj", globals())
-_MOLT_STREAM_RECV = _intrinsics_require("molt_stream_recv", globals())
-_MOLT_STREAM_CLOSE = _intrinsics_require("molt_stream_close", globals())
-_MOLT_STREAM_DROP = _intrinsics_require("molt_stream_drop", globals())
-_MOLT_PENDING = _intrinsics_require("molt_pending", globals())
+_MOLT_PROCESS_SPAWN = _intrinsics_require("molt_process_ipc_spawn")
+_MOLT_PROCESS_IPC_STREAMS = _intrinsics_require("molt_process_ipc_streams")
+_MOLT_PROCESS_IPC_CHILD = _intrinsics_require("molt_process_ipc_child")
+_MOLT_PROCESS_PID = _intrinsics_require("molt_process_pid")
+_MOLT_PROCESS_RETURN = _intrinsics_require("molt_process_returncode")
+_MOLT_PROCESS_KILL = _intrinsics_require("molt_process_kill")
+_MOLT_PROCESS_TERM = _intrinsics_require("molt_process_terminate")
+_MOLT_PROCESS_DROP = _intrinsics_require("molt_process_drop")
+_MOLT_STREAM_SEND = _intrinsics_require("molt_stream_send_obj")
+_MOLT_STREAM_RECV = _intrinsics_require("molt_stream_recv")
+_MOLT_STREAM_CLOSE = _intrinsics_require("molt_stream_close")
+_MOLT_STREAM_DROP = _intrinsics_require("molt_stream_drop")
+_MOLT_PENDING = _intrinsics_require("molt_pending")
 _MOLT_REQUIRE_OPERATION = _intrinsics_require(
-    "molt_capabilities_require_operation", globals()
+    "molt_capabilities_require_operation"
 )
-_MOLT_STRUCT_PACK = _intrinsics_require("molt_struct_pack", globals())
-_MOLT_STRUCT_UNPACK = _intrinsics_require("molt_struct_unpack", globals())
+_MOLT_STRUCT_PACK = _intrinsics_require("molt_struct_pack")
+_MOLT_STRUCT_UNPACK = _intrinsics_require("molt_struct_unpack")
 _MOLT_MP_CODEC_DUMPS = _intrinsics_require(
-    "molt_multiprocessing_codec_dumps", globals()
+    "molt_multiprocessing_codec_dumps"
 )
 _MOLT_MP_CODEC_LOADS = _intrinsics_require(
-    "molt_multiprocessing_codec_loads", globals()
+    "molt_multiprocessing_codec_loads"
 )
 _PENDING_SENTINEL: Any | None = None
 

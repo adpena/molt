@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 
 def _probe(name: str, getter) -> tuple[str, bool, str | None]:
@@ -70,6 +71,20 @@ PROBES = [
 def main() -> None:
     results = [_probe(name, getter) for name, getter in PROBES]
     print(results)
+    print(
+        "provider identity",
+        asyncio.tasks is sys.modules["asyncio.tasks"],
+        asyncio.base_events.tasks is asyncio.tasks,
+        asyncio.base_events.constants is asyncio.constants,
+        asyncio.selector_events.futures is asyncio.futures,
+        asyncio.constants.__spec__.name,
+    )
+
+    def marked():
+        return None
+
+    marked._is_coroutine = asyncio.coroutines._is_coroutine
+    print("coroutine marker", asyncio.iscoroutinefunction(marked))
 
 
 if __name__ == "__main__":

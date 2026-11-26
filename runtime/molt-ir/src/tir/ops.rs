@@ -448,6 +448,9 @@ pub enum OpCode {
     ScfYield,
     /// A checked packed load. The raw i64 is meaningful only on success.
     TryBuffer2dLoadI64,
+    /// Check the packed layout and integer operands, then commit one store.
+    /// False means no memory was changed. True leaves only post-call work.
+    TryBuffer2dStoreI64,
     /// An inline field borrowed from a held, layout-proven receiver.
     ProbeInlineField,
     /// A captured function and synchronous frame shape can use the current arena.

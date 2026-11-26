@@ -16,7 +16,7 @@ pub(super) enum MemRole {
     /// barrier, a module mutation, or a `MayDispatch` load that may run a user
     /// dunder writing arbitrary memory). Produces a new memory version.
     Def,
-    /// A proven-pure typed-slot load. Reads a memory version; defines none.
+    /// A read of a memory version, including a final-TIR packed probe.
     Use,
     /// Touches no heap memory (a pure register computation, constant, control
     /// marker). Not part of the memory graph.
@@ -27,8 +27,7 @@ pub(super) enum MemRole {
 /// surface — the single source of truth for memory-aliasing facts.
 ///
 /// * `ScalarRegister` region ⇒ [`MemRole::None`] (no heap footprint).
-/// * A proven-pure load (`load_purity == ProvenPure`, i.e. a typed-slot
-///   `LoadAttr`) ⇒ [`MemRole::Use`].
+/// * A known read-only access or proven-pure typed slot load ⇒ [`MemRole::Use`].
 /// * Everything else touching non-scalar memory ⇒ [`MemRole::Def`] (a
 ///   conservative clobber). This subsumes every heap-barrier opcode — the alias
 ///   oracle already widens calls/raises/yields/module-mutations to `GenericHeap`
@@ -43,11 +42,9 @@ pub(super) fn classify(
     if region == MemRegion::ScalarRegister {
         return MemRole::None;
     }
-    // A load (`LoadAttr` / `Index`) that is proven-pure reads but never writes.
-    // Every other non-scalar op is a clobbering def. `load_purity` only returns
-    // `ProvenPure` for typed-slot `LoadAttr` ops, so this gate is exactly the
-    // "pure read" set.
-    if slots.load_purity_at(site, op) == LoadPurity::ProvenPure {
+    if AliasAnalysisResult::is_read_only_access(op)
+        || slots.load_purity_at(site, op) == LoadPurity::ProvenPure
+    {
         MemRole::Use
     } else {
         MemRole::Def

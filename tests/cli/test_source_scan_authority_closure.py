@@ -86,6 +86,7 @@ def _discover(
     )
 
 
+@pytest.mark.parametrize("activated", [False, True])
 @pytest.mark.parametrize("first_full", [False, True])
 @pytest.mark.parametrize(
     "helper_source",
@@ -101,9 +102,12 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
     monkeypatch: pytest.MonkeyPatch,
     first_full: bool,
     helper_source: str,
+    activated: bool,
 ) -> None:
     entry = _source(tmp_path / "entry.py", "pass\n")
-    helper = _source(tmp_path / "helper.py", helper_source)
+    helper = _source(
+        tmp_path / "helper.py", helper_source + ("invoke()\n" if activated else "")
+    )
     _source(tmp_path / "leaf.py", "pass\n")
     monkeypatch.setattr(
         graph_cache, "_import_scan_tooling_fingerprint", lambda: "roles"
@@ -137,7 +141,7 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
             scan_authority=authority,
             namespace_writes={},
         )
-        assert policy.needs_runtime_import_support is full
+        assert policy.needs_runtime_import_support is activated
 
 
 def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) -> None:
@@ -416,23 +420,27 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
     )
 
 
-def test_runtime_protocol_bit_counts_statements_the_scan_reaches() -> None:
-    # A deferred body's import call counts only when the scan reaches the
-    # body; a literal import statement never needs the protocol (D8).
-    def detect(source: str, mode: str) -> bool:
-        return _source_import_scan._collect_imports_for_graph(
-            ast.parse(source),
-            "entry",
-            False,
-            import_scan_mode=mode,
-            target_python=PYTHON,
-        ).uses_runtime_import_protocol
+def test_runtime_protocol_bit_tracks_activation_and_inventory() -> None:
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
 
-    deferred = "def invoke():\n    return __import__('leaf')\n"
-    assert not detect(deferred, "module_init")
-    assert detect(deferred, "full")
-    assert not detect("pass\n", "full")
-    assert not detect("def invoke():\n    import leaf\n", "full")
+    tree = ast.parse("def invoke():\n    return __import__('leaf')\n")
+    for mode in ("module_init", "full"):
+        assert not _source_import_scan._collect_imports_for_graph(
+            tree, "entry", import_scan_mode=mode, target_python=PYTHON
+        ).uses_runtime_import_protocol
+    assert _source_import_scan._collect_imports_for_graph(
+        tree,
+        "entry",
+        source_owner=python_node_source_key(tree.body[0]),
+        import_scan_mode="module_init",
+        target_python=PYTHON,
+    ).uses_runtime_import_protocol
+    assert _source_import_scan._collect_imports_for_graph(
+        tree, "entry", purpose=SourceImportPurpose.INVENTORY, target_python=PYTHON
+    ).uses_runtime_import_protocol
+    assert not _source_import_scan._collect_imports_for_graph(
+        ast.parse("import leaf\n"), "entry", target_python=PYTHON
+    ).uses_runtime_import_protocol
 
 
 @pytest.mark.parametrize("target", ["native", "wasm", "mlir"])
@@ -705,7 +713,7 @@ def test_dynamic_owner_fixed_point_uses_custody_names_and_admitted_roots(
 
     closure = graphs._finalize_runtime_import_closure(**common)
 
-    assert closure.policy.needs_runtime_import_support
+    assert not closure.policy.needs_runtime_import_support
     assert closure.custody is not None
     assert closure.custody.owners_by_module["support.owner"] == owner
     assert closure.custody.owners_by_module["support.child"] == child
@@ -730,7 +738,7 @@ def test_ordinary_nested_package_owner_rescans_under_original_project_root(
     )
     child = _source(project / "pkg" / "nested" / "child.py", "VALUE = 1\n")
     stdlib = tmp_path / "stdlib"
-    support = _source(stdlib / "runtime_owner.py", "pass\n")
+    _source(stdlib / "runtime_owner.py", "pass\n")
     monkeypatch.setattr(
         scanner,
         "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES",
@@ -765,10 +773,11 @@ def test_ordinary_nested_package_owner_rescans_under_original_project_root(
         import_admission_policy=None,
     )
 
-    assert closure.policy.needs_runtime_import_support
+    assert not closure.policy.needs_runtime_import_support
     assert closure.custody is not None
     assert closure.custody.owners_by_module["pkg.nested.owner"] == owner
-    assert closure.custody.owners_by_module["runtime_owner"] == support
+    assert "runtime_owner" not in closure.custody.owners_by_module
+    assert "runtime_owner" not in graph
     assert graph["pkg.nested.child"] == child
     assert roles["pkg.nested.owner"].mode == "full"
 

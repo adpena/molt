@@ -62,6 +62,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 )
 from molt.compiler_analysis.python_namespace_writes import (
     python_namespace_summary,
+    PythonNamespaceSummary,
     refine_namespace_cache_writes,
     python_package_name,
 )
@@ -878,6 +879,7 @@ def _collect_imports(
     _source_bindings: list[_SourceImportBinding] | None = None,
     _source_values: list[_SourceValueSummary] | None = None,
     _source_sites: list[SourceImportSite] | None = None,
+    _namespace_summary: list[PythonNamespaceSummary] | None = None,
     _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
     _star_modules: list[str] | None = None,
     _dynamic_star_modules: list[str] | None = None,
@@ -2131,55 +2133,22 @@ def _collect_imports(
                 if ref.phase != "call"
             )
 
-    def record_protocol_use(node: ast.AST) -> None:
+    def record_protocol_use(node: ast.Call) -> None:
         nonlocal uses_runtime_import_protocol
         if _runtime_import_protocol is None or uses_runtime_import_protocol:
             return
-        if isinstance(node, ast.Call):
-            argument_count = (
-                None
-                if any(isinstance(arg, ast.Starred) for arg in node.args)
-                or any(keyword.arg is None for keyword in node.keywords)
-                else len(node.args) + len(node.keywords)
+        argument_count = (
+            None
+            if any(isinstance(arg, ast.Starred) for arg in node.args)
+            or any(keyword.arg is None for keyword in node.keywords)
+            else len(node.args) + len(node.keywords)
+        )
+        call = binding_index.call_fact(node)
+        uses_runtime_import_protocol = call is not None and bool(
+            possible_runtime_import_call_identities(
+                call.callee_identities, argument_count
             )
-            call = binding_index.call_fact(node)
-            uses_runtime_import_protocol = call is not None and bool(
-                possible_runtime_import_call_identities(
-                    call.callee_identities, argument_count
-                )
-            )
-        # A literal ``import``/``from ... import`` statement names its modules,
-        # so the closed graph holds them and the module registry serves them
-        # (bedrock §13 D8): it does not need the Python import machinery. Only
-        # a call that may reach an import entry point does; a write of the
-        # import state (hooks, ``sys.modules``, ``builtins.__import__``) is the
-        # graph policy's separate fact (HF-841).
-
-    def record_deferred_inventory(node: ast.AST) -> None:
-        # Full depth describes source permission and protocol requirements;
-        # execution belongs to the source-demand owner. Inventory alone cannot
-        # admit a dormant import, cache write, or source execution.
-        if isinstance(node, (ast.stmt, ast.Call)) and not import_flow.may_execute(node):
-            return
-        record_protocol_use(node)
-        if _dynamic_relative_import_discovery is None:
-            return
-        if isinstance(node, ast.ImportFrom) and node.level:
-            request = StaticImportRequest.statement(
-                node.module or "",
-                level=node.level,
-                fromlist=tuple(alias.name for alias in node.names),
-            )
-            if plan_static_import_request(
-                request, _import_contexts(node)
-            ).requires_runtime:
-                _dynamic_relative_import_discovery.required = True
-        elif isinstance(node, ast.Call):
-            transfers = _conditional_import_call_plans(node)
-            if transfers is not None and any(
-                transfer.site.plan.requires_runtime for transfer in transfers
-            ):
-                _dynamic_relative_import_discovery.required = True
+        )
 
     def _visit(
         node: ast.AST,
@@ -2532,7 +2501,8 @@ def _collect_imports(
                 binding_index.expression_result(node.subject), "escape", contents=True
             )
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            record_protocol_use(node)
+            # Literal statements use the registry and publish separate binding
+            # and namespace effects. A call may need the runtime protocol.
             _record_import_statement(node)
             if isinstance(node, ast.ImportFrom) and _source_demands is not None:
                 _source_demands.extend(
@@ -2572,20 +2542,21 @@ def _collect_imports(
     for region in python_execution_regions(
         cast(ast.Module, tree),
         target_python=target_python.feature_version,
-        include_deferred=import_scan_mode == "full" and source_owner is None,
+        # Permission to compile a body does not execute it. Source discovery
+        # revisits bodies on activation; the inventory and an admitted runtime
+        # catalog retain the full published source surface.
+        include_deferred=(
+            import_scan_mode == "full"
+            and source_owner is None
+            and (
+                _purpose is SourceImportPurpose.INVENTORY
+                or _runtime_catalog is not None
+            )
+        ),
         source_owner=source_owner,
         body=_source_body(tree, source_owner, ast_digest_admission),
         fact_result=binding_index.expression_result,
     ):
-        if (
-            _purpose is SourceImportPurpose.EXECUTION
-            and source_owner is None
-            and region.owner is not None
-            and _runtime_catalog is None
-        ):
-            if region.phase == "evaluate":
-                record_deferred_inventory(region.node)
-            continue
         demand_start = len(_source_demands) if _source_demands is not None else 0
         if region.phase == "evaluate":
             _visit(region.node)
@@ -2604,6 +2575,10 @@ def _collect_imports(
             call_imports=tuple(dict.fromkeys(conditional_import_sites)),
             cache_writes=tuple(dict.fromkeys(cache_writes)),
             cache_reads=tuple(dict.fromkeys(cache_reads)),
+        )
+    if _namespace_summary is not None:
+        _namespace_summary[0] = refine_namespace_cache_writes(
+            _namespace_summary[0], cache_writes, binding_index
         )
     if _runtime_import_protocol is not None:
         _runtime_import_protocol.append(uses_runtime_import_protocol)
@@ -2644,13 +2619,15 @@ def _collect_imports_for_graph(
     source_values: list[_SourceValueSummary] = []
     source_sites: list[SourceImportSite] = []
     runtime_import_protocol: list[bool] = []
-    namespace_summary = (
-        python_namespace_summary(
-            tree,
-            package=python_package_name(module_name or "", is_package=is_package),
-            target_python=target_python.feature_version,
-            ast_digest_admission=ast_digest_admission,
-        )
+    namespace_summaries = (
+        [
+            python_namespace_summary(
+                tree,
+                package=python_package_name(module_name or "", is_package=is_package),
+                target_python=target_python.feature_version,
+                ast_digest_admission=ast_digest_admission,
+            )
+        ]
         if source_owner is None and isinstance(tree, ast.Module)
         else None
     )
@@ -2670,6 +2647,7 @@ def _collect_imports_for_graph(
         _source_bindings=source_bindings,
         _source_values=source_values,
         _source_sites=source_sites,
+        _namespace_summary=namespace_summaries,
         _dynamic_relative_import_discovery=discovery,
         _star_modules=star_modules,
         _dynamic_star_modules=dynamic_star_modules,
@@ -2689,14 +2667,9 @@ def _collect_imports_for_graph(
             namespace_premise=namespace_premise,
             ast_digest_admission=ast_digest_admission,
         ),
-        namespace_summary=(
-            refine_namespace_cache_writes(
-                namespace_summary,
-                source_values[0].cache_writes if source_values else (),
-            )
-            if namespace_summary is not None
-            else None
-        ),
+        namespace_summary=namespace_summaries[0]
+        if namespace_summaries is not None
+        else None,
         runtime_catalog=(
             None
             if runtime_catalog is None

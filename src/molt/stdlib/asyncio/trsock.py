@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from asyncio import socket as socket
+from . import _SOCKET as socket
 
 
 class TransportSocket:

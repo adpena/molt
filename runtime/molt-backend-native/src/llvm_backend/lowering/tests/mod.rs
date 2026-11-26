@@ -335,12 +335,13 @@ impl<'ctx> OpLoweringFixture<'ctx, '_> {
         let at = crate::codegen_ssa::walk::Position {
             source,
             op_index: 0,
+            frame: crate::codegen_ssa::frame::ActiveFrame::Absent,
             initial_homes: &Default::default(),
             poll_frame: None,
             blocks: &HashMap::default(),
             exception_targets: &HashMap::default(),
         };
-        self.walker_op(|context, builder| context.lower_op(builder, &at, op, None));
+        self.walker_op(|context, builder| context.lower_op(builder, &at, op));
     }
 
     fn ensure_i64(&self, value: BasicValueEnum<'ctx>) -> inkwell::values::IntValue<'ctx> {

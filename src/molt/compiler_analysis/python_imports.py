@@ -2601,6 +2601,14 @@ class RuntimeCatalogDeferral(NamedTuple):
     star_modules: bool = False
 
 
+type _SourceImportCacheWrite = tuple[
+    PythonSourceKey,
+    tuple[str, ...] | None,
+    frozenset[PythonSourceKey],
+    frozenset[PythonSourceKey],
+]
+
+
 class _SourceValueSummary(NamedTuple):
     """Immutable source-owned values; no AST or resolved filesystem edges."""
 
@@ -2622,15 +2630,7 @@ class _SourceValueSummary(NamedTuple):
     callables: tuple[tuple[PythonSourceKey, int], ...] = ()
     # Candidate identity selects these plans only when this call executes.
     call_imports: tuple[SourceImportCall, ...] = ()
-    cache_writes: tuple[
-        tuple[
-            PythonSourceKey,
-            tuple[str, ...] | None,
-            frozenset[PythonSourceKey],
-            frozenset[PythonSourceKey],
-        ],
-        ...,
-    ] = ()
+    cache_writes: tuple[_SourceImportCacheWrite, ...] = ()
     cache_reads: tuple[
         tuple[
             PythonSourceKey,

@@ -3891,7 +3891,7 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
     // uncaught raise inside it is recorded VALUE-BASED and swallowed below,
     // instead of killing the process. ROOT CAUSE of #65 (definitively measured):
     // when a raise reaches `molt_raise` with `exception_handler_active()` false
-    // (the `EXCEPTION_STACK` empty), molt's uncaught-exception terminator runs
+    // (the `EXCEPTION_HANDLER_DEPTH` zero), molt's uncaught-exception terminator runs
     // `std::process::exit(1)` (exceptions.rs). It is NOT a "native unwind" (that
     // misdiagnosis drove the now-reverted deferral apparatus) — it is a hard
     // process exit, which is why `catch_unwind` caught nothing and a baseline
@@ -4916,14 +4916,6 @@ unsafe fn dec_ref_ptr_terminal_body(
                 Some(HeapDropPolicy::Buffer2d) => {
                     let buffer = buffer2d_ptr(ptr);
                     if !buffer.is_null() {
-                        match &mut (*buffer).data {
-                            buffer2d::Buffer2DStorage::I64(data, ..) => {
-                                drop(backing::tracked_vec_box_from_raw(*data));
-                            }
-                            buffer2d::Buffer2DStorage::Boxed(data, ..) => {
-                                drop(backing::tracked_vec_box_from_raw(*data));
-                            }
-                        }
                         std::ptr::drop_in_place(buffer);
                     }
                 }

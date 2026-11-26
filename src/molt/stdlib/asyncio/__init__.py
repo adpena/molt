@@ -2,36 +2,9 @@
 
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Iterable, cast
-import heapq as _heapq
-import logging as _logging
-import os as _os
 import sys as _sys
-import time as _time
-import traceback as _traceback
-import collections.abc as _collections_abc
-import contextlib as _contextlib
-import inspect as _inspect
-import errno as _errno
-import io as _io
 import types as _types
-import threading as _threading
-import reprlib as _reprlib
-import linecache as _linecache
 import typing
-import signal as _signal
-import functools as _functools
-import collections as _collections
-import selectors as _selectors
-import concurrent as _concurrent
-import itertools as _itertools
-import stat as _stat
-import warnings as _warnings
-import weakref as _weakref
-import ssl as _ssl
-import subprocess as _subprocess
-
-import contextvars as _contextvars
-import enum as _enum
 
 from _intrinsics import require_intrinsic as _intrinsic_require
 
@@ -59,7 +32,7 @@ _SOCKET = _LazySocketModule()
 _socket = _SOCKET
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
-_IS_WINDOWS = _os.name == "nt"
+_IS_WINDOWS = _sys.platform == "win32"
 _EXPOSE_EVENT_LOOP = _VERSION_INFO >= (3, 13)
 _EXPOSE_WINDOWS_POLICIES = _IS_WINDOWS
 _EXPOSE_QUEUE_SHUTDOWN = _VERSION_INFO >= (3, 13)
@@ -399,10 +372,6 @@ if TYPE_CHECKING:
         _sock: Any, _data: Any, _addr: Any, _fd: int
     ) -> Any: ...
 
-    def _molt_inspect_iscoroutine(_obj: Any) -> bool: ...
-
-    def _molt_inspect_iscoroutinefunction(_obj: Any) -> bool: ...
-
     # Handle-based state machine intrinsics -- Future
     def _molt_asyncio_future_new() -> int: ...
 
@@ -564,22 +533,10 @@ from .exceptions import (
 def _is_cancelled_exc(exc: BaseException) -> bool:
     return isinstance(exc, CancelledError)
 
-_iscoroutine_typecache: set[type] = set()
-
-def iscoroutine(obj: Any) -> bool:
-    # CPython's asyncio.coroutines.iscoroutine: a native coroutine or any
-    # collections.abc.Coroutine (an async generator's asend/athrow awaitable
-    # among them), with a positive type cache of at most 100 types.
-    if type(obj) in _iscoroutine_typecache:
-        return True
-    if _molt_inspect_iscoroutine(obj) or isinstance(obj, _collections_abc.Coroutine):
-        if len(_iscoroutine_typecache) < 100:
-            _iscoroutine_typecache.add(type(obj))
-        return True
-    return False
-
-def iscoroutinefunction(func: Any) -> bool:
-    return bool(_molt_inspect_iscoroutinefunction(func))
+from .coroutines import (
+    iscoroutine as iscoroutine,
+    iscoroutinefunction as iscoroutinefunction,
+)
 
 _UNSET = object()
 _PROC_STDIO_INHERIT = 0
@@ -803,381 +760,376 @@ async def _io_wait(fd: int, events: int, timeout: float | None = None) -> Any:
     io_wait = _require_io_wait_new()
     return await _require_asyncio_intrinsic(io_wait, "io_wait_new")(fd, events, timeout)
 
-_molt_io_wait_new = _intrinsic_require("molt_io_wait_new", globals())
-_molt_pending = _intrinsic_require("molt_pending", globals())
-_molt_async_sleep = _intrinsic_require("molt_async_sleep", globals())
-_molt_spawn = _intrinsic_require("molt_spawn", globals())
-_molt_cancel_token_new = _intrinsic_require("molt_cancel_token_new", globals())
-_molt_cancel_token_clone = _intrinsic_require("molt_cancel_token_clone", globals())
-_molt_cancel_token_drop = _intrinsic_require("molt_cancel_token_drop", globals())
-_molt_cancel_token_cancel = _intrinsic_require("molt_cancel_token_cancel", globals())
+_molt_io_wait_new = _intrinsic_require("molt_io_wait_new")
+_molt_pending = _intrinsic_require("molt_pending")
+_molt_async_sleep = _intrinsic_require("molt_async_sleep")
+_molt_spawn = _intrinsic_require("molt_spawn")
+_molt_cancel_token_new = _intrinsic_require("molt_cancel_token_new")
+_molt_cancel_token_clone = _intrinsic_require("molt_cancel_token_clone")
+_molt_cancel_token_drop = _intrinsic_require("molt_cancel_token_drop")
+_molt_cancel_token_cancel = _intrinsic_require("molt_cancel_token_cancel")
 _molt_cancel_token_is_cancelled = _intrinsic_require(
-    "molt_cancel_token_is_cancelled", globals()
+    "molt_cancel_token_is_cancelled"
 )
 _molt_cancel_token_set_current = _intrinsic_require(
-    "molt_cancel_token_set_current", globals()
+    "molt_cancel_token_set_current"
 )
 _molt_cancel_token_get_current = _intrinsic_require(
-    "molt_cancel_token_get_current", globals()
+    "molt_cancel_token_get_current"
 )
-_molt_promise_new = _intrinsic_require("molt_promise_new", globals())
-_molt_promise_set_result = _intrinsic_require("molt_promise_set_result", globals())
+_molt_promise_new = _intrinsic_require("molt_promise_new")
+_molt_promise_set_result = _intrinsic_require("molt_promise_set_result")
 _molt_task_register_execution = _intrinsic_require(
-    "molt_task_register_execution", globals()
+    "molt_task_register_execution"
 )
 _molt_asyncio_cancel_pending = _intrinsic_require(
-    "molt_asyncio_cancel_pending", globals()
+    "molt_asyncio_cancel_pending"
 )
 _molt_asyncio_waiters_notify = _intrinsic_require(
-    "molt_asyncio_waiters_notify", globals()
+    "molt_asyncio_waiters_notify"
 )
 _molt_asyncio_waiters_notify_exception = _intrinsic_require(
-    "molt_asyncio_waiters_notify_exception", globals()
+    "molt_asyncio_waiters_notify_exception"
 )
 _molt_asyncio_waiters_remove = _intrinsic_require(
-    "molt_asyncio_waiters_remove", globals()
+    "molt_asyncio_waiters_remove"
 )
 _molt_asyncio_barrier_release = _intrinsic_require(
-    "molt_asyncio_barrier_release", globals()
+    "molt_asyncio_barrier_release"
 )
 _molt_asyncio_condition_wait_for_step = _intrinsic_require(
-    "molt_asyncio_condition_wait_for_step", globals()
+    "molt_asyncio_condition_wait_for_step"
 )
 _molt_asyncio_future_transfer = _intrinsic_require(
-    "molt_asyncio_future_transfer", globals()
+    "molt_asyncio_future_transfer"
 )
 _molt_asyncio_event_waiters_cleanup = _intrinsic_require(
-    "molt_asyncio_event_waiters_cleanup", globals()
+    "molt_asyncio_event_waiters_cleanup"
 )
 _molt_asyncio_task_registry_set = _intrinsic_require(
-    "molt_asyncio_task_registry_set", globals()
+    "molt_asyncio_task_registry_set"
 )
 _molt_asyncio_task_registry_get = _intrinsic_require(
-    "molt_asyncio_task_registry_get", globals()
+    "molt_asyncio_task_registry_get"
 )
 _molt_asyncio_task_registry_contains = _intrinsic_require(
-    "molt_asyncio_task_registry_contains", globals()
+    "molt_asyncio_task_registry_contains"
 )
 _molt_asyncio_task_registry_current = _intrinsic_require(
-    "molt_asyncio_task_registry_current", globals()
+    "molt_asyncio_task_registry_current"
 )
 _molt_asyncio_task_registry_current_for_loop = _intrinsic_require(
-    "molt_asyncio_task_registry_current_for_loop", globals()
+    "molt_asyncio_task_registry_current_for_loop"
 )
 _molt_asyncio_task_registry_pop = _intrinsic_require(
-    "molt_asyncio_task_registry_pop", globals()
+    "molt_asyncio_task_registry_pop"
 )
 _molt_asyncio_task_last_exception_clear = _intrinsic_require(
-    "molt_asyncio_task_last_exception_clear", globals()
+    "molt_asyncio_task_last_exception_clear"
 )
 _molt_asyncio_task_registry_move = _intrinsic_require(
-    "molt_asyncio_task_registry_move", globals()
+    "molt_asyncio_task_registry_move"
 )
 _molt_asyncio_task_registry_values = _intrinsic_require(
-    "molt_asyncio_task_registry_values", globals()
+    "molt_asyncio_task_registry_values"
 )
 _molt_asyncio_task_registry_live_set = _intrinsic_require(
-    "molt_asyncio_task_registry_live_set", globals()
+    "molt_asyncio_task_registry_live_set"
 )
 _molt_asyncio_event_waiters_register = _intrinsic_require(
-    "molt_asyncio_event_waiters_register", globals()
+    "molt_asyncio_event_waiters_register"
 )
 _molt_asyncio_event_waiters_unregister = _intrinsic_require(
-    "molt_asyncio_event_waiters_unregister", globals()
+    "molt_asyncio_event_waiters_unregister"
 )
 _molt_asyncio_event_waiters_cleanup_token = _intrinsic_require(
-    "molt_asyncio_event_waiters_cleanup_token", globals()
+    "molt_asyncio_event_waiters_cleanup_token"
 )
 _molt_asyncio_child_watcher_add = _intrinsic_require(
-    "molt_asyncio_child_watcher_add", globals()
+    "molt_asyncio_child_watcher_add"
 )
 _molt_asyncio_child_watcher_remove = _intrinsic_require(
-    "molt_asyncio_child_watcher_remove", globals()
+    "molt_asyncio_child_watcher_remove"
 )
 _molt_asyncio_child_watcher_clear = _intrinsic_require(
-    "molt_asyncio_child_watcher_clear", globals()
+    "molt_asyncio_child_watcher_clear"
 )
 _molt_asyncio_child_watcher_pop = _intrinsic_require(
-    "molt_asyncio_child_watcher_pop", globals()
+    "molt_asyncio_child_watcher_pop"
 )
 _molt_asyncio_ssl_transport_orchestrate = _intrinsic_require(
-    "molt_asyncio_ssl_transport_orchestrate", globals()
+    "molt_asyncio_ssl_transport_orchestrate"
 )
 _molt_asyncio_tls_client_connect_new = _intrinsic_require(
-    "molt_asyncio_tls_client_connect_new", globals()
+    "molt_asyncio_tls_client_connect_new"
 )
 _molt_asyncio_tls_client_from_fd_new = _intrinsic_require(
-    "molt_asyncio_tls_client_from_fd_new", globals()
+    "molt_asyncio_tls_client_from_fd_new"
 )
 _molt_asyncio_tls_server_payload = _intrinsic_require(
-    "molt_asyncio_tls_server_payload", globals()
+    "molt_asyncio_tls_server_payload"
 )
 _molt_asyncio_tls_server_from_fd_new = _intrinsic_require(
-    "molt_asyncio_tls_server_from_fd_new", globals()
+    "molt_asyncio_tls_server_from_fd_new"
 )
 _molt_asyncio_require_unix_socket_support = _intrinsic_require(
-    "molt_asyncio_require_unix_socket_support", globals()
+    "molt_asyncio_require_unix_socket_support"
 )
 _molt_asyncio_require_child_watcher_support = _intrinsic_require(
-    "molt_asyncio_require_child_watcher_support", globals()
+    "molt_asyncio_require_child_watcher_support"
 )
 _molt_asyncio_running_loop_get = _intrinsic_require(
-    "molt_asyncio_running_loop_get", globals()
+    "molt_asyncio_running_loop_get"
 )
 _molt_asyncio_running_loop_set = _intrinsic_require(
-    "molt_asyncio_running_loop_set", globals()
+    "molt_asyncio_running_loop_set"
 )
 _molt_asyncio_event_loop_get_current = _intrinsic_require(
-    "molt_asyncio_event_loop_get_current", globals()
+    "molt_asyncio_event_loop_get_current"
 )
 _molt_asyncio_event_loop_set = _intrinsic_require(
-    "molt_asyncio_event_loop_set", globals()
+    "molt_asyncio_event_loop_set"
 )
 _molt_asyncio_event_loop_policy_get = _intrinsic_require(
-    "molt_asyncio_event_loop_policy_get", globals()
+    "molt_asyncio_event_loop_policy_get"
 )
 _molt_asyncio_event_loop_policy_set = _intrinsic_require(
-    "molt_asyncio_event_loop_policy_set", globals()
+    "molt_asyncio_event_loop_policy_set"
 )
 _molt_asyncio_tasks_add_done_callback = _intrinsic_require(
-    "molt_asyncio_tasks_add_done_callback", globals()
+    "molt_asyncio_tasks_add_done_callback"
 )
 _molt_asyncio_task_cancel_apply = _intrinsic_require(
-    "molt_asyncio_task_cancel_apply", globals()
+    "molt_asyncio_task_cancel_apply"
 )
 _molt_asyncio_task_uncancel_apply = _intrinsic_require(
-    "molt_asyncio_task_uncancel_apply", globals()
+    "molt_asyncio_task_uncancel_apply"
 )
 _molt_asyncio_event_set_waiters = _intrinsic_require(
-    "molt_asyncio_event_set_waiters", globals()
+    "molt_asyncio_event_set_waiters"
 )
 _molt_asyncio_fd_watcher_register = _intrinsic_require(
-    "molt_asyncio_fd_watcher_register", globals()
+    "molt_asyncio_fd_watcher_register"
 )
 _molt_asyncio_fd_watcher_unregister = _intrinsic_require(
-    "molt_asyncio_fd_watcher_unregister", globals()
+    "molt_asyncio_fd_watcher_unregister"
 )
 # --- Event loop Rust handle intrinsics (RT2 core, 28 total) ---
-_molt_event_loop_spawn = _intrinsic_require("molt_event_loop_spawn", globals())
-_molt_event_loop_new = _intrinsic_require("molt_event_loop_new", globals())
-_molt_event_loop_call_soon = _intrinsic_require("molt_event_loop_call_soon", globals())
-_molt_event_loop_call_at = _intrinsic_require("molt_event_loop_call_at", globals())
+_molt_event_loop_spawn = _intrinsic_require("molt_event_loop_spawn")
+_molt_event_loop_new = _intrinsic_require("molt_event_loop_new")
+_molt_event_loop_call_soon = _intrinsic_require("molt_event_loop_call_soon")
+_molt_event_loop_call_at = _intrinsic_require("molt_event_loop_call_at")
 _molt_event_loop_cancel_timer = _intrinsic_require(
-    "molt_event_loop_cancel_timer", globals()
+    "molt_event_loop_cancel_timer"
 )
-_molt_event_loop_add_reader = _intrinsic_require("molt_event_loop_add_reader", globals())
+_molt_event_loop_add_reader = _intrinsic_require("molt_event_loop_add_reader")
 _molt_event_loop_remove_reader = _intrinsic_require(
-    "molt_event_loop_remove_reader", globals()
+    "molt_event_loop_remove_reader"
 )
-_molt_event_loop_add_writer = _intrinsic_require("molt_event_loop_add_writer", globals())
+_molt_event_loop_add_writer = _intrinsic_require("molt_event_loop_add_writer")
 _molt_event_loop_remove_writer = _intrinsic_require(
-    "molt_event_loop_remove_writer", globals()
+    "molt_event_loop_remove_writer"
 )
-_molt_event_loop_run_once = _intrinsic_require("molt_event_loop_run_once", globals())
-_molt_event_loop_time = _intrinsic_require("molt_event_loop_time", globals())
-_molt_event_loop_wait = _intrinsic_require("molt_event_loop_wait", globals())
-_molt_event_loop_wake = _intrinsic_require("molt_event_loop_wake", globals())
-_molt_event_loop_start = _intrinsic_require("molt_event_loop_start", globals())
-_molt_event_loop_stop = _intrinsic_require("molt_event_loop_stop", globals())
-_molt_event_loop_is_running = _intrinsic_require("molt_event_loop_is_running", globals())
-_molt_event_loop_is_closed = _intrinsic_require("molt_event_loop_is_closed", globals())
-_molt_event_loop_close = _intrinsic_require("molt_event_loop_close", globals())
-_molt_event_loop_drop = _intrinsic_require("molt_event_loop_drop", globals())
-_molt_event_loop_set_debug = _intrinsic_require("molt_event_loop_set_debug", globals())
-_molt_event_loop_get_debug = _intrinsic_require("molt_event_loop_get_debug", globals())
+_molt_event_loop_run_once = _intrinsic_require("molt_event_loop_run_once")
+_molt_event_loop_time = _intrinsic_require("molt_event_loop_time")
+_molt_event_loop_wait = _intrinsic_require("molt_event_loop_wait")
+_molt_event_loop_wake = _intrinsic_require("molt_event_loop_wake")
+_molt_event_loop_start = _intrinsic_require("molt_event_loop_start")
+_molt_event_loop_stop = _intrinsic_require("molt_event_loop_stop")
+_molt_event_loop_is_running = _intrinsic_require("molt_event_loop_is_running")
+_molt_event_loop_is_closed = _intrinsic_require("molt_event_loop_is_closed")
+_molt_event_loop_close = _intrinsic_require("molt_event_loop_close")
+_molt_event_loop_drop = _intrinsic_require("molt_event_loop_drop")
+_molt_event_loop_set_debug = _intrinsic_require("molt_event_loop_set_debug")
+_molt_event_loop_get_debug = _intrinsic_require("molt_event_loop_get_debug")
 _molt_event_loop_set_exception_handler = _intrinsic_require(
-    "molt_event_loop_set_exception_handler", globals()
+    "molt_event_loop_set_exception_handler"
 )
 _molt_event_loop_get_exception_handler = _intrinsic_require(
-    "molt_event_loop_get_exception_handler", globals()
+    "molt_event_loop_get_exception_handler"
 )
 _molt_event_loop_set_task_factory = _intrinsic_require(
-    "molt_event_loop_set_task_factory", globals()
+    "molt_event_loop_set_task_factory"
 )
 _molt_event_loop_get_task_factory = _intrinsic_require(
-    "molt_event_loop_get_task_factory", globals()
+    "molt_event_loop_get_task_factory"
 )
 _molt_event_loop_notify_reader_ready = _intrinsic_require(
-    "molt_event_loop_notify_reader_ready", globals()
+    "molt_event_loop_notify_reader_ready"
 )
 _molt_event_loop_notify_writer_ready = _intrinsic_require(
-    "molt_event_loop_notify_writer_ready", globals()
+    "molt_event_loop_notify_writer_ready"
 )
-_molt_pipe_transport_new = _intrinsic_require("molt_pipe_transport_new", globals())
-_molt_pipe_transport_get_fd = _intrinsic_require("molt_pipe_transport_get_fd", globals())
+_molt_pipe_transport_new = _intrinsic_require("molt_pipe_transport_new")
+_molt_pipe_transport_get_fd = _intrinsic_require("molt_pipe_transport_get_fd")
 _molt_pipe_transport_is_closing = _intrinsic_require(
-    "molt_pipe_transport_is_closing", globals()
+    "molt_pipe_transport_is_closing"
 )
-_molt_pipe_transport_close = _intrinsic_require("molt_pipe_transport_close", globals())
+_molt_pipe_transport_close = _intrinsic_require("molt_pipe_transport_close")
 _molt_pipe_transport_pause_reading = _intrinsic_require(
-    "molt_pipe_transport_pause_reading", globals()
+    "molt_pipe_transport_pause_reading"
 )
 _molt_pipe_transport_resume_reading = _intrinsic_require(
-    "molt_pipe_transport_resume_reading", globals()
+    "molt_pipe_transport_resume_reading"
 )
-_molt_pipe_transport_write = _intrinsic_require("molt_pipe_transport_write", globals())
+_molt_pipe_transport_write = _intrinsic_require("molt_pipe_transport_write")
 _molt_pipe_transport_get_write_buffer_size = _intrinsic_require(
-    "molt_pipe_transport_get_write_buffer_size", globals()
+    "molt_pipe_transport_get_write_buffer_size"
 )
-_molt_pipe_transport_drop = _intrinsic_require("molt_pipe_transport_drop", globals())
+_molt_pipe_transport_drop = _intrinsic_require("molt_pipe_transport_drop")
 _molt_asyncio_subprocess_stdio_normalize = _intrinsic_require(
-    "molt_asyncio_subprocess_stdio_normalize", globals()
+    "molt_asyncio_subprocess_stdio_normalize"
 )
 _molt_asyncio_server_accept_loop_new = _intrinsic_require(
-    "molt_asyncio_server_accept_loop_new", globals()
+    "molt_asyncio_server_accept_loop_new"
 )
 _molt_asyncio_stream_reader_read_new = _intrinsic_require(
-    "molt_asyncio_stream_reader_read_new", globals()
+    "molt_asyncio_stream_reader_read_new"
 )
 _molt_asyncio_stream_reader_readline_new = _intrinsic_require(
-    "molt_asyncio_stream_reader_readline_new", globals()
+    "molt_asyncio_stream_reader_readline_new"
 )
 _molt_asyncio_stream_send_all_new = _intrinsic_require(
-    "molt_asyncio_stream_send_all_new", globals()
+    "molt_asyncio_stream_send_all_new"
 )
 _molt_asyncio_stream_buffer_snapshot = _intrinsic_require(
-    "molt_asyncio_stream_buffer_snapshot", globals()
+    "molt_asyncio_stream_buffer_snapshot"
 )
 _molt_asyncio_stream_buffer_consume = _intrinsic_require(
-    "molt_asyncio_stream_buffer_consume", globals()
+    "molt_asyncio_stream_buffer_consume"
 )
 _molt_asyncio_socket_reader_read_new = _intrinsic_require(
-    "molt_asyncio_socket_reader_read_new", globals()
+    "molt_asyncio_socket_reader_read_new"
 )
 _molt_asyncio_socket_reader_readline_new = _intrinsic_require(
-    "molt_asyncio_socket_reader_readline_new", globals()
+    "molt_asyncio_socket_reader_readline_new"
 )
-_molt_asyncio_sock_recv_new = _intrinsic_require("molt_asyncio_sock_recv_new", globals())
+_molt_asyncio_sock_recv_new = _intrinsic_require("molt_asyncio_sock_recv_new")
 _molt_asyncio_sock_connect_new = _intrinsic_require(
-    "molt_asyncio_sock_connect_new", globals()
+    "molt_asyncio_sock_connect_new"
 )
 _molt_asyncio_sock_accept_new = _intrinsic_require(
-    "molt_asyncio_sock_accept_new", globals()
+    "molt_asyncio_sock_accept_new"
 )
 _molt_asyncio_sock_recv_into_new = _intrinsic_require(
-    "molt_asyncio_sock_recv_into_new", globals()
+    "molt_asyncio_sock_recv_into_new"
 )
 _molt_asyncio_sock_sendall_new = _intrinsic_require(
-    "molt_asyncio_sock_sendall_new", globals()
+    "molt_asyncio_sock_sendall_new"
 )
 _molt_asyncio_sock_recvfrom_new = _intrinsic_require(
-    "molt_asyncio_sock_recvfrom_new", globals()
+    "molt_asyncio_sock_recvfrom_new"
 )
 _molt_asyncio_sock_recvfrom_into_new = _intrinsic_require(
-    "molt_asyncio_sock_recvfrom_into_new", globals()
+    "molt_asyncio_sock_recvfrom_into_new"
 )
 _molt_asyncio_sock_sendto_new = _intrinsic_require(
-    "molt_asyncio_sock_sendto_new", globals()
+    "molt_asyncio_sock_sendto_new"
 )
-_molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
+_molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new")
 
-_molt_module_new = _intrinsic_require("molt_module_new", globals())
-_molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
-_molt_process_spawn = _intrinsic_require("molt_process_spawn", globals())
-_molt_process_wait_future = _intrinsic_require("molt_process_wait_future", globals())
-_molt_process_pid = _intrinsic_require("molt_process_pid", globals())
-_molt_process_returncode = _intrinsic_require("molt_process_returncode", globals())
-_molt_process_kill = _intrinsic_require("molt_process_kill", globals())
-_molt_process_terminate = _intrinsic_require("molt_process_terminate", globals())
-_molt_process_stdin = _intrinsic_require("molt_process_stdin", globals())
-_molt_process_stdout = _intrinsic_require("molt_process_stdout", globals())
-_molt_process_stderr = _intrinsic_require("molt_process_stderr", globals())
-_molt_process_drop = _intrinsic_require("molt_process_drop", globals())
-_molt_stream_close = _intrinsic_require("molt_stream_close", globals())
-_molt_stream_reader_new = _intrinsic_require("molt_stream_reader_new", globals())
-_molt_stream_reader_at_eof = _intrinsic_require("molt_stream_reader_at_eof", globals())
-_molt_stream_reader_drop = _intrinsic_require("molt_stream_reader_drop", globals())
-_molt_socket_reader_new = _intrinsic_require("molt_socket_reader_new", globals())
-_molt_socket_reader_at_eof = _intrinsic_require("molt_socket_reader_at_eof", globals())
-_molt_socket_reader_drop = _intrinsic_require("molt_socket_reader_drop", globals())
-_molt_inspect_iscoroutine = _intrinsic_require("molt_inspect_iscoroutine", globals())
-_molt_inspect_iscoroutinefunction = _intrinsic_require(
-    "molt_inspect_iscoroutinefunction", globals()
-)
+_molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin")
+_molt_process_spawn = _intrinsic_require("molt_process_spawn")
+_molt_process_wait_future = _intrinsic_require("molt_process_wait_future")
+_molt_process_pid = _intrinsic_require("molt_process_pid")
+_molt_process_returncode = _intrinsic_require("molt_process_returncode")
+_molt_process_kill = _intrinsic_require("molt_process_kill")
+_molt_process_terminate = _intrinsic_require("molt_process_terminate")
+_molt_process_stdin = _intrinsic_require("molt_process_stdin")
+_molt_process_stdout = _intrinsic_require("molt_process_stdout")
+_molt_process_stderr = _intrinsic_require("molt_process_stderr")
+_molt_process_drop = _intrinsic_require("molt_process_drop")
+_molt_stream_close = _intrinsic_require("molt_stream_close")
+_molt_stream_reader_new = _intrinsic_require("molt_stream_reader_new")
+_molt_stream_reader_at_eof = _intrinsic_require("molt_stream_reader_at_eof")
+_molt_stream_reader_drop = _intrinsic_require("molt_stream_reader_drop")
+_molt_socket_reader_new = _intrinsic_require("molt_socket_reader_new")
+_molt_socket_reader_at_eof = _intrinsic_require("molt_socket_reader_at_eof")
+_molt_socket_reader_drop = _intrinsic_require("molt_socket_reader_drop")
 
 # Handle-based state machine intrinsics -- Future
-_molt_asyncio_future_new = _intrinsic_require("molt_asyncio_future_new", globals())
-_molt_asyncio_future_result = _intrinsic_require("molt_asyncio_future_result", globals())
+_molt_asyncio_future_new = _intrinsic_require("molt_asyncio_future_new")
+_molt_asyncio_future_result = _intrinsic_require("molt_asyncio_future_result")
 _molt_asyncio_future_exception = _intrinsic_require(
-    "molt_asyncio_future_exception", globals()
+    "molt_asyncio_future_exception"
 )
 _molt_asyncio_future_set_result_fast = _intrinsic_require(
-    "molt_asyncio_future_set_result_fast", globals()
+    "molt_asyncio_future_set_result_fast"
 )
 _molt_asyncio_future_set_exception_fast = _intrinsic_require(
-    "molt_asyncio_future_set_exception_fast", globals()
+    "molt_asyncio_future_set_exception_fast"
 )
 _molt_asyncio_future_cancel_fast = _intrinsic_require(
-    "molt_asyncio_future_cancel_fast", globals()
+    "molt_asyncio_future_cancel_fast"
 )
-_molt_asyncio_future_done = _intrinsic_require("molt_asyncio_future_done", globals())
+_molt_asyncio_future_done = _intrinsic_require("molt_asyncio_future_done")
 _molt_asyncio_future_cancelled = _intrinsic_require(
-    "molt_asyncio_future_cancelled", globals()
+    "molt_asyncio_future_cancelled"
 )
-_molt_asyncio_future_drop = _intrinsic_require("molt_asyncio_future_drop", globals())
+_molt_asyncio_future_drop = _intrinsic_require("molt_asyncio_future_drop")
 
 # Handle-based state machine intrinsics -- Event
-_molt_asyncio_event_new = _intrinsic_require("molt_asyncio_event_new", globals())
-_molt_asyncio_event_is_set = _intrinsic_require("molt_asyncio_event_is_set", globals())
+_molt_asyncio_event_new = _intrinsic_require("molt_asyncio_event_new")
+_molt_asyncio_event_is_set = _intrinsic_require("molt_asyncio_event_is_set")
 _molt_asyncio_event_set_fast = _intrinsic_require(
-    "molt_asyncio_event_set_fast", globals()
+    "molt_asyncio_event_set_fast"
 )
 _molt_asyncio_event_clear_handle = _intrinsic_require(
-    "molt_asyncio_event_clear", globals()
+    "molt_asyncio_event_clear"
 )
-_molt_asyncio_event_drop = _intrinsic_require("molt_asyncio_event_drop", globals())
+_molt_asyncio_event_drop = _intrinsic_require("molt_asyncio_event_drop")
 
 # Handle-based state machine intrinsics -- Lock
-_molt_asyncio_lock_new = _intrinsic_require("molt_asyncio_lock_new", globals())
-_molt_asyncio_lock_locked = _intrinsic_require("molt_asyncio_lock_locked", globals())
+_molt_asyncio_lock_new = _intrinsic_require("molt_asyncio_lock_new")
+_molt_asyncio_lock_locked = _intrinsic_require("molt_asyncio_lock_locked")
 _molt_asyncio_lock_acquire_fast = _intrinsic_require(
-    "molt_asyncio_lock_acquire_fast", globals()
+    "molt_asyncio_lock_acquire_fast"
 )
 _molt_asyncio_lock_release_fast = _intrinsic_require(
-    "molt_asyncio_lock_release_fast", globals()
+    "molt_asyncio_lock_release_fast"
 )
-_molt_asyncio_lock_drop = _intrinsic_require("molt_asyncio_lock_drop", globals())
+_molt_asyncio_lock_drop = _intrinsic_require("molt_asyncio_lock_drop")
 
 # Handle-based state machine intrinsics -- Semaphore
-_molt_asyncio_semaphore_new = _intrinsic_require("molt_asyncio_semaphore_new", globals())
+_molt_asyncio_semaphore_new = _intrinsic_require("molt_asyncio_semaphore_new")
 _molt_asyncio_semaphore_acquire_fast = _intrinsic_require(
-    "molt_asyncio_semaphore_acquire_fast", globals()
+    "molt_asyncio_semaphore_acquire_fast"
 )
 _molt_asyncio_semaphore_release_fast = _intrinsic_require(
-    "molt_asyncio_semaphore_release_fast", globals()
+    "molt_asyncio_semaphore_release_fast"
 )
 _molt_asyncio_semaphore_value = _intrinsic_require(
-    "molt_asyncio_semaphore_value", globals()
+    "molt_asyncio_semaphore_value"
 )
 _molt_asyncio_semaphore_drop = _intrinsic_require(
-    "molt_asyncio_semaphore_drop", globals()
+    "molt_asyncio_semaphore_drop"
 )
 
 # Handle-based state machine intrinsics -- Queue
-_molt_asyncio_queue_new = _intrinsic_require("molt_asyncio_queue_new", globals())
+_molt_asyncio_queue_new = _intrinsic_require("molt_asyncio_queue_new")
 _molt_asyncio_queue_put_nowait = _intrinsic_require(
-    "molt_asyncio_queue_put_nowait", globals()
+    "molt_asyncio_queue_put_nowait"
 )
 _molt_asyncio_queue_get_nowait = _intrinsic_require(
-    "molt_asyncio_queue_get_nowait", globals()
+    "molt_asyncio_queue_get_nowait"
 )
-_molt_asyncio_queue_qsize = _intrinsic_require("molt_asyncio_queue_qsize", globals())
-_molt_asyncio_queue_maxsize = _intrinsic_require("molt_asyncio_queue_maxsize", globals())
-_molt_asyncio_queue_empty = _intrinsic_require("molt_asyncio_queue_empty", globals())
-_molt_asyncio_queue_full = _intrinsic_require("molt_asyncio_queue_full", globals())
+_molt_asyncio_queue_qsize = _intrinsic_require("molt_asyncio_queue_qsize")
+_molt_asyncio_queue_maxsize = _intrinsic_require("molt_asyncio_queue_maxsize")
+_molt_asyncio_queue_empty = _intrinsic_require("molt_asyncio_queue_empty")
+_molt_asyncio_queue_full = _intrinsic_require("molt_asyncio_queue_full")
 _molt_asyncio_queue_task_done = _intrinsic_require(
-    "molt_asyncio_queue_task_done", globals()
+    "molt_asyncio_queue_task_done"
 )
 _molt_asyncio_queue_unfinished_tasks = _intrinsic_require(
-    "molt_asyncio_queue_unfinished_tasks", globals()
+    "molt_asyncio_queue_unfinished_tasks"
 )
 _molt_asyncio_queue_shutdown = _intrinsic_require(
-    "molt_asyncio_queue_shutdown", globals()
+    "molt_asyncio_queue_shutdown"
 )
 _molt_asyncio_queue_is_shutdown = _intrinsic_require(
-    "molt_asyncio_queue_is_shutdown", globals()
+    "molt_asyncio_queue_is_shutdown"
 )
-_molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop", globals())
+_molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop")
 
 _PENDING_SENTINEL: Any | None = None
 
@@ -1361,35 +1313,6 @@ from .protocols import (
     SubprocessProtocol as SubprocessProtocol,
 )
 
-def _module(name: str, attrs: dict[str, Any]) -> _types.ModuleType:
-    mod = _require_asyncio_intrinsic(_molt_module_new, "module_new")(name)
-    mod_dict = getattr(mod, "__dict__", None)
-    if isinstance(mod_dict, dict):
-        mod_dict.update(attrs)
-    else:
-        for key, val in attrs.items():
-            setattr(mod, key, val)
-    mod.__name__ = name
-    mod.__package__ = name.rpartition(".")[0]
-    _sys.modules[name] = mod
-    return mod
-
-def _format_callback_source(
-    callback: Any, args: tuple[Any, ...], *, debug: bool = False
-) -> str:
-    name = getattr(callback, "__qualname__", None) or getattr(
-        callback, "__name__", None
-    )
-    if name is None:
-        name = repr(callback)
-    if args:
-        args_repr = ", ".join(repr(arg) for arg in args)
-        return f"{name}({args_repr})"
-    return f"{name}()"
-
-def _extract_stack(limit: int | None = None) -> list[Any]:
-    return _traceback.extract_stack(limit=limit)
-
 class FlowControlMixin:
     def __init__(self) -> None:
         self._paused = False
@@ -1470,101 +1393,17 @@ if _EXPOSE_WINDOWS_POLICIES:
         WindowsSelectorEventLoopPolicy as WindowsSelectorEventLoopPolicy,
     )
 
-base_events = _module(
-    "asyncio.base_events",
-    {
-        "BaseEventLoop": BaseEventLoop,
-        "AbstractServer": AbstractServer,
-        "SelectorEventLoop": SelectorEventLoop,
-        "Handle": Handle,
-        "TimerHandle": TimerHandle,
-        "Server": Server,
-    },
-)
+from . import constants as constants
+from . import coroutines as coroutines
+from . import format_helpers as format_helpers
+from . import log as log
+from . import mixins as mixins
 
-constants = _module(
-    "asyncio.constants",
-    {
-        "enum": _enum,
-        "LOG_THRESHOLD_FOR_CONNLOST_WRITES": 5,
-        "ACCEPT_RETRY_DELAY": 1,
-        "DEBUG_STACK_DEPTH": 10,
-        "SSL_HANDSHAKE_TIMEOUT": 60.0,
-        "SSL_SHUTDOWN_TIMEOUT": 30.0,
-        "SENDFILE_FALLBACK_READBUFFER_SIZE": 256 * 1024,
-        "FLOW_CONTROL_HIGH_WATER_SSL_READ": 256,
-        "FLOW_CONTROL_HIGH_WATER_SSL_WRITE": 512,
-        "THREAD_JOIN_TIMEOUT": 300,
-    },
-)
-
-coroutines = _module(
-    "asyncio.coroutines",
-    {
-        "collections": _collections,
-        "inspect": _inspect,
-        "iscoroutine": iscoroutine,
-        "iscoroutinefunction": iscoroutinefunction,
-        "os": _os,
-        "sys": _sys,
-        "types": _types,
-    },
-)
-
-format_helpers = _module(
-    "asyncio.format_helpers",
-    {
-        "constants": constants,
-        "_format_callback_source": _format_callback_source,
-        "extract_stack": _extract_stack,
-        "functools": _functools,
-        "inspect": _inspect,
-        "reprlib": _reprlib,
-        "sys": _sys,
-        "traceback": _traceback,
-    },
-)
 setattr(events, "format_helpers", format_helpers)
-
-def _make_log_module() -> _types.ModuleType:
-    logger = _logging.getLogger("asyncio")
-    return _module(
-        "asyncio.log",
-        {
-            "logger": logger,
-            "logging": _logging,
-        },
-    )
-
-def _make_mixins_module() -> _types.ModuleType:
-    return _module(
-        "asyncio.mixins",
-        {
-            "events": events,
-            "threading": _threading,
-        },
-    )
-
-log = _make_log_module()
-mixins = _make_mixins_module()
 locks.exceptions = exceptions
 locks.mixins = mixins
 queues.locks = locks
 queues.mixins = mixins
-
-def __getattr__(name: str) -> Any:
-    if name == "log":
-        mod = _make_log_module()
-    elif name == "mixins":
-        mod = _make_mixins_module()
-    elif name == "locks":
-        mod = locks
-    elif name == "queues":
-        mod = queues
-    else:
-        raise AttributeError(f"module 'asyncio' has no attribute '{name}'")
-    globals()[name] = mod
-    return mod
 
 from . import runners as runners
 from . import taskgroups as taskgroups
@@ -1595,127 +1434,9 @@ if _typing_final_alias is None:
     def _typing_final_alias(arg: Any) -> Any:
         return arg
 
-base_futures = _module(
-    "asyncio.base_futures",
-    {
-        "format_helpers": format_helpers,
-        "isfuture": isfuture,
-        "reprlib": _reprlib,
-    },
-)
-
-base_tasks = _module(
-    "asyncio.base_tasks",
-    {
-        "base_futures": base_futures,
-        "coroutines": coroutines,
-        "linecache": _linecache,
-        "reprlib": _reprlib,
-        "traceback": _traceback,
-    },
-)
-
-base_subprocess = _module(
-    "asyncio.base_subprocess",
-    {
-        "BaseSubprocessTransport": Process,
-        "ReadSubprocessPipeProto": Process,
-        "WriteSubprocessPipeProto": Process,
-        "collections": _collections,
-        "logger": _logging.getLogger("asyncio"),
-        "protocols": protocols,
-        "subprocess": _subprocess,
-        "transports": transports,
-        "warnings": _warnings,
-    },
-)
-
-_SC_IOV_MAX = 1024
-if hasattr(_os, "sysconf"):
-    _sysconf_val = _os.sysconf("SC_IOV_MAX")
-    if isinstance(_sysconf_val, int) and _sysconf_val > 0:
-        _SC_IOV_MAX = _sysconf_val
-
-selector_events = _module(
-    "asyncio.selector_events",
-    {
-        "BaseSelectorEventLoop": SelectorEventLoop,
-        "SC_IOV_MAX": _SC_IOV_MAX,
-        "base_events": base_events,
-        "collections": _collections,
-        "constants": constants,
-        "errno": _errno,
-        "events": events,
-        "functools": _functools,
-        "futures": base_futures,
-        "itertools": _itertools,
-        "logger": _logging.getLogger("asyncio"),
-        "os": _os,
-        "protocols": protocols,
-        "selectors": _selectors,
-        "socket": _SOCKET,
-        "ssl": _ssl,
-        "transports": transports,
-        "warnings": _warnings,
-        "weakref": _weakref,
-    },
-)
-
-class EnumType(type):
-    pass
-
-class AppProtocolState(metaclass=EnumType):
-    STATE_INIT = 0
-    STATE_CON_MADE = 1
-    STATE_EOF = 2
-    STATE_CON_LOST = 3
-
-class SSLProtocolState(metaclass=EnumType):
-    UNWRAPPED = 0
-    DO_HANDSHAKE = 1
-    WRAPPED = 2
-    FLUSHING = 3
-    SHUTDOWN = 4
-
-class SSLProtocol:
-    pass
-
-del EnumType
-
-_ssl_again_errors: list[type[Any]] = []
-for _name in ("SSLWantReadError", "SSLWantWriteError"):
-    _value = getattr(_ssl, _name, None)
-    if isinstance(_value, type):
-        _ssl_again_errors.append(_value)
-if not _ssl_again_errors:
-    _ssl_again_errors = [_ssl.SSLError]
-SSLAgainErrors = tuple(_ssl_again_errors)
-
-def add_flowcontrol_defaults(
-    *args: Any, **kwargs: Any
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    return args, kwargs
-
-sslproto = _module(
-    "asyncio.sslproto",
-    {
-        "AppProtocolState": AppProtocolState,
-        "SSLAgainErrors": SSLAgainErrors,
-        "SSLProtocol": SSLProtocol,
-        "SSLProtocolState": SSLProtocolState,
-        "add_flowcontrol_defaults": add_flowcontrol_defaults,
-        "collections": _collections,
-        "constants": constants,
-        "enum": _enum,
-        "exceptions": exceptions,
-        "logger": _logging.getLogger("asyncio"),
-        "protocols": protocols,
-        "ssl": _ssl,
-        "transports": transports,
-        "warnings": _warnings,
-    },
-)
-setattr(selector_events, "sslproto", sslproto)
+from . import base_futures as base_futures
+from . import base_tasks as base_tasks
+from . import base_subprocess as base_subprocess
 
 futures.base_futures = base_futures
 futures.events = events
@@ -1727,10 +1448,6 @@ tasks.events = events
 tasks.exceptions = exceptions
 tasks.futures = futures
 tasks.timeouts = timeouts
-setattr(runners, "tasks", tasks)
-setattr(timeouts, "tasks", tasks)
-setattr(taskgroups, "tasks", tasks)
-setattr(subprocess, "tasks", tasks)
 
 streams.coroutines = coroutines
 streams.events = events
@@ -1738,146 +1455,6 @@ streams.exceptions = exceptions
 streams.format_helpers = format_helpers
 streams.protocols = protocols
 subprocess.events = events
-subprocess.protocols = protocols
-subprocess.logger = _logging.getLogger("asyncio")
-
-tasks = _module(
-    "asyncio.tasks",
-    {
-        "ALL_COMPLETED": "ALL_COMPLETED",
-        "FIRST_COMPLETED": "FIRST_COMPLETED",
-        "FIRST_EXCEPTION": "FIRST_EXCEPTION",
-        "GenericAlias": _types.GenericAlias,
-        "Task": Task,
-        "all_tasks": all_tasks,
-        "as_completed": as_completed,
-        "base_tasks": base_tasks,
-        "concurrent": _concurrent,
-        "contextvars": _contextvars,
-        "coroutines": coroutines,
-        "create_eager_task_factory": create_eager_task_factory,
-        "create_task": create_task,
-        "current_task": current_task,
-        "eager_task_factory": eager_task_factory,
-        "ensure_future": ensure_future,
-        "events": events,
-        "exceptions": exceptions,
-        "functools": _functools,
-        "futures": futures,
-        "gather": gather,
-        "inspect": _inspect,
-        "itertools": _itertools,
-        "run_coroutine_threadsafe": run_coroutine_threadsafe,
-        "shield": shield,
-        "sleep": sleep,
-        "timeouts": timeouts,
-        "types": _types,
-        "wait": wait,
-        "wait_for": wait_for,
-        "warnings": _warnings,
-        "weakref": _weakref,
-    },
-)
-setattr(runners, "tasks", tasks)
-setattr(timeouts, "tasks", tasks)
-setattr(taskgroups, "tasks", tasks)
-setattr(subprocess, "tasks", tasks)
-
-class TransportSocket:
-    pass
-
-trsock = _module(
-    "asyncio.trsock",
-    {
-        "TransportSocket": TransportSocket,
-        "socket": _SOCKET,
-    },
-)
-setattr(selector_events, "trsock", trsock)
-
-if not _IS_WINDOWS:
-    _unix_events_attrs: dict[str, Any] = {
-        "SelectorEventLoop": SelectorEventLoop,
-        "base_events": base_events,
-        "base_subprocess": base_subprocess,
-        "can_use_pidfd": can_use_pidfd,
-        "constants": constants,
-        "coroutines": coroutines,
-        "errno": _errno,
-        "events": events,
-        "exceptions": exceptions,
-        "futures": futures,
-        "io": _io,
-        "itertools": _itertools,
-        "logger": _logging.getLogger("asyncio"),
-        "os": _os,
-        "selector_events": selector_events,
-        "selectors": _selectors,
-        "signal": _signal,
-        "socket": _SOCKET,
-        "stat": _stat,
-        "subprocess": _subprocess,
-        "sys": _sys,
-        "tasks": tasks,
-        "threading": _threading,
-        "transports": transports,
-        "waitstatus_to_exitcode": waitstatus_to_exitcode,
-        "warnings": _warnings,
-    }
-    if _EXPOSE_CHILD_WATCHERS:
-        _unix_events_attrs.update(
-            {
-                "__all__": (
-                    "SelectorEventLoop",
-                    "AbstractChildWatcher",
-                    "SafeChildWatcher",
-                    "FastChildWatcher",
-                    "PidfdChildWatcher",
-                    "MultiLoopChildWatcher",
-                    "ThreadedChildWatcher",
-                    "DefaultEventLoopPolicy",
-                ),
-                "AbstractChildWatcher": AbstractChildWatcher,
-                "BaseChildWatcher": BaseChildWatcher,
-                "FastChildWatcher": FastChildWatcher,
-                "MultiLoopChildWatcher": MultiLoopChildWatcher,
-                "PidfdChildWatcher": PidfdChildWatcher,
-                "SafeChildWatcher": SafeChildWatcher,
-                "ThreadedChildWatcher": ThreadedChildWatcher,
-            }
-        )
-        _unix_events_attrs["DefaultEventLoopPolicy"] = _UnixDefaultEventLoopPolicy
-    else:
-        _unix_all = ["SelectorEventLoop"]
-        if _EXPOSE_EVENT_LOOP:
-            _unix_all.append("EventLoop")
-        _unix_events_attrs["__all__"] = tuple(_unix_all)
-    unix_events = _module("asyncio.unix_events", _unix_events_attrs)
-    if _EXPOSE_EVENT_LOOP:
-        setattr(unix_events, "EventLoop", SelectorEventLoop)
-
-if _IS_WINDOWS:
-    windows_events = _module(
-        "asyncio.windows_events",
-        {
-            "SelectorEventLoop": SelectorEventLoop,
-            "ProactorEventLoop": _ProactorEventLoop,
-            "DefaultEventLoopPolicy": _WindowsProactorEventLoopPolicy,
-            "WindowsSelectorEventLoopPolicy": _WindowsSelectorEventLoopPolicy,
-            "WindowsProactorEventLoopPolicy": _WindowsProactorEventLoopPolicy,
-        },
-    )
-    if _EXPOSE_EVENT_LOOP:
-        setattr(windows_events, "EventLoop", _ProactorEventLoop)
-    windows_utils = _module(
-        "asyncio.windows_utils",
-        {
-            "BUFSIZE": 8192,
-            "PIPE": _subprocess.PIPE,
-            "STDOUT": _subprocess.STDOUT,
-            "DEVNULL": _subprocess.DEVNULL,
-        },
-    )
 
 async def staggered_race(
     coro_fns: Iterable[Any], delay: float | None
@@ -2027,74 +1604,21 @@ async def staggered_race(
         # after staggered_race exits.
         on_completed_fut_cell[0] = None
 
-staggered = _module(
-    "asyncio.staggered",
-    {
-        "contextlib": _contextlib,
-        "events": events,
-        "exceptions_mod": exceptions,
-        "locks": locks,
-        "staggered_race": staggered_race,
-        "tasks": tasks,
-    },
-)
+from . import staggered as staggered
+from . import sslproto as sslproto
+from . import trsock as trsock
+from . import base_events as base_events
+from . import selector_events as selector_events
 
-for _name in ("AbstractServer", "SelectorEventLoop", "Handle", "TimerHandle"):
-    if hasattr(base_events, _name):
-        delattr(base_events, _name)
-for _name, _value in {
-    "MAXIMUM_SELECT_TIMEOUT": 24 * 3600,
-    "collections": _collections,
-    "concurrent": _concurrent,
-    "constants": constants,
-    "coroutines": coroutines,
-    "errno": _errno,
-    "events": events,
-    "exceptions": exceptions,
-    "futures": futures,
-    "heapq": _heapq,
-    "itertools": _itertools,
-    "logger": _logging.getLogger("asyncio"),
-    "os": _os,
-    "protocols": protocols,
-    "socket": _SOCKET,
-    "ssl": _ssl,
-    "sslproto": sslproto,
-    "staggered": staggered,
-    "stat": _stat,
-    "subprocess": _subprocess,
-    "sys": _sys,
-    "tasks": tasks,
-    "threading": _threading,
-    "time": _time,
-    "timeouts": timeouts,
-    "traceback": _traceback,
-    "transports": transports,
-    "trsock": trsock,
-    "warnings": _warnings,
-    "weakref": _weakref,
-}.items():
-    setattr(base_events, _name, _value)
+if _IS_WINDOWS:
+    from . import windows_events as windows_events
+    from . import windows_utils as windows_utils
+else:
+    from . import unix_events as unix_events
 
 if _EXPOSE_GRAPH:
-    graph = _module(
-        "asyncio.graph",
-        {
-            "capture_call_graph": capture_call_graph,
-            "format_call_graph": format_call_graph,
-            "print_call_graph": print_call_graph,
-            "FrameCallGraphEntry": FrameCallGraphEntry,
-            "FutureCallGraph": FutureCallGraph,
-        },
-    )
-    tools = _module(
-        "asyncio.tools",
-        {
-            "capture_call_graph": capture_call_graph,
-            "format_call_graph": format_call_graph,
-            "print_call_graph": print_call_graph,
-        },
-    )
+    from . import graph as graph
+    from . import tools as tools
 
 if not _EXPOSE_EVENT_LOOP:
     if "EventLoop" in globals():

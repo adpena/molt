@@ -802,6 +802,8 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         "AsyncWorkPending",
         # Reads one exact packed buffer and pending exception state.
         "TryBuffer2dLoadI64",
+        # Writes one exact packed cell after all guards have passed.
+        "TryBuffer2dStoreI64",
         "ProbeInlineField",
         "FrameEntryAdmits",
         "StringLiteralCellReady",
@@ -1461,6 +1463,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
             "CheckedAdd": ["operand", "bool"],
             "CheckedMul": ["operand", "bool"],
             "TryBuffer2dLoadI64": ["i64", "bool"],
+            "TryBuffer2dStoreI64": ["bool"],
             "ProbeInlineField": ["dynbox"],
             "FrameEntryAdmits": ["bool"],
             "StringLiteralCellReady": ["bool"],
@@ -4038,7 +4041,13 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     expected_typed_slot_store = {"StoreAttr"}
     expected_typed_slot = expected_typed_slot_load | expected_typed_slot_store
     expected_copy = {"Copy"}
-    expected_container = {"DelIndex", "Index", "StoreIndex"}
+    expected_container = {
+        "DelIndex",
+        "Index",
+        "StoreIndex",
+        "TryBuffer2dLoadI64",
+        "TryBuffer2dStoreI64",
+    }
     expected_module = {
         "ModuleCacheDel",
         "ModuleCacheGet",

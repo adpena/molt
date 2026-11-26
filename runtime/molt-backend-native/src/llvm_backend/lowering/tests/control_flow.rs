@@ -5,6 +5,72 @@ use molt_ir::OpKind;
 use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
 #[test]
+fn scoped_frame_record_captures_a_zero_home_owner_and_skips_a_frameless_pop() {
+    for enters in [false, true] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "scoped_frame_record".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        func.execution_context = crate::ir::ExecutionContextPolicy::Local;
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 7);
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Unwind,
+            },
+        );
+        let mut check = TirOp {
+            origin: None,
+            runtime: None,
+            callee: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(7))]),
+            source_span: None,
+        };
+        check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        if enters {
+            entry.ops.push(TirOp {
+                origin: Some(OpKind::TraceEnterSlot),
+                opcode: OpCode::Copy,
+                attrs: AttrDict::from_iter([
+                    ("s_value".into(), AttrValue::Str(func.name.clone())),
+                    ("value".into(), AttrValue::Int(0)),
+                ]),
+                ..check.clone()
+            });
+        }
+        entry.ops.push(check);
+        entry.terminator = Terminator::Return { values: vec![] };
+        let function = lower_tir_to_llvm(&func, &backend);
+        backend.module.verify().unwrap();
+        let ir = function.print_to_string().to_string();
+        let origin = ir
+            .lines()
+            .find(|line| line.contains_execution("@molt_exception_frame_origin("))
+            .expect("the cold edge captures its selected record");
+        assert_eq!(origin.contains("i64 0)"), !enters, "{ir}");
+        assert_eq!(ir.contains("%owned_frame_base"), enters, "{ir}");
+        assert_eq!(
+            ir.matches_execution("@__molt_frame_pop_0_up(").count(),
+            if enters { 2 } else { 0 },
+            "{ir}"
+        );
+    }
+}
+
+#[test]
 fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);

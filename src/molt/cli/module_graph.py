@@ -1229,38 +1229,24 @@ def _finalize_runtime_import_closure(
     This proves the finite source closure, not that a target can execute its
     operations; generated target admission owns that separate contract.
 
-    A ``REGISTRY_ONLY`` target roots none of the Python import machinery; it
-    still seals custody for dynamic relative-import owners, which the registry
-    serves.
+    An unresolved package anchor needs custody of the compiled registry.
+    Recompute finder demand after each admission so only a reached protocol
+    call or import-state write adds the Python machinery roots. Targets with
+    a ``REGISTRY_ONLY`` runtime still seal registry custody.
     """
-    authority = _ModuleGraphScanAuthority(tuple(scan_authorities.values()))
-    policy = _module_import_scanner._module_graph_needs_runtime_import_support(
-        module_graph=module_graph,
-        scan_authority=authority,
-        namespace_writes=discovery.namespace_writes,
-    )
     runtime_roots = set(dispatch_roots) | set(explicit_imports)
-    dynamic_owner_required = any(
-        source.requires_runtime_package_anchor for source in scan_authorities.values()
-    )
-    if dynamic_owner_required and not policy.needs_runtime_import_support:
-        policy = _RuntimeImportSupportPolicy(
-            True,
-        )
-    machinery_roots = (
-        ()
-        if runtime_import_machinery is RuntimeImportMachinery.REGISTRY_ONLY
-        else _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES
-    )
-    if not dynamic_owner_required and (
-        not policy.needs_runtime_import_support or not machinery_roots
-    ):
-        return _RuntimeImportClosure(policy, None, frozenset(runtime_roots))
     prior = previous_custody
     while True:
-        dynamic_owner_required = any(
-            source.requires_runtime_package_anchor
-            for source in scan_authorities.values()
+        policy = _module_import_scanner._module_graph_needs_runtime_import_support(
+            module_graph=module_graph,
+            scan_authority=_ModuleGraphScanAuthority(tuple(scan_authorities.values())),
+            namespace_writes=discovery.namespace_writes,
+        )
+        machinery_roots = (
+            _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES
+            if policy.needs_runtime_import_support
+            and runtime_import_machinery is RuntimeImportMachinery.PYTHON
+            else ()
         )
         owners: dict[str, Path] = {}
         for name in machinery_roots:
@@ -1287,6 +1273,8 @@ def _finalize_runtime_import_closure(
                 )
             source.validate(name, path)
             owners[name] = path.resolve()
+        if not owners:
+            return _RuntimeImportClosure(policy, None, frozenset(runtime_roots))
         owner_sources = tuple(sorted(owners.items()))
         owner_digests_list: list[tuple[str, str]] = []
         for name, path in owner_sources:
@@ -1305,15 +1293,6 @@ def _finalize_runtime_import_closure(
                 )
             )
         owner_digests = tuple(owner_digests_list)
-        policy = _module_import_scanner._module_graph_needs_runtime_import_support(
-            module_graph=module_graph,
-            scan_authority=_ModuleGraphScanAuthority(tuple(scan_authorities.values())),
-            namespace_writes=discovery.namespace_writes,
-        )
-        if dynamic_owner_required and not policy.needs_runtime_import_support:
-            policy = _RuntimeImportSupportPolicy(
-                True,
-            )
         catalog_names = runtime_roots | _runtime_import_parent_modules(
             runtime_roots,
             known_modules=set(module_graph),
@@ -1671,14 +1650,20 @@ def _assemble_import_plan(
     package_parent_modules = _modules_with_any_reason(
         module_graph, module_reasons, _PACKAGE_PARENT_REASONS
     )
-    explicit_runtime_import_dispatch_roots = (
-        runtime_closure.dispatch_roots | support_explicit_imports
+    # Import requests keep unresolved names for namespace resolution, native
+    # artifact admission and import-query replay. Only admitted modules can
+    # own executable dispatch; a request for an absent child still reaches
+    # the known ancestors Python imports before it reports the miss.
+    dispatch_requests = runtime_closure.dispatch_roots | support_explicit_imports
+    native_initializers = frozenset(
+        spec.module for spec in native_artifact_plan.native_module_init_specs()
     )
-    runtime_import_dispatch_roots = frozenset(
-        explicit_runtime_import_dispatch_roots
+    runtime_import_dispatch_roots = (
+        (known_modules & dispatch_requests)
+        | _runtime_import_parent_modules(dispatch_requests, known_modules=known_modules)
+        | (source_modules & native_initializers)
         | _runtime_import_parent_modules(
-            explicit_runtime_import_dispatch_roots,
-            known_modules=known_modules,
+            native_initializers, known_modules=source_modules
         )
     )
     import_redirects = prepared_module_graph.namespace_import_redirects.join(

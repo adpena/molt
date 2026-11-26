@@ -143,7 +143,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
             let mut required = false;
             let mut optional = false;
             for op in eligible {
-                if guarded_dispatch(op) == Some(GuardedDispatch::Required) {
+                if requires_expansion(op) {
                     required = true;
                 } else {
                     optional = true;
@@ -180,8 +180,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     let vr = super::value_range::compute_with_scalar_facts(&facts);
     let repr = crate::representation_facts::repr_by_value_from(&facts, Some(&vr));
     let exact = facts.types();
-    let allowed =
-        |op: &TirOp, optional| optional || guarded_dispatch(op) == Some(GuardedDispatch::Required);
+    let allowed = |op: &TirOp, optional| optional || requires_expansion(op);
     if !pending.iter().any(|(block, _, optional)| {
         func.blocks[block]
             .ops
@@ -257,6 +256,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
                 }
                 Expansion::FloatSqrt { operand } => expand_float_sqrt(func, current, op, operand),
                 Expansion::Truthiness => expand_truthiness(func, current, op),
+                Expansion::PackedAccess(access) => expand_packed_access(func, current, op, access),
                 Expansion::CapturedCall {
                     closure: Some(closure),
                     callback_free: true,
@@ -308,8 +308,12 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     stats
 }
 
+fn requires_expansion(op: &TirOp) -> bool {
+    packed_access(op).is_some() || guarded_dispatch(op) == Some(GuardedDispatch::Required)
+}
+
 fn may_expand(op: &TirOp, targets: &GuardedTargets) -> bool {
-    if sqrt_call_operand(op).is_some() {
+    if packed_access(op).is_some() || sqrt_call_operand(op).is_some() {
         return true;
     }
     match opcode_fast_path_expansion_rule_table(op.opcode) {
@@ -403,6 +407,7 @@ enum Expansion {
         operand: NumOperand,
     },
     Truthiness,
+    PackedAccess(PackedAccess),
     /// Call through a function object. `closure` is known when the target
     /// is proven. A speculative direct arm only accepts closure-free entries.
     CapturedCall {
@@ -695,6 +700,9 @@ fn expansion_of(
 ) -> Option<Expansion> {
     if !op.has_valid_shape() || op.results.len() != 1 {
         return None;
+    }
+    if let Some(access) = packed_access(op) {
+        return Some(Expansion::PackedAccess(access));
     }
     // Runtime identity is decoded and verified at ingest; annotations alone
     // do not prove the carrier of an exact semantic float.
@@ -1741,6 +1749,84 @@ fn expand_numeric(
     func.blocks
         .insert(slow, new_block(slow, slow_ops, branch(join, slow_result)));
     finish(func, join, result, vec![], Terminator::Unwind);
+    join
+}
+
+#[derive(Clone, Copy)]
+enum PackedAccess {
+    Read,
+    Write,
+}
+
+fn packed_access(op: &TirOp) -> Option<PackedAccess> {
+    use molt_ir::ir::ParameterCustody;
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    use molt_ir::tir::call_targets::direct_boxed_runtime;
+
+    let access = match (direct_boxed_runtime(op)?, op.operands.len()) {
+        (RuntimeFn::Buffer2dGet, 3) => PackedAccess::Read,
+        (RuntimeFn::Buffer2dSet, 4) => PackedAccess::Write,
+        _ => return None,
+    };
+    (op.results.len() == 1
+        && (0..op.operands.len())
+            .all(|index| op.operand_custody(index) == ParameterCustody::Borrowed))
+    .then_some(access)
+}
+
+fn expand_packed_access(
+    func: &mut TirFunction,
+    current: BlockId,
+    mut call: TirOp,
+    access: PackedAccess,
+) -> BlockId {
+    let original = call.results[0];
+    let span = call.source_span;
+    let commit = func.fresh_block();
+    let miss = func.fresh_block();
+    let join = func.fresh_block();
+    let hit = fresh_typed(func, TirType::Bool);
+    let (opcode, outputs, result, materialize) = match access {
+        PackedAccess::Read => {
+            let raw = fresh_typed(func, TirType::I64);
+            let result = fresh_typed(func, TirType::DynBox);
+            (
+                OpCode::TryBuffer2dLoadI64,
+                vec![raw, hit],
+                result,
+                new_op(OpCode::BoxVal, vec![raw], vec![result], span),
+            )
+        }
+        PackedAccess::Write => {
+            let result = fresh_typed(func, TirType::None);
+            (
+                OpCode::TryBuffer2dStoreI64,
+                vec![hit],
+                result,
+                new_op(OpCode::ConstNone, vec![], vec![result], span),
+            )
+        }
+    };
+    let operation = new_op(opcode, call.operands.clone(), outputs, span);
+    end_block(
+        func,
+        current,
+        vec![operation],
+        cond_branch(hit, commit, miss),
+    );
+    func.blocks.insert(
+        commit,
+        new_block(commit, vec![materialize], branch(join, result)),
+    );
+
+    let residual = fresh_typed(func, TirType::DynBox);
+    call.results[0] = residual;
+    func.blocks
+        .insert(miss, new_block(miss, vec![call], branch(join, residual)));
+
+    // The original continuation, including any call-return observation,
+    // runs once on either edge. It may expose the returned None or unwind.
+    finish(func, join, original, vec![], Terminator::Unreachable);
     join
 }
 

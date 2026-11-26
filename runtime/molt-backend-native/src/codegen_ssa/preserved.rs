@@ -71,11 +71,11 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// Lower a preserved `Copy` when a walker family owns its kind, and
     /// answer whether it did. A malformed op (wrong arity, missing
     /// attribute) is refused, as is a kind no family owns yet.
-    pub(crate) fn preserved_op(&mut self, b: &mut B, op: &TirOp) -> bool {
+    pub(crate) fn preserved_op(&mut self, b: &mut B, op: &TirOp, record: Option<B::Slot>) -> bool {
         let Some(kind) = op.origin else {
             return false;
         };
-        self.direct_preserved_op(b, op, kind)
+        self.direct_preserved_op(b, op, kind, record)
             || self.container_preserved_op(b, op, kind)
             || self.callable_preserved_op(b, op, kind)
     }
@@ -83,7 +83,13 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// The direct family: operators carried as `Copy`, value forwarding,
     /// reference-count aliases, and runtime entries whose symbol or ABI is
     /// not the generic `molt_<kind>` boxed call.
-    fn direct_preserved_op(&mut self, b: &mut B, op: &TirOp, kind: OpKind) -> bool {
+    fn direct_preserved_op(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        kind: OpKind,
+        record: Option<B::Slot>,
+    ) -> bool {
         if let Some(function) = nullary_runtime(kind) {
             let word = b
                 .call_runtime(function, &[])
@@ -153,7 +159,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             // services pending work first.
             OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
                 let word = if op.is_async_work_poll() {
-                    self.async_work_poll(b, true, op.frame_location())
+                    self.async_work_poll(b, true, record, op.frame_location())
                 } else {
                     b.call_runtime(RuntimeFn::ExceptionLastPending, &[])
                         .expect("molt_exception_last_pending returns a word")
@@ -535,7 +541,7 @@ mod tests {
                 functions: &Default::default(),
                 call_sites: &sites,
             };
-            let claimed = cx.preserved_op(b, op);
+            let claimed = cx.preserved_op(b, op, None);
             assert!(diagnostics.borrow().is_empty(), "{:?}", diagnostics.borrow());
             let result = op.results[0];
             let carrier = values.repr(result);

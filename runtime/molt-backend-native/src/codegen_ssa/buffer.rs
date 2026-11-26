@@ -6,10 +6,9 @@ use molt_codegen_abi::boxed_word::{
 };
 use molt_codegen_abi::word::WordComparison;
 use molt_codegen_abi::{
-    BUFFER2D_COLS_OFFSET, BUFFER2D_ROWS_OFFSET, BUFFER2D_STORAGE_PACKED,
-    BUFFER2D_STORAGE_PTR_OFFSET, BUFFER2D_STORAGE_TAG_OFFSET, HEADER_TYPE_ID_OFFSET,
-    LIST_STORAGE_DATA_OFFSET, MOLT_REFCOUNT_ATOMIC, POINTER_MASK, QNAN, TAG_NONE,
-    THREAD_RECORD_EXCEPTION_PENDING_OFFSET, TYPE_ID_BUFFER2D,
+    BUFFER2D_COLS_OFFSET, BUFFER2D_ROWS_OFFSET, BUFFER2D_STORAGE_DATA_OFFSET,
+    BUFFER2D_STORAGE_PACKED, BUFFER2D_STORAGE_TAG_OFFSET, HEADER_TYPE_ID_OFFSET,
+    MOLT_REFCOUNT_ATOMIC, POINTER_MASK, THREAD_RECORD_EXCEPTION_PENDING_OFFSET, TYPE_ID_BUFFER2D,
 };
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
@@ -114,9 +113,7 @@ fn checked_slot<B: CodegenBuilder>(
     let row_base = b.int_binary(IntBinary::Mul, row, cols, false);
     let index = b.int_binary(IntBinary::Add, row_base, col, false);
     let offset = b.shift_left(index, 3);
-    let storage = b.load_word(buffer, BUFFER2D_STORAGE_PTR_OFFSET);
-    let storage = b.word_to_address(storage);
-    let data = b.load_word(storage, LIST_STORAGE_DATA_OFFSET);
+    let data = b.load_word(buffer, BUFFER2D_STORAGE_DATA_OFFSET);
     let address = b.int_binary(IntBinary::Add, data, offset, false);
     b.word_to_address(address)
 }
@@ -130,6 +127,18 @@ fn load_packed_i64<B: CodegenBuilder>(
     let owner = checked_buffer(b, operands, op.operands[0], miss);
     let slot = checked_slot(b, operands, owner, op.operands[1], op.operands[2], miss);
     b.load_word(slot, 0)
+}
+
+fn commit_packed_store<B: CodegenBuilder>(
+    b: &mut B,
+    operands: &Operands<'_, B>,
+    op: &TirOp,
+    miss: B::Block,
+) {
+    let owner = checked_buffer(b, operands, op.operands[0], miss);
+    let slot = checked_slot(b, operands, owner, op.operands[1], op.operands[2], miss);
+    let value = exact_i64(b, operands, op.operands[3], miss);
+    b.store_word(slot, 0, value);
 }
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
@@ -156,32 +165,59 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         self.bind(op.results[1], success, HeldCarrier::RawBool);
     }
 
+    pub(super) fn try_buffer_store(&mut self, b: &mut B, op: &TirOp) {
+        let operands = self.operands();
+        let miss_value = b.bit_constant(false);
+        let success = if can_access(&operands, op) {
+            let miss = b.create_block("buffer_store_miss");
+            let done = b.create_block("buffer_store_done");
+            let result = b.append_block_param(done, MachineKind::Bit);
+            commit_packed_store(b, &operands, op, miss);
+            let hit = b.bit_constant(true);
+            b.jump(done, &[b.bit_value(hit)]);
+            b.switch_to_block(miss);
+            b.jump(done, &[b.bit_value(miss_value)]);
+            b.switch_to_block(done);
+            result
+        } else {
+            b.bit_value(miss_value)
+        };
+        self.bind(op.results[0], success, HeldCarrier::RawBool);
+    }
+
     pub(super) fn try_buffer_branch(
         &mut self,
         b: &mut B,
         op: &TirOp,
         hit: B::Block,
         miss: B::Block,
+        raw: Option<ValueId>,
     ) -> bool {
         let operands = self.operands();
         if !can_access(&operands, op) {
             return false;
         }
-        let value = load_packed_i64(b, &operands, op, miss);
-        self.bind(op.results[0], b.word_value(value), HeldCarrier::RawI64);
+        if let Some(raw) = raw {
+            let value = load_packed_i64(b, &operands, op, miss);
+            self.bind(raw, b.word_value(value), HeldCarrier::RawI64);
+        } else {
+            commit_packed_store(b, &operands, op, miss);
+        }
         b.jump(hit, &[]);
         true
     }
 
-    pub(super) fn packed_buffer_call(&mut self, b: &mut B, op: &TirOp, entry: RuntimeFn) -> bool {
+    pub(super) fn buffer_dimension_call(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        entry: RuntimeFn,
+    ) -> bool {
         let dimension = match entry {
-            RuntimeFn::Buffer2dRows => Some(BUFFER2D_ROWS_OFFSET),
-            RuntimeFn::Buffer2dCols => Some(BUFFER2D_COLS_OFFSET),
-            RuntimeFn::Buffer2dGet | RuntimeFn::Buffer2dSet => None,
+            RuntimeFn::Buffer2dRows => BUFFER2D_ROWS_OFFSET,
+            RuntimeFn::Buffer2dCols => BUFFER2D_COLS_OFFSET,
             _ => return false,
         };
-        // The GIL protects the current storage pointer through the access.
-        // Each operation acquires it afresh, because a store may promote it.
         let operands = self.operands();
         if !can_access(&operands, op) {
             return false;
@@ -191,26 +227,10 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let result = b.append_block_param(done, MachineKind::Word);
 
         let buffer = checked_buffer(b, &operands, op.operands[0], cold);
-        let store = entry == RuntimeFn::Buffer2dSet;
-        let answer = if let Some(offset) = dimension {
-            b.load_word(buffer, offset)
-        } else {
-            let slot = checked_slot(b, &operands, buffer, op.operands[1], op.operands[2], cold);
-            if store {
-                let value = exact_i64(b, &operands, op.operands[3], cold);
-                b.store_word(slot, 0, value);
-                b.constant(QNAN | TAG_NONE)
-            } else {
-                b.load_word(slot, 0)
-            }
-        };
-        let hot = if store {
-            answer
-        } else {
-            let inline = generate_inline_int_fits(b, answer);
-            require(b, inline, cold, "buffer_inline_result");
-            generate_box_inline_int(b, answer)
-        };
+        let answer = b.load_word(buffer, dimension);
+        let inline = generate_inline_int_fits(b, answer);
+        require(b, inline, cold, "buffer_inline_result");
+        let hot = generate_box_inline_int(b, answer);
         b.jump(done, &[b.word_value(hot)]);
 
         b.switch_to_block(cold);

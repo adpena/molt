@@ -35,6 +35,7 @@ from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     python_node_source_key,
 )
+from molt.compiler_analysis.python_string_facts import PythonStringBound
 from molt.compiler_analysis.static_truth import (
     DeferredExecution,
     StaticExpressionResult,
@@ -66,7 +67,12 @@ PythonStringValue: TypeAlias = str | PythonStringAlternatives
 
 
 PythonStaticValue: TypeAlias = (
-    PythonStringValue | int | tuple[str, ...] | PythonParameterRef | None
+    PythonStringValue
+    | PythonStringBound
+    | int
+    | tuple[str, ...]
+    | PythonParameterRef
+    | None
 )
 
 
@@ -80,6 +86,8 @@ def python_static_value_key(value: PythonStaticValue) -> tuple[object, ...]:
         return ("parameter", value.name)
     if isinstance(value, PythonStringAlternatives):
         return ("string-alternatives", value.values)
+    if isinstance(value, PythonStringBound):
+        return ("string-bound", value)
     key = literal_identity_key(value)
     if key is None:
         raise TypeError("static binding values require immutable literal facts")
@@ -1046,6 +1054,9 @@ class PythonBindingFacts:
 
     def expression_fact(self, node: ast.AST) -> PythonExpressionFact | None:
         return self._expression_lookup.get(python_node_source_key(node))
+
+    def expression_fact_at(self, key: PythonSourceKey) -> PythonExpressionFact | None:
+        return self._expression_lookup.get(key)
 
     def annotation_head_at_decoration(self, node: ast.expr) -> IdentityMask | None:
         """A class annotation head's value when the class's decorators run;
