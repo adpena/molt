@@ -57,6 +57,8 @@ class PythonSourceProjection(StrEnum):
     CALL_MAPPING_VALUE = "Call.mapping_value"
     CALL_NATIVE_BUILTINS = "Call.native_builtins"
     DECORATOR_APPLY = "Decorator.apply"
+    CALL_REFLECTED_BUILTINS = "Call.reflected_builtins"
+    MAPPING_WRITE = "Mapping.write"
 
 
 def guarded_declaration_origin(

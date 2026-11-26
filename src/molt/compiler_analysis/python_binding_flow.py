@@ -80,7 +80,10 @@ from molt.compiler_analysis.python_parameter_classes import (
 from molt.compiler_analysis.python_namespace_writes import (
     _own_namespace_names,
 )
-from molt.compiler_analysis.python_string_facts import python_string_spelling
+from molt.compiler_analysis.python_string_facts import (
+    PythonStringBound,
+    python_string_spelling,
+)
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     PythonSourceProjection,
@@ -269,7 +272,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 82
+_ANALYSIS_SCHEMA: Final = 84
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -4156,6 +4159,43 @@ class _Analyzer:
             self._observed_stack[-1].deferred_execution |= refs
             self._observed_stack[-1].module_metadata_effects |= module_metadata_effects
 
+    def _can_select_builtin_environment(self, operand: ast.expr) -> bool:
+        fact = self.transfer.expressions.get(self._node_key(operand))
+        name = None if fact is None else fact.static_value
+        fields = {"__builtins__", "f_builtins"}
+        if isinstance(name, str):
+            return name in fields
+        if isinstance(name, PythonStringAlternatives):
+            return not fields.isdisjoint(name.values)
+        if isinstance(name, PythonStringBound):
+            return any(name.admits(field) for field in fields)
+        return True
+
+    def _project_mapping_write(
+        self,
+        scope: _Scope,
+        operation: ast.expr,
+        origins: frozenset[PythonSourceKey],
+        key: PythonStaticValue,
+    ) -> None:
+        if not origins:
+            return
+        write = python_source_projection_key(
+            operation, PythonSourceProjection.MAPPING_WRITE
+        )
+        prior = self.transfer.source_elements.get(write)
+        self.transfer.source_elements[write] = PythonSourceElement(
+            write,
+            PythonElementProtocol.MAPPING_WRITE,
+            origins | (prior.origins if prior else frozenset()),
+            key
+            if isinstance(key, str) and (prior is None or prior.key == key)
+            else None,
+        )
+        self._record_operation_execution(
+            scope, frozenset({DeferredExecution(write, "mutate")})
+        )
+
     def _publish_source_attribute(
         self, site: PythonSourceKey, name: str, owners: frozenset[PythonSourceKey]
     ) -> None:
@@ -5492,6 +5532,30 @@ class _Analyzer:
                             DeferredExecution(selected, "release"),
                         }
                     )
+        elif (
+            callee & int(PythonIdentity.BUILTIN_GETATTR)
+            and not node.keywords
+            and len(node.args) in {2, 3}
+            and not any(isinstance(arg, ast.Starred) for arg in node.args)
+            and (owners := argument_results[0].source_origins)
+            and self._can_select_builtin_environment(node.args[1])
+        ):
+            # The selected name can be unknown without erasing its receiver.
+            selected = python_source_projection_key(
+                node, PythonSourceProjection.CALL_REFLECTED_BUILTINS
+            )
+            prior = self.transfer.source_elements.get(selected)
+            self.transfer.source_elements[selected] = PythonSourceElement(
+                selected,
+                PythonElementProtocol.REFLECTED_BUILTINS,
+                owners | (prior.origins if prior else frozenset()),
+            )
+            result_fact = StaticExpressionResult(source_origins=frozenset({selected}))
+            if len(argument_results) == 3:
+                result_fact = join_static_expression_results(
+                    (result_fact, argument_results[2])
+                )
+            effects |= UNKNOWN_EFFECTS
         elif (
             exact
             and callee == int(PythonIdentity.BUILTIN_ISINSTANCE)
@@ -7592,14 +7656,21 @@ class _Analyzer:
                 and target.node.attr in MODULE_IMPORT_METADATA_NAMES
             ):
                 effects |= WRITES_MODULE_METADATA | WRITES_GLOBAL_NAMESPACE
-        elif (
-            target.owner_identities & int(PythonIdentity.CURRENT_GLOBALS)
-            or target.owner_result.exposes_module_globals
-        ):
-            effects |= WRITES_GLOBAL_NAMESPACE
-            # An unknown key can select any import-metadata member.
-            if strings is None or strings & MODULE_IMPORT_METADATA_NAMES:
-                effects |= WRITES_MODULE_METADATA
+        else:
+            self._project_mapping_write(
+                scope,
+                target.node,
+                target.owner_result.source_origins,
+                target.static_index,
+            )
+            if (
+                target.owner_identities & int(PythonIdentity.CURRENT_GLOBALS)
+                or target.owner_result.exposes_module_globals
+            ):
+                effects |= WRITES_GLOBAL_NAMESPACE
+                # An unknown key can select any import-metadata member.
+                if strings is None or strings & MODULE_IMPORT_METADATA_NAMES:
+                    effects |= WRITES_MODULE_METADATA
         self._record_operation_execution(
             scope,
             _operand_dispatch_deferred(
@@ -8355,6 +8426,10 @@ class _Analyzer:
             operation_effects = binary_operation_effects(
                 retained_target, value.result, inplace=True
             )
+            if isinstance(node.op, ast.BitOr):
+                self._project_mapping_write(
+                    scope, node.target, target_read.result.source_origins, None
+                )
             namespace_effects = NO_EFFECTS
             if target_read.result.exposes_module_globals:
                 # __iop__ receives the retained object before the name/member is

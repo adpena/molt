@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import Final, Literal, cast
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
@@ -175,6 +176,19 @@ def builtin_method_writes_receiver(kind: Literal["list", "dict"], method: str) -
     premise separately. Unsupported native descriptors cannot mutate storage.
     """
     return _METHODS_BY_KIND[kind].get(method, False)
+
+
+class MappingWriteScope(StrEnum):
+    KEY = "key"
+    CONTENTS = "contents"
+
+
+def builtin_mapping_write_scope(method: str) -> MappingWriteScope | None:
+    if not builtin_method_writes_receiver("dict", method):
+        return None
+    if method in {"pop", "setdefault", "__setitem__", "__delitem__"}:
+        return MappingWriteScope.KEY
+    return MappingWriteScope.CONTENTS
 
 
 def _normal_result(

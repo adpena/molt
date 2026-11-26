@@ -11,9 +11,23 @@ from molt.compiler_analysis import python_identity_catalog_generated as _catalog
 from molt.compiler_analysis.python_string_facts import PythonStringBound
 
 
+SOURCE_ITERATION_CALLABLES = frozenset(
+    {
+        _catalog.PythonIdentity.BUILTIN_ENUMERATE,
+        _catalog.PythonIdentity.BUILTIN_FILTER,
+        _catalog.PythonIdentity.BUILTIN_ITER,
+        _catalog.PythonIdentity.BUILTIN_MAP,
+        _catalog.PythonIdentity.BUILTIN_NEXT,
+        _catalog.PythonIdentity.BUILTIN_REVERSED,
+        _catalog.PythonIdentity.BUILTIN_ZIP,
+        *_catalog.NATIVE_ITERATOR_PAYLOADS,
+    }
+)
 SOURCE_CALLABLE_IDENTITIES = (
     _catalog.ALL_INTRINSIC_CALLABLE_IDENTITIES
     | _catalog.PUBLIC_RUNTIME_IMPORT_IDENTITIES
+    | int(_catalog.PythonIdentity.BUILTIN_DICT)
+    | sum(SOURCE_ITERATION_CALLABLES)
 )
 
 
