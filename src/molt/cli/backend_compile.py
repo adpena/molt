@@ -102,7 +102,8 @@ from molt.cli.runtime_native_codegen import (
 from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
 from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenUse
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
-from molt.cli.runtime_wasm_validation import _require_runtime_wasm_validator
+from molt.cli.runtime_wasm_validation import _admit_runtime_wasm_validator
+from molt.tool_releases import ToolDiscovery
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.artifact_publication import discard_staged_output
 from molt.file_publication import staged_file_path
@@ -280,6 +281,7 @@ def _prepare_backend_setup(
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
     restore_application_artifact: bool = True,
+    wasm_validator: ToolDiscovery | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     try:
         artifact_contract = resolve_backend_artifact_contract(
@@ -305,21 +307,13 @@ def _prepare_backend_setup(
         )
     except InstalledRuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
-    # Runtime and app admission both require this validator. Check before
-    # the backend compiler itself can trigger a source Cargo build.
-    if (
-        is_wasm
-        and _require_runtime_wasm_validator(runtime_state, project_root=molt_root)
-        is None
-    ):
-        failure = runtime_state.runtime_wasm_build_failure
-        assert failure is not None
-        return None, _fail(
-            failure.summary,
-            json_output,
-            command="build",
-            data={"runtime_wasm_failure": failure.json_payload()},
+    if is_wasm:
+        runtime_state.runtime_wasm_validator = wasm_validator
+        validator_error = _admit_runtime_wasm_validator(
+            runtime_state, project_root=molt_root, json_output=json_output
         )
+        if validator_error is not None:
+            return None, validator_error
     runtime_callable_symbols_digest = ""
     callable_symbols_start = time.perf_counter()
     runtime_callable_symbols_digest, callable_symbols_error = (
