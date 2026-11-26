@@ -17,8 +17,7 @@ pub(super) fn checked_private_returns<'a>(
     >,
     private_entries: impl IntoIterator<Item = molt_ir::FunctionId>,
 ) -> BTreeMap<molt_ir::FunctionId, crate::tir::types::TirType> {
-    use crate::tir::types::TirType;
-    use molt_ir::tir::call_targets::final_call_arguments;
+    use crate::representation_plan::CheckedResultRefusal;
 
     let report = super::compile_driver::backend_timing_enabled();
     let mut private_entries = private_entries.into_iter().peekable();
@@ -51,25 +50,14 @@ pub(super) fn checked_private_returns<'a>(
             let Some((ty, used)) = candidates.get_mut(&callee) else {
                 continue;
             };
-            let direct = final_call_arguments(op).is_some_and(|(_, args)| {
-                matches!(
-                    args,
-                    molt_ir::ir::CompiledCallArguments::Parameters(_)
-                        | molt_ir::ir::CompiledCallArguments::Direct(_)
-                )
-            });
-            if !direct {
-                non_direct += 1;
-            } else if let [result] = op.results.as_slice()
-                && carriers.effective_value_type(*result, &TirType::DynBox) == *ty
-            {
-                if carriers.is_checked_call_result(*result) {
+            match carriers.checked_direct_result(op, ty) {
+                Ok(_) => {
                     *used = true;
                     continue;
                 }
-                unobserved += 1;
-            } else {
-                carrier_mismatch += 1;
+                Err(CheckedResultRefusal::NonDirectReference) => non_direct += 1,
+                Err(CheckedResultRefusal::CarrierMismatch) => carrier_mismatch += 1,
+                Err(CheckedResultRefusal::UnobservedUnwind) => unobserved += 1,
             }
             candidates.remove(&callee);
         }

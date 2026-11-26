@@ -5,6 +5,7 @@
 //! the caller's lookup (the runner resolves them in the runtime image it
 //! loaded), and every import must resolve before relocating code that uses it.
 
+use super::backend_selection::NativeCodegenBackend;
 use super::compile_driver::{NativeCodegenProgram, backend_timing_enabled};
 use super::machine_code_cache::MachineCodeCache;
 use super::*;
@@ -228,7 +229,13 @@ impl SimpleBackend {
             .map_err(JitCompileError::Admission)?;
         let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
-        let program = self.prepare_native_codegen(&mut ir, false, true, timing, &compile_start);
+        let program = self.prepare_native_codegen(
+            &mut ir,
+            NativeCodegenBackend::Cranelift,
+            true,
+            timing,
+            &compile_start,
+        );
         self.stage_jit_program(program, timing, compile_start)
     }
 
@@ -267,7 +274,7 @@ impl SimpleBackend {
             super::compile_driver::NativeCodegenProgram {
                 emit_resolver_here: true,
                 app_callable_manifest: callables,
-                final_functions: Some(final_functions),
+                final_functions,
             },
             backend_timing_enabled(),
             start,
@@ -298,7 +305,7 @@ impl SimpleBackend {
             emit_resolver_here,
             app_callable_manifest,
         } = program;
-        let functions = final_functions.expect("JIT requires final function custody");
+        let functions = final_functions;
         let table = molt_ir::FunctionTable::of(&functions.ir().functions);
         let (declarations, linkage) = self.declare_final_functions(&functions, &table);
         let runtime =

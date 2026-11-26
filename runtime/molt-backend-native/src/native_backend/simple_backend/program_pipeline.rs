@@ -1,16 +1,10 @@
 use super::backend_selection::NativeCodegenBackend;
+use super::compile_driver::NativeCodegenProgram;
 use super::*;
 use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_tir::ir_rewrites::rewrite_phi_to_store_load;
 use std::fmt::Write as _;
-
-pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
-    pub(in crate::native_backend::simple_backend) emit_resolver_here: bool,
-    pub(in crate::native_backend::simple_backend) app_callable_manifest:
-        crate::passes::AppCallableManifest,
-    pub(in crate::native_backend::simple_backend) final_functions: Option<NativeFinalFunctions>,
-}
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
@@ -37,16 +31,13 @@ impl SimpleBackend {
     }
 
     /// Consume transported operations into the terminal TIR used by every code owner.
-    pub(super) fn prepare_final_tir(
+    fn prepare_final_tir(
         &mut self,
         ir: &mut SimpleIR,
         backend: NativeCodegenBackend,
         owns_cell_layout: bool,
         mark: &mut impl FnMut(&str, usize),
-    ) -> (
-        crate::tir::pipeline_cache::TirOwnedModule,
-        molt_ir::linkage_abi::FunctionSignatures,
-    ) {
+    ) -> NativeFinalFunctions {
         use crate::tir::pipeline_cache::{
             TirOwnedModulePipelineMode, TirOwnedModulePipelineOptions, TirPipelineCacheFlavor,
             TirPipelineRunOptions, partition_cached_functions_before_drops,
@@ -132,17 +123,27 @@ impl SimpleBackend {
             },
         );
         mark("module pipeline", ir.functions.len());
-        (typed, signatures)
+        typed.append_clone_rows(&mut ir.functions);
+        let mut finalized = NativeFinalFunctions::from_final_tir(
+            SimpleIR {
+                functions: std::mem::take(&mut ir.functions),
+                profile: ir.profile.take(),
+            },
+            typed.functions,
+        );
+        finalized.admit_checked_clone_returns(&typed.clones);
+        finalized
     }
 
     pub(in crate::native_backend::simple_backend) fn prepare_program_for_codegen(
         &mut self,
         ir: &mut SimpleIR,
-        use_llvm: bool,
+        backend: NativeCodegenBackend,
         owns_cell_layout: bool,
         timing: bool,
         compile_start: &std::time::Instant,
-    ) -> NativeProgramPipeline {
+    ) -> NativeCodegenProgram {
+        let use_llvm = backend.uses_llvm();
         apply_profile_order(ir);
         // Import bedrock: module init bodies are reachable only through the
         // registry blob's MODULE_INIT_TABLE relocations (no call edges), so
@@ -202,46 +203,26 @@ impl SimpleBackend {
         detect_gpu_kernels(&ir.functions);
         dump_raw_ir_if_requested(&ir.functions);
 
-        let mut final_functions = if use_llvm {
-            None
-        } else {
-            let (typed, _) = self.prepare_final_tir(
-                ir,
-                NativeCodegenBackend::Cranelift,
-                owns_cell_layout,
-                &mut mark,
-            );
-            // A specialized clone is another entry of its origin's row.
-            typed.append_clone_rows(&mut ir.functions);
-            let mut final_functions = NativeFinalFunctions::from_final_tir(
-                SimpleIR {
-                    functions: std::mem::take(&mut ir.functions),
-                    profile: ir.profile.take(),
-                },
-                typed.functions,
-            );
-            final_functions.admit_checked_clone_returns(&typed.clones);
-            if !self.skip_ir_passes {
-                final_functions.retain_reachable(&module_registry_roots);
-            }
-            Some(final_functions)
-        };
+        // LLVM consumes the shared image's external declarations before its
+        // target-specific module phase. Cranelift retains those bodies for
+        // type flow until its terminal rows have been assembled.
         if use_llvm && !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
-        }
-        mark("final functions", ir.functions.len());
-        if let Some(functions) = &final_functions {
-            dump_rewritten_tir_if_requested(functions.bodies());
         }
         let emit_resolver_here = self.emit_app_callable_resolver;
         let app_callable_manifest =
             native_manifest.unwrap_or_else(|| self.take_app_callable_manifest(ir));
-        if !self.skip_shared_stdlib_partition {
-            if let Some(final_functions) = &mut final_functions {
-                final_functions.externalize_partition(self.skip_ir_passes, &module_registry_roots);
-            } else {
-                externalize_shared_stdlib_partition(ir, &module_registry_roots);
-            }
+        if use_llvm && !self.skip_shared_stdlib_partition {
+            externalize_shared_stdlib_partition(ir, &module_registry_roots);
+        }
+        let mut final_functions = self.prepare_final_tir(ir, backend, owns_cell_layout, &mut mark);
+        if !use_llvm && !self.skip_ir_passes {
+            final_functions.retain_reachable(&module_registry_roots);
+        }
+        mark("final functions", final_functions.ir().functions.len());
+        dump_rewritten_tir_if_requested(final_functions.bodies());
+        if !use_llvm && !self.skip_shared_stdlib_partition {
+            final_functions.externalize_partition(self.skip_ir_passes, &module_registry_roots);
         }
         mark("manifest and partition", 0);
         if timing {
@@ -249,7 +230,7 @@ impl SimpleBackend {
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
         }
 
-        NativeProgramPipeline {
+        NativeCodegenProgram {
             emit_resolver_here,
             app_callable_manifest,
             final_functions,

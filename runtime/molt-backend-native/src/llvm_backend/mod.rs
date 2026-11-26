@@ -30,6 +30,7 @@ use inkwell::targets::TargetMachine;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "llvm")]
+#[cfg(test)]
 use crate::representation_plan::ProducerCarrierPlan;
 #[cfg(feature = "llvm")]
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
@@ -45,7 +46,8 @@ pub struct LlvmBackend<'ctx> {
     /// The function table of the document being lowered (HF-847 slice 1): a
     /// typed callee names its linker symbol here.
     pub function_table: molt_ir::FunctionTable,
-    /// Carrier facts for each terminal SSA body, indexed by linker symbol.
+    /// Overrides for standalone instruction-selection fixtures.
+    #[cfg(test)]
     pub(crate) function_repr_facts: BTreeMap<String, ProducerCarrierPlan>,
     /// The runtime entries the linked runtime staticlib defines (the active
     /// stdlib profile's callable surface, from `MOLT_RUNTIME_CALLABLE_SYMBOLS`),
@@ -149,6 +151,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             builder,
             function_linkage_abis: BTreeMap::new(),
             function_table: molt_ir::FunctionTable::default(),
+            #[cfg(test)]
             function_repr_facts: BTreeMap::new(),
             runtime_callable_symbols: symbols.runtime_fn_set(),
             runtime_imports: runtime_imports::LlvmRuntimeImports::default(),

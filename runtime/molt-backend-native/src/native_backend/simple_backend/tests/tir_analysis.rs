@@ -505,42 +505,49 @@ fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
     let _guard = backend_env_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    for skip_ir_passes in [false, true] {
-        for callback in [false, true] {
-            let ops = if callback {
-                vec![
-                    callback_op(OpKind::DecRef, &["owned"], None),
-                    callback_op(OpKind::RetVoid, &[], None),
-                ]
-            } else {
-                vec![callback_op(OpKind::RetVoid, &[], None)]
-            };
-            let mut ir = SimpleIR {
-                functions: vec![callback_function("molt_main", &["owned"], ops)],
-                profile: None,
-            };
-            let mut backend = SimpleBackend::new();
-            backend.skip_ir_passes = skip_ir_passes;
-            backend.skip_shared_stdlib_partition = true;
-            backend.emit_app_callable_resolver = false;
-            let prepared = backend.prepare_program_for_codegen(
-                &mut ir,
-                false,
-                false,
-                false,
-                &std::time::Instant::now(),
-            );
-            let finalized = prepared.final_functions.expect("native final owner");
-            assert!(
-                ir.functions.is_empty(),
-                "source custody moved into final owner"
-            );
-            let leaves = terminal_leaf_oracle(&finalized);
-            assert_eq!(
-                leaves.contains("molt_main"),
-                !callback,
-                "skip={skip_ir_passes}"
-            );
+    use crate::native_backend::simple_backend::backend_selection::NativeCodegenBackend;
+    for selection in [
+        NativeCodegenBackend::Cranelift,
+        #[cfg(feature = "llvm")]
+        NativeCodegenBackend::Llvm,
+    ] {
+        for skip_ir_passes in [false, true] {
+            for callback in [false, true] {
+                let ops = if callback {
+                    vec![
+                        callback_op(OpKind::DecRef, &["owned"], None),
+                        callback_op(OpKind::RetVoid, &[], None),
+                    ]
+                } else {
+                    vec![callback_op(OpKind::RetVoid, &[], None)]
+                };
+                let mut ir = SimpleIR {
+                    functions: vec![callback_function("molt_main", &["owned"], ops)],
+                    profile: None,
+                };
+                let mut backend = SimpleBackend::new();
+                backend.skip_ir_passes = skip_ir_passes;
+                backend.skip_shared_stdlib_partition = true;
+                backend.emit_app_callable_resolver = false;
+                let prepared = backend.prepare_program_for_codegen(
+                    &mut ir,
+                    selection,
+                    false,
+                    false,
+                    &std::time::Instant::now(),
+                );
+                let finalized = prepared.final_functions;
+                assert!(
+                    ir.functions.is_empty(),
+                    "source custody moved into final owner"
+                );
+                let leaves = terminal_leaf_oracle(&finalized);
+                assert_eq!(
+                    leaves.contains("molt_main"),
+                    !callback,
+                    "backend={selection:?} skip={skip_ir_passes}"
+                );
+            }
         }
     }
 }
