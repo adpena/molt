@@ -9,7 +9,7 @@ import ntpath
 import os
 import posixpath
 import stat
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 from molt._intrinsic_symbols import INTRINSIC_RUNTIME_ROOTS
@@ -314,7 +314,7 @@ def _module_graph_needs_runtime_import_support(
     *,
     module_graph: Mapping[str, Path],
     scan_authority: _ModuleGraphScanAuthority,
-    namespace_writes: Mapping[str, Collection[PythonNamespaceWrite]],
+    reached_writes: Iterable[tuple[str, PythonNamespaceWrite]],
 ) -> _RuntimeImportSupportPolicy:
     """Whether the closed graph needs the Python import machinery.
 
@@ -322,7 +322,7 @@ def _module_graph_needs_runtime_import_support(
     (bedrock §13 D8, HF-841). The machinery is needed only when reached code
     may call an import entry point (each scan's execution-region bit, which a
     source that was not scanned claims), or when some module writes the
-    import state (``namespace_writes``, keyed by writer module). The
+    import state (``reached_writes`` carries each writer's module). The
     machinery's own modules are exempt from both. The decision reads facts
     and no source.
     """
@@ -337,8 +337,7 @@ def _module_graph_needs_runtime_import_support(
         )
         or any(
             _writes_import_state(write)
-            for writer, writes in namespace_writes.items()
+            for writer, write in reached_writes
             if writer not in exempt
-            for write in writes
         ),
     )
