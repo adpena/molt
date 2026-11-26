@@ -66,6 +66,7 @@ def compiler_build_admission(
     return SimpleNamespace(
         plan=plan,
         verify=lambda: None,
+        prove_source_build_ready=lambda: None,
         fingerprint=canonical_json_sha256(
             {
                 "features": sorted(features),

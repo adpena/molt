@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.compiler_distribution import InstalledCompiler
     from molt.llvm_link_plan import LlvmNativeLinkPlan
-    from molt.llvm_toolchain import LlvmPrefixVerification
+    from molt.llvm_toolchain import LlvmPrefixVerification, LlvmSdkLinkProbe
     from molt.toolchain_identity import (
         StableRegularFileObservation,
         StableRegularFileVersion,
@@ -180,6 +180,7 @@ def admit_llvm_compiler_inputs(
     env: Mapping[str, str],
     *,
     shared_capability: tuple[Mapping[str, object], frozenset[str]] | None = None,
+    defer_link_probe: bool = False,
 ) -> LlvmCompilerInputs:
     from molt.cargo_resource_selection import CargoResourceRoot
     from molt.cli.cargo_resource_custody import CargoResourceCustody
@@ -189,7 +190,9 @@ def admit_llvm_compiler_inputs(
     )
     from molt.llvm_link_plan import select_native_llvm_link_plan
 
-    verification = verify_available_llvm_toolchain(root, environ=env)
+    verification = verify_available_llvm_toolchain(
+        root, environ=env, defer_link_probe=defer_link_probe
+    )
     if verification is None:
         raise CompilerIdentityError(
             "Selected LLVM backend has no admitted LLVM toolchain"
@@ -257,6 +260,19 @@ def admit_llvm_compiler_inputs(
 class BackendBuildAdmission:
     plan: RuntimeCargoPlan
     fingerprint: str
+    llvm_link_probe: LlvmSdkLinkProbe | None = None
+
+    def prove_source_build_ready(self) -> None:
+        if self.llvm_link_probe is None:
+            return
+        from molt.llvm_toolchain import LlvmToolchainConfigError
+
+        self.verify()
+        try:
+            self.llvm_link_probe.run()
+        except LlvmToolchainConfigError as exc:
+            raise CompilerIdentityError(str(exc)) from exc
+        self.verify()
 
     def verify(self) -> None:
         try:
@@ -325,7 +341,9 @@ def backend_build_admission(
             effective = environment
             if "llvm" not in features:
                 return effective
-            llvm_inputs = admit_llvm_compiler_inputs(root, effective)
+            llvm_inputs = admit_llvm_compiler_inputs(
+                root, effective, defer_link_probe=True
+            )
             return llvm_inputs.environment(effective)
 
         command = [
@@ -389,7 +407,15 @@ def backend_build_admission(
                 "link_resources": plan.link_resources.content_identity(),
             }
         )
-        result = BackendBuildAdmission(plan, fingerprint)
+        result = BackendBuildAdmission(
+            plan,
+            fingerprint,
+            llvm_link_probe=(
+                None
+                if llvm_inputs is None
+                else llvm_inputs.verification.deferred_link_probe
+            ),
+        )
         result.verify()
         if transaction is not None:
             transaction.compiler_plans[key] = result

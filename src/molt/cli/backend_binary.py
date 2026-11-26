@@ -1312,6 +1312,7 @@ def _ensure_backend_binary(
             return _backend_ensure_failure("backend_source_identity", str(exc))
         cmd = list(build_admission.plan.command)
         try:
+            build_admission.prove_source_build_ready()
             source_generation.verify()
         except (OSError, ValueError) as exc:
             return _backend_ensure_failure(
