@@ -231,39 +231,39 @@ fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
     let before_top = machine.read(THREAD, THREAD_RECORD_ARENA_TOP_OFFSET);
     let before_frame = machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET);
     let before_handoff = machine.read(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET);
-    let root = VirtualFramePrefix::default();
-    let parent = VirtualFramePrefix::from_counts(3, 1).unwrap();
-    let nested = VirtualFramePrefix::from_counts(11, 2).unwrap();
+    let callable_only = FrameReservation::default();
+    let one = FrameReservation::from_counts(2, 1).unwrap();
+    let two = FrameReservation::from_counts(5, 2).unwrap();
+    let three = FrameReservation::from_counts(13, 3).unwrap();
     assert_eq!(
-        parent.arena_bytes,
-        (FRAME_RECORD_HEADER_BYTES + 3 * FRAME_HOME_BYTES) as u32
+        two.arena_bytes,
+        (2 * FRAME_RECORD_HEADER_BYTES + 5 * FRAME_HOME_BYTES) as u32
     );
-    assert_eq!(
-        nested.arena_bytes,
-        (2 * FRAME_RECORD_HEADER_BYTES + 11 * FRAME_HOME_BYTES) as u32
-    );
-    assert!(VirtualFramePrefix::from_counts(u32::MAX, 1).is_none());
-    assert!(VirtualFramePrefix::from_counts(0, u32::MAX).is_none());
-    let with_space = VirtualFramePrefix {
-        arena_bytes: 0x1000,
-        ..parent
-    };
-    for (slot, homes, prefix, expected) in [
-        (code_slot, 2, root, 1),
-        (code_slot, 2, parent, 1),
-        (code_slot, 2, nested, 0),
-        (code_slot, 2, with_space, 0),
-        (code_slot + 1, 2, parent, 0),
-        (code_slot, u32::MAX, root, 0),
+    assert!(FrameReservation::from_counts(u32::MAX, 1).is_none());
+    assert!(FrameReservation::from_counts(0, u32::MAX).is_none());
+    let chunk_homes =
+        ((CHUNK_BYTES - FRAME_RECORD_HEADER_BYTES as u64) / FRAME_HOME_BYTES as u64) as u32;
+    let exact = FrameReservation::from_counts(chunk_homes, 1).unwrap();
+    let oversized = FrameReservation::from_counts(chunk_homes + 1, 1).unwrap();
+    for (slot, reservation, expected) in [
+        (code_slot, callable_only, 1),
+        (code_slot, one, 1),
+        (code_slot, two, 1),
+        (code_slot, three, 0),
+        (code_slot, exact, 1),
+        (code_slot, oversized, 0),
+        (code_slot + 1, callable_only, 0),
+        (code_slot + 1, one, 0),
     ] {
         assert_eq!(
-            generate_frame_entry_admits(&mut machine, THREAD, function, slot, homes, prefix),
-            expected
+            generate_frame_entry_admits(&mut machine, THREAD, function, slot, reservation),
+            expected,
+            "slot={slot}, reservation={reservation:?}"
         );
     }
     machine.write(THREAD, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET, 1);
     assert_eq!(
-        generate_frame_entry_admits(&mut machine, THREAD, function, code_slot, 2, root),
+        generate_frame_entry_admits(&mut machine, THREAD, function, code_slot, two),
         0
     );
     assert_eq!(

@@ -670,15 +670,14 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             (SiteBody::FieldProbe { offset }, &[object, _]) => {
                 emit_field_slot_probe(self.words.builder, sites, object, offset)
             }
-            (SiteBody::FrameEntryProbe { homes, prefix }, &[thread, function, code, _]) => {
+            (SiteBody::FrameEntryProbe { reservation }, &[thread, function, code, _]) => {
                 emit_frame_entry_probe(
                     self.words.builder,
                     sites,
                     thread,
                     function,
                     code,
-                    homes,
-                    prefix,
+                    reservation,
                 )
             }
             (SiteBody::BuiltinFieldGet { field }, &[object, _]) => {
