@@ -21,7 +21,6 @@ from molt._wasm_runtime_exports import (
     wasm_split_runtime_export_name_for_import,
     wasm_split_runtime_import_name_for_export,
     wasm_split_runtime_import_signature,
-    wasm_runtime_lifetime_export_names,
     wasm_runtime_is_attached_physical_export,
 )
 
@@ -191,7 +190,6 @@ def _generate_split_worker_js(
     deployment_manifest: Mapping[str, object],
     shared_memory_initial_pages: int,
     shared_table_initial: int,
-    runtime_import_names: Iterable[str] | None = None,
 ) -> str:
     """Generate a Cloudflare Workers shim for split-runtime deployment.
 
@@ -210,23 +208,6 @@ def _generate_split_worker_js(
             raise ValueError(
                 "split worker requires compiler-owned fixed lexical module paths"
             )
-    runtime_import_names = tuple(
-        dict.fromkeys(
-            (
-                *(runtime_import_names or ()),
-                "runtime_execution_enter",
-                "runtime_execution_leave",
-                "runtime_shutdown",
-            )
-        )
-    )
-    runtime_import_export_names = {
-        **_runtime_import_export_names_from_manifest(runtime_import_names),
-        **wasm_runtime_lifetime_export_names(),
-    }
-    runtime_import_export_names_json = json.dumps(
-        runtime_import_export_names, sort_keys=True
-    )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
 import "./molt_vfs_browser.js";
@@ -250,6 +231,7 @@ const {
   sideModuleRuntimeImports,
 } = globalThis.MoltWasmLoaderBridge;
 const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
+const runtimeImportAbi = deploymentManifest.abi?.runtime_imports;
 const { createRuntimeLifetime, runtimeExport, combinedError } = globalThis.MoltRuntimeLifecycle;
 
 // The ABI generator owns both protocols. Allocate immutable views once per module.
@@ -329,7 +311,6 @@ export default {
     const QNAN = 0x7ff8000000000000n;
     const TAG_NONE = 0x0003000000000000n;
     const NONE_BITS = QNAN | TAG_NONE;
-    const runtimeImportExportNames = __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__;
     const WEBGPU_DISPATCH_HOST_IMPORT = __MOLT_WEBGPU_DISPATCH_HOST_IMPORT__;
     const WASI_FILETYPE_CHARACTER_DEVICE = 2;
     const WASI_FILETYPE_DIRECTORY = 3;
@@ -937,11 +918,11 @@ export default {
         env: { ...hostEnv, __indirect_function_table: sharedTable },
       };
       rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
-      lifetime = createRuntimeLifetime(rtInstance, runtimeImportExportNames, () => {
+      lifetime = createRuntimeLifetime(rtInstance, runtimeImportAbi?.export_names, () => {
         if (runtimeExceptionPending(rtInstance)) {
           throw new Error("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception");
         }
-      }, deploymentManifest.abi.runtime_imports);
+      }, runtimeImportAbi);
       lifetime.admit();
       // 2. Place the app side module after the runtime and instantiate it.
       if (!isSideModule(appModule)) {
@@ -963,7 +944,7 @@ export default {
         "GOT.mem": placement["GOT.mem"],
         "GOT.func": placement["GOT.func"],
       };
-      requireAttachedExecutionAbi(appModule, rtInstance, deploymentManifest.abi.runtime_imports);
+      requireAttachedExecutionAbi(appModule, rtInstance, runtimeImportAbi);
       requireSharedExecutionMemoryImport(appModule);
       appInstance = await WebAssembly.instantiate(appModule, appImports);
       placement.start(appInstance);
@@ -1024,7 +1005,6 @@ export default {
         "__MOLT_SYNTHETIC_ERRNO__": json.dumps(dict(WASM_SYNTHETIC_ERRNO)),
         "__MOLT_WASI_PREVIEW1_ERRNO__": json.dumps(dict(WASM_WASI_PREVIEW1_ERRNO)),
         "__MOLT_SHARED_TABLE_INITIAL__": str(shared_table_initial),
-        "__MOLT_RUNTIME_IMPORT_EXPORT_NAMES__": runtime_import_export_names_json,
         "__MOLT_WEBGPU_DISPATCH_HOST_IMPORT__": json.dumps(WEBGPU_DISPATCH_HOST_IMPORT),
     }
     # Substitute only the original template: policy strings remain data even

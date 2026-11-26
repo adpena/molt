@@ -1687,8 +1687,9 @@ assert.equal(runtime.exports.molt_exception_pending_detached(), 1n);
     )
 
 
+@pytest.mark.parametrize("manifest_matches", [True, False])
 def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
-    tmp_path: Path,
+    tmp_path: Path, manifest_matches: bool
 ) -> None:
     from tools.generate_worker import generate_worker
     from tests.wasm_module_fixtures import with_execution_context_abi
@@ -1696,7 +1697,13 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
     output = tmp_path / "worker.js"
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(with_execution_context_abi(EMPTY_WASM_MODULE))
-    write_wasm_execution_manifest(tmp_path, linked=module)
+    manifest = write_wasm_execution_manifest(tmp_path, linked=module)
+    if not manifest_matches:
+        deployment = json.loads(manifest.read_text(encoding="utf-8"))
+        deployment["abi"]["runtime_imports"]["execution_context_abi"][
+            "thread_record_offset"
+        ] += 1
+        manifest.write_text(json.dumps(deployment), encoding="utf-8")
     generate_worker(output, tmp_quota_mb=32)
     source = output.read_text(encoding="utf-8")
     assert source.count("export default {") == 1
@@ -1707,7 +1714,9 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
         + json.dumps(source)
         + ";\nconst moduleBytes = new Uint8Array("
         + json.dumps(list(module.read_bytes()))
-        + ");\n"
+        + ");\nconst manifestMatches = "
+        + json.dumps(manifest_matches)
+        + ";\n"
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -1743,6 +1752,11 @@ async function exercise(status) {
   vm.createContext(context);
   vm.runInContext(workerSource, context);
   const response = await context.worker.fetch({body: null});
+  if (!manifestMatches) {
+    assert.equal(response.status, 500);
+    assert.deepEqual(events, []);
+    return;
+  }
   assert.equal(response.status, status === 'ok' ? 200 : 500);
   assert.deepEqual(events, status === 'missing'
     ? ['enter', 'leave', 'shutdown'] : ['enter', 'main', 'status', 'leave', 'shutdown']);
@@ -2291,8 +2305,9 @@ async function exercise(fail, primary, failShutdown, failInstantiate = false) {
     createRuntimeLifetime, combinedError, runtimeExceptionPending: () => false,
     compiledExecutionSymbol: fixtureCompiledSymbol, runtimeExport,
     requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory,
-    deploymentManifest: {abi: {runtime_imports: fixtureAbi}},
-    runtimeImportExportNames: fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'}),
+    runtimeImportAbi: {...fixtureAbi, export_names: fixtureScopeNames({
+      runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'
+    })},
     runtimeModule, appModule: new WebAssembly.Module(appModuleBytes), appInstance: null, wasi: {}, hostEnv: {}, sharedTable: {}, wasmMemory: sharedMemory,
     isSideModule: () => true, sideModuleRuntimeImports: () => ({}),
     placeSideModule: () => ({env: {}, 'GOT.mem': {}, 'GOT.func': {}, start() {}}),

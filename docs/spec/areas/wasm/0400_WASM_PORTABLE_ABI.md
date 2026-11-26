@@ -779,7 +779,7 @@ failure protocol.
 
 ### Deployment semantic compatibility
 
-Linked and split Molt deployments use execution manifest version 4. The version
+Linked and split Molt deployments use execution manifest version 5. The version
 is declared once in the existing WASM ABI manifest and projected into the
 Python producer, shared Rust facts and Node/browser ABI assets. Host entry
 loaders reject old or absent versions before fetching/reading a module or
@@ -798,6 +798,12 @@ for every receiver. Hosts validate the envelope and string transport before
 module reads; they do not parse capability profiles or resource policy again.
 Node, browser, the Rust deployment host (including manifest-bound WASI commands)
 and the generated Cloudflare host all consume that projection.
+
+The generated host execution ABI owns logical-to-physical runtime operation
+identities and attachment classifications. Each deployment carries its
+execution-context ABI witness and its selected import names, signatures and
+export bindings. Linked and split Workers use these manifest facts at the
+same admission boundary as the other hosts.
 
 The overlay follows native launch semantics: emitted keys replace ambient
 values, including empty or `full` grants; omitted optional resource, audit and

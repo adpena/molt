@@ -345,7 +345,6 @@ class _RuntimeImportAbiManifest(TypedDict):
     runtime_export_signatures: dict[str, WasmExportSignature]
     result_kinds: dict[str, str]
     execution_context_abi: dict[str, object]
-    runtime_execution_abis: dict[str, dict[str, str]]
 
 
 def _external_static_bundle_arcname(root: Path, path: Path) -> str | None:
@@ -419,10 +418,6 @@ def _runtime_import_abi_manifest(
             "suffix": ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
             "section": ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
             "thread_record_offset": ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
-        },
-        "runtime_execution_abis": {
-            logical: {"context": abi.context, "physical_symbol": abi.physical_symbol}
-            for logical, abi in RUNTIME_EXECUTION_ABIS.items()
         },
         "names": sorted(names),
         "export_names": {
@@ -2040,7 +2035,6 @@ def _prepare_non_native_build_result_in_generation(
                     deployment_manifest=manifest_data,
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
-                    runtime_import_names=runtime_abi_names,
                 ).encode("utf-8"),
             )
             try:

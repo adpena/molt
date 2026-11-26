@@ -133,41 +133,38 @@ _SLOTTED_SITE_OPS = frozenset({"module_get_global", "module_set_attr", "dict_set
 
 
 def _global_name_sites(
-    funcs: Sequence[Mapping[str, Any]],
-) -> Iterator[tuple[Mapping[str, Any], str]]:
-    """Identify materialized global access sites for slot stamping."""
-    for func in funcs:
-        constants: dict[str, str] = {}
-        globals_dicts: set[str] = set()
-        own_modules: set[str] = {
-            param
-            for param in func.get("params") or ()
-            if param == _MOLT_MODULE_CHUNK_PARAM
-        }
-        for op in func.get("ops", ()):
-            kind = op.get("kind")
-            out = op.get("out")
-            if kind == "const_str":
-                value = op.get("s_value")
-                if isinstance(out, str) and isinstance(value, str):
-                    constants[out] = value
-                continue
-            if kind == "module_new" and isinstance(out, str):
-                own_modules.add(out)
-                continue
-            if kind == "call" and op.get("s_value") == "molt_globals_builtin":
-                if isinstance(out, str):
-                    globals_dicts.add(out)
-                continue
-            args = op.get("args") or ()
-            if len(args) < 2 or args[1] not in constants:
-                continue
-            if (
-                kind in _FRAME_GLOBAL_OPS
-                or (kind in _MODULE_OBJECT_GLOBAL_OPS and args[0] in own_modules)
-                or (kind == "dict_set" and args[0] in globals_dicts)
-            ):
-                yield op, constants[args[1]]
+    func: Mapping[str, Any],
+) -> Iterator[tuple[int, Mapping[str, Any], str]]:
+    """Yield each materialized global access with its position in this body."""
+    constants: dict[str, str] = {}
+    globals_dicts: set[str] = set()
+    own_modules: set[str] = {
+        param for param in func.get("params") or () if param == _MOLT_MODULE_CHUNK_PARAM
+    }
+    for index, op in enumerate(func.get("ops", ())):
+        kind = op.get("kind")
+        out = op.get("out")
+        if kind == "const_str":
+            value = op.get("s_value")
+            if isinstance(out, str) and isinstance(value, str):
+                constants[out] = value
+            continue
+        if kind == "module_new" and isinstance(out, str):
+            own_modules.add(out)
+            continue
+        if kind == "call" and op.get("s_value") == "molt_globals_builtin":
+            if isinstance(out, str):
+                globals_dicts.add(out)
+            continue
+        args = op.get("args") or ()
+        if len(args) < 2 or args[1] not in constants:
+            continue
+        if (
+            kind in _FRAME_GLOBAL_OPS
+            or (kind in _MODULE_OBJECT_GLOBAL_OPS and args[0] in own_modules)
+            or (kind == "dict_set" and args[0] in globals_dicts)
+        ):
+            yield index, op, constants[args[1]]
 
 
 def module_global_layout(names: Collection[str]) -> tuple[str, ...]:
@@ -214,24 +211,21 @@ def stamp_global_slots(
         dominated = (init_dominated or {}).get(module_name, frozenset())
         for func in funcs:
             stamps: dict[int, dict[str, Any]] = {}
-            positions = (
-                {id(op): at for at, op in enumerate(func["ops"])} if dominated else {}
-            )
-            for op, name in _global_name_sites([func]):
+            for at, op, name in _global_name_sites(func):
                 index = index_of.get(name)
                 if index is not None and op.get("kind") in _SLOTTED_SITE_OPS:
                     stamp: dict[str, Any] = {"module": module_name, "index": index}
                     if cells:
                         stamp["cell"] = True
-                        if (func.get("name", ""), positions.get(id(op))) in dominated:
+                        if (func.get("name", ""), at) in dominated:
                             stamp["init_once"] = True
-                    stamps[id(op)] = stamp
+                    stamps[at] = stamp
             binds = bind_site is not None and bind_site[0] == func.get("name")
             if (not stamps and not binds) or id(func) not in position:
                 continue
             ops = [
-                {**op, "global_slot": stamps[id(op)]} if id(op) in stamps else op
-                for op in func["ops"]
+                {**op, "global_slot": stamps[at]} if at in stamps else op
+                for at, op in enumerate(func["ops"])
             ]
             if binds:
                 assert bind_site is not None

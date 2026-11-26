@@ -6,11 +6,10 @@ import linkedModule from './{{WASM_FILENAME}}';
 {{LOADER_BRIDGE}}
 {{RUNTIME_LIFECYCLE}}
 const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
-const lifetimeExports = {{RUNTIME_LIFETIME_EXPORTS}};
-const executionAbi = {{RUNTIME_EXECUTION_ABI}};
 const {compiledExecutionSymbol, requireAppExecutionAbi, requireAttachedExecutionAbi,
        runtimeExceptionPending} = globalThis.MoltWasmLoaderBridge;
 const deploymentManifest = globalThis.MoltWasmLoaderBridge.requireMoltDeploymentManifest({{DEPLOYMENT_MANIFEST}});
+const runtimeImportAbi = deploymentManifest.abi?.runtime_imports;
 class ProcExit { constructor(code) { this.code = code; } }
 
 const DEBUG_STDERR = {{DEBUG_STDERR}};
@@ -367,22 +366,22 @@ export default {
         const wasiImports = buildWasiShim(state, stdio);
 
         try {
-            requireAppExecutionAbi(linkedModule, executionAbi);
+            requireAppExecutionAbi(linkedModule, runtimeImportAbi);
             const instance = await WebAssembly.instantiate(
                 linkedModule, { env: hostEnv, wasi_snapshot_preview1: wasiImports }
             );
-            requireAttachedExecutionAbi(linkedModule, instance, executionAbi);
+            requireAttachedExecutionAbi(linkedModule, instance, runtimeImportAbi);
 
             // Bind memory/table from the instance exports so host imports can
             // use them (the WASM module owns memory in Molt builds).
             state.memory = instance.exports.memory || null;
             state.table = instance.exports.__indirect_function_table || null;
 
-            const lifetime = createRuntimeLifetime(instance, lifetimeExports, () => {
+            const lifetime = createRuntimeLifetime(instance, runtimeImportAbi.export_names, () => {
                 if (runtimeExceptionPending(instance)) {
                     throw new Error('MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception');
                 }
-            }, executionAbi);
+            }, runtimeImportAbi);
             const errors = [];
             let exitStatus = 0;
             try {
