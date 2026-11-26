@@ -21,7 +21,7 @@ import platform
 import pytest
 from tools.command_execution import CommandExecutor
 
-import molt.cli as cli
+from molt.cli import entrypoint
 from molt.cli import build_results, link_pipeline, native_link_command, native_link_plan
 from molt.cli import atomic_io
 from molt.cli import link_fingerprints
@@ -1071,7 +1071,7 @@ def test_cli_threads_bolt_intent_into_the_single_build_pipeline(
         ],
     )
 
-    assert cli.main() == 0
+    assert entrypoint.main() == 0
     [request] = received
     assert request.bolt is True
     assert request.bolt_training_cmd == "{binary} --train"

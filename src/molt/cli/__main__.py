@@ -13,13 +13,14 @@ if _UNSUPPORTED is not None:
 from typing import NoReturn  # noqa: E402
 
 from molt import compiler_process  # noqa: E402
-from molt.cli import main  # noqa: E402
 
 
 def run() -> NoReturn:
     """Run one command in a compiler process, then end that process."""
     compiler_process.configure()
     try:
+        from molt.cli.entrypoint import main
+
         code: object = main()
     except SystemExit as exc:
         code = exc.code

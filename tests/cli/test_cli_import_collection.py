@@ -64,7 +64,7 @@ import pytest
 
 from molt.backend_environment import CodegenSelection
 from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
-import molt.cli as cli
+from molt.cli import entrypoint
 from molt.backend_binary_identity import identify_backend_binary
 import molt.wasm_artifact as wasm_artifact
 from molt import c_api_symbols as cli_c_api_symbols
@@ -26106,7 +26106,7 @@ def test_browser_deploy_profile_enables_split_runtime_publication(
         ["molt", "build", "--target", "wasm", "--profile", "browser", str(entry)],
     )
 
-    assert cli.main() == 0
+    assert entrypoint.main() == 0
     assert seen == [True]
 
 
@@ -26152,7 +26152,7 @@ def test_wasm_optimizer_level_follows_build_intent_and_explicit_override(
     )
     for command in commands:
         monkeypatch.setattr(sys, "argv", command)
-        assert cli.main() == 0
+        assert entrypoint.main() == 0
 
     assert seen == [None, "Oz", "O3", "O4"]
 
@@ -26177,7 +26177,7 @@ def test_build_cli_defaults_to_auto_wasm_profile(
         ["molt", "build", "--target", "wasm", str(entry)],
     )
 
-    assert cli.main() == 0
+    assert entrypoint.main() == 0
     assert seen_profiles == ["auto"]
 
 
@@ -26197,7 +26197,7 @@ def test_build_cli_defaults_to_auto_stdlib_profile(
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     monkeypatch.setattr(sys, "argv", ["molt", "build", str(entry)])
 
-    assert cli.main() == 0
+    assert entrypoint.main() == 0
     # The CLI hands the unresolved "auto" intent to the build; the build
     # pipeline resolves it to a runtime tier from the import graph.
     assert seen_profiles == [cli_config_resolution.AUTO_STDLIB_PROFILE]
@@ -26224,7 +26224,7 @@ def test_build_cli_keeps_deploy_stdlib_profile_auto_intent(
             "argv",
             ["molt", "build", "--target", "wasm", "--profile", profile, str(entry)],
         )
-        assert cli.main() == 0
+        assert entrypoint.main() == 0
 
     assert seen_profiles == [
         cli_config_resolution.AUTO_STDLIB_PROFILE,

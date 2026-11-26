@@ -71,7 +71,7 @@ def test_cli_loads_only_the_phases_an_admitted_request_reaches(
             "-c",
             """import json
 import sys
-from molt.cli import main
+from molt.cli.entrypoint import main
 
 unloaded = json.loads(sys.argv.pop(1))
 try:
@@ -103,10 +103,7 @@ def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> Non
     assert not hasattr(cli, "_dispatch_entrypoint_command")
     assert not hasattr(cli, "_build_entrypoint_parser")
 
-    root_main_source = inspect.getsource(cli.main)
-    assert "ArgumentParser" not in root_main_source
-    assert "add_parser" not in root_main_source
-    assert "entrypoint.main()" in root_main_source
+    assert not hasattr(cli, "main")
 
     entrypoint_source = inspect.getsource(entrypoint)
     assert "ArgumentParser(" not in entrypoint_source
@@ -126,7 +123,7 @@ def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> Non
 
     root_module_source = inspect.getsource(cli)
     assert "def build(" not in root_module_source
-    assert "def main(" in root_module_source
+    assert "def main(" not in root_module_source
     assert "def build(" in inspect.getsource(build_command)
     assert "if args.command ==" not in root_module_source
     assert "ArgumentParser(" not in root_module_source

@@ -348,7 +348,7 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import molt.cli as cli
+    from molt.cli import entrypoint
 
     source = tmp_path / "unsupported_nonlocal.py"
     source.write_text("nonlocal value\n", encoding="utf-8")
@@ -366,7 +366,7 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
             "argv",
             ["molt", "build", str(source), "--target", target, "--json"],
         )
-        assert cli.main() == 2
+        assert entrypoint.main() == 2
         captured = capsys.readouterr()
         assert captured.err == ""
         payload = json.loads(captured.out)
