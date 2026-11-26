@@ -403,7 +403,13 @@ pub(super) fn conditionally_valid_regions(
                             return None;
                         }
                     }
-                    _ => return None,
+                    Terminator::CondBranch { .. }
+                    | Terminator::Branch { .. }
+                    | Terminator::Switch { .. }
+                    | Terminator::StateDispatch { .. }
+                    | Terminator::Return { .. }
+                    | Terminator::Unwind
+                    | Terminator::Unreachable => return None,
                 }
             }
             None
