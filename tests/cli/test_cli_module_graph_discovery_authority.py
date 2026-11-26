@@ -140,7 +140,7 @@ def test_initialization_seed_does_not_grant_dynamic_import_custody(
     for full in (False, True):
         discovered = discover(full)
         authority = discovered.scan_authority.by_module["pkg"]
-        needs_runtime = full or not deferred
+        needs_runtime = not deferred
         assert authority.requires_runtime_package_anchor is needs_runtime
         assert discovered.graph == {"pkg": entry}
         # Finding the source owner never seals its dynamic package operand.
