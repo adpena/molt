@@ -177,7 +177,9 @@ class _ProjectionReads:
         key = (
             path,
             None if args is None else tuple(id(arg) for arg in args),
-            tuple((name, id(arg)) for name, arg in sorted(kwargs.items())),
+            tuple((name, id(arg)) for name, arg in sorted(kwargs.items()))
+            if kwargs
+            else (),
         )
         self.reads.setdefault(key, (path, args, kwargs, result))
 
@@ -252,7 +254,7 @@ SCAN_PREMISE_READS: contextvars.ContextVar[ScanPremiseReads | None] = (
 class _TrackedPremiseRead:
     """A premise-dependent analysis object whose every read is logged."""
 
-    __slots__ = ("_log", "_reads", "_path", "_target")
+    __slots__ = ("_log", "_reads", "_path", "_target", "__dict__")
 
     def __init__(
         self,
@@ -269,25 +271,31 @@ class _TrackedPremiseRead:
     def __getattr__(self, name: str) -> object:
         value = getattr(self._target, name)
         path = (*self._path, name)
+        log, reads = self._log, self._reads
         if isinstance(value, (PythonBindingFacts, ModuleImportFlow)):
-            return _TrackedPremiseRead(self._log, self._reads, path, value)
-        if not callable(value) or isinstance(value, type):
-            self._reads.record(path, None, {}, value)
-            return value
+            member = _TrackedPremiseRead(log, reads, path, value)
+        elif not callable(value) or isinstance(value, type):
+            reads.record(path, None, {}, value)
+            member = value
+        else:
 
-        def call(*args: object, **kwargs: object) -> object:
-            try:
-                result = value(*args, **kwargs)
-            except BaseException:
-                self._log.usable = False
-                raise
-            self._reads.record(path, args, kwargs, result)
-            if isinstance(result, (PythonBindingFacts, ModuleImportFlow)):
-                # Reads of a returned analysis object have no replay path.
-                self._log.usable = False
-            return result
+            def call(*args: object, **kwargs: object) -> object:
+                try:
+                    result = value(*args, **kwargs)
+                except BaseException:
+                    log.usable = False
+                    raise
+                reads.record(path, args, kwargs, result)
+                if isinstance(result, (PythonBindingFacts, ModuleImportFlow)):
+                    # Reads of a returned analysis object have no replay path.
+                    log.usable = False
+                return result
 
-        return call
+            member = call
+        # The tracked publication is immutable. Bind each accessor once for
+        # this scan, while still tracking every distinct method invocation.
+        self.__dict__[name] = member
+        return member
 
 
 def _premise_analysis[T: _ProjectionRoot](

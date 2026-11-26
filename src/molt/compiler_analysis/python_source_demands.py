@@ -174,6 +174,13 @@ class SourceCacheItem:
     wildcard: bool = False
 
 
+def _import_cache_items(keys: tuple[str, ...] | None) -> tuple[SourceCacheItem, ...]:
+    if keys is None:
+        return (SourceCacheItem(None),)
+    # A nonliteral key may name any one of these entries.
+    return tuple(SourceCacheItem(key) for key in keys) + (SourceCacheItem(None, True),)
+
+
 # Each operation is a distinct graph key even when it consumes the same
 # source value. Tuple field equality would merge call, await and delegation.
 @dataclass(frozen=True, slots=True)
@@ -384,7 +391,9 @@ class PythonSourceDemands:
         self.bases: dict[SourceValue, frozenset[PythonSourceKey]] = {}
         self.attributes: dict[SourceValue, dict[str, frozenset[PythonSourceKey]]] = {}
         self.import_bindings: dict[SourceValue, _SourceImportBinding] = {}
-        self.value_jobs: set[SourceValue] = set()
+        # Pending values carry whether their candidate transfer must run.
+        # Demand-only work can activate the current candidates directly.
+        self.value_jobs: dict[SourceValue, bool] = {}
         # Body scans by class representative, and every argument tuple that
         # activated each body, so a changed parameter fact re-maps them.
         self.body_jobs: dict[SourceValue, set[tuple[str, ...]]] = {}
@@ -394,10 +403,13 @@ class PythonSourceDemands:
         self.queue: deque[SourceValue] = deque()
         self.exports: dict[str, SourceAllExports] = {}
 
-    def queue_value(self, value: SourceValue) -> None:
-        if value not in self.value_jobs:
-            self.value_jobs.add(value)
+    def queue_value(self, value: SourceValue, *, refresh: bool = True) -> None:
+        pending = self.value_jobs.get(value)
+        if pending is None:
             self.queue.append(value)
+            self.value_jobs[value] = refresh
+        elif refresh and not pending:
+            self.value_jobs[value] = True
 
     def demand(
         self,
@@ -415,7 +427,12 @@ class PythonSourceDemands:
         if incidence not in phases:
             phases.add(incidence)
             self.pending_phases.setdefault(value, set()).add(incidence)
-            self.queue_value(value)
+            # Method and store demands also determine receiver binding
+            # and escape in the attribute transfer.
+            needs_candidates = (
+                phase in {"method", "mutate"} or value not in self.value_candidates
+            )
+            self.queue_value(value, refresh=needs_candidates)
 
     def watch(self, origin: SourceValue, user: SourceValue) -> set[SourceCandidate]:
         self.value_users.setdefault(origin, set()).add(user)
@@ -452,9 +469,14 @@ class PythonSourceDemands:
         self, item: SourceCacheItem, values: set[tuple[SourceValue, bool]]
     ) -> None:
         known = self.cache_origins.setdefault(item, set())
-        if values - known:
-            known.update(values)
-            self.queue_value(("", item))
+        additions = values - known
+        if additions:
+            known.update(additions)
+            value = ("", item)
+            # Publication alone does not read a cache entry. The first
+            # demand or dependent initializes the entry from all its origins.
+            if value in self.value_candidates or value in self.value_phases:
+                self.queue_value(value)
 
     def accept(self, module_name: str, scan: _ImportScanRequests) -> None:
         self.modules.add(module_name)
@@ -688,6 +710,10 @@ class PythonSourceDemands:
             items.append(SourceCacheItem(None))
             for item in items:
                 self.hold_cache_origins(item, values)
+            # Removing or replacing a literal key can retire values from
+            # that entry and computed-key stores. The aggregate is needed
+            # only for an operation whose key is unknown or removes all keys.
+            for item in _import_cache_items(keys):
                 self.demand(("", item), "release", consumer=module_name)
         for (
             source,
@@ -1990,7 +2016,10 @@ class PythonSourceDemands:
         )
 
     def process_value(self, value: SourceValue) -> None:
-        self.value_jobs.discard(value)
+        refresh = self.value_jobs.pop(value)
+        if not refresh:
+            self._activate_pending(value, self.value_candidates[value], ())
+            return
         module_name, source = value
         if module_name not in self.modules and not isinstance(source, SourceCacheItem):
             self.pending_modules.setdefault(module_name, set()).add(value)
@@ -2009,14 +2038,7 @@ class PythonSourceDemands:
                 )
         elif value in self.cache_reads:
             for keys, defaults, default_contents, contained in self.cache_reads[value]:
-                items = (
-                    [SourceCacheItem(key) for key in keys]
-                    if keys is not None
-                    else [SourceCacheItem(None)]
-                )
-                if keys is not None:
-                    items.append(SourceCacheItem(None, True))
-                for item in items:
+                for item in _import_cache_items(keys):
                     candidates.update(
                         item._replace(contained=contained or item.contained)
                         for item in self.watch(("", item), value)
@@ -2388,13 +2410,22 @@ class PythonSourceDemands:
             for users in (self.value_users, self.candidate_users):
                 for user in users.get(value, ()):
                     self.queue_value(user)
-        # Incremental join: each candidate/demand incidence is emitted once.
-        # A namespace dependency wake with neither delta performs no old product.
-        new_phases = self.pending_phases.pop(value, set())
-        old_phases = (self.value_phases.get(value, set()) - new_phases) if added else ()
-        for candidate in added:
-            for incidence in old_phases:
-                self._activate_demand(value, candidate, incidence)
+        self._activate_pending(value, known, added)
+
+    def _activate_pending(
+        self,
+        value: SourceValue,
+        known: set[SourceCandidate],
+        added: Collection[SourceCandidate],
+    ) -> None:
+        # A demand-only wake joins existing candidates without evaluating their
+        # producer. A changed publication visits only its new incidences.
+        new_phases = self.pending_phases.pop(value, None)
+        if added and (phases := self.value_phases.get(value)):
+            old_phases = phases.difference(new_phases or ())
+            for candidate in added:
+                for incidence in old_phases:
+                    self._activate_demand(value, candidate, incidence)
         if new_phases:
             for candidate in tuple(known):
                 for incidence in new_phases:
