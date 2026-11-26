@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections.abc import Iterable
 from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
 from molt import compiled_symbols
 
@@ -7,6 +8,7 @@ from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.cli.build_output_layout import _runtime_facts_target
 from molt.compilation_target import TargetKind
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 from tests.artifact_targets import artifact_target as _target
 from tests.class_model_support import class_model
 
@@ -114,6 +116,7 @@ from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.models import (
     _ModuleGraphScanAuthority,
+    _RuntimeImportSupportPolicy,
     _ModuleSourceScanAuthority,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalNativeCallableExport,
@@ -3374,9 +3377,12 @@ def test_builtins_mapping_write_controls_runtime_import_support(
     ("payload", "key", "needs_finder"),
     [
         ("next(alias((fn,), 1))", "__import__", True),
+        ("alias((fn,), 1).__next__()", "__import__", True),
+        ("next(alias((fn,), 1).__iter__())", "__import__", True),
         ("next(pairwise((fn, fn)))[0]", "__import__", True),
         ("next(batched(iterable=(fn,), n=1))[0]", "__import__", True),
         ("next(chain((), alias(repeat(fn, 1), 1)))", "__import__", True),
+        ("next(chain.from_iterable(((fn,),)))", "__import__", True),
         ("next(batched(iterable=(fn,), n=1))[0]", "len", False),
     ],
 )
@@ -3395,8 +3401,77 @@ def test_native_iterator_payload_reaches_namespace_writer(
     _assert_graph_import_finder(tmp_path, source, needs_finder)
 
 
+@pytest.mark.usefixtures("isolated_frontend_state")
+@pytest.mark.parametrize(
+    ("payload", "key", "needs_finder"),
+    [
+        ("select(0)((Row.__init__,))", "__import__", True),
+        ("choose().__call__((Row.__init__,))", "__import__", True),
+        ("select(1, 0)((None, Row.__init__))[0]", "__import__", True),
+        ("next(map(choose(), ((Row.__init__,),)))", "__import__", True),
+        ("select(Row.__init__)(Reflector())", "__import__", True),
+        ("attrgetter('__init__')(Row)", "__import__", True),
+        ("next(map(attrgetter('__class__.__init__'), (Row(1),)))", "__import__", True),
+        ("attrgetter('__init__')(Row)", "len", False),
+        ("choose()((Row.__init__,))", "len", False),
+    ],
+)
+def test_native_selection_reaches_namespace_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: str,
+    key: str,
+    needs_finder: bool,
+) -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "from operator import itemgetter as select, attrgetter\n"
+        "@dataclass\n"
+        "class Row:\n"
+        "    x: int\n"
+        "class Reflector:\n"
+        "    def __getitem__(self, key): return key\n"
+        "def choose():\n"
+        "    return select(0)\n"
+        "def modify(name):\n"
+        f"    ns = getattr({payload}, name)\n"
+        f"    ns[{key!r}] = lambda *args: None\n"
+        "modify(input())\n"
+        "import math\n"
+    )
+    reached: list[PythonNamespaceWrite] = []
+    original = cli_module_import_scanner._module_graph_needs_runtime_import_support
+
+    def observe(
+        *,
+        module_graph: Mapping[str, Path],
+        scan_authority: _ModuleGraphScanAuthority,
+        reached_writes: Iterable[tuple[str, PythonNamespaceWrite]],
+    ) -> _RuntimeImportSupportPolicy:
+        writes = tuple(reached_writes)
+        reached.extend(row for writer, row in writes if writer == "demo")
+        return original(
+            module_graph=module_graph,
+            scan_authority=scan_authority,
+            reached_writes=writes,
+        )
+
+    monkeypatch.setattr(
+        cli_module_import_scanner, "_module_graph_needs_runtime_import_support", observe
+    )
+    _assert_graph_import_finder(tmp_path, source, None)
+    assert any(
+        row.construct == "namespace" and row.module == "builtins" and row.name == key
+        for row in reached
+    )
+    assert (
+        any(cli_module_import_scanner._writes_import_state(row) for row in reached)
+        is needs_finder
+    )
+
+
 def _assert_graph_import_finder(
-    tmp_path: Path, source: str, needs_finder: bool
+    tmp_path: Path, source: str, needs_finder: bool | None
 ) -> None:
     entry_path = tmp_path / "demo.py"
     entry_path.write_text(source, encoding="utf-8")
@@ -3415,11 +3490,12 @@ def _assert_graph_import_finder(
     )
     assert error is None
     assert prepared is not None
-    assert (
-        prepared.runtime_import_support_policy.needs_runtime_import_support
-        is needs_finder
-    )
-    assert ("importlib.machinery" in prepared.module_graph) is needs_finder
+    if needs_finder is not None:
+        assert (
+            prepared.runtime_import_support_policy.needs_runtime_import_support
+            is needs_finder
+        )
+        assert ("importlib.machinery" in prepared.module_graph) is needs_finder
 
 
 def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_lazy(

@@ -207,6 +207,11 @@ INTRINSIC_ITERTOOLS_CHAIN_TYPE = 201
 ITERTOOLS_CHAIN = 202
 INTRINSIC_ITERTOOLS_REPEAT_TYPE = 203
 ITERTOOLS_REPEAT = 204
+ITERTOOLS_CHAIN_FROM_ITERABLE = 205
+INTRINSIC_OPERATOR_ITEMGETTER_TYPE = 206
+OPERATOR_ITEMGETTER = 207
+INTRINSIC_OPERATOR_ATTRGETTER_TYPE = 208
+OPERATOR_ATTRGETTER = 209
 
 [native_initializer]
 DATACLASS = ["PARAMETERS", "POSITIONAL", "DEFAULTS", "KWDEFAULTS", "CAPTURE_NAMES", "CAPTURES", "STORES", "POST_INIT_INPUTS", "FACTORY_MARKER", "FROZEN_OBJECT", "ANNOTATIONS", "GLOBALS", "MODULE", "BUILTINS"]
@@ -383,6 +388,23 @@ name = "molt_itertools_repeat_type"
 identity = "INTRINSIC_ITERTOOLS_REPEAT_TYPE"
 result_identity = "ITERTOOLS_REPEAT"
 iterator_payload = { parameter = "object", shape = "value" }
+
+[[intrinsic_callable]]
+name = "molt_operator_itemgetter_type"
+identity = "INTRINSIC_OPERATOR_ITEMGETTER_TYPE"
+result_identity = "OPERATOR_ITEMGETTER"
+
+[[intrinsic_callable]]
+name = "molt_operator_attrgetter_type"
+identity = "INTRINSIC_OPERATOR_ATTRGETTER_TYPE"
+result_identity = "OPERATOR_ATTRGETTER"
+
+[[iterator_member]]
+owner = "ITERTOOLS_CHAIN"
+member = "from_iterable"
+identity = "ITERTOOLS_CHAIN_FROM_ITERABLE"
+producer = "molt_itertools_chain_from_iterable"
+shape = "flatten"
 
 [member_bits]
 IMPORTLIB_IMPORT_MODULE = 0

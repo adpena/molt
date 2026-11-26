@@ -64,6 +64,7 @@ class IteratorPayloadShape(StrEnum):
     ITEM = "item"
     TUPLE = "tuple"
     VALUE = "value"
+    FLATTEN = "flatten"
 
 
 class IteratorPayload(NamedTuple):
@@ -136,6 +137,7 @@ class Schema:
     import_callables: tuple[ImportCallable, ...]
     builtin_return_captures: tuple[tuple[str, str, str, str], ...]
     native_initializers: tuple[tuple[str, tuple[str, ...]], ...]
+    iterator_members: tuple[tuple[str, str, str, IteratorPayload], ...]
 
 
 def _bits(raw: object, label: str) -> tuple[tuple[str, int], ...]:
@@ -241,6 +243,7 @@ def load_schema(
         "import_argument_role",
         "import_callable",
         "native_initializer",
+        "iterator_member",
     }:
         raise SchemaError("unknown or missing identity-catalog top-level keys")
     if type(data["schema_version"]) is not int or data["schema_version"] != 3:
@@ -709,6 +712,36 @@ def load_schema(
                 iterator_payload,
             )
         )
+    iterator_members = []
+    iterator_member_keys: set[tuple[str, str]] = set()
+    for row in _rows(
+        data["iterator_member"],
+        "iterator member",
+        {"owner", "member", "identity", "producer", "shape"},
+    ):
+        owner = _reference(row["owner"], iterator_classes, "iterator owner")
+        member = _name(row["member"], "iterator member name")
+        identity = _reference(
+            row["identity"], identity_names, "iterator member identity"
+        )
+        producer_name = _name(row["producer"], "iterator member producer")
+        entry = producers.get(producer_name)
+        if entry is None or entry.arity != 2:
+            raise SchemaError("iterator class method requires a class and one iterable")
+        if identity in intrinsic_identities or identity in other_callable_identities:
+            raise SchemaError(f"ambiguous iterator member identity {identity!r}")
+        try:
+            shape = IteratorPayloadShape(row["shape"])
+        except (TypeError, ValueError) as error:
+            raise SchemaError("unknown iterator member payload shape") from error
+        key = (owner, member)
+        if key in iterator_member_keys:
+            raise SchemaError(f"duplicate iterator member {owner}.{member}")
+        iterator_member_keys.add(key)
+        intrinsic_identities.add(identity)
+        iterator_members.append(
+            (owner, member, identity, IteratorPayload(0, None, shape))
+        )
     if used_properties != set(properties):
         raise SchemaError(
             f"orphan target properties: {sorted(set(properties) - used_properties)}"
@@ -737,6 +770,7 @@ def load_schema(
         tuple(import_callables),
         tuple(builtin_return_captures),
         tuple(native_initializers),
+        tuple(iterator_members),
     )
 
 
@@ -903,18 +937,34 @@ def render_python(schema: Schema) -> str:
             "    kind: PythonIteratorPayloadKind\n\n\n",
         )
     )
+    iterator_payloads = [
+        (row.result_identity, payload)
+        for row in schema.intrinsic_callables
+        if (payload := row.iterator_payload) is not None
+    ]
+    iterator_payloads.extend(
+        (identity, payload) for _, _, identity, payload in schema.iterator_members
+    )
     mapping(
         "NATIVE_ITERATOR_PAYLOADS",
         "PythonIdentity",
         "PythonIteratorPayload",
         [
             (
-                f"PythonIdentity.{row.result_identity}",
+                f"PythonIdentity.{identity}",
                 f"PythonIteratorPayload({payload.position!r}, {payload.keyword!r}, "
                 f"PythonIteratorPayloadKind.{payload.shape.name})",
             )
-            for row in schema.intrinsic_callables
-            if (payload := row.iterator_payload) is not None
+            for identity, payload in iterator_payloads
+        ],
+    )
+    mapping(
+        "NATIVE_ITERATOR_MEMBERS",
+        "tuple[PythonIdentity, str]",
+        "PythonIdentity",
+        [
+            (f"(PythonIdentity.{owner}, {member!r})", f"PythonIdentity.{identity}")
+            for owner, member, identity, _ in schema.iterator_members
         ],
     )
     mapping(

@@ -18,7 +18,7 @@ from molt.compiler_analysis.python_binding_facts import (
 from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from typing import Literal, NamedTuple, assert_never, cast
 
 from molt.compiler_analysis.python_builtin_shapes import (
@@ -36,13 +36,17 @@ from molt.compiler_analysis.python_imports import (
     normalize_stdlib_module_name,
 )
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
-from molt.compiler_analysis.python_source_keys import PythonSourceKey
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    PythonSourceProjection,
+)
 from molt.compiler_analysis.python_parameter_classes import representative_arguments
 from molt.compiler_analysis.python_identity_catalog_generated import (
     PythonIdentity,
     INTRINSIC_ACQUISITION_IDENTITIES,
     INTRINSIC_RESULT_IDENTITIES,
     NATIVE_ITERATOR_PAYLOADS,
+    NATIVE_ITERATOR_MEMBERS,
     PythonIteratorPayloadKind,
 )
 from molt.compiler_analysis.python_value_identity import (
@@ -83,6 +87,9 @@ class SourceCandidate(NamedTuple):
         "instance",
         "resumable",
         "iterator",
+        "iterator_next",
+        "iterator_self",
+        "native_selector",
         "class_descriptor",
         "static_descriptor",
         "property_descriptor",
@@ -1084,6 +1091,10 @@ class PythonSourceDemands:
         binding_owner=None,
     ):
         if owner.identity is not None:
+            if owner.kind == "native_selector" and name == "__call__":
+                return {owner}
+            if member := NATIVE_ITERATOR_MEMBERS.get((owner.identity, name)):
+                return {owner._replace(identity=member)}
             if (
                 owner.identity is PythonIdentity.BUILTIN_DICT
                 and (mutation := builtin_mapping_write_scope(name)) is not None
@@ -1095,6 +1106,12 @@ class PythonSourceDemands:
                         namespace_mutation=mutation,
                     )
                 }
+            return set()
+        if owner.kind == "iterator":
+            if name == "__next__":
+                return {owner._replace(kind="iterator_next")}
+            if name == "__iter__":
+                return {owner._replace(kind="iterator_self")}
             return set()
         owner_module, owner_source = owner.value
         result = set()
@@ -1558,12 +1575,18 @@ class PythonSourceDemands:
                     "iterate",
                 )
             return
-        if origin.kind == "iterator":
+        if origin.kind in {"iterator", "iterator_next", "iterator_self"}:
             assert owner is not None
-            if phase in {"escape", "expose", "iterate", "next"}:
+            escapes = phase in {"escape", "expose"}
+            advances = (
+                origin.kind == "iterator"
+                and phase in {"iterate", "next"}
+                or origin.kind == "iterator_next"
+                and phase == "call"
+            )
+            if escapes or advances:
                 self.demand(
-                    self._iterator_contents(origin),
-                    "escape" if phase in {"escape", "expose"} else "read",
+                    self._iterator_contents(origin), "escape" if escapes else "read"
                 )
             return
         if phase in {"iterate", "async_iterate", "get_iter", "get_async_iter"}:
@@ -1947,6 +1970,8 @@ class PythonSourceDemands:
             candidates.update(self.arguments.get(value, ()))
         elif source is None or source[-1] == "Module":
             candidates.add(SourceCandidate(module_name, None))
+        elif source[-1] == PythonSourceProjection.CALL_NATIVE_BUILTINS:
+            candidates.add(_INTERPRETER_BUILTINS)
         elif value in self.native_initializers:
             candidates.add(SourceCandidate(module_name, source, "native_initializer"))
             plan = self.native_initializers[value]
@@ -2045,6 +2070,10 @@ class PythonSourceDemands:
                             candidates.update(
                                 self.select_member(candidate, "__builtins__", value)
                             )
+                    elif element.protocol is PythonElementProtocol.SUBSCRIPT:
+                        candidates.update(
+                            self._subscript_values(candidate, value, element.key)
+                        )
                     elif candidate.contained:
                         # Exposed provenance is transitive may-containment, not
                         # an exact container depth. A selector can yield the
@@ -2053,24 +2082,6 @@ class PythonSourceDemands:
                         candidates.add(candidate._replace(contained=False))
                     else:
                         match element.protocol:
-                            case PythonElementProtocol.SUBSCRIPT:
-                                if candidate.kind == "namespace":
-                                    candidates.update(
-                                        self._namespace_values(
-                                            candidate, value, element.key
-                                        )
-                                    )
-                                elif candidate.kind == "instance":
-                                    member = (
-                                        candidate.module,
-                                        SourceMember(candidate, "__getitem__"),
-                                    )
-                                    candidates.update(
-                                        self.watch(
-                                            (candidate.module, SourceReturn(member)),
-                                            value,
-                                        )
-                                    )
                             case (
                                 PythonElementProtocol.ITERATE
                                 | PythonElementProtocol.ASYNC_ITERATE
@@ -2088,6 +2099,7 @@ class PythonSourceDemands:
                                 | PythonElementProtocol.STATIC_METHOD
                                 | PythonElementProtocol.PROPERTY
                                 | PythonElementProtocol.SUPER
+                                | PythonElementProtocol.SUBSCRIPT
                                 | PythonElementProtocol.REFLECTED_BUILTINS
                                 | PythonElementProtocol.REFLECTED_GLOBALS
                                 | PythonElementProtocol.MAPPING_WRITE
@@ -2118,6 +2130,33 @@ class PythonSourceDemands:
                         candidates.update(self._returned_values(candidate, value))
                         continue
                     if candidate.identity is not None:
+                        if candidate.kind == "native_selector":
+                            if self._positional_arities(call)[0]:
+                                candidates.update(
+                                    self._native_selector_values(
+                                        candidate,
+                                        self._positional_candidates(
+                                            call, value, 0, include_contents=True
+                                        ),
+                                        value,
+                                    )
+                                )
+                        elif candidate.identity in {
+                            PythonIdentity.OPERATOR_ITEMGETTER,
+                            PythonIdentity.OPERATOR_ATTRGETTER,
+                        }:
+                            if call.arguments and all(
+                                not isinstance(name, str)
+                                for name, _, _ in call.arguments
+                            ):
+                                candidates.add(
+                                    SourceCandidate(
+                                        module_name,
+                                        call.owner,
+                                        "native_selector",
+                                        identity=candidate.identity,
+                                    )
+                                )
                         if candidate.identity in SOURCE_ITERATION_CALLABLES:
                             candidates.update(
                                 self._iteration_call(candidate.identity, call, value)
@@ -2586,9 +2625,99 @@ class PythonSourceDemands:
         declaration = self.declarations.get(callee.value)
         return FunctionKind.SYNC if declaration is None else declaration.kind
 
+    def _subscript_values(
+        self,
+        owner: SourceCandidate,
+        user: SourceValue,
+        key: str | None,
+        *,
+        key_values: Collection[SourceCandidate] = (),
+    ) -> set[SourceCandidate]:
+        if owner.contained:
+            # Exposure is transitive, so one selection can still leave a container.
+            return {owner, owner._replace(contained=False)}
+        if owner.kind == "namespace":
+            return self._namespace_values(owner, user, key)
+        if owner.kind == "instance":
+            member = (owner.module, SourceMember(owner, "__getitem__"))
+            self.demand(member, "call", argument_count=1, consumer=user[0])
+            if key_values:
+                for getter in self.watch(member, user):
+                    self._bind_actuals(
+                        (0,),
+                        lambda _, packed: {
+                            value._replace(contained=packed or value.contained)
+                            for value in key_values
+                        },
+                        getter.value,
+                        user,
+                        getter.kind != "bound_static_method",
+                    )
+            return set(self.watch((owner.module, SourceReturn(member)), user))
+        return set()
+
+    def _attribute_path_values(
+        self, owner: SourceCandidate, path: str, user: SourceValue
+    ) -> set[SourceCandidate]:
+        selected = {owner}
+        for name in path.split("."):
+            selected = {
+                member
+                for candidate in selected
+                for member in self.watch(
+                    (candidate.module, SourceMember(candidate, name)), user
+                )
+            }
+        return selected
+
+    def _native_selector_values(
+        self,
+        selector: SourceCandidate,
+        owners: Iterable[SourceCandidate],
+        user: SourceValue,
+    ) -> set[SourceCandidate]:
+        self.watch(selector.value, user)
+        constructor = self.calls[selector.value]
+        expanded = any(name is None for name, _, _ in constructor.arguments)
+        keys: dict[str | None, set[SourceCandidate]] = {}
+        for index, (name, origins, exposed) in enumerate(constructor.arguments):
+            key = (
+                constructor.argument_strings[index]
+                if name is not None and index < len(constructor.argument_strings)
+                else None
+            )
+            values = keys.setdefault(key, set())
+            for source in exposed:
+                for value in self.watch((selector.module, source), user):
+                    values.add(
+                        value._replace(
+                            contained=(value.contained or source not in origins)
+                        )
+                    )
+                    if name is None:
+                        # Expansion may supply the inner value as a key itself.
+                        values.add(value._replace(contained=False))
+        result: set[SourceCandidate] = set()
+        for owner in owners:
+            for key, values in keys.items():
+                if selector.identity is PythonIdentity.OPERATOR_ITEMGETTER:
+                    result.update(
+                        self._subscript_values(owner, user, key, key_values=values)
+                    )
+                elif key is not None:
+                    result.update(self._attribute_path_values(owner, key, user))
+        if not expanded and len(constructor.arguments) == 1:
+            return result
+        contents = {item._replace(contained=True) for item in result}
+        return result | contents if expanded else contents
+
     def _returned_values(
         self, callee: SourceCandidate, user: SourceValue
     ) -> set[SourceCandidate]:
+        if callee.kind == "iterator_next":
+            return set(self.watch(self._iterator_contents(callee), user))
+        if callee.kind == "iterator_self":
+            return {callee._replace(kind="iterator")}
         if callee.kind == "namespace_popitem":
             # Removal returns (key, value), not the value returned by pop().
             return {
@@ -2690,7 +2819,7 @@ class PythonSourceDemands:
         return set()
 
     @staticmethod
-    def _iteration_arities(call: PythonSourceCall) -> tuple[bool, bool]:
+    def _positional_arities(call: PythonSourceCall) -> tuple[bool, bool]:
         names = tuple(name for name, _, _ in call.arguments)
         if any(isinstance(name, str) for name in names):
             return False, False
@@ -2746,7 +2875,7 @@ class PythonSourceDemands:
     def _iteration_call(
         self, identity: PythonIdentity, call: PythonSourceCall, user: SourceValue
     ) -> set[SourceCandidate]:
-        unary, binary = self._iteration_arities(call)
+        unary, binary = self._positional_arities(call)
         module = user[0]
         if identity is not PythonIdentity.BUILTIN_NEXT:
             native_payload = NATIVE_ITERATOR_PAYLOADS.get(identity)
@@ -2844,7 +2973,7 @@ class PythonSourceDemands:
         # Revisit a consumed iterator if its constructor learns new arguments.
         self.watch(origin, user)
         call = self.calls[origin]
-        unary, binary = self._iteration_arities(call)
+        unary, binary = self._positional_arities(call)
         inputs = self._iteration_operands(
             items.producer, call, user, unary, include_contents=True
         )
@@ -2892,11 +3021,25 @@ class PythonSourceDemands:
                         self._record_namespace_write(module, items.site, callback, None)
                 self.activate(callback, "call", argument_count=count, consumer=module)
                 if items.producer is PythonIdentity.BUILTIN_MAP:
-                    result.update(self._returned_values(callback, user))
+                    if callback.kind == "native_selector" and (
+                        count is None or count == 1
+                    ):
+                        result.update(
+                            self._native_selector_values(
+                                callback, set().union(*operands), user
+                            )
+                        )
+                    else:
+                        result.update(self._returned_values(callback, user))
             if items.producer is PythonIdentity.BUILTIN_MAP:
                 return result
             # Filter only returns elements from the original iterable.
         result = set().union(*operands)
+        if (
+            native_payload is not None
+            and native_payload.kind is PythonIteratorPayloadKind.FLATTEN
+        ):
+            return self._iterator_operand_values(items.producer, result, user)
         if (
             native_payload is not None
             and native_payload.kind is PythonIteratorPayloadKind.TUPLE

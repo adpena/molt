@@ -216,6 +216,11 @@ class PythonIdentity(IntFlag):
     ITERTOOLS_CHAIN = 1 << 202
     INTRINSIC_ITERTOOLS_REPEAT_TYPE = 1 << 203
     ITERTOOLS_REPEAT = 1 << 204
+    ITERTOOLS_CHAIN_FROM_ITERABLE = 1 << 205
+    INTRINSIC_OPERATOR_ITEMGETTER_TYPE = 1 << 206
+    OPERATOR_ITEMGETTER = 1 << 207
+    INTRINSIC_OPERATOR_ATTRGETTER_TYPE = 1 << 208
+    OPERATOR_ATTRGETTER = 1 << 209
 
 
 class PythonMember(IntFlag):
@@ -497,6 +502,8 @@ INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProx
         'molt_itertools_pairwise_type': PythonIdentity.INTRINSIC_ITERTOOLS_PAIRWISE_TYPE,
         'molt_itertools_chain_type': PythonIdentity.INTRINSIC_ITERTOOLS_CHAIN_TYPE,
         'molt_itertools_repeat_type': PythonIdentity.INTRINSIC_ITERTOOLS_REPEAT_TYPE,
+        'molt_operator_itemgetter_type': PythonIdentity.INTRINSIC_OPERATOR_ITEMGETTER_TYPE,
+        'molt_operator_attrgetter_type': PythonIdentity.INTRINSIC_OPERATOR_ATTRGETTER_TYPE,
         'molt_sys_version_info': PythonIdentity.INTRINSIC_SYS_VERSION_INFO,
         'molt_runtime_active_runtime': PythonIdentity.INTRINSICS_RUNTIME_ACTIVE,
     }
@@ -528,6 +535,8 @@ INTRINSIC_RESULT_IDENTITIES: Final[Mapping[PythonIdentity, PythonIdentity]] = Ma
         PythonIdentity.INTRINSIC_ITERTOOLS_PAIRWISE_TYPE: PythonIdentity.ITERTOOLS_PAIRWISE,
         PythonIdentity.INTRINSIC_ITERTOOLS_CHAIN_TYPE: PythonIdentity.ITERTOOLS_CHAIN,
         PythonIdentity.INTRINSIC_ITERTOOLS_REPEAT_TYPE: PythonIdentity.ITERTOOLS_REPEAT,
+        PythonIdentity.INTRINSIC_OPERATOR_ITEMGETTER_TYPE: PythonIdentity.OPERATOR_ITEMGETTER,
+        PythonIdentity.INTRINSIC_OPERATOR_ATTRGETTER_TYPE: PythonIdentity.OPERATOR_ATTRGETTER,
     }
 )
 
@@ -535,6 +544,7 @@ class PythonIteratorPayloadKind(Enum):
     ITEM = 'item'
     TUPLE = 'tuple'
     VALUE = 'value'
+    FLATTEN = 'flatten'
 
 
 class PythonIteratorPayload(NamedTuple):
@@ -551,6 +561,13 @@ NATIVE_ITERATOR_PAYLOADS: Final[Mapping[PythonIdentity, PythonIteratorPayload]] 
         PythonIdentity.ITERTOOLS_PAIRWISE: PythonIteratorPayload(0, None, PythonIteratorPayloadKind.TUPLE),
         PythonIdentity.ITERTOOLS_CHAIN: PythonIteratorPayload(None, None, PythonIteratorPayloadKind.ITEM),
         PythonIdentity.ITERTOOLS_REPEAT: PythonIteratorPayload(0, 'object', PythonIteratorPayloadKind.VALUE),
+        PythonIdentity.ITERTOOLS_CHAIN_FROM_ITERABLE: PythonIteratorPayload(0, None, PythonIteratorPayloadKind.FLATTEN),
+    }
+)
+
+NATIVE_ITERATOR_MEMBERS: Final[Mapping[tuple[PythonIdentity, str], PythonIdentity]] = MappingProxyType(
+    {
+        (PythonIdentity.ITERTOOLS_CHAIN, 'from_iterable'): PythonIdentity.ITERTOOLS_CHAIN_FROM_ITERABLE,
     }
 )
 
@@ -666,6 +683,8 @@ ALL_INTRINSIC_CALLABLE_IDENTITIES: Final[IdentityMask] = (
     int(PythonIdentity.INTRINSIC_ITERTOOLS_PAIRWISE_TYPE) |
     int(PythonIdentity.INTRINSIC_ITERTOOLS_CHAIN_TYPE) |
     int(PythonIdentity.INTRINSIC_ITERTOOLS_REPEAT_TYPE) |
+    int(PythonIdentity.INTRINSIC_OPERATOR_ITEMGETTER_TYPE) |
+    int(PythonIdentity.INTRINSIC_OPERATOR_ATTRGETTER_TYPE) |
     int(PythonIdentity.INTRINSIC_SYS_VERSION_INFO) |
     int(PythonIdentity.INTRINSICS_RUNTIME_ACTIVE) |
     0
