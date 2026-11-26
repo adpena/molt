@@ -303,14 +303,19 @@ impl SimpleBackend {
         // optimized and emitted as a native object file.
         #[cfg(feature = "llvm")]
         if backend.uses_llvm() {
-            use crate::llvm_backend::{LlvmBackend, MoltOptLevel};
+            use crate::llvm_backend::LlvmBackend;
 
             let emit_resolver_here = program.emit_resolver_here;
             let app_callable_manifest = &program.app_callable_manifest;
 
             let llvm_target = self.llvm_target;
             let context = inkwell::context::Context::create();
-            let mut llvm = LlvmBackend::new_for_target(&context, "molt_module", llvm_target);
+            let mut llvm = LlvmBackend::new_for_target(
+                &context,
+                "molt_module",
+                llvm_target,
+                self.llvm_optimization,
+            );
 
             // Runtime functions are declared on first use by typed identity.
 
@@ -419,8 +424,7 @@ impl SimpleBackend {
                 )
             });
 
-            llvm.optimize(MoltOptLevel::Aggressive)
-                .unwrap_or_else(|err| panic!("{err}"));
+            llvm.optimize().unwrap_or_else(|err| panic!("{err}"));
             llvm.module.verify().unwrap_or_else(|msg| {
                 panic!(
                     "LLVM module verification failed after optimization:\n{}",
@@ -443,7 +447,7 @@ impl SimpleBackend {
                 "llvm/molt_llvm_output.o",
             )
             .expect("failed to prepare LLVM object path");
-            llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
+            llvm.emit_object(&tmp_obj)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).unwrap_or_else(|err| {
                 panic!(

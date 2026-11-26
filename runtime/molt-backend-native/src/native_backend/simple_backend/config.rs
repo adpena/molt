@@ -254,6 +254,8 @@ impl SimpleBackend {
             deferred_defines: Vec::new(),
             #[cfg(feature = "llvm")]
             llvm_target: crate::CodegenTarget::Host,
+            #[cfg(feature = "llvm")]
+            llvm_optimization: crate::llvm_backend::MoltOptLevel::from_request(),
         }
     }
 
@@ -299,6 +301,7 @@ impl SimpleBackend {
             let (cpu, features) = backend.llvm_target.cpu_features();
             identity["llvm_target"] = serde_json::json!({
                 "triple": backend.llvm_target.triple_name(),
+                "optimization": backend.llvm_optimization,
                 "cpu": cpu,
                 "features": features,
             });

@@ -864,9 +864,7 @@ fn constructor_operands_execute_identity_failures_and_discarded_results() {
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-constructor-object")
         .expect("create the LLVM object within Cargo image custody");
     let object = artifacts.path().join("llvm_constructor_operands.o");
-    backend
-        .emit_object(&object, crate::llvm_backend::MoltOptLevel::None)
-        .expect("emit the LLVM object");
+    backend.emit_object(&object).expect("emit the LLVM object");
     let object_bytes = std::fs::read(&object).expect("read the LLVM object");
     let none = (nanbox::QNAN | nanbox::TAG_NONE).to_string();
     let provider = PROVIDER
@@ -3058,9 +3056,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-borrowed-family-object")
         .expect("create the LLVM object within Cargo image custody");
     let object = artifacts.path().join("llvm_borrowed_family.o");
-    backend
-        .emit_object(&object, crate::llvm_backend::MoltOptLevel::None)
-        .expect("emit the LLVM object");
+    backend.emit_object(&object).expect("emit the LLVM object");
     let object_bytes = std::fs::read(&object).expect("read the LLVM object");
     let none = (nanbox::QNAN | nanbox::TAG_NONE).to_string();
     let truth = (nanbox::QNAN | nanbox::TAG_BOOL | 1).to_string();

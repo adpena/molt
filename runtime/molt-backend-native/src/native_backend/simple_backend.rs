@@ -127,6 +127,8 @@ pub struct SimpleBackend {
     /// The machine the LLVM lane generates for; Cranelift ignores it.
     #[cfg(feature = "llvm")]
     pub(crate) llvm_target: crate::CodegenTarget,
+    #[cfg(feature = "llvm")]
+    pub(crate) llvm_optimization: crate::llvm_backend::MoltOptLevel,
 }
 
 #[cfg(all(test, feature = "native-backend"))]

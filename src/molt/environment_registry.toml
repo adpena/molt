@@ -2669,6 +2669,15 @@ owner = "src/molt/llvm_toolchain.py"
 summary = "Explicit llvm-nm executable for WebAssembly symbol inspection; the file name must be llvm-nm (optionally versioned) and the path must pass the poison checks, the projected WASI toolchain environment fills it from the provisioned wasi-sdk when unset, and the release workflow verifies it with --version."
 
 [[variable]]
+name = "MOLT_LLVM_OPT_LEVEL"
+audience = "user"
+kind = "enum"
+default = "O3"
+values = ["O0", "O1", "O2", "O3"]
+owner = "runtime/molt-backend-native/src/llvm_backend/mod.rs"
+summary = "LLVM optimization level for program IR and target-machine code generation on native and wasm32 targets. All application profiles default to O3."
+
+[[variable]]
 name = "MOLT_LLVM_PREFIX"
 audience = "user"
 kind = "path"

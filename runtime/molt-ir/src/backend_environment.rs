@@ -279,7 +279,7 @@ pub fn is_set(key: BackendEnv) -> bool {
 }
 
 /// The setting's value, failing on a non-Unicode process value.
-fn try_var(key: BackendEnv) -> io::Result<Option<String>> {
+pub fn try_var(key: BackendEnv) -> io::Result<Option<String>> {
     match var(key) {
         Ok(value) => Ok(Some(value)),
         Err(std::env::VarError::NotPresent) => Ok(None),
@@ -386,6 +386,7 @@ mod tests {
         for (key, value) in [
             (BackendEnv::MOLT_DISABLE_SPLIT_FIELD_DEFOREST, ""),
             (BackendEnv::MOLT_BACKEND_ENABLE_VERIFIER, "1"),
+            (BackendEnv::MOLT_LLVM_OPT_LEVEL, "O1"),
         ] {
             let changed = NativeCodegenEnvironment::from_lookup(|probe| {
                 Ok((probe == key).then(|| value.to_string()))

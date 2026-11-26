@@ -508,7 +508,7 @@ fn task_trampolines_execute_lazy_construction_payload_custody_and_failures() {
         .expect("create the LLVM task object within Cargo image custody");
     let object = artifacts.path().join("llvm_task_trampolines.o");
     backend
-        .emit_object(&object, crate::llvm_backend::MoltOptLevel::None)
+        .emit_object(&object)
         .expect("emit the LLVM task object");
     let none = (nanbox::QNAN | nanbox::TAG_NONE).to_string();
     let provider = provider

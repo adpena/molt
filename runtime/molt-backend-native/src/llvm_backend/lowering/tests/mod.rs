@@ -157,7 +157,12 @@ impl ExecutionIrAssertions for str {
 }
 
 fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
-    LlvmBackend::new(ctx, "test")
+    LlvmBackend::new_for_target(
+        ctx,
+        "test",
+        crate::CodegenTarget::Host,
+        crate::llvm_backend::MoltOptLevel::O0,
+    )
 }
 
 fn test_native_linkage_abi(

@@ -15,16 +15,17 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
 
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-rc-determinism").unwrap();
     let mut first_ir = None;
-    for level in 0..3 {
-        let opt = || match level {
-            0 => MoltOptLevel::None,
-            1 => MoltOptLevel::Speed,
-            _ => MoltOptLevel::Aggressive,
-        };
+    for level in [
+        MoltOptLevel::O0,
+        MoltOptLevel::O1,
+        MoltOptLevel::O2,
+        MoltOptLevel::O3,
+    ] {
         let mut first_object = None;
         for attempt in 0..8 {
             let ctx = Context::create();
-            let mut backend = LlvmBackend::new(&ctx, "rc_determinism");
+            let mut backend =
+                LlvmBackend::new_for_target(&ctx, "rc_determinism", CodegenTarget::Host, level);
             let mut func = TirFunction::new(
                 "rc_determinism".into(),
                 vec![TirType::Bool, TirType::DynBox],
@@ -98,18 +99,18 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
             } else {
                 first_ir = Some(ir);
             }
-            backend.optimize(opt()).unwrap();
+            backend.optimize().unwrap();
             let path = artifacts
                 .path()
-                .join(format!("level-{level}-attempt-{attempt}.o"));
-            backend.emit_object(&path, opt()).unwrap();
+                .join(format!("level-{level:?}-attempt-{attempt}.o"));
+            backend.emit_object(&path).unwrap();
             let bytes = std::fs::read(path).unwrap();
             let object = object::File::parse(bytes.as_slice()).unwrap();
             assert!(
                 !object.symbols().any(|symbol| symbol
                     .name()
                     .is_ok_and(|name| name.contains("__molt_inline_"))),
-                "alwaysinline must remove RC wrapper symbols at level {level}"
+                "alwaysinline must remove RC wrapper symbols at level {level:?}"
             );
             let undefined = crate::test_support::native_object_symbols(&bytes).undefined;
             assert!(
@@ -120,7 +121,7 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
             if let Some(expected) = &first_object {
                 assert_eq!(
                     expected, &bytes,
-                    "identical RC input changed object bytes at level {level}"
+                    "identical RC input changed object bytes at level {level:?}"
                 );
             } else {
                 first_object = Some(bytes);
@@ -188,7 +189,7 @@ fn refcount_sites_past_the_inline_budget_call_one_outlined_transition() {
         sites - 512,
         "sites past the budget call the outlined copy"
     );
-    backend.optimize(MoltOptLevel::Aggressive).unwrap();
+    backend.optimize().unwrap();
     backend.module.verify().unwrap();
 }
 
@@ -215,7 +216,12 @@ fn test_backend_module_name() {
 #[test]
 fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
     let ctx = Context::create();
-    let backend = LlvmBackend::new(&ctx, "direct_object_abi");
+    let backend = LlvmBackend::new_for_target(
+        &ctx,
+        "direct_object_abi",
+        CodegenTarget::Host,
+        MoltOptLevel::O0,
+    );
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-object-abi")
         .expect("create LLVM object outputs within Cargo image custody");
     let artifact = artifacts.path().join(if cfg!(windows) {
@@ -224,7 +230,7 @@ fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
         "backend.o"
     });
     backend
-        .emit_object(&artifact, MoltOptLevel::None)
+        .emit_object(&artifact)
         .expect("direct LLVM object emission");
     let bytes = std::fs::read(&artifact).expect("read direct LLVM object");
     let object = object::File::parse(bytes.as_slice()).expect("parse direct LLVM object");
@@ -261,7 +267,12 @@ fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
 #[test]
 fn wasm32_target_emits_a_relocatable_wasm_object_with_32_bit_pointers() {
     let ctx = Context::create();
-    let backend = LlvmBackend::new_for_target(&ctx, "wasm32_object", CodegenTarget::Wasm32Wasip1);
+    let backend = LlvmBackend::new_for_target(
+        &ctx,
+        "wasm32_object",
+        CodegenTarget::Wasm32Wasip1,
+        MoltOptLevel::O0,
+    );
     // One position-independent object links statically or as a side module.
     assert_eq!(
         backend.target.reloc_mode(),
@@ -275,7 +286,7 @@ fn wasm32_target_emits_a_relocatable_wasm_object_with_32_bit_pointers() {
         .expect("create LLVM wasm32 object output");
     let artifact = artifacts.path().join("backend.o");
     backend
-        .emit_object(&artifact, MoltOptLevel::None)
+        .emit_object(&artifact)
         .expect("wasm32 object emission");
     let bytes = std::fs::read(&artifact).expect("read wasm32 object");
     assert_eq!(
@@ -293,6 +304,31 @@ fn wasm32_target_emits_a_relocatable_wasm_object_with_32_bit_pointers() {
 }
 
 #[test]
+#[cfg(feature = "native-backend")]
+fn scoped_llvm_level_binds_the_effective_native_and_wasm_codegen_identity() {
+    use molt_ir::backend_environment::{self, BackendEnvironment};
+    for setting in [None, Some("O0"), Some("O1"), Some("O2"), Some("O3")] {
+        let mut payload = serde_json::Map::new();
+        if let Some(level) = setting {
+            payload.insert("MOLT_LLVM_OPT_LEVEL".into(), serde_json::json!(level));
+        }
+        let _scope = backend_environment::enter(std::sync::Arc::new(
+            BackendEnvironment::from_request(&payload).unwrap(),
+        ));
+        for target in [None, Some("wasm32-wasip1")] {
+            let identity = crate::SimpleBackend::object_codegen_identity(target);
+            assert_eq!(
+                identity["llvm_target"]["optimization"],
+                setting.unwrap_or("O3")
+            );
+        }
+    }
+    for invalid in ["", "O4", "speed"] {
+        assert!(serde_json::from_value::<MoltOptLevel>(serde_json::json!(invalid)).is_err());
+    }
+}
+
+#[test]
 fn test_create_target_machine_all_levels() {
     let ctx = Context::create();
     let backend = LlvmBackend::new(&ctx, "tm_test");
@@ -301,26 +337,42 @@ fn test_create_target_machine_all_levels() {
         inkwell::targets::RelocMode::PIC,
         "LLVM object emission must stay PIC-compatible for the shared runtime link path"
     );
-    // Simply ensure no panic at any opt level.
-    let _tm_none = backend.create_target_machine(&MoltOptLevel::None);
-    let _tm_speed = backend.create_target_machine(&MoltOptLevel::Speed);
-    let _tm_agg = backend.create_target_machine(&MoltOptLevel::Aggressive);
+    for (level, pipeline, machine) in [
+        (MoltOptLevel::O0, "default<O0>", OptimizationLevel::None),
+        (MoltOptLevel::O1, "default<O1>", OptimizationLevel::Less),
+        (MoltOptLevel::O2, "default<O2>", OptimizationLevel::Default),
+        (
+            MoltOptLevel::O3,
+            "default<O3>",
+            OptimizationLevel::Aggressive,
+        ),
+    ] {
+        assert_eq!(level.pipeline(), pipeline);
+        assert_eq!(level.machine_level(), machine);
+        let _machine = backend.target.create_target_machine(level);
+    }
 }
 
 #[test]
 fn test_optimize_empty_module_smoke() {
     let ctx = Context::create();
-    let backend = LlvmBackend::new(&ctx, "opt_smoke");
+    let backend =
+        LlvmBackend::new_for_target(&ctx, "opt_smoke", CodegenTarget::Host, MoltOptLevel::O2);
     // Running passes on an empty module must not panic or error.
     backend
-        .optimize(MoltOptLevel::Speed)
+        .optimize()
         .expect("empty-module optimization should succeed");
 }
 
 #[test]
 fn test_optimize_invalid_pipeline_fails_closed_and_restores_linkage() {
     let ctx = Context::create();
-    let backend = LlvmBackend::new(&ctx, "opt_fail_closed");
+    let backend = LlvmBackend::new_for_target(
+        &ctx,
+        "opt_fail_closed",
+        CodegenTarget::Host,
+        MoltOptLevel::O2,
+    );
     let i64_ty = ctx.i64_type();
     let func = backend.module.add_function(
         "visible_entry",
@@ -335,7 +387,7 @@ fn test_optimize_invalid_pipeline_fails_closed_and_restores_linkage() {
         .unwrap();
 
     let err = backend
-        .run_optimization_passes(&MoltOptLevel::Speed, "not-a-real-pass")
+        .run_optimization_passes("not-a-real-pass")
         .expect_err("invalid LLVM pass pipeline must fail closed");
     assert!(
         err.contains("not-a-real-pass"),

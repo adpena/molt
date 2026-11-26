@@ -13,13 +13,17 @@ from molt.backend_environment import (
     codegen_environment_inputs,
     compilation_diagnostics_requested,
     environment_keys,
+    request_environment_inputs,
 )
 from molt.cli import backend_cache
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
     BackendArtifactKind,
 )
-from molt.cli.backend_execution import _backend_codegen_env_digest
+from molt.cli.backend_execution import (
+    _backend_codegen_env_digest,
+    _native_object_codegen_env_digest,
+)
 
 # These cases build synthetic projects and assert developer-host roots;
 # hosted custody has its own cases in tests/test_dx_run_context.py.
@@ -45,6 +49,23 @@ def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
     assert "MOLT_DISABLE_SPLIT_FIELD_DEFORESTING" not in environment_keys(
         "common", "native"
     )
+
+
+def test_llvm_levels_reach_requests_and_each_codegen_cache_identity() -> None:
+    selection = CodegenSelection(backend="llvm")
+    key = "MOLT_LLVM_OPT_LEVEL"
+    native: set[str] = set()
+    wasm: set[str] = set()
+    objects: set[str] = set()
+    for profile in ("dev", "release"):
+        assert key not in selection.environment({}, profile=profile)
+    for level in ("O0", "O1", "O2", "O3"):
+        env = selection.environment({key: level}, profile="dev")
+        assert request_environment_inputs(env)[key] == level
+        native.add(_backend_codegen_env_digest(is_wasm=False, env=env))
+        wasm.add(_backend_codegen_env_digest(is_wasm=True, env=env))
+        objects.add(_native_object_codegen_env_digest(env))
+    assert len(native) == len(wasm) == len(objects) == 4
 
 
 def test_wasm_jobs_read_the_native_catalog():

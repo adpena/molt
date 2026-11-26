@@ -4173,6 +4173,21 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "O3",
+      "kind": "enum",
+      "name": "MOLT_LLVM_OPT_LEVEL",
+      "output_neutral": false,
+      "owner": "runtime/molt-backend-native/src/llvm_backend/mod.rs",
+      "summary": "LLVM optimization level for program IR and target-machine code generation on native and wasm32 targets. All application profiles default to O3.",
+      "values": [
+        "O0",
+        "O1",
+        "O2",
+        "O3"
+      ]
+    },
+    {
+      "audience": "user",
       "default": "",
       "kind": "path",
       "name": "MOLT_LLVM_PREFIX",

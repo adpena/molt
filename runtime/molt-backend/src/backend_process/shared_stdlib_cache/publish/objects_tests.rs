@@ -398,6 +398,7 @@ fn constituent_key_binds_actual_emitter_and_presence_gated_pass_inputs() {
     for (name, value) in [
         (BackendEnv::MOLT_DISABLE_SPLIT_FIELD_DEFOREST, ""),
         (BackendEnv::MOLT_BACKEND_ENABLE_VERIFIER, "1"),
+        (BackendEnv::MOLT_LLVM_OPT_LEVEL, "O1"),
     ] {
         let mut changed = roundtrip(&original);
         changed.codegen_environment = NativeCodegenEnvironment::from_lookup(|setting| {

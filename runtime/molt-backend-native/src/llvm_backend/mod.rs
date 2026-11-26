@@ -63,9 +63,32 @@ pub struct LlvmBackend<'ctx> {
     /// The machine this module is generated for. The triple, data layout,
     /// relocation model and CPU policy all derive from it.
     pub target: CodegenTarget,
+    optimization: MoltOptLevel,
+    machine: TargetMachine,
 }
 
 impl CodegenTarget {
+    /// Create the module's target machine for layout, optimization, and emission.
+    fn create_target_machine(self, optimization: MoltOptLevel) -> TargetMachine {
+        use inkwell::targets::{CodeModel, Target};
+
+        self.initialize();
+        let triple = self.triple();
+        let target = Target::from_triple(&triple).expect("Failed to get target from triple");
+        let (cpu, features) = self.cpu_features();
+
+        target
+            .create_target_machine(
+                &triple,
+                &cpu,
+                &features,
+                optimization.machine_level(),
+                self.reloc_mode(),
+                CodeModel::Default,
+            )
+            .expect("Failed to create target machine")
+    }
+
     /// The target triple LLVM generates for, as cache identity names it.
     pub(crate) fn triple_name(self) -> String {
         self.triple().as_str().to_string_lossy().into_owned()
@@ -133,18 +156,26 @@ pub(crate) fn native_cpu_features() -> (String, String) {
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
-        Self::new_for_target(context, module_name, CodegenTarget::Host)
+        Self::new_for_target(
+            context,
+            module_name,
+            CodegenTarget::Host,
+            MoltOptLevel::from_request(),
+        )
     }
 
     pub fn new_for_target(
         context: &'ctx Context,
         module_name: &str,
         target: CodegenTarget,
+        optimization: MoltOptLevel,
     ) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
         module.set_triple(&target.triple());
         let symbols = crate::runtime_callable_symbols::RuntimeCallableSymbols::capture();
+        let machine = target.create_target_machine(optimization);
+        module.set_data_layout(&machine.get_target_data().get_data_layout());
         let backend = Self {
             context,
             module,
@@ -156,22 +187,17 @@ impl<'ctx> LlvmBackend<'ctx> {
             runtime_callable_symbols: symbols.runtime_fn_set(),
             runtime_imports: runtime_imports::LlvmRuntimeImports::default(),
             target,
+            optimization,
+            machine,
         };
-        // Lowering lays out structs and GEPs against the module's data
-        // layout, so it must be the target's before any body is generated.
-        let machine = backend.create_target_machine(&MoltOptLevel::Aggressive);
-        backend
-            .module
-            .set_data_layout(&machine.get_target_data().get_data_layout());
         backend.ensure_generated_object_abi_anchor();
         backend
     }
 
     /// The integer type as wide as a target pointer (`usize`).
     pub(crate) fn pointer_sized_int_type(&self) -> inkwell::types::IntType<'ctx> {
-        let machine = self.create_target_machine(&MoltOptLevel::None);
         self.context
-            .ptr_sized_int_type(&machine.get_target_data(), None)
+            .ptr_sized_int_type(&self.machine.get_target_data(), None)
     }
 
     /// Attach the mandatory, retained relocation to the runtime's exact
@@ -216,13 +242,45 @@ impl<'ctx> LlvmBackend<'ctx> {
 
 /// Optimization level for the LLVM compilation pipeline.
 #[cfg(feature = "llvm")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum MoltOptLevel {
-    /// No optimization (-O0), fastest compilation. Use for development.
-    None,
-    /// Standard optimization (-O2), good balance of speed and compile time.
-    Speed,
-    /// Aggressive optimization (-O3), maximum runtime performance. Use for release.
-    Aggressive,
+    O0,
+    O1,
+    O2,
+    #[default]
+    O3,
+}
+
+impl MoltOptLevel {
+    pub(crate) fn from_request() -> Self {
+        use molt_ir::backend_environment::{BackendEnv, try_var};
+        use serde::Deserialize;
+        let Some(value) =
+            try_var(BackendEnv::MOLT_LLVM_OPT_LEVEL).expect("read LLVM optimization level")
+        else {
+            return Self::default();
+        };
+        Self::deserialize(serde::de::value::StrDeserializer::<serde::de::value::Error>::new(&value))
+            .unwrap_or_else(|error| panic!("invalid MOLT_LLVM_OPT_LEVEL={value:?}: {error}"))
+    }
+
+    fn pipeline(self) -> &'static str {
+        match self {
+            Self::O0 => "default<O0>",
+            Self::O1 => "default<O1>",
+            Self::O2 => "default<O2>",
+            Self::O3 => "default<O3>",
+        }
+    }
+
+    fn machine_level(self) -> OptimizationLevel {
+        match self {
+            Self::O0 => OptimizationLevel::None,
+            Self::O1 => OptimizationLevel::Less,
+            Self::O2 => OptimizationLevel::Default,
+            Self::O3 => OptimizationLevel::Aggressive,
+        }
+    }
 }
 
 #[cfg(feature = "llvm")]
@@ -286,28 +344,17 @@ impl<'ctx> LlvmBackend<'ctx> {
     /// polyhedral loop optimizations (tiling, interchange, strip-mine
     /// vectorization) are applied automatically after the standard O2/O3
     /// pipeline, giving additional gains on loop-heavy numeric code.
-    pub fn optimize(&self, opt_level: MoltOptLevel) -> Result<(), String> {
+    pub fn optimize(&self) -> Result<(), String> {
         // Activate Polly polyhedral optimizer (no-op if already initialized).
         #[cfg(feature = "polly")]
         Self::init_polly_once();
 
-        let passes = match opt_level {
-            MoltOptLevel::None => "default<O0>",
-            MoltOptLevel::Speed => "default<O2>",
-            MoltOptLevel::Aggressive => "default<O3>",
-        };
-        self.run_optimization_passes(&opt_level, passes)
+        self.run_optimization_passes(self.optimization.pipeline())
     }
 
-    fn run_optimization_passes(
-        &self,
-        opt_level: &MoltOptLevel,
-        passes: &str,
-    ) -> Result<(), String> {
+    fn run_optimization_passes(&self, passes: &str) -> Result<(), String> {
         use inkwell::module::Linkage;
         use inkwell::passes::PassBuilderOptions;
-
-        let target_machine = self.create_target_machine(opt_level);
 
         // Mark all externally-visible functions as dllexport so the
         // Internalize pass treats them as API and doesn't remove them.
@@ -330,7 +377,7 @@ impl<'ctx> LlvmBackend<'ctx> {
         options.set_merge_functions(true);
         let result = self
             .module
-            .run_passes(passes, &target_machine, options)
+            .run_passes(passes, &self.machine, options)
             .map_err(|e| format!("LLVM optimization pipeline `{passes}` failed: {e}"));
 
         // Restore original linkage after optimization.
@@ -343,59 +390,22 @@ impl<'ctx> LlvmBackend<'ctx> {
         result
     }
 
-    /// Create a native target machine for the host CPU at the given opt level.
-    fn create_target_machine(&self, opt_level: &MoltOptLevel) -> TargetMachine {
-        use inkwell::targets::{CodeModel, Target};
-
-        self.target.initialize();
-        let triple = self.target.triple();
-        let target = Target::from_triple(&triple).expect("Failed to get target from triple");
-        let (cpu, features) = self.target.cpu_features();
-
-        let llvm_opt = match opt_level {
-            MoltOptLevel::None => OptimizationLevel::None,
-            MoltOptLevel::Speed => OptimizationLevel::Default,
-            MoltOptLevel::Aggressive => OptimizationLevel::Aggressive,
-        };
-
-        target
-            .create_target_machine(
-                &triple,
-                &cpu,
-                &features,
-                llvm_opt,
-                self.target.reloc_mode(),
-                CodeModel::Default,
-            )
-            .expect("Failed to create target machine")
-    }
-
     /// Emit a native object file (`.o`) at the given optimization level.
-    pub fn emit_object(
-        &self,
-        path: &std::path::Path,
-        opt_level: MoltOptLevel,
-    ) -> Result<(), String> {
+    pub fn emit_object(&self, path: &std::path::Path) -> Result<(), String> {
         use inkwell::targets::FileType;
 
         self.ensure_generated_object_abi_anchor();
-        let target_machine = self.create_target_machine(&opt_level);
-        target_machine
+        self.machine
             .write_to_file(&self.module, FileType::Object, path)
             .map_err(|e| e.to_string())
     }
 
     /// Emit LLVM assembly (`.s`) for debugging or manual inspection.
-    pub fn emit_llvm_asm(
-        &self,
-        path: &std::path::Path,
-        opt_level: MoltOptLevel,
-    ) -> Result<(), String> {
+    pub fn emit_llvm_asm(&self, path: &std::path::Path) -> Result<(), String> {
         use inkwell::targets::FileType;
 
         self.ensure_generated_object_abi_anchor();
-        let target_machine = self.create_target_machine(&opt_level);
-        target_machine
+        self.machine
             .write_to_file(&self.module, FileType::Assembly, path)
             .map_err(|e| e.to_string())
     }
