@@ -223,6 +223,9 @@ class PythonIdentity(IntFlag):
     OPERATOR_ATTRGETTER = 1 << 209
     TYPE_SETATTR = 1 << 210
     TYPE_DELATTR = 1 << 211
+    INTRINSIC_OPERATOR_METHODCALLER_TYPE = 1 << 212
+    OPERATOR_METHODCALLER = 1 << 213
+    OPERATOR_MODULE = 1 << 214
 
 
 class PythonMember(IntFlag):
@@ -384,6 +387,9 @@ class PythonMember(IntFlag):
     BUILTINS_WARNING = 1 << 155
     BUILTINS_ZERODIVISIONERROR = 1 << 156
     BUILTINS_BUILD_CLASS = 1 << 157
+    OPERATOR_ITEMGETTER = 1 << 158
+    OPERATOR_ATTRGETTER = 1 << 159
+    OPERATOR_METHODCALLER = 1 << 160
 
 
 class PythonTargetProperty(Enum):
@@ -410,7 +416,6 @@ class DataclassInitSpecField(IntEnum):
     ANNOTATIONS = 10
     GLOBALS = 11
     MODULE = 12
-    BUILTINS = 13
 
 
 class PythonImportBehavior(Enum):
@@ -440,7 +445,7 @@ UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = 365375409332725729550921208179070754913983135743
+ALL_INVALID_MEMBERS: Final[MemberMask] = 2923003274661805836407369665432566039311865085951
 
 class PythonImportCallable(NamedTuple):
     behavior: PythonImportBehavior
@@ -506,6 +511,7 @@ INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProx
         'molt_itertools_repeat_type': PythonIdentity.INTRINSIC_ITERTOOLS_REPEAT_TYPE,
         'molt_operator_itemgetter_type': PythonIdentity.INTRINSIC_OPERATOR_ITEMGETTER_TYPE,
         'molt_operator_attrgetter_type': PythonIdentity.INTRINSIC_OPERATOR_ATTRGETTER_TYPE,
+        'molt_operator_methodcaller_type': PythonIdentity.INTRINSIC_OPERATOR_METHODCALLER_TYPE,
         'molt_sys_version_info': PythonIdentity.INTRINSIC_SYS_VERSION_INFO,
         'molt_runtime_active_runtime': PythonIdentity.INTRINSICS_RUNTIME_ACTIVE,
     }
@@ -539,6 +545,7 @@ INTRINSIC_RESULT_IDENTITIES: Final[Mapping[PythonIdentity, PythonIdentity]] = Ma
         PythonIdentity.INTRINSIC_ITERTOOLS_REPEAT_TYPE: PythonIdentity.ITERTOOLS_REPEAT,
         PythonIdentity.INTRINSIC_OPERATOR_ITEMGETTER_TYPE: PythonIdentity.OPERATOR_ITEMGETTER,
         PythonIdentity.INTRINSIC_OPERATOR_ATTRGETTER_TYPE: PythonIdentity.OPERATOR_ATTRGETTER,
+        PythonIdentity.INTRINSIC_OPERATOR_METHODCALLER_TYPE: PythonIdentity.OPERATOR_METHODCALLER,
     }
 )
 
@@ -687,6 +694,7 @@ ALL_INTRINSIC_CALLABLE_IDENTITIES: Final[IdentityMask] = (
     int(PythonIdentity.INTRINSIC_ITERTOOLS_REPEAT_TYPE) |
     int(PythonIdentity.INTRINSIC_OPERATOR_ITEMGETTER_TYPE) |
     int(PythonIdentity.INTRINSIC_OPERATOR_ATTRGETTER_TYPE) |
+    int(PythonIdentity.INTRINSIC_OPERATOR_METHODCALLER_TYPE) |
     int(PythonIdentity.INTRINSIC_SYS_VERSION_INFO) |
     int(PythonIdentity.INTRINSICS_RUNTIME_ACTIVE) |
     0
@@ -1113,6 +1121,7 @@ BUILTIN_SHAPE_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProx
 
 CANONICAL_IMPORT_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
     {
+        'operator': PythonIdentity.OPERATOR_MODULE,
         '__future__': PythonIdentity.OTHER,
         'importlib': PythonIdentity.IMPORTLIB_MODULE,
         'importlib.util': PythonIdentity.IMPORTLIB_UTIL_MODULE,
@@ -1131,6 +1140,9 @@ CANONICAL_IMPORT_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyT
 
 CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIdentity, PythonMember]]] = MappingProxyType(
     {
+        ('operator', 'itemgetter'): (PythonIdentity.OPERATOR_ITEMGETTER, PythonMember.OPERATOR_ITEMGETTER),
+        ('operator', 'attrgetter'): (PythonIdentity.OPERATOR_ATTRGETTER, PythonMember.OPERATOR_ATTRGETTER),
+        ('operator', 'methodcaller'): (PythonIdentity.OPERATOR_METHODCALLER, PythonMember.OPERATOR_METHODCALLER),
         ('importlib', 'import_module'): (PythonIdentity.IMPORTLIB_IMPORT_MODULE, PythonMember.IMPORTLIB_IMPORT_MODULE),
         ('importlib', 'util'): (PythonIdentity.IMPORTLIB_UTIL_MODULE, PythonMember.IMPORTLIB_UTIL),
         ('importlib', 'machinery'): (PythonIdentity.IMPORTLIB_MACHINERY_MODULE, PythonMember.IMPORTLIB_MACHINERY),
@@ -1296,6 +1308,9 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
 
 CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, PythonIdentity, PythonMember], ...]]] = MappingProxyType(
     {
+        'itemgetter': ((PythonIdentity.OPERATOR_MODULE, PythonIdentity.OPERATOR_ITEMGETTER, PythonMember.OPERATOR_ITEMGETTER),),
+        'attrgetter': ((PythonIdentity.OPERATOR_MODULE, PythonIdentity.OPERATOR_ATTRGETTER, PythonMember.OPERATOR_ATTRGETTER),),
+        'methodcaller': ((PythonIdentity.OPERATOR_MODULE, PythonIdentity.OPERATOR_METHODCALLER, PythonMember.OPERATOR_METHODCALLER),),
         'import_module': ((PythonIdentity.IMPORTLIB_MODULE, PythonIdentity.IMPORTLIB_IMPORT_MODULE, PythonMember.IMPORTLIB_IMPORT_MODULE),),
         'util': ((PythonIdentity.IMPORTLIB_MODULE, PythonIdentity.IMPORTLIB_UTIL_MODULE, PythonMember.IMPORTLIB_UTIL),),
         'machinery': ((PythonIdentity.IMPORTLIB_MODULE, PythonIdentity.IMPORTLIB_MACHINERY_MODULE, PythonMember.IMPORTLIB_MACHINERY),),
@@ -1458,6 +1473,9 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
 
 CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMask], ...]]] = MappingProxyType(
     {
+        'itemgetter': ((PythonIdentity.OPERATOR_MODULE, 365375409332725729550921208179070754913983135744),),
+        'attrgetter': ((PythonIdentity.OPERATOR_MODULE, 730750818665451459101842416358141509827966271488),),
+        'methodcaller': ((PythonIdentity.OPERATOR_MODULE, 1461501637330902918203684832716283019655932542976),),
         'import_module': ((PythonIdentity.IMPORTLIB_MODULE, 1),),
         'util': ((PythonIdentity.IMPORTLIB_MODULE, 256),),
         'machinery': ((PythonIdentity.IMPORTLIB_MODULE, 2),),
@@ -1626,4 +1644,4 @@ CANONICAL_WILDCARD_WRITES: Final[tuple[tuple[PythonIdentity, MemberMask], ...]] 
     (PythonIdentity.MODULE_SPEC_CLASS, 64),
 )
 
-ANY_CANONICAL_MODULE_IDENTITY: Final[IdentityMask] = 461168601844164854437
+ANY_CANONICAL_MODULE_IDENTITY: Final[IdentityMask] = 26328072917139296674479506920917608079723774311305879657742598821

@@ -23,11 +23,19 @@ SOURCE_ITERATION_CALLABLES = frozenset(
         *_catalog.NATIVE_ITERATOR_PAYLOADS,
     }
 )
+NATIVE_SELECTOR_CONSTRUCTORS = frozenset(
+    {
+        _catalog.PythonIdentity.OPERATOR_ITEMGETTER,
+        _catalog.PythonIdentity.OPERATOR_ATTRGETTER,
+        _catalog.PythonIdentity.OPERATOR_METHODCALLER,
+    }
+)
+
 SOURCE_CALLABLE_IDENTITIES = (
     _catalog.ALL_INTRINSIC_CALLABLE_IDENTITIES
     | _catalog.PUBLIC_RUNTIME_IMPORT_IDENTITIES
     | int(_catalog.PythonIdentity.BUILTIN_DICT)
-    | sum(SOURCE_ITERATION_CALLABLES)
+    | sum(SOURCE_ITERATION_CALLABLES | NATIVE_SELECTOR_CONSTRUCTORS)
 )
 
 

@@ -3413,7 +3413,11 @@ def test_native_iterator_payload_reaches_namespace_writer(
         ("attrgetter('__init__')(Row)", "__import__", True),
         ("next(map(attrgetter('__class__.__init__'), (Row(1),)))", "__import__", True),
         ("attrgetter('__init__')(Row)", "len", False),
+        ("methodcaller('__getattribute__', '__init__')(Row(1))", "__import__", True),
+        ("methodcaller('select', Row.__init__)(Reflector())", "__import__", True),
+        ("methodcaller('select', value=Row.__init__)(Reflector())", "len", False),
         ("choose()((Row.__init__,))", "len", False),
+        ("forward()((Row.__init__,))", "len", False),
     ],
 )
 def test_native_selection_reaches_namespace_writer(
@@ -3425,14 +3429,17 @@ def test_native_selection_reaches_namespace_writer(
 ) -> None:
     source = (
         "from dataclasses import dataclass\n"
-        "from operator import itemgetter as select, attrgetter\n"
+        "from operator import itemgetter as select, attrgetter, methodcaller\n"
         "@dataclass\n"
         "class Row:\n"
         "    x: int\n"
         "class Reflector:\n"
         "    def __getitem__(self, key): return key\n"
+        "    def select(self, value): return value\n"
         "def choose():\n"
         "    return select(0)\n"
+        "def forward():\n"
+        "    return choose()\n"
         "def modify(name):\n"
         f"    ns = getattr({payload}, name)\n"
         f"    ns[{key!r}] = lambda *args: None\n"
@@ -3459,7 +3466,7 @@ def test_native_selection_reaches_namespace_writer(
     monkeypatch.setattr(
         cli_module_import_scanner, "_module_graph_needs_runtime_import_support", observe
     )
-    _assert_graph_import_finder(tmp_path, source, None)
+    _assert_graph_import_finder(tmp_path, source, needs_finder)
     assert any(
         row.construct == "namespace" and row.module == "builtins" and row.name == key
         for row in reached
@@ -3468,6 +3475,40 @@ def test_native_selection_reaches_namespace_writer(
         any(cli_module_import_scanner._writes_import_state(row) for row in reached)
         is needs_finder
     )
+
+
+@pytest.mark.usefixtures("isolated_frontend_state")
+@pytest.mark.parametrize(
+    "factory",
+    [
+        "    if input(): return itemgetter(0)\n    return getattr(Provider, input())\n",
+        "    return itemgetter(Key())\n",
+    ],
+)
+def test_returned_selector_keeps_open_argument_effects(
+    tmp_path: Path, factory: str
+) -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "from operator import itemgetter\n"
+        "@dataclass\n"
+        "class Row:\n"
+        "    x: int\n"
+        "def redirect(*args): return None\n"
+        "class Provider:\n"
+        "    @staticmethod\n"
+        "    def install(values):\n"
+        "        values[0].__builtins__['__import__'] = redirect\n"
+        "class Key:\n"
+        "    def __index__(self):\n"
+        "        Row.__init__.__builtins__['__import__'] = redirect\n"
+        "        return 0\n"
+        "def choose():\n"
+        f"{factory}"
+        "choose()((Row.__init__,))\n"
+        "import math\n"
+    )
+    _assert_graph_import_finder(tmp_path, source, True)
 
 
 def _assert_graph_import_finder(

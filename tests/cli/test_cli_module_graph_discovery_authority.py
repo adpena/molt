@@ -3149,7 +3149,7 @@ def test_native_initializer_uses_plan_selected_callbacks(
     schema = ((), False, post != "pass", False, False)
     defaults = "(callback,)" if len(parameters) == 2 and invoke == "Point()" else "()"
     sources = {
-        "entry": "from _intrinsics import require_intrinsic\nimport api, builtin_api\n"
+        "entry": "from _intrinsics import require_intrinsic\nimport api\n"
         "make = require_intrinsic('molt_dataclasses_init')\n"
         "def callback():\n    import live_leaf\n"
         "def unused():\n    import dead_leaf\n"
@@ -3162,11 +3162,13 @@ def test_native_initializer_uses_plan_selected_callbacks(
         + stores
         + ", "
         + inputs
-        + ", (-1, -1), (-1, -1), {}, api.__dict__, 'entry', builtin_api)\n"
+        + ", (-1, -1), (-1, -1), {}, api.__dict__, 'entry')\n"
         + f"Point.__init__ = make(Point, {schema!r}, spec)\n"
         + invoke
         + "\n",
-        "api": "def callback():\n    import live_leaf\n",
+        "api": "from builtin_api import builtin_callback\n"
+        "__builtins__ = {'builtin_callback': builtin_callback}\n"
+        "def callback():\n    import live_leaf\n",
         "builtin_api": "def builtin_callback():\n    import builtin_leaf\n",
         "builtin_leaf": "pass\n",
         "live_leaf": "pass\n",

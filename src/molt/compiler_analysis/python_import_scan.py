@@ -2422,7 +2422,7 @@ def _collect_imports(
                     ref.phase != "protocol" or ref.source not in native_receiver_origins
                 )
                 and (
-                    ref.phase not in {"escape", "expose"}
+                    ref.phase not in {"escape", "expose", "opaque_argument"}
                     or ref.source not in held_call_origins
                 )
             )

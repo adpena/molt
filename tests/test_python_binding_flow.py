@@ -5846,7 +5846,7 @@ def test_retained_descriptor_fresh_function_construction_keeps_effects(construct
     ],
 )
 def test_retained_descriptor_unproven_constructor_or_function_stays_broad(source):
-    from molt.compiler_analysis.python_binding_facts import PythonElementProtocol
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
 
     index = analyze_python_source_bindings(source)
     assert not any(
@@ -5860,7 +5860,7 @@ def test_retained_descriptor_older_function_metadata_is_not_fresh_acquisition():
     source = (
         "def method():\n    pass\nmethod.__doc__=opaque\nwrapped=classmethod(method)\n"
     )
-    from molt.compiler_analysis.python_binding_facts import PythonElementProtocol
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
 
     index = analyze_python_source_bindings(source)
     assert not any(
@@ -5873,7 +5873,7 @@ def test_retained_descriptor_older_function_metadata_is_not_fresh_acquisition():
     "body,retained", [("return global_payload", True), ("return __class__", False)]
 )
 def test_retained_descriptor_function_lookup_obeys_function_scope(body, retained):
-    from molt.compiler_analysis.python_binding_facts import PythonElementProtocol
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
 
     source = (
         "global_payload=()\nclass Box:\n    @classmethod\n    def method(cls):\n        "
@@ -5896,7 +5896,7 @@ def test_retained_descriptor_function_lookup_obeys_function_scope(body, retained
 
 
 def test_retained_descriptor_outer_cell_remains_unproven():
-    from molt.compiler_analysis.python_binding_facts import PythonElementProtocol
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
 
     source = "def outer():\n    payload=()\n    @classmethod\n    def method(cls):\n        return payload\n    return method\n"
     index = analyze_python_source_bindings(
@@ -5922,10 +5922,8 @@ def test_retained_descriptor_outer_cell_remains_unproven():
 def test_native_class_preparation_is_independent_of_prior_import_or_callback(
     prefix, entry
 ):
-    from molt.compiler_analysis.python_binding_facts import (
-        PythonClassPreparation,
-        PythonElementProtocol,
-    )
+    from molt.compiler_analysis.python_binding_facts import PythonClassPreparation
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
 
     source = prefix + "class Box:\n    @classmethod\n    def method(cls): return 1\n"
     for model in PythonClassPreparation:
@@ -5953,10 +5951,8 @@ def test_native_class_preparation_is_independent_of_prior_import_or_callback(
     "header", ["class Box(opaque_base):", "class Box(metaclass=opaque_meta):"]
 )
 def test_native_class_preparation_preserves_custom_prepare_callback(header):
-    from molt.compiler_analysis.python_binding_facts import (
-        PythonClassPreparation,
-        PythonElementProtocol,
-    )
+    from molt.compiler_analysis.python_binding_facts import PythonClassPreparation
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
 
     index = analyze_python_source_bindings(
         header + "\n    @classmethod\n    def method(cls): pass\n",
@@ -6072,10 +6068,8 @@ def test_native_class_preparation_model_is_a_closed_policy_fact():
 def test_retained_descriptor_defaults_use_evaluated_immutable_value_fact(
     default, retained
 ):
-    from molt.compiler_analysis.python_binding_facts import (
-        PythonClassPreparation,
-        PythonElementProtocol,
-    )
+    from molt.compiler_analysis.python_binding_facts import PythonClassPreparation
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
 
     source = (
         "alias=None\nclass Box:\n    @classmethod\n    def method(cls,value="
@@ -6100,10 +6094,8 @@ def test_retained_descriptor_defaults_use_evaluated_immutable_value_fact(
 
 
 def test_retained_descriptor_immutable_default_does_not_erase_evaluation_callbacks():
-    from molt.compiler_analysis.python_binding_facts import (
-        PythonClassPreparation,
-        PythonElementProtocol,
-    )
+    from molt.compiler_analysis.python_binding_facts import PythonClassPreparation
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
     from molt.compiler_analysis.python_effects_generated import (
         EXECUTES_ARBITRARY_PYTHON,
     )
@@ -6869,13 +6861,31 @@ def test_native_attribute_reader_identity_tracks_alias_and_rebinding(callee):
 
 @pytest.mark.parametrize("call", ["getattr", "hasattr", "delattr", "foreign"])
 def test_unknown_attribute_selector_or_callee_keeps_module_exposure(call):
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
+
     source = f"import provider\nmember = selector\n{call}(provider, member)\n"
     tree = ast.parse(source)
     facts = analyze_python_source_bindings(source)
     module_source = python_node_source_key(tree.body[0].names[0])
     call_fact = facts.expression_fact(tree.body[-1].value)
+    if call == "getattr":
+        projection = python_source_projection_key(
+            tree.body[-1].value, PythonSourceProjection.CALL_REFLECTED_BUILTINS
+        )
+        assert any(
+            ref.source == projection and ref.phase == "read"
+            for ref in call_fact.deferred_execution
+        )
+        assert any(
+            element.owner == projection
+            and element.protocol is PythonElementProtocol.REFLECTED_BUILTINS
+            and module_source in element.origins
+            for element in facts.source_elements
+        )
+        return
     assert any(
-        ref.source == module_source and ref.phase in {"expose", "escape"}
+        ref.source == module_source
+        and ref.phase in {"expose", "escape", "opaque_argument"}
         for ref in call_fact.deferred_execution
     )
 

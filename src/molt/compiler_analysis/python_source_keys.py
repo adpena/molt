@@ -50,6 +50,24 @@ def decode_python_source_key(value: object) -> PythonSourceKey:
     return (line, column, end_line, end_column, kind)
 
 
+class PythonElementProtocol(StrEnum):
+    CLASS_METHOD = "class_method"
+    STATIC_METHOD = "static_method"
+    # `property(fget)`: an instance attribute load calls `fget` with the
+    # instance; a class attribute load returns the property itself.
+    PROPERTY = "property"
+    SUBSCRIPT = "subscript"
+    REFLECTED_BUILTINS = "reflected_builtins"
+    REFLECTED_GLOBALS = "reflected_globals"
+    MAPPING_WRITE = "mapping_write"
+    # Zero-argument `super()` as an attribute receiver: the origins are the
+    # enclosing function's first argument. An attribute of it selects from
+    # the strict ancestors of the argument's class and binds the argument.
+    SUPER = "super"
+    ITERATE = "iterate"
+    ASYNC_ITERATE = "async_iterate"
+
+
 class PythonSourceProjection(StrEnum):
     YIELD_FROM_ELEMENTS = "YieldFrom.elements"
     CALL_ATTRIBUTE = "Call.attribute"

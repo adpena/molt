@@ -47,7 +47,13 @@ from molt.cli.models import (
     ImportScanAdmission,
     ImportScanQuery,
 )
+from molt.compiler_analysis.python_binding_facts import (
+    PythonFunctionResult,
+    PythonSourceCall,
+    PythonSourceCallDispatch,
+)
 from molt.compiler_analysis.python_binding_flow import python_binding_revision_scope
+from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.compiler_analysis.python_imports import (
     ImportScanMode,
     _ImportDiscoveryProjection,
@@ -81,6 +87,7 @@ from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
+from molt.typed_cache import typed_cache
 
 
 @dataclass(frozen=True)
@@ -1527,7 +1534,97 @@ def _discovery_pass(
             source_publications[module] = python_module_publications(snapshot.tree)
         return source_publications[module], authority
 
+    @typed_cache(maxsize=None)
+    def current_return_dispatch(
+        module: str,
+    ) -> tuple[
+        dict[PythonSourceKey, list[PythonSourceCall]],
+        dict[PythonSourceKey, list[PythonFunctionResult]],
+    ]:
+        # Graph candidates retain every may-value ever published. The current
+        # activation projections own exhaustive proofs and replace older ones.
+        calls: dict[PythonSourceKey, list[PythonSourceCall]] = {}
+        functions: dict[PythonSourceKey, list[PythonFunctionResult]] = {}
+        jobs = (
+            _SourceScanJob(module, None),
+            *(
+                _SourceScanJob(module, owner, arguments)
+                for owner, arguments in scanned_bodies.get(module, ())
+            ),
+        )
+        for job in jobs:
+            if (scan := state.scan_outputs.get(job)) is None:
+                continue
+            for call in scan.source_values.calls:
+                calls.setdefault(call.owner, []).append(call)
+            for result in scan.source_values.functions:
+                functions.setdefault(result.owner, []).append(result)
+        return calls, functions
+
+    def returned_selector_reads_tuple(user: str, site: PythonSourceKey) -> bool:
+        graph_call = demands.calls.get((user, site))
+        authority = scan_sources.get(user)
+        premise = authority.namespace_premise if authority is not None else None
+        if (
+            graph_call is None
+            or graph_call.dispatch
+            is not PythonSourceCallDispatch.TUPLE_LITERAL_RECEIVER
+            or premise is None
+            or premise.code_rebinding
+        ):
+            return False
+        calls, functions = current_return_dispatch(user)
+        consuming = calls.get(site, ())
+        if not consuming or any(
+            call.dispatch is not PythonSourceCallDispatch.TUPLE_LITERAL_RECEIVER
+            for call in consuming
+        ):
+            return False
+        pending = list(set().union(*(call.callees for call in consuming)))
+        visited: set[PythonSourceKey] = set()
+        definitions: set[PythonSourceKey] = set()
+        found_constructor = False
+        # Each edge is a normal-return producer. Cycles can add paths but
+        # cannot produce another kind of value without an open exit.
+        while pending:
+            producer = pending.pop()
+            if producer in visited:
+                continue
+            visited.add(producer)
+            rows = calls.get(producer, ())
+            if not rows:
+                return False
+            for call in rows:
+                if call.dispatch is PythonSourceCallDispatch.ITEMGETTER_INTEGER_KEYS:
+                    found_constructor = True
+                    continue
+                if (
+                    call.dispatch is not PythonSourceCallDispatch.SOURCE_FUNCTION
+                    or len(call.callees) != 1
+                ):
+                    return False
+                (declaration,) = call.callees
+                if declaration in definitions:
+                    continue
+                definitions.add(declaration)
+                shape = demands.declarations.get((user, declaration))
+                outcomes = functions.get(declaration, ())
+                if (
+                    shape is None
+                    or shape.kind is not FunctionKind.SYNC
+                    or not outcomes
+                    or any(
+                        not outcome.returns_calls_only or not outcome.returned
+                        for outcome in outcomes
+                    )
+                ):
+                    return False
+                pending.extend(set().union(*(outcome.returned for outcome in outcomes)))
+        return found_constructor
+
     def call_binds_arguments(user: str, site: PythonSourceKey) -> bool:
+        if returned_selector_reads_tuple(user, site):
+            return True
         # A singleton source candidate is may-provenance. Require exhaustive
         # publications on both sides of the load and an actual formal transfer.
         caller = publications(user)
@@ -1568,6 +1665,7 @@ def _discovery_pass(
 
     while True:
         if not queue and not scan_revisions and not deferred_bodies:
+            current_return_dispatch.cache_clear()
             if not demands.resolve_argument_exposures(call_binds_arguments):
                 break
             drain_source_demands()

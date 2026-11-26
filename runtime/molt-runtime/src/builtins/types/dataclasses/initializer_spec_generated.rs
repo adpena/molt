@@ -15,6 +15,5 @@ pub(super) enum InitSpecField {
     Annotations = 10,
     Globals = 11,
     Module = 12,
-    Builtins = 13,
 }
-pub(super) const INIT_SPEC_FIELDS: usize = 14;
+pub(super) const INIT_SPEC_FIELDS: usize = 13;

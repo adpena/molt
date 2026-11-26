@@ -307,7 +307,7 @@ def load_schema(
                 raise SchemaError(
                     "builtin return_capture requires producer, result and protocol"
                 )
-            from molt.compiler_analysis.python_binding_facts import (
+            from molt.compiler_analysis.python_source_keys import (
                 PythonElementProtocol,
             )
 

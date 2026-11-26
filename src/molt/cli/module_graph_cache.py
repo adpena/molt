@@ -7,10 +7,10 @@ from molt.typed_cache import typed_cache
 from molt import input_report as _input_report
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.compiler_analysis.python_binding_facts import (
-    PythonElementProtocol,
     PythonFunctionResult,
     PythonActivationPartition,
     PythonSourceCall,
+    PythonSourceCallDispatch,
     PythonSourceCallableDeclaration,
     PythonSourceElement,
     PythonNativeInitializerSource,
@@ -50,6 +50,7 @@ from molt.cli.cache_fingerprints import (
 )
 from molt.cli import module_source as _module_source
 from molt.compiler_analysis.python_source_keys import (
+    PythonElementProtocol,
     PythonSourceProjection,
     PythonSourceKey,
     decode_python_source_key,
@@ -937,7 +938,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 # 54: keys and source requests preserve every Python string code point.
 # 55: bounded string spellings inform import and namespace invalidation.
 # 56: generic positional argument exposure retains its qualified call site.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 66
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 69
 
 
 def _import_scan_cache_key(
@@ -1334,7 +1335,7 @@ def _decode_import_scan_payload(
         if any(
             item.phase not in get_args(SourceDemandPhase)
             or item.argument_call is not None
-            and (item.phase != "expose" or item.argument_call[-1] != "Call")
+            and (item.phase != "opaque_argument" or item.argument_call[-1] != "Call")
             or item.argument_count is not None
             and (
                 type(item.argument_count) is not int
@@ -1444,6 +1445,7 @@ def _decode_import_scan_payload(
                     None
                     if unbound_keys is None
                     else _source_cache_sorted_strings(unbound_keys),
+                    PythonSourceCallDispatch(dispatch),
                 )
                 for (
                     source,
@@ -1453,7 +1455,8 @@ def _decode_import_scan_payload(
                     strings,
                     bound_keys,
                     unbound_keys,
-                ) in _source_cache_rows(raw_values["calls"], 7)
+                    dispatch,
+                ) in _source_cache_rows(raw_values["calls"], 8)
             ),
             tuple(
                 PythonSourceCallableDeclaration(
@@ -1481,10 +1484,16 @@ def _decode_import_scan_payload(
                     _source_cache_origins(exposed),
                     _source_cache_origins(yielded),
                     _source_cache_origins(yielded_exposed),
+                    _source_cache_bool(returns_calls_only),
                 )
-                for owner, origins, exposed, yielded, yielded_exposed in _source_cache_rows(
-                    raw_values["functions"], 5
-                )
+                for (
+                    owner,
+                    origins,
+                    exposed,
+                    yielded,
+                    yielded_exposed,
+                    returns_calls_only,
+                ) in _source_cache_rows(raw_values["functions"], 6)
             ),
             tuple(
                 (decode_python_source_key(owner), _source_cache_origins(origins))
@@ -1669,7 +1678,12 @@ def _decode_import_scan_payload(
             return None
         if len({item.owner for item in values.functions}) != len(
             values.functions
-        ) or any(item.owner not in declarations for item in values.functions):
+        ) or any(
+            item.owner not in declarations
+            or item.returns_calls_only
+            and (not item.returned or any(key[-1] != "Call" for key in item.returned))
+            for item in values.functions
+        ):
             return None
         if admission.source_owner is not None and (
             values.activation_partitions
@@ -1869,6 +1883,7 @@ def _import_scan_payload(
                     item.argument_strings,
                     item.bound_update_keys,
                     item.unbound_update_keys,
+                    item.dispatch,
                 )
                 for item in scan.source_values.calls
             ],
@@ -1891,6 +1906,7 @@ def _import_scan_payload(
                     sorted(item.returned_exposed),
                     sorted(item.yielded),
                     sorted(item.yielded_exposed),
+                    item.returns_calls_only,
                 )
                 for item in scan.source_values.functions
             ],

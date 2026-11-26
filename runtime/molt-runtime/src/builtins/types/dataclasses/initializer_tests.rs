@@ -33,6 +33,36 @@ extern "C" fn observe_native_initializer_and_raise() -> u64 {
 }
 
 #[test]
+fn initializer_globals_inherit_the_frame_and_preserve_an_explicit_override() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let key = crate::NameId::DunderBuiltins.bits(py);
+        let frame_builtins_ptr = crate::alloc_dict_with_pairs(py, &[]);
+        let frame_builtins = DcValue::owned(py, MoltObject::from_ptr(frame_builtins_ptr).bits());
+        let globals_ptr = crate::alloc_dict_with_pairs(py, &[]);
+        let globals = DcValue::owned(py, MoltObject::from_ptr(globals_ptr).bits());
+        let explicit_ptr = crate::alloc_dict_with_pairs(py, &[key, MoltObject::none().bits()]);
+        let explicit = DcValue::owned(py, MoltObject::from_ptr(explicit_ptr).bits());
+
+        inc_ref_bits(py, frame_builtins.bits);
+        crate::builtins::frames::frame_stack_push_owned(py, 0, 0, frame_builtins.bits);
+        let inherited_result = prepare_globals(py, globals.bits);
+        let explicit_result = prepare_globals(py, explicit.bits);
+        crate::builtins::frames::frame_stack_pop(py);
+
+        assert!(inherited_result.is_ok() && explicit_result.is_ok());
+        assert_eq!(
+            unsafe { dict_get_in_place(py, globals_ptr, key) }.unwrap(),
+            Some(frame_builtins.bits)
+        );
+        assert_eq!(
+            unsafe { dict_get_in_place(py, explicit_ptr, key) }.unwrap(),
+            Some(MoltObject::none().bits())
+        );
+    });
+}
+
+#[test]
 fn native_initializer_observes_its_entry_and_captures_one_escaping_origin() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
@@ -96,7 +126,6 @@ fn native_initializer_observes_its_entry_and_captures_one_escaping_origin() {
                 absent.bits,
                 annotations.bits,
                 globals.bits,
-                none,
                 none,
             ],
         )

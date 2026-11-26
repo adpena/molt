@@ -85,6 +85,7 @@ from molt.compiler_analysis.python_string_facts import (
     python_string_spelling,
 )
 from molt.compiler_analysis.python_source_keys import (
+    PythonElementProtocol,
     PythonSourceKey,
     PythonSourceProjection,
     python_source_projection_key,
@@ -98,6 +99,7 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonBindingFacts,
     PythonSourceArgument,
     PythonSourceCall,
+    PythonSourceCallDispatch,
     PythonNativeInitializerSource,
     PythonSourceClass,
     PythonSourceCallableDeclaration,
@@ -109,7 +111,6 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonExpressionFact,
     PythonFunctionResult,
     PythonActivationPartition,
-    PythonElementProtocol,
     PythonClassPreparation,
     PythonSourceElement,
     PythonIterationFact,
@@ -130,6 +131,7 @@ from molt.compiler_analysis.python_binding_facts import (
     same_python_static_value,
 )
 from molt.compiler_analysis.python_value_identity import (
+    NATIVE_SELECTOR_CONSTRUCTORS,
     SOURCE_CALLABLE_IDENTITIES,
     exact_identity,
     possible_identity,
@@ -277,7 +279,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 85
+_ANALYSIS_SCHEMA: Final = 90
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -2257,6 +2259,7 @@ class _Scope:
     escaped_source_origins: frozenset[PythonSourceKey] = frozenset()
     returned_source_origins: frozenset[PythonSourceKey] = frozenset()
     returned_exposed_source_origins: frozenset[PythonSourceKey] = frozenset()
+    returns_calls_only: bool = True
     yielded_source_origins: frozenset[PythonSourceKey] = frozenset()
     yielded_exposed_source_origins: frozenset[PythonSourceKey] = frozenset()
     escaped_metadata_effects: EffectMask = NO_EFFECTS
@@ -5241,21 +5244,20 @@ class _Analyzer:
             builtins = python_source_projection_key(
                 node, PythonSourceProjection.CALL_NATIVE_BUILTINS
             )
-            self._publish_source_attribute(
-                builtins,
-                "__dict__",
-                items[DataclassInitSpecField.BUILTINS].result.source_origins,
+            global_sources = items[DataclassInitSpecField.GLOBALS].result.source_origins
+            explicit_builtins = python_source_projection_key(
+                node, PythonSourceProjection.CALL_MAPPING_VALUE
+            )
+            previous = self.transfer.source_elements.get(explicit_builtins)
+            self.transfer.source_elements[explicit_builtins] = PythonSourceElement(
+                explicit_builtins,
+                PythonElementProtocol.SUBSCRIPT,
+                global_sources | (previous.origins if previous else frozenset()),
+                "__builtins__",
             )
             attributes = (
-                (
-                    "__builtins__",
-                    frozenset({builtins})
-                    | items[DataclassInitSpecField.BUILTINS].result.source_origins,
-                ),
-                (
-                    "__globals__",
-                    items[DataclassInitSpecField.GLOBALS].result.source_origins,
-                ),
+                ("__builtins__", frozenset({builtins, explicit_builtins})),
+                ("__globals__", global_sources),
                 (
                     "__defaults__",
                     items[
@@ -5596,6 +5598,14 @@ class _Analyzer:
                     (result_fact, argument_results[2])
                 )
             effects |= UNKNOWN_EFFECTS
+            selected_deferred = self._attribute_dispatch(
+                argument_results[0], effects
+            ) | frozenset({DeferredExecution(selected, "read")})
+            if exact:
+                # Descriptor and retirement effects still follow the bounded
+                # getattr protocol. A read need not expose the operand as an
+                # arbitrary argument to unknown code.
+                argument_protocol_indices = frozenset(range(len(argument_results)))
         elif (
             exact
             and callee == int(PythonIdentity.BUILTIN_ISINSTANCE)
@@ -5633,6 +5643,12 @@ class _Analyzer:
             # Python, cannot fail, and neither calls nor publishes `x`
             # (HF-971). The result is a class object of unknown identity.
             argument_protocol_indices = frozenset()
+        elif exact and callee in NATIVE_SELECTOR_CONSTRUCTORS:
+            # The immutable native class stores its operands in the callable.
+            # Metadata and callback effects belong to the later invocation.
+            effects |= ALLOCATES | RAISES
+            argument_protocol_indices = frozenset()
+            retained_argument_indices = frozenset(range(len(argument_results)))
         elif (
             callee == int(PythonIdentity.BUILTIN_ITER)
             and len(node.args) == 1
@@ -6204,6 +6220,35 @@ class _Analyzer:
                 # A call's value is not its callee. Retain the source relation
                 # while deferred jobs publish their actual return origins.
                 call_source = self._node_key(node)
+                dispatch = PythonSourceCallDispatch.OPEN
+                if (
+                    isinstance(node.func, ast.Call)
+                    and len(node.args) == 1
+                    and not node.keywords
+                    and isinstance(node.args[0], ast.Tuple)
+                ):
+                    dispatch = PythonSourceCallDispatch.TUPLE_LITERAL_RECEIVER
+                elif (
+                    callee_result.identities == int(PythonIdentity.OPERATOR_ITEMGETTER)
+                    and node.args
+                    and not node.keywords
+                    and all(
+                        result.value_known and type(result.value) is int
+                        for result in argument_results
+                    )
+                    and not any(isinstance(arg, ast.Starred) for arg in node.args)
+                ):
+                    dispatch = PythonSourceCallDispatch.ITEMGETTER_INTEGER_KEYS
+                elif (
+                    callee_result.identities == int(PythonIdentity.USER_FUNCTION)
+                    and not node.args
+                    and not node.keywords
+                    and isinstance(node.func, ast.Name)
+                    and callee_fact is not None
+                    and not callee_fact.binding_invalidated
+                    and not callee_fact.star_export_lookup
+                ):
+                    dispatch = PythonSourceCallDispatch.SOURCE_FUNCTION
                 first_starred = next(
                     (
                         index
@@ -6241,6 +6286,7 @@ class _Analyzer:
                         unbound_update_keys=literal_mapping_update_keys(
                             node, unbound=True
                         ),
+                        dispatch=dispatch,
                     )
                 )
                 result_override = replace(
@@ -6352,9 +6398,17 @@ class _Analyzer:
                 if fallback_operand is not None
                 else None
             )
+            opaque_argument_dispatch = not builtin and protocol_indices is None
             argument_call = None
             if (
-                isinstance(node.func, ast.Attribute)
+                opaque_argument_dispatch
+                and isinstance(node.func, ast.Call)
+                and self._node_key(node) in self.transfer.source_calls
+            ):
+                argument_call = self._node_key(node)
+            if (
+                opaque_argument_dispatch
+                and isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
                 and (
                     receiver_fact := self.transfer.expressions.get(
@@ -6407,8 +6461,11 @@ class _Analyzer:
                     # Primary module/import sources need the same generic-call
                     # exposure as deferred objects. The scanner must not repeat
                     # this transfer for proven builtin/source callees.
+                    phase: SourceDemandPhase = (
+                        "opaque_argument" if opaque_argument_dispatch else "expose"
+                    )
                     deferred_execution |= frozenset(
-                        DeferredExecution(source, "expose", argument_call)
+                        DeferredExecution(source, phase, argument_call)
                         for source in argument.exposed_source_origins
                     )
                     if argument.exposes_module_globals:
@@ -9238,11 +9295,15 @@ class _Analyzer:
                 effects |= bind_effects
             effects |= ALLOCATES
         elif isinstance(node, ast.Return):
+            scope.returns_calls_only &= isinstance(node.value, ast.Call)
             if node.value is not None:
                 result = self.eval_expr(node.value, state_id, scope)
                 state_id, effects = result.state_id, result.effects
                 scope.escaped_deferred |= result.result.exposed_deferred
                 scope.returned_source_origins |= result.result.source_origins
+                scope.returns_calls_only &= result.result.source_origins == {
+                    self._node_key(node.value)
+                }
                 scope.returned_exposed_source_origins |= (
                     result.result.exposed_source_origins
                 )
@@ -9878,20 +9939,19 @@ class _Analyzer:
         previous_history = self._active_lexical_history
         self._active_lexical_history = observed
         try:
-            self.exec_statements(body, state_id, scope)
+            flow = self.exec_statements(body, state_id, scope)
             if job.annotation_scope:
                 # Annotation evaluators execute through their lexical scope.
                 # The synthetic lambda does not own a source callable result.
                 return
-            previous = self.transfer.source_function_results.get(
+            previous = self.transfer.source_function_results.get(source)
+            previous_closed = previous is None or previous.returns_calls_only
+            previous = previous or PythonFunctionResult(
                 source,
-                PythonFunctionResult(
-                    source,
-                    frozenset(),
-                    frozenset(),
-                    frozenset(),
-                    frozenset(),
-                ),
+                frozenset(),
+                frozenset(),
+                frozenset(),
+                frozenset(),
             )
             self.transfer.source_function_results[source] = previous._replace(
                 returned=previous.returned | scope.returned_source_origins,
@@ -9900,6 +9960,12 @@ class _Analyzer:
                 yielded=previous.yielded | scope.yielded_source_origins,
                 yielded_exposed=previous.yielded_exposed
                 | scope.yielded_exposed_source_origins,
+                returns_calls_only=(
+                    flow.normal is None
+                    and flow.returned is not None
+                    and scope.returns_calls_only
+                    and previous_closed
+                ),
             )
         finally:
             self._active_lexical_history = previous_history

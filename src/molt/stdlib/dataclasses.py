@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-import builtins as _builtins
 import sys as _sys
 from reprlib import recursive_repr
 from types import MappingProxyType, MemberDescriptorType
@@ -402,7 +401,6 @@ def _dataclass_init_factory(cls, fields_map, frozen, slots, has_post_init, globa
         annotations,
         globals,
         dict.get(globals, "__name__"),
-        _builtins,
     )
     return _MOLT_DATACLASSES_INIT(cls, schema, spec)
 

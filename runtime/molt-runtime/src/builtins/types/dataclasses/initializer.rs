@@ -227,15 +227,19 @@ pub(crate) fn molt_dataclasses_init_globals_attached_body(
     })
 }
 
-fn prepare_globals(py: &PyToken<'_>, globals: u64, builtins: u64) -> Result<(), ()> {
+fn prepare_globals(py: &PyToken<'_>, globals: u64) -> Result<(), ()> {
     let ptr = crate::builtins::frames::globals_namespace_storage_ptr(py, globals)?
         .ok_or_else(|| invalid(py, "dataclass initializer globals must be a dictionary"))?;
     let key = DcValue::owned(py, crate::NameId::DunderBuiltins.owned_bits(py).ok_or(())?);
     if unsafe { dict_get_in_place(py, ptr, key.bits) }?.is_none() {
-        // CPython's generated-function exec inserts precisely this one key.
-        // Keep that bounded effect at function construction, without exposing
-        // either module dictionary to an opaque Python consumer.
-        let dictionary = dc_attr(py, builtins, crate::NameId::DunderDict)?;
+        // exec inherits the executing frame's captured builtins.
+        let bits = crate::builtins::frames::frame_effective_builtins_bits(py, 0)?;
+        if bits == 0 {
+            invalid(py, "dataclass initializer has no active builtins");
+            return Err(());
+        }
+        inc_ref_bits(py, bits);
+        let dictionary = DcValue::owned(py, bits);
         if !unsafe { dict_set_in_place(py, ptr, key.bits, dictionary.bits) } {
             return Err(());
         }
@@ -381,11 +385,7 @@ fn build_initializer<'guard>(
         invalid(py, "invalid dataclass initializer schema");
         return Err(());
     }
-    prepare_globals(
-        py,
-        spec[InitSpecField::Globals as usize],
-        spec[InitSpecField::Builtins as usize],
-    )?;
+    prepare_globals(py, spec[InitSpecField::Globals as usize])?;
     let candidate_owner = DcValue::owned(py, unsafe {
         ClassReferenceSlot::DataclassInitTemplate.exchange_owned(class_ptr, 0)
     });

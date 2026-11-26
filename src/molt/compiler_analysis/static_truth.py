@@ -59,6 +59,8 @@ SourceDemandPhase = Literal[
     "resume",
     "escape",
     "expose",
+    # The reached callee can use or retain an argument's visible metadata.
+    "opaque_argument",
     "release",
     "release_contents",
     "protocol",

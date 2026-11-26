@@ -10,7 +10,6 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonSourceCall,
     PythonSourceCallableDeclaration,
     PythonSourceElement,
-    PythonElementProtocol,
     PythonNativeInitializerSource,
     PythonSourceClass,
 )
@@ -37,6 +36,7 @@ from molt.compiler_analysis.python_imports import (
 )
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 from molt.compiler_analysis.python_source_keys import (
+    PythonElementProtocol,
     PythonSourceKey,
     PythonSourceProjection,
 )
@@ -50,6 +50,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     PythonIteratorPayloadKind,
 )
 from molt.compiler_analysis.python_value_identity import (
+    NATIVE_SELECTOR_CONSTRUCTORS,
     SOURCE_CALLABLE_IDENTITIES,
     SOURCE_ITERATION_CALLABLES,
     possible_runtime_import_call_identities,
@@ -103,6 +104,7 @@ class SourceCandidate(NamedTuple):
         "iterator_next",
         "iterator_self",
         "native_selector",
+        "reflective_result",
         "class_descriptor",
         "static_descriptor",
         "property_descriptor",
@@ -624,6 +626,9 @@ class PythonSourceDemands:
                     | result.returned_exposed,
                     yielded=previous.yielded | result.yielded,
                     yielded_exposed=previous.yielded_exposed | result.yielded_exposed,
+                    returns_calls_only=(
+                        previous.returns_calls_only and result.returns_calls_only
+                    ),
                 )
             if self._publish(self.functions, value, result):
                 old = (
@@ -821,7 +826,7 @@ class PythonSourceDemands:
             if closed(module, site):
                 continue
             for source in origins:
-                self.demand((module, source), "expose", consumer=module)
+                self.demand((module, source), "opaque_argument", consumer=module)
             del self.argument_exposures[module, site]
             released = True
         return released
@@ -1136,6 +1141,10 @@ class PythonSourceDemands:
         member_visiting=frozenset(),
         binding_owner=None,
     ):
+        if owner.kind == "reflective_result" and not owner.contained:
+            if name in {"__builtins__", "f_builtins"}:
+                return {_INTERPRETER_BUILTINS}
+            return {owner}
         if owner.identity is not None:
             if owner.kind == "native_selector" and name == "__call__":
                 return {owner}
@@ -1913,12 +1922,18 @@ class PythonSourceDemands:
         return selected
 
     def _argument_candidates(
-        self, argument: PythonSourceArgument, user: SourceValue, include_contents: bool
+        self,
+        argument: PythonSourceArgument,
+        user: SourceValue,
+        include_contents: bool,
+        *,
+        module: str | None = None,
     ) -> set[SourceCandidate]:
         name, direct, exposed = argument
+        defining_module = module or user[0]
         selected: set[SourceCandidate] = set()
         for origin in exposed if include_contents or name is None else direct:
-            for candidate in self.watch((user[0], origin), user):
+            for candidate in self.watch((defining_module, origin), user):
                 # An expansion can move a contained value to an actual
                 # argument. Until its arity is known, keep that alternative.
                 contained = name is not None and (
@@ -1935,8 +1950,25 @@ class PythonSourceDemands:
         module, source = value
         if isinstance(source, SourceIteratorItems):
             source = source.site
+        phase = demand.phase
+        if phase == "opaque_argument":
+            if (
+                type(source) is tuple
+                and len(source) == 5
+                and candidate.kind
+                in {
+                    "native_initializer",
+                    "bound_native_initializer",
+                    "reflective_result",
+                }
+            ):
+                self._record_namespace_write(
+                    module, source, _INTERPRETER_BUILTINS, None
+                )
+            # The ordinary exposure transfer owns the body and retained values.
+            phase = "expose"
         if (
-            demand.phase in {"escape", "expose"}
+            phase in {"escape", "expose"}
             and (
                 candidate.kind == "namespace"
                 or candidate.namespace_mutation is not None
@@ -1951,7 +1983,7 @@ class PythonSourceDemands:
             )
         self.activate(
             candidate,
-            demand.phase,
+            phase,
             demand.arguments,
             argument_count=demand.argument_count,
             consumer=demand.consumer,
@@ -2109,13 +2141,26 @@ class PythonSourceDemands:
                         )
                     elif element.protocol is PythonElementProtocol.REFLECTED_BUILTINS:
                         if (
+                            candidate.source is None
+                            and candidate.identity is None
+                            and candidate.kind == "value"
+                            and not candidate.contained
+                        ):
+                            # With no finite name, a module lookup can select
+                            # any export or call __getattr__ with an unknown key.
+                            self.activate(candidate, "expose", consumer=module_name)
+                        elif (
                             candidate.identity is PythonIdentity.CURRENT_FRAME
                             and not candidate.contained
                         ):
                             candidates.add(_INTERPRETER_BUILTINS)
                         elif not candidate.contained and (
                             candidate.kind
-                            in {"native_initializer", "bound_native_initializer"}
+                            in {
+                                "native_initializer",
+                                "bound_native_initializer",
+                                "reflective_result",
+                            }
                             or candidate.value in self.declarations
                         ):
                             candidates.add(_INTERPRETER_BUILTINS)
@@ -2193,13 +2238,14 @@ class PythonSourceDemands:
                                         value,
                                     )
                                 )
-                        elif candidate.identity in {
-                            PythonIdentity.OPERATOR_ITEMGETTER,
-                            PythonIdentity.OPERATOR_ATTRGETTER,
-                        }:
-                            if call.arguments and all(
-                                not isinstance(name, str)
-                                for name, _, _ in call.arguments
+                        elif candidate.identity in NATIVE_SELECTOR_CONSTRUCTORS:
+                            if call.arguments and (
+                                candidate.identity
+                                is PythonIdentity.OPERATOR_METHODCALLER
+                                or all(
+                                    not isinstance(name, str)
+                                    for name, _, _ in call.arguments
+                                )
                             ):
                                 candidates.add(
                                     SourceCandidate(
@@ -2722,14 +2768,91 @@ class PythonSourceDemands:
             }
         return selected
 
+    def _methodcaller_values(
+        self,
+        selector: SourceCandidate,
+        constructor: PythonSourceCall,
+        owners: Collection[SourceCandidate],
+        user: SourceValue,
+    ) -> set[SourceCandidate]:
+        names = constructor.argument_strings
+        member = names[0] if names else None
+        # Invocation looks up the method on the receiver before passing its
+        # captured arguments. A custom lookup may have effects of its own.
+        for owner in owners:
+            self.activate(owner, "descriptor", consumer=user[0])
+        if member is None or constructor.arguments[0][0] != 0:
+            return {
+                _INTERPRETER_BUILTINS,
+                SourceCandidate(*selector.value, "reflective_result"),
+            }
+        actuals = constructor.arguments[1:]
+        selectors = tuple(
+            name - 1 if isinstance(name, int) else name for name, _, _ in actuals
+        )
+        fixed_key = (
+            names[1] if len(names) > 1 and actuals and actuals[0][0] == 1 else None
+        )
+
+        def argument(index: int, packed: bool) -> set[SourceCandidate]:
+            return {
+                candidate._replace(contained=packed or candidate.contained)
+                for candidate in self._argument_candidates(
+                    actuals[index], user, True, module=selector.module
+                )
+            }
+
+        result: set[SourceCandidate] = set()
+        for owner in owners:
+            if member == "__getattribute__":
+                # The default slot reads the named attribute directly. A
+                # source override is also an ordinary callback below.
+                if fixed_key is None:
+                    result.update(
+                        {
+                            _INTERPRETER_BUILTINS,
+                            SourceCandidate(*selector.value, "reflective_result"),
+                        }
+                    )
+                else:
+                    selected = (owner.module, SourceMember(owner, fixed_key))
+                    result.update(self.watch(selected, user))
+            selection = (owner.module, SourceMember(owner, member))
+            for callee in self.watch(selection, user):
+                self._bind_actuals(
+                    selectors,
+                    argument,
+                    callee.value,
+                    user,
+                    owner.kind == "instance"
+                    and callee.kind != "bound_static_method"
+                    or callee.kind == "bound_class_method",
+                )
+                self.activate(callee, "call", consumer=user[0])
+                result.update(self._returned_values(callee, user))
+                if callee.namespace_mutation is not None:
+                    site = user[1]
+                    if isinstance(site, SourceIteratorItems):
+                        site = site.site
+                    if type(site) is tuple and len(site) == 5:
+                        key = (
+                            fixed_key
+                            if callee.namespace_mutation is MappingWriteScope.KEY
+                            else None
+                        )
+                        self._record_namespace_write(user[0], site, callee, key)
+        return result
+
     def _native_selector_values(
         self,
         selector: SourceCandidate,
-        owners: Iterable[SourceCandidate],
+        owners: Collection[SourceCandidate],
         user: SourceValue,
     ) -> set[SourceCandidate]:
         self.watch(selector.value, user)
         constructor = self.calls[selector.value]
+        if selector.identity is PythonIdentity.OPERATOR_METHODCALLER:
+            return self._methodcaller_values(selector, constructor, owners, user)
         expanded = any(name is None for name, _, _ in constructor.arguments)
         keys: dict[str | None, set[SourceCandidate]] = {}
         for index, (name, origins, exposed) in enumerate(constructor.arguments):
@@ -2750,6 +2873,12 @@ class PythonSourceDemands:
                         # Expansion may supply the inner value as a key itself.
                         values.add(value._replace(contained=False))
         result: set[SourceCandidate] = set()
+        if selector.identity is PythonIdentity.OPERATOR_ATTRGETTER and None in keys:
+            # A computed, possibly dotted selection may expose the live table
+            # directly or return an object through which metadata is accessible.
+            # Keep the capability on the result for its actual consumer.
+            result.add(_INTERPRETER_BUILTINS)
+            result.add(SourceCandidate(*selector.value, "reflective_result"))
         for owner in owners:
             for key, values in keys.items():
                 if selector.identity is PythonIdentity.OPERATOR_ITEMGETTER:

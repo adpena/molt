@@ -2437,7 +2437,7 @@ def test_typed_element_value_matches_actual_cpython_protocol_selection(
     tmp_path, operation
 ):
     import asyncio
-    from molt.compiler_analysis.python_binding_facts import PythonElementProtocol
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
     from molt.compiler_analysis.python_imports import _ImportScanRequests
     from molt.compiler_analysis.python_source_demands import PythonSourceDemands
 

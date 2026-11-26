@@ -32,6 +32,7 @@ from molt.compiler_analysis.python_value_identity import (
 )
 from molt.compiler_analysis.python_effects_generated import EffectMask
 from molt.compiler_analysis.python_source_keys import (
+    PythonElementProtocol,
     PythonSourceKey,
     PythonSourceProjection,
     python_node_source_key,
@@ -138,6 +139,7 @@ class PythonFunctionResult(NamedTuple):
     returned_exposed: frozenset[PythonSourceKey]
     yielded: frozenset[PythonSourceKey]
     yielded_exposed: frozenset[PythonSourceKey]
+    returns_calls_only: bool = False
 
 
 class PythonActivationPartition(NamedTuple):
@@ -152,6 +154,15 @@ PythonSourceArgument: TypeAlias = tuple[
 ]
 
 
+class PythonSourceCallDispatch(StrEnum):
+    """Bounded call proofs from one binding-analysis context."""
+
+    OPEN = "open"
+    SOURCE_FUNCTION = "source_function"
+    ITEMGETTER_INTEGER_KEYS = "itemgetter_integer_keys"
+    TUPLE_LITERAL_RECEIVER = "tuple_literal_receiver"
+
+
 class PythonSourceCall(NamedTuple):
     """Source call value transfer, with argument facts already bound by analysis."""
 
@@ -162,9 +173,18 @@ class PythonSourceCall(NamedTuple):
     argument_strings: tuple[str | None, ...] = ()
     bound_update_keys: tuple[str, ...] | None = None
     unbound_update_keys: tuple[str, ...] | None = None
+    dispatch: PythonSourceCallDispatch = PythonSourceCallDispatch.OPEN
 
     def has_valid_source_form(self) -> bool:
         if self.owner[-1] == "Call":
+            if self.dispatch is PythonSourceCallDispatch.SOURCE_FUNCTION:
+                return bool(self.callees) and not self.arguments
+            if self.dispatch is PythonSourceCallDispatch.ITEMGETTER_INTEGER_KEYS:
+                return bool(self.arguments) and all(
+                    name == index for index, (name, _, _) in enumerate(self.arguments)
+                )
+            if self.dispatch is PythonSourceCallDispatch.TUPLE_LITERAL_RECEIVER:
+                return len(self.arguments) == 1 and self.arguments[0][0] == 0
             return True
         return (
             self.owner[-1] == PythonSourceProjection.DECORATOR_APPLY
@@ -175,12 +195,18 @@ class PythonSourceCall(NamedTuple):
             and self.argument_strings == (None,)
             and self.bound_update_keys is None
             and self.unbound_update_keys is None
+            and self.dispatch is PythonSourceCallDispatch.OPEN
         )
 
     def join(self, prior: PythonSourceCall) -> PythonSourceCall:
         return self._replace(
             callees=self.callees | prior.callees,
             intrinsic_result=self.intrinsic_result | prior.intrinsic_result,
+            dispatch=(
+                self.dispatch
+                if self.dispatch is prior.dispatch
+                else PythonSourceCallDispatch.OPEN
+            ),
             arguments=tuple(
                 (name, origins | earlier[1], exposed | earlier[2])
                 for (name, origins, exposed), earlier in zip(
@@ -244,24 +270,6 @@ class PythonSourceCallableDeclaration(NamedTuple):
 class PythonClassPreparation(StrEnum):
     PYTHON = "python"
     MOLT_NATIVE = "molt_native"
-
-
-class PythonElementProtocol(StrEnum):
-    CLASS_METHOD = "class_method"
-    STATIC_METHOD = "static_method"
-    # `property(fget)`: an instance attribute load calls `fget` with the
-    # instance; a class attribute load returns the property itself.
-    PROPERTY = "property"
-    SUBSCRIPT = "subscript"
-    REFLECTED_BUILTINS = "reflected_builtins"
-    REFLECTED_GLOBALS = "reflected_globals"
-    MAPPING_WRITE = "mapping_write"
-    # Zero-argument `super()` as an attribute receiver: the origins are the
-    # enclosing function's first argument. An attribute of it selects from
-    # the strict ancestors of the argument's class and binds the argument.
-    SUPER = "super"
-    ITERATE = "iterate"
-    ASYNC_ITERATE = "async_iterate"
 
 
 class PythonSourceElement(NamedTuple):
