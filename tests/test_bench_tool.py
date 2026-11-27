@@ -231,7 +231,13 @@ def test_prepare_molt_binary_defaults_to_cache_reuse(
         command = commands[0]
         assert "--cache" in command
         assert "--rebuild" not in command
-        assert pruned_envs == [{"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)}]
+        assert pruned_envs == [
+            {
+                "BASE": "1",
+                "MOLT_EXT_ROOT": str(tmp_path),
+                "MOLT_PROJECT_ROOT": str(bench_tool.REPO_ROOT.resolve()),
+            }
+        ]
     finally:
         binary.temp_dir.cleanup()
 
@@ -1370,7 +1376,10 @@ def test_prepare_molt_binary_uses_batch_build_server(
         assert params["trusted"] is True
         assert params["json_output"] is True
         assert params["cache"] is True
-        assert env_overrides == environment
+        assert dict(env_overrides) == {
+            **environment,
+            "MOLT_PROJECT_ROOT": str(bench_tool.REPO_ROOT.resolve()),
+        }
         assert "env_overrides" not in params
         assert not {"codec", "type_hints", "type_facts", "backend"} & params.keys()
     finally:
@@ -1885,7 +1894,7 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
     assert timeout_s == 0.25
     assert not build_directory.exists()
     assert len(prunes) == 1  # Initial maintenance only.
-    assert restarts == [None]  # Close the unsynchronized stream for future cells.
+    assert restarts == [bench_tool.REPO_ROOT.resolve()]  # Close this project's stream.
 
 
 def test_host_capacity_refusal_is_infrastructure_not_a_build_failure() -> None:
@@ -2736,6 +2745,218 @@ def test_benchmark_build_request_rejects_missing_capabilities_value(tmp_path):
             extra_args=["--capabilities"],
             env={},
         )
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+@pytest.mark.parametrize("route", ["direct", "batch"])
+@pytest.mark.parametrize("explicit_stdlib", [False, True])
+def test_benchmark_project_request_reaches_public_and_batch_consumers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    target: str,
+    route: str,
+    explicit_stdlib: bool,
+) -> None:
+    from molt.cli import entrypoint
+    from molt.cli.build_request import BuildRequest, build_request_from_payload
+    from molt.compilation_target import target_name
+
+    controller = tmp_path / "controller"
+    project = tmp_path / "sealed-project"
+    controller.mkdir()
+    project.mkdir()
+    (controller / "pyproject.toml").write_text(
+        '[tool.molt.build]\nstdlib-profile="micro"\n', encoding="utf-8"
+    )
+    (project / "pyproject.toml").write_text(
+        '[tool.molt.build]\nstdlib-profile="full"\n'
+        'lib-paths=["recipe-lib"]\ninclude-modules=["json"]\n'
+        'capabilities="fs.read"\nprofile="dev"\ncache=false\n'
+        f'target="{"wasm" if target == "native" else "native"}"\n'
+        f"trusted={str(target == 'wasm').lower()}\n"
+        f"linked={str(target == 'native').lower()}\n"
+        f"require-linked={str(target == 'native').lower()}\n",
+        encoding="utf-8",
+    )
+    (project / "probe.py").write_text("print(1)\n", encoding="utf-8")
+    observed: list[BuildRequest] = []
+    monkeypatch.setattr(bench_tool, "REPO_ROOT", controller)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda env: {
+            "MOLT_EXT_ROOT": str(tmp_path),
+            "MOLT_PROJECT_ROOT": str(controller),
+        },
+    )
+
+    class Batch:
+        def request_build(
+            self,
+            params: dict[str, object],
+            *,
+            env_overrides: Mapping[str, str],
+            timeout_s: float,
+            source_cwd: Path | None,
+        ) -> dict[str, object]:
+            assert source_cwd == project
+            assert env_overrides["MOLT_PROJECT_ROOT"] == str(project)
+            observed.append(build_request_from_payload(params))
+            return {"ok": False, "returncode": 2, "stderr": "observation only"}
+
+    def record_public(
+        command: list[str],
+        *,
+        prefix: str,
+        env: Mapping[str, str],
+        cwd: Path,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        limits: bench_tool.harness_memory_guard.HarnessMemoryLimits,
+    ) -> bench_tool.harness_memory_guard.GuardedCompletedProcess:
+        assert cwd == project
+        assert env["MOLT_PROJECT_ROOT"] == str(project)
+        with monkeypatch.context() as child:
+            child.setenv("MOLT_PROJECT_ROOT", str(project))
+            child.delenv("MOLT_STDLIB_PROFILE", raising=False)
+            child.setattr(sys, "argv", ["molt", *command[3:]])
+            assert (
+                entrypoint.main(build_fn=lambda request: observed.append(request) or 0)
+                == 0
+            )
+        return _guarded_result(command, 2, "", "observation only")
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", record_public
+    )
+    extra = ["--backend", "cranelift" if target == "native" else "llvm"]
+    if explicit_stdlib:
+        extra += ["--stdlib-profile=micro"]
+    result = bench_tool.prepare_molt_binary(
+        "probe.py",
+        extra_args=extra,
+        env={},
+        build_target=target,
+        source_cwd=project,
+        batch_server=Batch() if route == "batch" else None,
+    )
+    assert isinstance(result, bench_tool.MoltFailure)
+    assert len(observed) == 1
+    request = observed[0]
+    assert request.file_path == str(project / "probe.py")
+    assert request.stdlib_profile == ("micro" if explicit_stdlib else "full")
+    assert request.build_config["stdlib-profile"] == "full"
+    assert request.lib_paths == ["recipe-lib"]
+    assert request.include_modules == ("json",)
+    assert request.capabilities == "fs.read"
+    assert request.profile == "release" and request.cache
+    assert request.trusted is (target == "native")
+    assert request.linked is (target == "wasm")
+    assert request.require_linked is (target == "wasm")
+    assert target_name(request.target) == target
+
+
+def test_benchmark_preserves_instruction_program_project_root(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.molt.build]\nstdlib-profile="full"\n', encoding="utf-8"
+    )
+    params = bench_tool._molt_build_params(
+        script=str(tmp_path / "generated.py"),
+        out_dir=tmp_path / "out",
+        build_profile="release",
+        extra_args=[],
+        env={"MOLT_PROJECT_ROOT": str(tmp_path), "MOLT_STDLIB_PROFILE": "micro"},
+    )
+    # The existing public precedence is flag > environment > project config.
+    assert params["stdlib_profile"] == "micro"
+    assert params["build_config"] == {"stdlib-profile": "full"}
+
+
+def test_batch_server_launch_ignores_foreign_project_override(tmp_path: Path) -> None:
+    foreign = tmp_path / "foreign"
+    admitted = tmp_path / "admitted"
+    foreign.mkdir()
+    admitted.mkdir()
+    # The real CLI refuses this before entering its batch RPC loop if the
+    # guard's launch mapping still selects the controller's ambient project.
+    (foreign / "pyproject.toml").write_text(
+        "[tool.molt.build]\nfallback=true\n", encoding="utf-8"
+    )
+    env = bench_tool._canonical_bench_env().updated({"MOLT_PROJECT_ROOT": str(foreign)})
+    server = bench_tool._BenchBatchBuildServer(env)
+    try:
+        client = server.start(admitted)
+        response = client.request("ping", params={}, env_overrides={}, timeout=10.0)
+        assert response["pong"] is True
+        assert client._guard_context.env["MOLT_PROJECT_ROOT"] == str(admitted)
+        # The lane context remains stable for the single suite sentinel.
+        assert server._guard_context.env["MOLT_PROJECT_ROOT"] == str(foreign)
+    finally:
+        server.close(force=True)
+
+
+@pytest.mark.parametrize("route", ["direct", "batch"])
+@pytest.mark.parametrize("config", ["[tool.molt.build]\nlib-paths=7\n", "tool=7\n"])
+def test_benchmark_malformed_config_is_retained_cell_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    route: str,
+    config: str,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(config, encoding="utf-8")
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
+    result = bench_tool.prepare_molt_binary(
+        "probe.py",
+        env={},
+        source_cwd=tmp_path,
+        batch_server=object() if route == "batch" else None,
+    )
+    assert isinstance(result, bench_tool.MoltFailure)
+    assert result.detail == "build_request_invalid" and result.returncode == 2
+    assert result.stderr
+
+
+@pytest.mark.parametrize("field", ["output", "linked-output", "emit", "emit-ir"])
+@pytest.mark.parametrize("route", ["direct", "batch"])
+def test_benchmark_config_output_redirect_refused_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    field: str,
+    route: str,
+) -> None:
+    value = "obj" if field == "emit" else str(tmp_path / "escaped")
+    (tmp_path / "pyproject.toml").write_text(
+        f'[tool.molt.build]\n{field}="{value}"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("redirected build reached a process boundary")
+
+    class Batch:
+        request_build = forbidden
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", forbidden
+    )
+    result = bench_tool.prepare_molt_binary(
+        "probe.py",
+        env={},
+        source_cwd=tmp_path,
+        batch_server=Batch() if route == "batch" else None,
+    )
+    assert isinstance(result, bench_tool.MoltFailure)
+    assert result.detail == "build_request_invalid"
+    assert "cannot configure" in result.stderr
+    assert not (tmp_path / "escaped").exists()
 
 
 def test_failed_baseline_diagnostics_precede_missing_clock(monkeypatch, capsys):

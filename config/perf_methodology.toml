@@ -78,8 +78,10 @@ schema = "molt-perf-methodology-v1"
 # branches directly, changing admitted dependencies and emitted instructions.
 # One synchronous source-outcome dependency observation can reduce compile time.
 # Tool source closure keys use the selected per-file content digests.
-version = 157
-content_sha256 = "972599de06961bbcd3d08afbbe731ad4977453cf2ef3672be890bb52edd25f6a"
+# v158: measured builds share public configuration/option normalization;
+# sealed recipe inputs and explicit deployment ownership replace batch defaults.
+version = 158
+content_sha256 = "d205d2f92afd6a23e9b0ec10e34ad10a454ec74c65abf137e5be252a538a986f"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -324,17 +326,37 @@ reason = "classifies external benchmark reference requirements outside sample ti
 path = "tools/bench_reporting.py"
 role = "rejects incompatible baseline profile/timing evidence before regression classification"
 
-[[mechanics]]
+[[methodology]]
 path = "src/molt/cli/build_request.py"
-reason = "compiler build-request transport outside guest sampling; selected compiler, runtime and deployment identities are recorded separately"
+role = "defines effective build defaults and batch request transport for measured artifacts"
 
 [[methodology]]
 path = "src/molt/compilation_target.py"
 role = "admits the observed target used by metric-lane comparison policy"
 
-[[mechanics]]
+[[methodology]]
 path = "src/molt/cli/config_resolution.py"
-reason = "compiler option admission outside sampling; selected backend and profile coordinates are recorded independently"
+role = "selects project and environment options used to build measured artifacts"
+
+[[methodology]]
+path = "src/molt/cli/build_request_resolution.py"
+role = "normalizes direct and batch benchmark builds through the public project configuration and option precedence"
+
+[[methodology]]
+path = "src/molt/cli/entrypoint_parser.py"
+role = "defines public build grammar and defaults used by benchmark request normalization"
+
+[[methodology]]
+path = "src/molt/cli/build_output_layout.py"
+role = "defines deployment profile defaults consumed by measured build normalization"
+
+[[methodology]]
+path = "src/molt/cli/run_tier.py"
+role = "admits executable emission tiers during measured build normalization"
+
+[[methodology]]
+path = "src/molt/wasm_optimization.py"
+role = "selects WASM optimizer defaults used by measured build normalization"
 
 [[methodology]]
 path = "tools/bench_evidence.py"
@@ -656,3 +678,75 @@ reason = "recognizes proof command entrypoints for custody, not workload statist
 [[mechanics]]
 path = "tools/win_job.py"
 reason = "owns Windows Job containment and closure, not comparison statistics"
+
+[[mechanics]]
+path = "src/molt/build_output_selection.py"
+reason = "output-layout helper not reached by benchmark request normalization; measured artifact selection retains its own authority"
+
+[[mechanics]]
+path = "src/molt/build_record.py"
+reason = "build-record types not instantiated by benchmark request normalization"
+
+[[mechanics]]
+path = "src/molt/capability_policy.py"
+reason = "capability type vocabulary; the governed resolver chooses the effective input"
+
+[[mechanics]]
+path = "src/molt/cli/__init__.py"
+reason = "lazy CLI facade; benchmark normalization imports its explicit owning modules"
+
+[[mechanics]]
+path = "src/molt/cli/arg_helpers.py"
+reason = "build help formatting and non-build argument helpers, not effective build defaults"
+
+[[mechanics]]
+path = "src/molt/cli/backend_artifact_contract.py"
+reason = "artifact publication helpers not reached by benchmark request normalization"
+
+[[mechanics]]
+path = "src/molt/cli/compiler_metadata.py"
+reason = "JIT metadata helpers not reached by executable benchmark request normalization"
+
+[[mechanics]]
+path = "src/molt/cli/dx_cli.py"
+reason = "registers unrelated development subcommands; not reached by the build-only parser"
+
+[[mechanics]]
+path = "src/molt/cli/factgraph.py"
+reason = "factgraph subcommand helpers; not executed by benchmark builds"
+
+[[mechanics]]
+path = "src/molt/cli/native_launch_abi_generated.py"
+reason = "JIT runner ABI constants not reached by executable benchmark normalization"
+
+[[mechanics]]
+path = "src/molt/cli/product_kinds.py"
+reason = "non-build product subcommand vocabulary"
+
+[[mechanics]]
+path = "src/molt/cli/product_store.py"
+reason = "product store helpers not reached by benchmark request normalization"
+
+[[mechanics]]
+path = "src/molt/cli/source_extension_invocation.py"
+reason = "registers extension-only grammar, not benchmark build options"
+
+[[mechanics]]
+path = "src/molt/compiler_distribution.py"
+reason = "compiler installation helpers not reached by pure benchmark request normalization"
+
+[[mechanics]]
+path = "src/molt/debug/__init__.py"
+reason = "debug subcommand vocabulary, not benchmark build options"
+
+[[mechanics]]
+path = "src/molt/file_locks.py"
+reason = "file locking outside guest samples and pure request normalization"
+
+[[mechanics]]
+path = "src/molt/target_python_policy.py"
+reason = "non-build CLI guest defaults; benchmark builds bind their oracle minor explicitly"
+
+[[mechanics]]
+path = "src/molt/type_facts.py"
+reason = "type-hint vocabulary; effective request intent is selected by the governed public resolver"

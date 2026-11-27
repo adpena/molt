@@ -12,7 +12,7 @@ import statistics
 import subprocess
 import sys
 import threading
-from typing import Any, Literal, cast
+from typing import Any, Literal
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, replace
@@ -80,15 +80,9 @@ from tools.bench_evidence import AdmittedBenchmarkWorkload, admit_benchmark_work
 
 MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 from tools import perf_authority  # noqa: E402
-from molt.compilation_target import admit_target  # noqa: E402
+from molt.default_paths import expand_user_path  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
-from molt.cli.build_request import (  # noqa: E402
-    BuildProfile,
-    BuildRequest,
-    TypeHintPolicy,
-    build_request_to_payload,
-)
-from molt.cli.config_resolution import _select_codegen_backend  # noqa: E402
+from molt.cli.build_request import build_request_to_payload  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
     artifact_root as dx_artifact_root,
@@ -751,7 +745,7 @@ class _BenchBatchBuildServer:
         self._clients: dict[Path, BatchCompileServerClient] = {}
 
     def start(self, source_cwd: Path | None = None) -> BatchCompileServerClient:
-        project = (source_cwd or REPO_ROOT).resolve()
+        project = _benchmark_project_root(source_cwd, self._env)
         if project in self._clients:
             client = self._clients.pop(project)
             self._clients[project] = client
@@ -771,6 +765,10 @@ class _BenchBatchBuildServer:
                 # Register before the clients so their own exit handlers get
                 # the first chance to close, then retry and drain the lane.
                 atexit.register(self.close, force=True)
+        launch_context = replace(
+            self._guard_context,
+            env=self._guard_context.env.updated({"MOLT_PROJECT_ROOT": str(project)}),
+        )
         client = BatchCompileServerClient(
             [
                 sys.executable,
@@ -779,8 +777,8 @@ class _BenchBatchBuildServer:
                 "internal-batch-build-server",
             ],
             cwd=project,
-            env=self._env,
-            guard_context=self._guard_context,
+            env=launch_context.env,
+            guard_context=launch_context,
             reader_name="molt-bench-batch-server-reader",
             borrowed_sentinel=self._borrowed_sentinel or self._owned_sentinel,
             start_local_sentinel=False,
@@ -822,12 +820,69 @@ class _BenchBatchBuildServer:
         self._guard_started = False
 
     def restart(self, source_cwd: Path | None = None) -> None:
-        project = (source_cwd or REPO_ROOT).resolve()
+        project = _benchmark_project_root(source_cwd, self._env)
         client = self._clients.get(project)
         if client is not None:
             client.close(force=True, timeout=5.0)
             del self._clients[project]
         self.start(project)
+
+
+def _benchmark_project_root(source_cwd: Path | None, env: Mapping[str, str]) -> Path:
+    if source_cwd is not None:
+        return source_cwd.resolve()
+    explicit = env.get("MOLT_PROJECT_ROOT")
+    if explicit:
+        root = expand_user_path(explicit, environment=env)
+        return (root if root.is_absolute() else REPO_ROOT / root).resolve()
+    return REPO_ROOT.resolve()
+
+
+def _molt_build_arguments(
+    *,
+    script: str,
+    out_dir: Path,
+    build_profile: str,
+    extra_args: list[str] | None,
+    use_molt_build_cache: bool = True,
+    build_target: Literal["native", "wasm"] = "native",
+) -> list[str]:
+    if build_target not in {"native", "wasm"}:
+        raise ValueError(f"unsupported benchmark build target: {build_target}")
+    # Recipes may select semantics, not replace the measured deployment or
+    # redirect its artifacts. The public parser owns option values and defaults.
+    options = {
+        "--python-version",
+        "--type-hints",
+        "--backend",
+        "--stdlib-profile",
+        "--capabilities",
+    }
+    remaining = deque(extra_args or ())
+    while remaining:
+        arg = remaining.popleft()
+        option, separator, _value = arg.partition("=")
+        if option not in options:
+            raise ValueError(f"unsupported benchmark Molt build arg: {arg}")
+        if not separator:
+            if not remaining:
+                raise ValueError(f"{option} requires a value")
+            remaining.popleft()
+    return [
+        "--build-profile",
+        build_profile,
+        "--target",
+        build_target,
+        "--trusted" if build_target == "native" else "--no-trusted",
+        "--linked" if build_target == "wasm" else "--no-linked",
+        "--require-linked" if build_target == "wasm" else "--no-require-linked",
+        "--json",
+        "--cache" if use_molt_build_cache else "--rebuild",
+        "--out-dir",
+        str(out_dir),
+        *(extra_args or ()),
+        script,
+    ]
 
 
 def _molt_build_params(
@@ -839,75 +894,36 @@ def _molt_build_params(
     env: Mapping[str, str],
     use_molt_build_cache: bool = True,
     build_target: Literal["native", "wasm"] = "native",
+    source_cwd: Path | None = None,
 ) -> dict[str, object]:
-    request = BuildRequest(
-        file_path=script,
-        profile=cast(BuildProfile, build_profile),
-        target=admit_target(build_target),
-        trusted=build_target == "native",
-        json_output=True,
-        out_dir=str(out_dir),
-        cache=use_molt_build_cache,
-        linked=build_target == "wasm",
-        require_linked=build_target == "wasm",
+    # Keep metadata-only planning independent of the public build parser.
+    from molt.cli.build_request_resolution import resolve_build_arguments
+
+    arguments = _molt_build_arguments(
+        script=script,
+        out_dir=out_dir,
+        build_profile=build_profile,
+        extra_args=extra_args,
+        use_molt_build_cache=use_molt_build_cache,
+        build_target=build_target,
     )
-    remaining = deque(extra_args or ())
-    while remaining:
-        arg = remaining.popleft()
-        if arg == "--python-version":
-            if not remaining:
-                raise ValueError("--python-version requires a value")
-            request = replace(request, python_version=remaining.popleft())
-            continue
-        if arg.startswith("--python-version="):
-            request = replace(request, python_version=arg.split("=", maxsplit=1)[1])
-            continue
-        if arg == "--type-hints":
-            if not remaining:
-                raise ValueError("--type-hints requires a value")
-            request = replace(
-                request, type_hint_policy=cast(TypeHintPolicy, remaining.popleft())
-            )
-            continue
-        if arg.startswith("--type-hints="):
-            request = replace(
-                request,
-                type_hint_policy=cast(TypeHintPolicy, arg.split("=", maxsplit=1)[1]),
-            )
-            continue
-        if arg == "--backend":
-            if not remaining:
-                raise ValueError("--backend requires a value")
-            backend_choice = remaining.popleft()
-        elif arg.startswith("--backend="):
-            backend_choice = arg.split("=", maxsplit=1)[1]
-        else:
-            backend_choice = None
-        if backend_choice is not None:
-            target, backend, error = _select_codegen_backend(
-                build_target, backend_choice, build_profile=request.profile
-            )
-            if error is not None:
-                raise ValueError(error)
-            request = replace(request, target=target, codegen_backend=backend)
-            continue
-        if arg == "--stdlib-profile":
-            if not remaining:
-                raise ValueError("--stdlib-profile requires a value")
-            request = replace(request, stdlib_profile=remaining.popleft())
-            continue
-        if arg.startswith("--stdlib-profile="):
-            request = replace(request, stdlib_profile=arg.split("=", maxsplit=1)[1])
-            continue
-        if arg == "--capabilities":
-            if not remaining:
-                raise ValueError("--capabilities requires a value")
-            request = replace(request, capabilities=remaining.popleft())
-            continue
-        if arg.startswith("--capabilities="):
-            request = replace(request, capabilities=arg.split("=", maxsplit=1)[1])
-            continue
-        raise ValueError(f"unsupported benchmark Molt build arg: {arg}")
+    request = resolve_build_arguments(
+        arguments,
+        file_path=None,
+        module=None,
+        project_root=_benchmark_project_root(source_cwd, env),
+        env=env,
+    )
+    # Project config must not redirect primary/link/IR outputs beyond the
+    # harness-owned directory or turn an executable measurement into an emit.
+    for field_name, value in (
+        ("output", request.output),
+        ("linked_output", request.linked_output),
+        ("emit", request.emit),
+        ("emit_ir", request.emit_ir),
+    ):
+        if value is not None:
+            raise ValueError(f"benchmark project cannot configure {field_name}")
     return build_request_to_payload(request)
 
 
@@ -1482,6 +1498,10 @@ def prepare_molt_binary(
     if build_target not in {"native", "wasm"}:
         raise ValueError(f"unsupported benchmark build target: {build_target}")
     env = _canonical_bench_env(env)
+    source_cwd = _benchmark_project_root(source_cwd, env)
+    env = ProcessEnvironment(env).updated({"MOLT_PROJECT_ROOT": str(source_cwd)})
+    script_path = Path(script)
+    script = str(script_path if script_path.is_absolute() else source_cwd / script_path)
     _prune_backend_daemons(env)
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     bench_tmp_root = _bench_tmp_root(env)
@@ -1503,8 +1523,9 @@ def prepare_molt_binary(
                     env=env,
                     use_molt_build_cache=use_molt_build_cache,
                     build_target=build_target,
+                    source_cwd=source_cwd,
                 )
-            except ValueError as exc:
+            except (AttributeError, TypeError, ValueError) as exc:
                 primary = exc
                 failure = _classified_molt_failure(
                     phase="build",
@@ -1517,17 +1538,19 @@ def prepare_molt_binary(
                 _emit_molt_failure_summary(script, failure)
                 return failure
             args = [
-                *_molt_build_cmd(build_profile),
-                *(["--trusted"] if params["trusted"] else []),
-                "--json",
-                "--cache" if use_molt_build_cache else "--rebuild",
-                "--out-dir",
-                str(out_dir),
+                sys.executable,
+                "-m",
+                "molt.cli",
+                "build",
+                *_molt_build_arguments(
+                    script=script,
+                    out_dir=out_dir,
+                    build_profile=build_profile,
+                    extra_args=extra_args,
+                    use_molt_build_cache=use_molt_build_cache,
+                    build_target=build_target,
+                ),
             ]
-            if build_target == "wasm":
-                args.extend(["--target", "wasm", "--linked", "--require-linked"])
-            args.extend(extra_args or [])
-            args.append(script)
             start = time.perf_counter()
             custody = None
             try:

@@ -90,7 +90,8 @@ counter or toolchain failure stop the run, so a host fault is never RED.
 `storage_path(<checkout>, "benchmark-evidence") / "instructions"` on `molt-gate`.
 `records/<commit>.<identity>.json` is written once. The run identity is the
 SHA-256 of the instrument (`perf_instructions.INSTRUMENT`: this tool and the
-`tools/` modules it imports to measure), the native target triple, the counter,
+`tools/` modules it imports to measure, plus the public build-request grammar,
+configuration and deployment-default authorities it uses), the native target triple, the counter,
 the selected profiles and the tier; an axis compares only under one admitted
 workload identity (`bench_evidence`, `molt.benchmark-workload/2`). A second run
 for the same (commit, identity) answers from the stored record.

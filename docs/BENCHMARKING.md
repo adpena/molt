@@ -123,6 +123,41 @@ admission. Timeouts, guard violations and infrastructure failures return their
 first failure without an automatic rebuild; protocol-desynchronization recovery
 retains its existing bounded retry. Do not treat `--no-gate` exit zero as a
 successful cell: inspect its verdict, output parity, coverage and signals.
+
+Shared `bench.prepare_molt_binary` build requests use the public CLI's configuration resolver for both
+direct and persistent compilation. The admitted workload's `source_cwd` owns
+the project root; otherwise an explicit captured `MOLT_PROJECT_ROOT` is preserved
+(including generated instruction workloads), then the benchmark checkout is the
+default. The harness binds that absolute root into the request environment and
+child cwd, including persistent-server startup; relative entry paths use the same root. An external `--benchmark`
+entry alone does not select another project's configuration. Sealed application
+recipes therefore retain their declared stdlib profile, modules, library paths
+and capability configuration. Public flag/environment/project precedence applies;
+the harness explicitly owns target, build profile, cache, trust and linking.
+Recipe flags remain limited to the existing Python-version, type-hint, backend,
+stdlib-profile and capability options. Configured primary/link/IR output redirects
+or alternate emit modes fail request admission before either compiler path starts.
+Malformed configuration values or table shapes become retained request failures.
+Configuration must remain stable between controller admission and the direct
+CLI's own read; sealed workload custody enforces this for applications. Other
+compiler validation still occurs at its owning boundary. This changes the
+methodology class; old application observations are not corrected in place.
+
+The standing exact uv-managed, isolated CPython requirement remains an open
+benchmark qualification gap. Default scoreboard discovery can admit a system
+installation and mutable aliases; ordinary timed references filter inherited
+`PYTHON*` settings and request hash seed zero but omit `-I`. Sealed references
+use declared imports with `-P -S -B`. Neither protocol proves compliance with
+isolated mode. An explicit physical managed executable improves identity custody
+but does not repair launch isolation. Migrate the existing interpreter resolver,
+all timed comparator consumers and retained-evidence admission together, preserving
+explicit guest-version intent and plan-mode laziness. Record the hash protocol
+explicitly: [`-I` ignores all `PYTHON*` variables](https://docs.python.org/3/using/cmdline.html#cmdoption-I),
+including `PYTHONHASHSEED`; it cannot substantiate a fixed-seed claim. Repeated
+output parity, local/sealed imports and stock extension loading must pass under
+the selected protocol before quiet performance qualification. The
+[V1 ledger](agent/V1_HANDOFF_FINDINGS.md) owns this remaining acceptance work.
+
 Automatic and explicit baseline consumers require a valid, completed snapshot;
 a diagnostic merge of partial inputs remains partial even after every selected
 coordinate has an observation. Its filename does not establish closure. Default

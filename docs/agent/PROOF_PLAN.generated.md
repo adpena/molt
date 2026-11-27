@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 15 |
-| Hashed executable authority inputs | 1 | 425 |
+| Hashed executable authority inputs | 1 | 431 |
 | Local path rules | 35 | 83 |
 | Unique local commands | 73 | 82 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -406,7 +406,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `typed-facts-gate` | 2 | 0 |
 | `apparatus-hooks` | 9 | 1 |
 | `apparatus-learning-protection` | 4 | 1 |
-| `performance-measurement` | 35 | 0 |
+| `performance-measurement` | 42 | 0 |
 | `apparatus-a11` | 10 | 3 |
 | `apparatus-a8-a12-disk-reclaim` | 13 | 1 |
 | `import-symbol-gate` | 2 | 1 |
