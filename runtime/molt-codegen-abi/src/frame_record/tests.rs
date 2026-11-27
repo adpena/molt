@@ -261,6 +261,39 @@ fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
             "slot={slot}, reservation={reservation:?}"
         );
     }
+    let virtual_level = FrameReservation {
+        virtual_exception_level: true,
+        ..two
+    };
+    for (depth, baseline, virtual_depth, expected) in [
+        (6, 4, 6, 1),
+        (6, 6, 6, 1),
+        (6, 4, crate::NO_VIRTUAL_EXCEPTION_DEPTH, 0),
+        (6, 4, 7, 0),
+        (6, 7, 6, 0),
+        (1 << 32, 4, 1 << 32, 0),
+    ] {
+        machine.write(
+            THREAD,
+            crate::THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET,
+            depth,
+        );
+        machine.write(
+            THREAD,
+            crate::THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET,
+            baseline,
+        );
+        machine.write(
+            THREAD,
+            crate::THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET,
+            virtual_depth,
+        );
+        assert_eq!(
+            generate_frame_entry_admits(&mut machine, THREAD, function, code_slot, virtual_level),
+            expected,
+            "depth={depth}, baseline={baseline}, virtual_depth={virtual_depth}"
+        );
+    }
     machine.write(THREAD, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET, 1);
     assert_eq!(
         generate_frame_entry_admits(&mut machine, THREAD, function, code_slot, two),

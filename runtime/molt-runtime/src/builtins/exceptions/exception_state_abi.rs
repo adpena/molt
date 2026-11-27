@@ -525,19 +525,10 @@ pub(crate) fn molt_exception_push_or_defer_attached_body(_py: &crate::PyToken<'_
 fn virtual_level_ready(py: &crate::PyToken<'_>) -> bool {
     let tls = py.execution_tls();
     let depth = tls.exception_handler_depth.get();
-    !trace_exception_stack() && depth >= tls.exception_stack_baseline.get() && {
-        let active = tls.active_exception_stack.borrow();
-        active.len() == depth && active.capacity() > depth
-    }
-}
-
-pub(crate) fn molt_exception_virtual_level_ready_attached_body(py: &crate::PyToken<'_>) -> u64 {
-    crate::with_attached_entry_nopanic!(py, py, {
-        // Eliding an entire activation also skips encoding its two saved
-        // coordinates. Keep wide snapshots in the ordinary invocation.
-        let depth = py.execution_tls().exception_handler_depth.get();
-        u64::from(u32::try_from(depth).is_ok() && virtual_level_ready(py))
-    })
+    let admitted = tls.active_exception_stack.virtual_depth();
+    admitted != molt_codegen_abi::NO_VIRTUAL_EXCEPTION_DEPTH
+        && depth as u64 == admitted
+        && depth >= tls.exception_stack_baseline.get()
 }
 
 pub(crate) fn molt_exception_pop_attached_body(_py: &crate::PyToken<'_>) -> u64 {
@@ -627,7 +618,7 @@ mod diagnostic_tests {
             tls.exception_stack_baseline.set(0);
             let old_active = tls.active_exception_stack.replace(Vec::new());
 
-            assert_eq!(molt_exception_virtual_level_ready_attached_body(py), 0);
+            assert!(!virtual_level_ready(py));
             assert_eq!(tls.exception_handler_depth.get(), 0);
             assert_eq!(
                 molt_exception_push_or_defer_attached_body(py),
@@ -636,10 +627,15 @@ mod diagnostic_tests {
             );
             assert_eq!(tls.exception_handler_depth.get(), 1);
             exception_stack_pop(py);
-            assert_eq!(
-                molt_exception_virtual_level_ready_attached_body(py),
-                u64::from(!trace_exception_stack())
-            );
+            assert_eq!(virtual_level_ready(py), !trace_exception_stack());
+            {
+                let _exclusive = tls.active_exception_stack.borrow_mut();
+                assert!(
+                    !virtual_level_ready(py),
+                    "the mutable stack has no admission"
+                );
+            }
+            assert_eq!(virtual_level_ready(py), !trace_exception_stack());
             assert_eq!(tls.exception_handler_depth.get(), 0);
             let materialized = molt_exception_push_or_defer_attached_body(py);
             assert_eq!(materialized, u64::from(trace_exception_stack()));

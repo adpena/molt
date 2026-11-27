@@ -1,7 +1,9 @@
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::state::tls::ExceptionDepthWord;
 use crate::{PyToken, runtime_state};
-use std::cell::{Cell, RefCell};
+use std::cell::{BorrowMutError, Cell, Ref, RefCell, RefMut};
+use std::mem::ManuallyDrop;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicU64;
 
 pub(super) fn debug_oom() -> bool {
@@ -12,6 +14,86 @@ pub(super) fn debug_oom() -> bool {
 pub(crate) struct ExceptionContextFallback {
     pub(crate) bits: u64,
     pub(crate) owned: bool,
+}
+
+/// The active stack owns its exception objects and publishes the only depth
+/// at which it can enter a virtual level without allocating or tracing.
+#[repr(C)]
+pub(crate) struct ActiveExceptionStack {
+    virtual_depth: Cell<u64>,
+    values: ManuallyDrop<RefCell<Vec<u64>>>,
+}
+
+impl ActiveExceptionStack {
+    pub(crate) const VIRTUAL_DEPTH_OFFSET: usize = std::mem::offset_of!(Self, virtual_depth);
+
+    pub(crate) const fn new() -> Self {
+        Self {
+            virtual_depth: Cell::new(molt_codegen_abi::NO_VIRTUAL_EXCEPTION_DEPTH),
+            values: ManuallyDrop::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    pub(super) fn virtual_depth(&self) -> u64 {
+        self.virtual_depth.get()
+    }
+
+    pub(crate) fn borrow(&self) -> Ref<'_, Vec<u64>> {
+        self.values.borrow()
+    }
+
+    pub(crate) fn borrow_mut(&self) -> ActiveExceptionStackWrite<'_> {
+        self.mutating(self.values.borrow_mut())
+    }
+
+    pub(crate) fn try_borrow_mut(&self) -> Result<ActiveExceptionStackWrite<'_>, BorrowMutError> {
+        self.values
+            .try_borrow_mut()
+            .map(|values| self.mutating(values))
+    }
+
+    fn mutating<'a>(&'a self, values: RefMut<'a, Vec<u64>>) -> ActiveExceptionStackWrite<'a> {
+        self.virtual_depth
+            .set(molt_codegen_abi::NO_VIRTUAL_EXCEPTION_DEPTH);
+        ActiveExceptionStackWrite {
+            values,
+            virtual_depth: &self.virtual_depth,
+        }
+    }
+
+    pub(crate) fn replace(&self, values: Vec<u64>) -> Vec<u64> {
+        std::mem::replace(&mut *self.borrow_mut(), values)
+    }
+}
+
+pub(crate) struct ActiveExceptionStackWrite<'a> {
+    values: RefMut<'a, Vec<u64>>,
+    virtual_depth: &'a Cell<u64>,
+}
+
+impl Deref for ActiveExceptionStackWrite<'_> {
+    type Target = Vec<u64>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+
+impl DerefMut for ActiveExceptionStackWrite<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.values
+    }
+}
+
+impl Drop for ActiveExceptionStackWrite<'_> {
+    fn drop(&mut self) {
+        let depth = if self.values.len() < self.values.capacity() && !trace_exception_stack() {
+            self.values.len() as u64
+        } else {
+            molt_codegen_abi::NO_VIRTUAL_EXCEPTION_DEPTH
+        };
+        self.virtual_depth.set(depth);
+    }
 }
 
 /// One field of this thread's record (`crate::state::ExecutionTls`), named as
@@ -54,7 +136,7 @@ pub(crate) static EXCEPTION_HANDLER_DEPTH: RecordField<ExceptionDepthWord> =
     RecordField(|tls| &tls.exception_handler_depth);
 pub(crate) static EXCEPTION_STACK_BASELINE: RecordField<ExceptionDepthWord> =
     RecordField(|tls| &tls.exception_stack_baseline);
-pub(crate) static ACTIVE_EXCEPTION_STACK: RecordField<std::mem::ManuallyDrop<RefCell<Vec<u64>>>> =
+pub(crate) static ACTIVE_EXCEPTION_STACK: RecordField<ActiveExceptionStack> =
     RecordField(|tls| &tls.active_exception_stack);
 pub(crate) static ACTIVE_EXCEPTION_FALLBACK: RecordField<
     std::mem::ManuallyDrop<RefCell<Vec<ExceptionContextFallback>>>,

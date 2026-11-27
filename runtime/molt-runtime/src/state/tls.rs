@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 use crate::PtrSlot;
+use crate::builtins::exceptions::state::ActiveExceptionStack;
 use crate::resource::TempArena;
 use crate::state::runtime_state::RuntimeState;
 
@@ -69,6 +70,9 @@ pub(crate) struct ExecutionTls {
     pub(crate) missing_slot: Cell<u64>,
     pub(crate) exception_handler_depth: ExceptionDepthWord,
     pub(crate) exception_stack_baseline: ExceptionDepthWord,
+    /// Owns handled exceptions and lends the current virtual-admission depth
+    /// to compiled frame guards.
+    pub(crate) active_exception_stack: ActiveExceptionStack,
     /// GIL custody depth held by this thread.
     pub(crate) gil_depth: AdmissionInput<usize>,
     /// Runtime execution lease depth, with the service-role bit.
@@ -105,7 +109,6 @@ pub(crate) struct ExecutionTls {
     /// a runtime path that holds the execution context reaches it with no
     /// thread-local access. No field has a destructor.
     pub(crate) thread_last_exception: crate::builtins::exceptions::state::ThreadExceptionState,
-    pub(crate) active_exception_stack: std::mem::ManuallyDrop<RefCell<Vec<u64>>>,
     pub(crate) active_exception_fallback: std::mem::ManuallyDrop<
         RefCell<Vec<crate::builtins::exceptions::state::ExceptionContextFallback>>,
     >,
@@ -144,7 +147,7 @@ const _: () = {
     use molt_codegen_abi::{
         THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET,
         THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET, THREAD_RECORD_GC_RECORD_OFFSET,
-        THREAD_RECORD_MISSING_SLOT_OFFSET,
+        THREAD_RECORD_MISSING_SLOT_OFFSET, THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET,
     };
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
@@ -190,6 +193,11 @@ const _: () = {
     assert!(
         offset_of!(ExecutionTls, exception_stack_baseline) as i32
             == THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET
+    );
+    assert!(
+        (offset_of!(ExecutionTls, active_exception_stack)
+            + ActiveExceptionStack::VIRTUAL_DEPTH_OFFSET) as i32
+            == THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET
     );
 };
 
@@ -306,7 +314,7 @@ thread_local! {
                 crate::builtins::exceptions::state::ThreadExceptionState::new(),
             exception_handler_depth: ExceptionDepthWord(Cell::new(0)),
             exception_stack_baseline: ExceptionDepthWord(Cell::new(0)),
-            active_exception_stack: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
+            active_exception_stack: ActiveExceptionStack::new(),
             active_exception_fallback: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
             generator_raise: Cell::new(false),
             task_raise_active: Cell::new(false),
