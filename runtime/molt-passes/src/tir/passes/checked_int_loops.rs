@@ -258,9 +258,14 @@ impl<'f> LoopFacts<'f> {
 enum LoopRewrite {
     Ascii(short_ascii::ShortAscii),
     Arithmetic {
-        guard: Option<InvariantGuard>,
+        prepared: Option<PreparedEntry>,
         selection: Selection,
     },
+}
+
+struct PreparedEntry {
+    candidate: Box<TirFunction>,
+    guard: InvariantGuard,
 }
 
 fn plan_version(
@@ -279,44 +284,78 @@ fn plan_version(
         return Ok(LoopRewrite::Ascii(ascii));
     }
 
-    let guard = entry.and_then(|entry| invariant_guard(header, body, vr, facts, entry));
-    // Only a guard that has work to do needs a speculative analysis body.
-    let selection = if let Some(guard) = &guard {
-        let mut fast = func.clone();
-        guard.install_payloads(&mut fast);
-        guard.rewrite(&mut fast, body);
-        fast.blocks
+    if let Some(guard) = entry.and_then(|entry| invariant_guard(header, body, vr, facts, entry)) {
+        let mut candidate = Box::new(func.clone());
+        guard.install_payloads(&mut candidate);
+        guard.rewrite(&mut candidate, body);
+        let preheader = &mut candidate
+            .blocks
             .get_mut(&guard.preheader)
             .expect("preheader exists")
-            .ops
-            .extend(guard.unbox_ops());
-        let fast_facts = LoopFacts::new(&fast);
+            .ops;
+        let original_len = preheader.len();
+        preheader.extend(guard.unbox_ops());
+        let fast_facts = LoopFacts::new(&candidate);
         let fast_vr =
             crate::tir::passes::value_range::compute_with_scalar_facts(&fast_facts.scalar);
-        select(header, body, &fast_vr, &fast_facts, final_tir)?
-    } else {
-        select(header, body, vr, facts, final_tir)?
-    };
-
-    if guard.is_none() && selection.is_empty() {
+        let selection = select(header, body, &fast_vr, &fast_facts, final_tir)?;
+        // The unboxes used by analysis become real definitions only after
+        // the entry tests. Keep the proved operands and their reserved IDs.
+        candidate
+            .blocks
+            .get_mut(&guard.preheader)
+            .unwrap()
+            .ops
+            .truncate(original_len);
+        return Ok(LoopRewrite::Arithmetic {
+            prepared: Some(PreparedEntry { candidate, guard }),
+            selection,
+        });
+    }
+    let selection = select(header, body, vr, facts, final_tir)?;
+    if selection.is_empty() {
         return Err(Refusal::NoProfitableRewrite);
     }
-    Ok(LoopRewrite::Arithmetic { guard, selection })
+    Ok(LoopRewrite::Arithmetic {
+        prepared: None,
+        selection,
+    })
 }
 
 impl LoopRewrite {
     fn apply(self, func: &mut TirFunction, body: &HashSet<BlockId>) -> Result<usize, Refusal> {
-        let (guard, selection) = match self {
+        let selection = match self {
             Self::Ascii(ascii) => {
-                return commit_version(func, |candidate| {
-                    version(candidate, body, &Selection::default(), None, Some(&ascii))
+                return commit_version(func, |candidate, original| {
+                    version(
+                        candidate,
+                        original,
+                        body,
+                        &Selection::default(),
+                        None,
+                        Some(&ascii),
+                    )
                 });
             }
-            Self::Arithmetic { guard, selection } => (guard, selection),
+            Self::Arithmetic {
+                prepared:
+                    Some(PreparedEntry {
+                        mut candidate,
+                        guard,
+                    }),
+                selection,
+            } => {
+                let added = version(&mut candidate, func, body, &selection, Some(&guard), None)?;
+                *func = *candidate;
+                return Ok(added);
+            }
+            Self::Arithmetic {
+                prepared: None,
+                selection,
+            } => selection,
         };
         // Proofs alone need no second loop and cannot fail.
-        if guard.is_none()
-            && selection.checked.is_empty()
+        if selection.checked.is_empty()
             && selection.projections.is_empty()
             && selection.packed.is_empty()
         {
@@ -332,11 +371,8 @@ impl LoopRewrite {
             }
             return Ok(0);
         }
-        commit_version(func, |candidate| {
-            if let Some(guard) = &guard {
-                guard.install_payloads(candidate);
-            }
-            version(candidate, body, &selection, guard.as_ref(), None)
+        commit_version(func, |candidate, original| {
+            version(candidate, original, body, &selection, None, None)
         })
     }
 }
@@ -345,10 +381,10 @@ impl LoopRewrite {
 /// speculatively and publish a replacement only after its repair succeeds.
 fn commit_version(
     func: &mut TirFunction,
-    build: impl FnOnce(&mut TirFunction) -> Result<usize, Refusal>,
+    build: impl FnOnce(&mut TirFunction, &TirFunction) -> Result<usize, Refusal>,
 ) -> Result<usize, Refusal> {
     let mut candidate = func.clone();
-    let added = build(&mut candidate)?;
+    let added = build(&mut candidate, func)?;
     *func = candidate;
     Ok(added)
 }
@@ -1109,6 +1145,7 @@ fn uncheck(func: &mut TirFunction, block: BlockId, index: usize) -> Option<Value
 /// Returns the number of operations added.
 fn version(
     func: &mut TirFunction,
+    original: &TirFunction,
     body: &HashSet<BlockId>,
     selection: &Selection,
     guard: Option<&InvariantGuard>,
@@ -1125,14 +1162,14 @@ fn version(
     let mut value_map: HashMap<ValueId, ValueId> = HashMap::default();
     let mut defined: Vec<(ValueId, TirType)> = Vec::new();
     for &bid in &blocks {
-        let block = &func.blocks[&bid];
+        let block = &original.blocks[&bid];
         let block_values: Vec<(ValueId, TirType)> = block
             .args
             .iter()
             .map(|arg| (arg.id, arg.ty.clone()))
             .chain(block.ops.iter().flat_map(|op| {
                 op.results.iter().map(|&result| {
-                    let ty = func
+                    let ty = original
                         .value_types
                         .get(&result)
                         .cloned()
@@ -1143,7 +1180,7 @@ fn version(
             .collect();
         for (value, ty) in block_values {
             let fresh = func.fresh_value();
-            if let Some(known) = func.value_types.get(&value).cloned() {
+            if let Some(known) = original.value_types.get(&value).cloned() {
                 func.value_types.insert(fresh, known);
             }
             value_map.insert(value, fresh);
@@ -1153,7 +1190,7 @@ fn version(
     let map_value = |value: ValueId| value_map.get(&value).copied().unwrap_or(value);
     let mut added = 0usize;
     for &bid in &blocks {
-        let source = &func.blocks[&bid];
+        let source = &original.blocks[&bid];
         let mut terminator = source.terminator.clone();
         terminator.for_each_value_mut(|value| *value = map_value(*value));
         terminator.for_each_edge_mut(|target, _| {
@@ -1187,9 +1224,9 @@ fn version(
         func.blocks.insert(clone.id, clone);
     }
 
-    // 2. The fast loop alone holds the facts it was selected under: its exact
-    //    ops carry their proof, and its numeric ops read the invariants'
-    //    payloads. Both precede the splits, which move ops between blocks.
+    // 2. The fast loop alone holds the facts it was selected under. Its
+    //    numeric operands already read guarded payloads. Mark the exact ops
+    //    before the splits, which move ops between blocks.
     for &(block, index) in &selection.exact {
         func.blocks
             .get_mut(&block)
@@ -1204,9 +1241,6 @@ fn version(
         .iter()
         .filter_map(|&(block, index)| uncheck(func, block, index))
         .collect();
-    if let Some(guard) = guard {
-        guard.rewrite(func, body);
-    }
 
     // 3. Split after each checked operation in both loops.
     let mut by_block: BTreeMap<u32, Vec<(usize, FastCheck)>> = BTreeMap::new();
