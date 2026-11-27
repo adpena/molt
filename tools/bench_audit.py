@@ -4,7 +4,7 @@ Runs each benchmark through both Molt (native) and CPython, computes speedup,
 and classifies results as Green/Yellow/Red.
 
 Usage:
-    python3 tools/bench_audit.py [--samples N] [--timeout S] [--out FILE]
+    uv run python tools/bench_audit.py [--samples N] [--timeout S] [--out FILE]
 """
 
 from __future__ import annotations
@@ -15,12 +15,10 @@ import os
 import platform
 import shutil
 import statistics
-import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 # ---------------------------------------------------------------------------
 # Re-use infrastructure from bench.py where possible
@@ -36,29 +34,27 @@ bind_repository_imports(__file__)
 
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 
-# Import bench.py helpers directly
-
+from tools import bench as _bench  # noqa: E402
+from tools import bench_suites  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools import perf_authority  # noqa: E402
+from tools.bench_evidence import (  # noqa: E402
+    AdmittedBenchmarkWorkload,
+    BenchmarkWorkloadRecord,
+    admit_benchmark_workload,
+)
+from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
+from molt.python_environment_identity import PythonIdentityVerifier  # noqa: E402
+from molt.python_interpreter import (  # noqa: E402
+    BenchmarkPythonMetadata,
+    PythonInterpreter,
+    benchmark_python_metadata,
+    resolve_benchmark_python,
+)
 
-try:
-    from tools import bench as _bench
-
-    prepare_molt_binary = _bench.prepare_molt_binary
-    measure_molt_run = _bench.measure_molt_run
-    BENCHMARKS = _bench.BENCHMARKS
-    MOLT_ARGS_BY_BENCH = _bench.MOLT_ARGS_BY_BENCH
-    molt_args_for_benchmark = _bench.molt_args_for_benchmark
-except ImportError as _err:
-    print(f"Warning: could not import bench.py helpers: {_err}", file=sys.stderr)
-    _bench = None  # type: ignore[assignment]
-    prepare_molt_binary = None  # type: ignore[assignment]
-    measure_molt_run = None  # type: ignore[assignment]
-    BENCHMARKS = []
-    MOLT_ARGS_BY_BENCH = {}
-
-    def molt_args_for_benchmark(_script):  # type: ignore[no-untyped-def]
-        return []
+prepare_molt_binary = _bench.prepare_molt_binary
+measure_molt_run = _bench.measure_molt_run
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -80,16 +76,22 @@ DEFAULT_OUTPUT = RESULTS_DIR / "audit_baseline.json"
 # ---------------------------------------------------------------------------
 
 
+AuditClassification = Literal["Green", "Yellow", "Red", "Error", "Skipped", "Molt-only"]
+
+
 @dataclass
 class BenchResult:
     name: str
+    workload: BenchmarkWorkloadRecord
     molt_s: Optional[float]
     cpython_s: Optional[float]
     speedup: Optional[float]
-    classification: str  # "Green", "Yellow", "Red", "Error"
+    classification: AuditClassification
     error: Optional[str] = None
     molt_build_s: Optional[float] = None
-    perf_data: Optional[dict] = None
+    perf_data: dict[str, int] | None = None
+    cpython_oracle: BenchmarkPythonMetadata | None = None
+    molt_output_parity: dict[str, object] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -97,101 +99,100 @@ class BenchResult:
 # ---------------------------------------------------------------------------
 
 
-def _median_time(
-    cmd: list[str],
+def _cpython_samples(
+    workload: AdmittedBenchmarkWorkload,
     samples: int,
     timeout_s: float,
-    *,
-    label: str = "",
-) -> Optional[float]:
-    """Run *cmd* *samples* times and return the median elapsed time.
-
-    Returns None if any run fails or times out.
-    """
-    times: list[float] = []
-    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
-    for _ in range(samples):
-        start = time.perf_counter()
-        try:
-            res = harness_memory_guard.guarded_completed_process(
-                cmd,
-                prefix="MOLT_BENCH",
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                limits=limits,
-            )
-        except subprocess.TimeoutExpired:
-            print(
-                f"  [timeout] {label or ' '.join(cmd[:3])} timed out after {timeout_s:.1f}s",
-                file=sys.stderr,
-            )
-            return None
-        elapsed = (
-            res.elapsed_s if res.elapsed_s is not None else time.perf_counter() - start
-        )
-        if res.returncode != 0:
-            err_snippet = (res.stderr or res.stdout or "").strip()[:200]
-            print(
-                f"  [error] {label or cmd[0]} exited {res.returncode}: {err_snippet}",
-                file=sys.stderr,
-            )
-            return None
-        times.append(elapsed)
-    return statistics.median(times)
-
-
-def _cpython_median(
-    script: str,
-    samples: int,
-    timeout_s: float,
-) -> Optional[float]:
-    python_exe = sys.executable  # same interpreter that's running us
-    return _median_time(
-        [python_exe, script],
+    baseline: PythonInterpreter,
+    environment: ProcessEnvironment,
+) -> _bench.SampleBatch:
+    """Capture complete CPython samples from the admitted reference invocation."""
+    invocation = workload.reference_invocation(baseline.command, environment)
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", invocation.environment)
+    batch = _bench.collect_samples(
+        lambda: _bench.measure_runtime(
+            list(invocation.command),
+            env=invocation.environment,
+            cwd=invocation.cwd,
+            timeout_s=timeout_s,
+            label=f"cpython:{workload.script.name}",
+            limits=limits,
+        ),
         samples,
-        timeout_s,
-        label=f"cpython:{Path(script).name}",
+        validate_inputs=workload.verify,
+    )
+    if batch.ok:
+        for sample in (*batch.warmup_samples, *batch.samples):
+            try:
+                workload.verify_reference_output(sample.stdout, sample.stderr)
+            except ValueError as exc:
+                return _bench.SampleBatch(
+                    batch.samples,
+                    False,
+                    batch.warmup_samples,
+                    _bench.MoltFailure(
+                        phase="reference",
+                        status="output_mismatch",
+                        returncode=0,
+                        timed_out=False,
+                        elapsed_s=sample.elapsed_s,
+                        detail="sealed_oracle_mismatch",
+                        message=str(exc),
+                        stdout=sample.stdout,
+                        stderr=sample.stderr,
+                    ),
+                )
+    return batch
+
+
+def _prepare_workload(
+    workload: AdmittedBenchmarkWorkload, environment: ProcessEnvironment
+) -> _bench.MoltBinary | _bench.MoltFailure:
+    workload.verify()
+    return prepare_molt_binary(
+        str(workload.execution_script),
+        extra_args=workload.record["molt_args"],
+        env=workload.compiler_environment(environment),
+        source_cwd=workload.source_cwd,
     )
 
 
-def _molt_median(
-    script: str,
+def _molt_samples(
+    workload: AdmittedBenchmarkWorkload,
     samples: int,
     timeout_s: float,
-    extra_args: Optional[list[str]] = None,
-    *,
-    skip_molt: bool = False,
-) -> tuple[Optional[float], Optional[float]]:
-    """Build the Molt binary once, then time *samples* runs.
-
-    Returns (median_run_s, build_s).  Both are None on failure.
-    """
-    if skip_molt or prepare_molt_binary is None or measure_molt_run is None:
-        return None, None
-
-    binary_info = prepare_molt_binary(script, extra_args=extra_args)
-    if _bench is None or not isinstance(binary_info, _bench.MoltBinary):
-        return None, None
-
+    environment: ProcessEnvironment,
+) -> tuple[_bench.SampleBatch, float | None]:
+    """Build and sample the admitted Molt workload, then close its scratch owner."""
+    binary = _prepare_workload(workload, environment)
+    if isinstance(binary, _bench.MoltFailure):
+        workload.verify()
+        return _bench.SampleBatch([], False, failure=binary), None
     primary: BaseException | None = None
     try:
-        build_s = binary_info.build_s
-        times: list[float] = []
-        label = f"molt:{Path(script).name}"
-        for _ in range(samples):
-            sample = measure_molt_run(
-                binary_info.path, label=label, timeout_s=timeout_s
-            )
-            if not isinstance(sample, _bench.RunSample):
-                return None, build_s
-            times.append(sample.elapsed_s)
-        return statistics.median(times), build_s
+        invocation = workload.guest_invocation([str(binary.path)], environment)
+        limits = harness_memory_guard.limits_from_env(
+            "MOLT_BENCH", invocation.environment
+        )
+        batch = _bench.collect_samples(
+            lambda: measure_molt_run(
+                binary.path,
+                env=invocation.environment,
+                cwd=invocation.cwd,
+                run_args=list(invocation.command[1:]),
+                label=f"molt:{workload.script.name}",
+                timeout_s=timeout_s,
+                limits=limits,
+            ),
+            samples,
+            validate_inputs=workload.verify,
+        )
+        return batch, binary.build_s
     except BaseException as exc:
         primary = exc
         raise
     finally:
-        _bench._cleanup_bench_temp(binary_info.temp_dir, primary)
+        _bench._cleanup_bench_temp(binary.temp_dir, primary)
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +200,12 @@ def _molt_median(
 # ---------------------------------------------------------------------------
 
 
-def _collect_perf_data(binary_path: Path) -> Optional[dict]:
+def _collect_perf_data(
+    binary_path: Path,
+    *,
+    workload: AdmittedBenchmarkWorkload,
+    environment: ProcessEnvironment,
+) -> dict[str, int] | None:
     """Collect instruction count and cache-miss data via `perf stat`."""
     if platform.system() != "Linux":
         return None
@@ -207,11 +213,14 @@ def _collect_perf_data(binary_path: Path) -> Optional[dict]:
     if perf is None:
         return None
     events = "instructions,cache-misses,cache-references"
-    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+    guest = workload.guest_invocation([str(binary_path)], environment)
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", guest.environment)
     try:
         res = harness_memory_guard.guarded_completed_process(
-            [perf, "stat", "-e", events, "--", str(binary_path)],
+            [perf, "stat", "-e", events, "--", *guest.command],
             prefix="MOLT_BENCH",
+            cwd=guest.cwd,
+            env=guest.environment,
             capture_output=True,
             text=True,
             timeout=30.0,
@@ -222,7 +231,7 @@ def _collect_perf_data(binary_path: Path) -> Optional[dict]:
     if res.returncode != 0:
         return None
     # Parse the perf stat stderr output
-    data: dict = {}
+    data: dict[str, int] = {}
     for line in res.stderr.splitlines():
         line = line.strip()
         for key, token in [
@@ -240,12 +249,34 @@ def _collect_perf_data(binary_path: Path) -> Optional[dict]:
     return data or None
 
 
+def _collect_perf_rebuild(
+    workload: AdmittedBenchmarkWorkload, environment: ProcessEnvironment
+) -> dict[str, int] | None:
+    binary = _prepare_workload(workload, environment)
+    if isinstance(binary, _bench.MoltFailure):
+        workload.verify()
+        return None
+    primary: BaseException | None = None
+    try:
+        workload.verify()
+        perf = _collect_perf_data(
+            binary.path, workload=workload, environment=environment
+        )
+        workload.verify()
+        return perf
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        _bench._cleanup_bench_temp(binary.temp_dir, primary)
+
+
 # ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
 
 
-def _classify(speedup: Optional[float]) -> str:
+def _classify(speedup: Optional[float]) -> AuditClassification:
     if speedup is None:
         return "Error"
     if speedup >= GREEN_THRESHOLD:
@@ -267,34 +298,126 @@ def audit_benchmarks(
     verbose: bool = False,
     skip_molt: bool = False,
 ) -> list[BenchResult]:
+    if samples <= 0:
+        raise ValueError("benchmark audit requires positive sample count")
     results: list[BenchResult] = []
+    environment = ProcessEnvironment(os.environ)
+    baseline = None
+    cpython_oracle = None
+    if any(
+        benchmark_reference_contract(path).external_baselines for path in benchmarks
+    ):
+        with PythonIdentityVerifier() as verifier:
+            baseline = resolve_benchmark_python(
+                env=environment, cwd=REPO_ROOT, verifier=verifier
+            )
+        cpython_oracle = benchmark_python_metadata(baseline)
+        print(f"CPython: {baseline.version} ({baseline.executable})")
 
     for i, bench_path in enumerate(benchmarks, 1):
         # Resolve relative to repo root
-        script = (
-            str(REPO_ROOT / bench_path) if not os.path.isabs(bench_path) else bench_path
-        )
-        name = Path(script).stem
-        extra_args = molt_args_for_benchmark(bench_path)
+        script = REPO_ROOT / bench_path
+        name = script.stem
+        contract = benchmark_reference_contract(str(script))
+        has_reference = contract.external_baselines
 
         print(f"[{i:2d}/{len(benchmarks)}] {name} ...", flush=True)
 
-        # --- CPython timing ---
-        cpython_s = _cpython_median(script, samples, timeout_s)
+        with admit_benchmark_workload(
+            script,
+            project_root=REPO_ROOT,
+            run_args=bench_suites.application_run_args(script),
+            molt_args=bench_suites.molt_args_for_benchmark(script),
+            cpython_command=baseline.command if has_reference and baseline else None,
+        ) as workload:
+            reference_batch = (
+                _cpython_samples(workload, samples, timeout_s, baseline, environment)
+                if has_reference and baseline is not None
+                else None
+            )
+            reference_ready = (
+                reference_batch is not None
+                and _bench._stable_output(reference_batch) is not None
+            )
+            if skip_molt:
+                molt_batch, build_s = None, None
+            elif has_reference and not reference_ready:
+                molt_batch, build_s = _bench.SampleBatch([], False), None
+            else:
+                molt_batch, build_s = _molt_samples(
+                    workload, samples, timeout_s, environment
+                )
+            cpython_s = (
+                statistics.median(reference_batch.times_s)
+                if reference_batch is not None and reference_batch.ok
+                else None
+            )
+            molt_s = (
+                statistics.median(molt_batch.times_s)
+                if molt_batch is not None and molt_batch.ok
+                else None
+            )
+            problems = []
+            for runtime, batch in (("CPython", reference_batch), ("Molt", molt_batch)):
+                if batch is not None and batch.failure is not None:
+                    failure = batch.failure
+                    detail = failure.detail or failure.message or failure.status
+                    problems.append(f"{runtime} {detail}")
 
-        # --- Molt timing ---
-        molt_s, build_s = _molt_median(
-            script, samples, timeout_s, extra_args=extra_args, skip_molt=skip_molt
-        )
+            parity = None
+            if molt_batch is not None and has_reference:
+                parity = _bench._output_parity_evidence(
+                    reference_batch,
+                    molt_batch,
+                    reference_runtime=contract.reference_runtime,
+                    reference_required=has_reference,
+                    reference_reason=contract.reason,
+                )
+                if parity["ok"] is False:
+                    molt_s = None
+                    reason = parity["reason"]
+                    if reason != "molt_unavailable":
+                        problems.append(str(reason))
+                    if reason == "reference_unstable":
+                        cpython_s = None
+            elif molt_batch is not None and molt_batch.ok:
+                output = _bench._stable_output(molt_batch)
+                if output is None or not contract.molt_output_matches(*output):
+                    molt_s = None
+                    problems.append("intrinsic_oracle_mismatch")
+            elif (
+                reference_batch is not None
+                and reference_batch.ok
+                and not reference_ready
+            ):
+                cpython_s = None
+                problems.append("reference_unstable")
 
-        # --- Speedup ---
-        speedup = perf_authority.signed_ratio_value(
-            cpython_s,
-            molt_s,
-            direction=perf_authority.RatioDirection.SPEEDUP,
-        )
+            speedup = (
+                perf_authority.signed_ratio_value(
+                    cpython_s, molt_s, direction=perf_authority.RatioDirection.SPEEDUP
+                )
+                if parity is not None and parity["ok"] is True
+                else None
+            )
+            perf_data = None
+            if (
+                molt_s is not None
+                and (not has_reference or speedup is not None)
+                and platform.system() == "Linux"
+                and shutil.which("perf")
+            ):
+                perf_data = _collect_perf_rebuild(workload, environment)
+            elif verbose and platform.system() == "Darwin":
+                print(
+                    "  [note] macOS: perf counters require Instruments (not automated)"
+                )
+            workload_record = workload.record
 
-        if skip_molt and cpython_s is not None:
+        classification: AuditClassification
+        if not has_reference and molt_s is not None:
+            classification = "Molt-only"
+        elif skip_molt and (cpython_s is not None or not has_reference):
             classification = "Skipped"
         else:
             classification = _classify(speedup)
@@ -310,51 +433,25 @@ def audit_benchmarks(
             )
         elif skip_molt and cpython_s is not None:
             print(f"  CPython: {cpython_s:.4f}s  (Molt skipped)")
+        elif not has_reference and molt_s is not None:
+            print(f"  Molt: {molt_s:.4f}s  (Molt-only)")
         else:
-            reason_parts = []
-            if cpython_s is None:
-                reason_parts.append("CPython failed")
-            if molt_s is None and not skip_molt:
-                reason_parts.append("Molt failed")
-            print(
-                f"  {color_tag}{classification}{reset}: {', '.join(reason_parts) or 'unknown'}"
-            )
-
-        perf_data: Optional[dict] = None
-        if (
-            not skip_molt
-            and platform.system() == "Linux"
-            and shutil.which("perf")
-            and molt_s is not None
-        ):
-            # We need the binary path — re-build for perf collection
-            if prepare_molt_binary is not None:
-                bin_info = prepare_molt_binary(script, extra_args=extra_args)
-                if _bench is not None and isinstance(bin_info, _bench.MoltBinary):
-                    primary = None
-                    try:
-                        perf_data = _collect_perf_data(bin_info.path)
-                    except BaseException as exc:
-                        primary = exc
-                        raise
-                    finally:
-                        _bench._cleanup_bench_temp(bin_info.temp_dir, primary)
-        elif platform.system() == "Darwin":
-            if verbose:
-                print(
-                    "  [note] macOS: perf counters require Instruments (not automated)"
-                )
+            detail = ", ".join(problems) if problems else "no qualified comparison"
+            print(f"  {color_tag}{classification}{reset}: {detail}")
 
         results.append(
             BenchResult(
                 name=name,
+                workload=workload_record,
                 molt_s=molt_s,
                 cpython_s=cpython_s,
                 speedup=speedup,
                 classification=classification,
-                error=None,
+                error=", ".join(problems) if problems else None,
                 molt_build_s=build_s,
                 perf_data=perf_data,
+                cpython_oracle=cpython_oracle if has_reference else None,
+                molt_output_parity=parity,
             )
         )
 
@@ -369,8 +466,11 @@ def audit_benchmarks(
 def _to_json_record(r: BenchResult) -> dict:
     record: dict = {
         "name": r.name,
+        "workload": r.workload,
         "molt_s": round(r.molt_s, 6) if r.molt_s is not None else None,
         "cpython_s": round(r.cpython_s, 6) if r.cpython_s is not None else None,
+        "cpython_oracle": r.cpython_oracle,
+        "molt_output_parity": r.molt_output_parity,
         "speedup": round(r.speedup, 4) if r.speedup is not None else None,
         "ratio_directions": {
             "speedup": perf_authority.RatioDirection.SPEEDUP.value,
@@ -392,6 +492,7 @@ def print_summary(results: list[BenchResult]) -> None:
     red = [r for r in results if r.classification == "Red"]
     error = [r for r in results if r.classification == "Error"]
     skipped = [r for r in results if r.classification == "Skipped"]
+    molt_only = [r for r in results if r.classification == "Molt-only"]
 
     print()
     print("=" * 72)
@@ -402,6 +503,8 @@ def print_summary(results: list[BenchResult]) -> None:
     print(f"  \033[33mYellow\033[0m (0.5x–1x):       {len(yellow)}")
     print(f"  \033[31mRed\033[0m (< 0.5x):           {len(red)}")
     print(f"  Error:               {len(error)}")
+    if molt_only:
+        print(f"  Molt-only:           {len(molt_only)}")
     if skipped:
         print(f"  Skipped (--cpython-only): {len(skipped)}")
     print()
@@ -518,13 +621,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Build the list of benchmark paths
-    benchmarks = list(BENCHMARKS)
-    if not benchmarks:
-        # Fallback: discover from tests/benchmarks/
-        bench_dir = REPO_ROOT / "tests" / "benchmarks"
-        benchmarks = sorted(
-            str(p.relative_to(REPO_ROOT)) for p in bench_dir.glob("bench_*.py")
-        )
+    benchmarks = list(bench_suites.BENCHMARKS)
 
     if args.filter:
         benchmarks = [b for b in benchmarks if args.filter in Path(b).stem]
@@ -537,7 +634,6 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Benchmark audit: {len(benchmarks)} benchmarks, {args.samples} samples each")
     print(f"Platform: {platform.system()} {platform.machine()}")
-    print(f"CPython: {sys.version.split()[0]}")
 
     if platform.system() == "Darwin":
         print("Note: perf counters require Instruments on macOS (not automated here)")

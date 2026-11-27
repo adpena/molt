@@ -816,8 +816,10 @@ def release_scoreboard_problems(
         f"{label} {problem}" for problem in scoreboard_observed_toolchain_problems(doc)
     )
 
-    if doc.get("kind") != "cpython_floor_scoreboard":
-        problems.append(f"{label} kind must be 'cpython_floor_scoreboard'")
+    if doc.get("kind") != perf_schema.CPYTHON_FLOOR_SCOREBOARD:
+        problems.append(
+            f"{label} kind must be {perf_schema.CPYTHON_FLOOR_SCOREBOARD!r}"
+        )
 
     provenance = doc.get("provenance")
     if not isinstance(provenance, Mapping):
@@ -1015,7 +1017,9 @@ def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
         ):
             problems.append(f"{label} lacks observed file-content identity")
 
-    def check_runtime(value: Any, image: Any, label: str, version: Any = None) -> None:
+    def check_runtime(
+        value: object, image: object, label: str, version: object = None
+    ) -> Mapping[str, object] | None:
         from molt.python_runtime_identity import (
             validate_python_runtime_identity,
             runtime_explicit_file_content,
@@ -1027,7 +1031,7 @@ def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
             problems.append(
                 f"{label} canonical Python runtime closure is invalid: {exc}"
             )
-            return
+            return None
         if version is not None and runtime.get("version") != version:
             problems.append(f"{label} runtime version differs from observed oracle")
         base = runtime_explicit_file_content(runtime, "base-executable")
@@ -1040,6 +1044,7 @@ def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
             problems.append(
                 f"{label} base image differs from canonical loaded runtime closure"
             )
+        return runtime
 
     provenance = doc.get("provenance", {})
     invocations = (
@@ -1061,19 +1066,31 @@ def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
                 record.get("base_interpreter"),
                 "producer",
             )
-    host = doc.get("host", {})
-    oracle = host.get("cpython_oracle", {}) if isinstance(host, Mapping) else {}
-    for field in ("command_executable_identity", "base_executable_identity"):
-        check_identity(
-            oracle.get(field) if isinstance(oracle, Mapping) else None,
-            f"CPython {field}",
-        )
-    check_runtime(
-        oracle.get("runtime_closure") if isinstance(oracle, Mapping) else None,
-        oracle.get("base_executable_identity") if isinstance(oracle, Mapping) else None,
+    oracle = host.get("cpython_oracle") if isinstance(host, Mapping) else None
+    oracle = oracle if isinstance(oracle, Mapping) else {}
+    command_image = oracle.get("command_executable_identity")
+    base_image = oracle.get("base_executable_identity")
+    check_identity(command_image, "CPython command_executable_identity")
+    check_identity(base_image, "CPython base_executable_identity")
+    if (
+        isinstance(command_image, Mapping)
+        and isinstance(base_image, Mapping)
+        and command_image != base_image
+    ):
+        problems.append("CPython command and base executable observations differ")
+    runtime = check_runtime(
+        oracle.get("runtime_closure"),
+        base_image,
         "CPython",
-        oracle.get("version") if isinstance(oracle, Mapping) else None,
+        oracle.get("version"),
     )
+    if runtime is not None:
+        from molt.native_target_shape import normalize_native_architecture
+
+        if normalize_native_architecture(str(runtime["architecture"])) != oracle.get(
+            "arch"
+        ) or runtime["pointer_bits"] != oracle.get("pointer_bits"):
+            problems.append("CPython runtime ABI differs from the benchmark oracle")
     cells = perf_schema.flatten_cells(doc)
     if not cells:
         problems.append("measured cells are missing")

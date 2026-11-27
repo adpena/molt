@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from molt.host_python import frontend_python_supported
 from molt.target_python import (
@@ -23,11 +23,30 @@ from molt.target_python import (
 )
 
 if TYPE_CHECKING:
+    from molt.process_environment import ProcessEnvironment
     from molt.python_environment_identity import PythonIdentityVerifier
+    from molt.toolchain_identity import StableRegularFileVersion
 
 
 class PythonInterpreterError(RuntimeError):
     """Raised when a requested CPython interpreter cannot be proven."""
+
+
+PythonDiscoveryPolicy = Literal["general", "uv-managed"]
+MANAGED_PYTHON_ORIGIN_KIND: Literal["uv-managed"] = "uv-managed"
+BENCHMARK_PYTHON_ARGUMENTS = ("-I", "-S", "-B")
+BENCHMARK_PYTHON_LAUNCH_POLICY: Literal["isolated-randomized-hash"] = (
+    "isolated-randomized-hash"
+)
+MANAGED_PYTHON_LOOKUP_ARGS = (
+    "python",
+    "find",
+    "--managed-python",
+    "--no-project",
+    "--no-python-downloads",
+    "--system",
+    "--no-config",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +267,81 @@ def python_environment_options(
 
 
 @dataclass(frozen=True, slots=True)
+class BenchmarkPythonHost:
+    """Process platform and architecture observed by the interpreter."""
+
+    sys_platform: str
+    machine: str
+    arch: str
+    pointer_bits: Literal[32, 64]
+
+    @classmethod
+    def from_observation(
+        cls, sys_platform: str, machine: str, pointer_bits: Literal[32, 64]
+    ) -> BenchmarkPythonHost:
+        from molt.native_target_shape import normalize_native_architecture
+
+        if sys_platform == "win32":
+            machine = "x86" if machine == "win32" else machine.removeprefix("win-")
+        try:
+            arch = normalize_native_architecture(machine)
+        except RuntimeError as exc:
+            raise PythonInterpreterError(str(exc)) from exc
+        return cls(sys_platform, machine, arch, pointer_bits)
+
+
+def benchmark_python_host() -> BenchmarkPythonHost:
+    """Identify the host process ABI used to accept a benchmark interpreter."""
+    if sys.platform == "win32":
+        import sysconfig
+
+        machine = sysconfig.get_platform()
+    else:
+        machine = platform.machine()
+    return BenchmarkPythonHost.from_observation(
+        sys.platform, machine, 64 if sys.maxsize > 2**32 else 32
+    )
+
+
+def benchmark_python_environment(environment: Mapping[str, str]) -> ProcessEnvironment:
+    """Remove inherited CPython configuration before startup."""
+    from molt.process_environment import ProcessEnvironment
+
+    env = ProcessEnvironment(environment)
+    return env.without(
+        name
+        for name in env
+        if env.rule.key(name).startswith("PYTHON")
+        or env.rule.key(name) == "__PYVENV_LAUNCHER__"
+    )
+
+
+class ManagedPythonOriginRecord(TypedDict):
+    kind: Literal["uv-managed"]
+    requested_release: str
+    executable: str
+    lookup_command: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedPythonOrigin:
+    """An exact installed release witnessed by uv and an isolated probe."""
+
+    request: PythonInterpreterRequest
+    executable: Path
+    uv: Path
+    host: BenchmarkPythonHost
+
+    def as_record(self) -> ManagedPythonOriginRecord:
+        return {
+            "kind": MANAGED_PYTHON_ORIGIN_KIND,
+            "requested_release": self.request.selector,
+            "executable": str(self.executable),
+            "lookup_command": list(_managed_python_lookup(self.uv, self.request)),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PythonInterpreter:
     """A runnable command and the identity reported by that interpreter."""
 
@@ -255,11 +349,46 @@ class PythonInterpreter:
     executable: str
     version: str
     implementation: str
+    managed_origin: ManagedPythonOrigin | None = None
 
     @property
     def major_minor(self) -> str:
         parts = self.version.split(".")
         return ".".join(parts[:2])
+
+
+class BenchmarkPythonMetadata(TypedDict):
+    cmd: list[str]
+    executable: str
+    implementation: str
+    version: str
+    sys_platform: str
+    machine: str
+    arch: str
+    pointer_bits: Literal[32, 64]
+    managed_origin: ManagedPythonOriginRecord
+    launch_policy: Literal["isolated-randomized-hash"]
+
+
+def benchmark_python_metadata(
+    interpreter: PythonInterpreter,
+) -> BenchmarkPythonMetadata:
+    """Project the admitted benchmark oracle into the retained evidence format."""
+    origin = interpreter.managed_origin
+    if origin is None:
+        raise PythonInterpreterError("benchmark CPython has no managed origin")
+    return {
+        "cmd": list(interpreter.command),
+        "executable": interpreter.executable,
+        "implementation": interpreter.implementation,
+        "version": interpreter.version,
+        "sys_platform": origin.host.sys_platform,
+        "machine": origin.host.machine,
+        "arch": origin.host.arch,
+        "pointer_bits": origin.host.pointer_bits,
+        "managed_origin": origin.as_record(),
+        "launch_policy": BENCHMARK_PYTHON_LAUNCH_POLICY,
+    }
 
 
 _IDENTITY_PROBE = "\n".join(
@@ -269,6 +398,23 @@ _IDENTITY_PROBE = "\n".join(
         "    'executable': sys.executable,",
         "    'implementation': platform.python_implementation(),",
         "    'version': platform.python_version(),",
+        "}, sort_keys=True))",
+    )
+)
+
+_MANAGED_IDENTITY_PROBE = "\n".join(
+    (
+        "import json, platform, sys, sysconfig",
+        "print(json.dumps({",
+        "    'executable': sys.executable,",
+        "    'base_executable': sys._base_executable,",
+        "    'prefix': sys.prefix,",
+        "    'base_prefix': sys.base_prefix,",
+        "    'implementation': platform.python_implementation(),",
+        "    'version': platform.python_version(),",
+        "    'sys_platform': sys.platform,",
+        "    'machine': sysconfig.get_platform() if sys.platform == 'win32' else platform.machine(),",
+        "    'pointer_bits': 64 if sys.maxsize > 2**32 else 32,",
         "}, sort_keys=True))",
     )
 )
@@ -410,7 +556,7 @@ def readonly_python_command(
 
 
 def _verifier_python_command(
-    command: tuple[str, ...], verifier_bytecode_prefix: Path
+    command: tuple[str, ...], verifier_bytecode_prefix: Path, *, site_enabled: bool
 ) -> tuple[str, ...]:
     """Fence metadata imports without changing the selected launcher's prefix."""
     from molt.python_environment_identity import python_identity_verifier_arguments
@@ -419,7 +565,7 @@ def _verifier_python_command(
     return (
         *command,
         *python_identity_verifier_arguments(verifier_bytecode_prefix),
-        "-S",
+        *(() if site_enabled else ("-S",)),
     )
 
 
@@ -440,38 +586,72 @@ def probe_python_command(
     probe_env = dict(os.environ if env is None else env)
     probe_env["PYTHONHASHSEED"] = "0"
     probe_cwd = Path.cwd() if cwd is None else cwd
-    probe_command = _verifier_python_command(normalized, verifier.prefix)
-    stdout, stderr, rc = _run_command(
-        [*probe_command, "-c", _IDENTITY_PROBE],
-        verifier=verifier,
-        timeout=timeout if probe_timeout is None else probe_timeout(timeout),
+    payload = _probe_python_identity_payload(
+        normalized,
+        _IDENTITY_PROBE,
+        site_enabled=False,
         env=probe_env,
         cwd=probe_cwd,
+        timeout=timeout if probe_timeout is None else probe_timeout(timeout),
+        verifier=verifier,
+    )
+    return _interpreter_from_probe(normalized, payload)
+
+
+def _probe_python_identity_payload(
+    command: tuple[str, ...],
+    probe: str,
+    *,
+    site_enabled: bool,
+    env: Mapping[str, str],
+    cwd: Path,
+    timeout: float,
+    verifier: PythonIdentityVerifier,
+) -> dict[str, object]:
+    probe_command = _verifier_python_command(
+        command, verifier.prefix, site_enabled=site_enabled
+    )
+    stdout, stderr, rc = _run_command(
+        [*probe_command, "-c", probe],
+        verifier=verifier,
+        timeout=timeout,
+        env=env,
+        cwd=cwd,
     )
     if rc != 0:
         detail = (stderr or stdout).strip() or f"returncode={rc}"
         raise PythonInterpreterError(
-            f"{format_python_command(normalized)} identity probe failed: {detail}"
+            f"{format_python_command(command)} identity probe failed: {detail}"
         )
     lines = [line for line in stdout.splitlines() if line.strip()]
     try:
-        payload = json.loads(lines[-1])
+        payload: object = json.loads(lines[-1])
     except (IndexError, json.JSONDecodeError) as exc:
         raise PythonInterpreterError(
-            f"{format_python_command(normalized)} emitted invalid identity JSON"
+            f"{format_python_command(command)} emitted invalid identity JSON"
         ) from exc
+    if not isinstance(payload, dict):
+        raise PythonInterpreterError(
+            f"{format_python_command(command)} emitted invalid identity JSON"
+        )
+    return cast(dict[str, object], payload)
+
+
+def _interpreter_from_probe(
+    command: tuple[str, ...], payload: Mapping[str, object]
+) -> PythonInterpreter:
     implementation = str(payload.get("implementation", ""))
     executable = str(payload.get("executable", ""))
     version = str(payload.get("version", ""))
     if implementation != "CPython":
         raise PythonInterpreterError(
-            f"{format_python_command(normalized)} is {implementation or '<unknown>'}, not CPython"
+            f"{format_python_command(command)} is {implementation or '<unknown>'}, not CPython"
         )
     if not executable or not version:
         raise PythonInterpreterError(
-            f"{format_python_command(normalized)} emitted incomplete identity metadata"
+            f"{format_python_command(command)} emitted incomplete identity metadata"
         )
-    return PythonInterpreter(normalized, executable, version, implementation)
+    return PythonInterpreter(command, executable, version, implementation)
 
 
 def verify_target_python_command(
@@ -532,20 +712,34 @@ def python_command_candidates(
 
 
 def resolve_python_interpreter(
-    request: PythonInterpreterRequest,
+    request: PythonInterpreterRequest | None,
     *,
     override: str | None = None,
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     prefer_current: bool = False,
     prefer_uv: bool = True,
+    policy: PythonDiscoveryPolicy = "general",
     probe_timeout: Callable[[float], float] | None = None,
     verifier: PythonIdentityVerifier,
 ) -> PythonInterpreter:
-    """Resolve a physical request through the existing finite discovery order."""
+    """Resolve a physical interpreter under the caller's discovery policy."""
 
     probe_env = dict(os.environ if env is None else env)
     probe_cwd = Path.cwd() if cwd is None else cwd
+    if policy == "uv-managed":
+        return _resolve_uv_managed_python(
+            request,
+            override=override,
+            env=probe_env,
+            cwd=probe_cwd.absolute(),
+            timeout=10.0 if probe_timeout is None else probe_timeout(10.0),
+            verifier=verifier,
+        )
+    if request is None:
+        raise PythonInterpreterError(
+            "general Python discovery requires a release request"
+        )
     failures: list[str] = []
     current = ".".join(map(str, sys.version_info[:3]))
     if (
@@ -673,6 +867,251 @@ def target_release_request(
         assert request.micro is not None
         micro = request.micro
     return PythonInterpreterRequest(target_python.major, target_python.minor, micro)
+
+
+def resolve_benchmark_python(
+    *,
+    override: str | None = None,
+    request: PythonInterpreterRequest | None = None,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    verifier: PythonIdentityVerifier,
+) -> PythonInterpreter:
+    """Admit an installed base interpreter for the exact benchmark protocol.
+
+    A blank override selects the canonical guest release. A series selects its
+    canonical patch, an exact release selects that patch, and a physical path
+    selects the exact patch its interpreter reports.
+    """
+    explicit = "" if override is None else override.strip()
+    if explicit and is_python_version_selector(explicit):
+        raw = explicit.lower().removeprefix("py")
+        try:
+            selected = parse_python_interpreter_request(raw)
+        except ValueError as exc:
+            raise PythonInterpreterError(str(exc)) from exc
+        if request is not None and request != selected:
+            raise PythonInterpreterError(
+                f"benchmark CPython override {explicit!r} conflicts with {request.selector}"
+            )
+        request = selected
+        explicit = ""
+    if not explicit and request is None:
+        request = target_release_request(parse_target_python_version(None))
+    if request is not None and request.micro is None:
+        try:
+            request = target_release_request(
+                parse_target_python_version(request.series)
+            )
+        except ValueError as exc:
+            raise PythonInterpreterError(str(exc)) from exc
+    try:
+        return resolve_python_interpreter(
+            request,
+            override=explicit or None,
+            env=env,
+            cwd=cwd,
+            policy="uv-managed",
+            verifier=verifier,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        raise PythonInterpreterError(
+            f"benchmark CPython admission failed: {exc}"
+        ) from exc
+
+
+def _managed_python_lookup(
+    uv: Path, request: PythonInterpreterRequest
+) -> tuple[str, ...]:
+    return (str(uv), *MANAGED_PYTHON_LOOKUP_ARGS, request.selector)
+
+
+def _resolve_uv_managed_python(
+    request: PythonInterpreterRequest | None,
+    *,
+    override: str | None,
+    env: Mapping[str, str],
+    cwd: Path,
+    timeout: float,
+    verifier: PythonIdentityVerifier,
+) -> PythonInterpreter:
+    """Join the isolated base probe to uv's exact installed selection."""
+    from molt.default_paths import expand_user_path
+    from molt.toolchain_identity import (
+        executable_content_path,
+        find_executable,
+        verify_stable_regular_file_identity,
+    )
+
+    if request is not None and request.micro is None:
+        raise PythonInterpreterError("managed-only discovery requires an exact release")
+    observation: (
+        tuple[PythonInterpreter, BenchmarkPythonHost, StableRegularFileVersion] | None
+    ) = None
+    if override is not None:
+        path = expand_user_path(override, environment=env)
+        entry = path if path.is_absolute() else cwd / path
+        observation = _probe_managed_python_base(
+            entry, env=env, cwd=cwd, timeout=timeout, verifier=verifier
+        )
+        observed, _, _ = observation
+        if request is None:
+            request = parse_python_interpreter_request(observed.version)
+        elif not request.matches_version(observed.version):
+            raise PythonInterpreterError(
+                f"{entry} reports CPython {observed.version}, expected {request.selector}"
+            )
+
+    if request is None or request.micro is None:
+        raise PythonInterpreterError("managed-only discovery requires an exact release")
+    uv = find_executable("uv", environment=env, cwd=cwd)
+    if uv is None:
+        raise PythonInterpreterError(
+            "uv is required to select an installed benchmark CPython"
+        )
+    command = _managed_python_lookup(uv, request)
+    stdout, stderr, rc = _run_command(
+        command, verifier=verifier, timeout=timeout, env=env, cwd=cwd
+    )
+    lines = stdout.splitlines()
+    if rc != 0 or len(lines) != 1 or not Path(lines[0]).is_absolute():
+        detail = (stderr or stdout).strip() or f"returncode={rc}"
+        raise PythonInterpreterError(
+            f"no installed uv-managed CPython {request.selector} ({detail}); "
+            f"run `uv python install {request.selector}`"
+        )
+    selected_entry = Path(lines[0])
+    if observation is None:
+        observation = _probe_managed_python_base(
+            selected_entry, env=env, cwd=cwd, timeout=timeout, verifier=verifier
+        )
+    observed, host, image = observation
+    executable = image.path
+    selected_executable = executable_content_path(
+        selected_entry, label="uv-managed benchmark CPython"
+    )
+    if executable != selected_executable:
+        raise PythonInterpreterError(
+            f"{observed.executable} is not the uv-managed CPython {request.selector} "
+            f"executable {selected_executable}"
+        )
+    if not request.matches_version(observed.version):
+        raise PythonInterpreterError(
+            f"{selected_entry} reports CPython {observed.version}, expected {request.selector}"
+        )
+    verify_stable_regular_file_identity(image, label="benchmark CPython executable")
+    return PythonInterpreter(
+        (str(executable), *BENCHMARK_PYTHON_ARGUMENTS),
+        str(executable),
+        observed.version,
+        observed.implementation,
+        ManagedPythonOrigin(request, executable, uv, host),
+    )
+
+
+def _probe_managed_python_base(
+    entry: Path,
+    *,
+    env: Mapping[str, str],
+    cwd: Path,
+    timeout: float,
+    verifier: PythonIdentityVerifier,
+) -> tuple[PythonInterpreter, BenchmarkPythonHost, StableRegularFileVersion]:
+    from molt.python_environment_location import python_venv_config_candidates
+    from molt.toolchain_identity import (
+        executable_content_path,
+        is_searchable_executable,
+        stable_regular_file_version,
+        verify_stable_regular_file_identity,
+    )
+
+    if not is_searchable_executable(entry):
+        raise PythonInterpreterError(
+            f"benchmark CPython executable is unavailable: {entry}"
+        )
+    for config in python_venv_config_candidates(Path(os.path.abspath(entry))):
+        try:
+            config.lstat()
+        except FileNotFoundError:
+            continue
+        raise PythonInterpreterError(
+            f"{entry} is a virtual environment interpreter ({config})"
+        )
+    entry_stat = entry.stat()
+    command = (str(entry),)
+    # The canonical lexical venv fence runs before this no-site probe. On
+    # 3.12, -S alone hides venv prefix evidence; resolving links first would
+    # also erase the original placement. No rejected image runs site startup.
+    payload = _probe_python_identity_payload(
+        command,
+        _MANAGED_IDENTITY_PROBE,
+        site_enabled=False,
+        env=benchmark_python_environment(env),
+        cwd=cwd,
+        timeout=timeout,
+        verifier=verifier,
+    )
+    interpreter = _interpreter_from_probe(command, payload)
+    prefix = payload.get("prefix")
+    if (
+        not isinstance(prefix, str)
+        or not prefix
+        or prefix != payload.get("base_prefix")
+    ):
+        raise PythonInterpreterError(
+            f"{entry} is not a base CPython interpreter (virtual environment or missing prefix)"
+        )
+    base_executable = payload.get("base_executable")
+    if (
+        not isinstance(base_executable, str)
+        or not Path(base_executable).is_absolute()
+        or Path(interpreter.executable) != entry
+    ):
+        raise PythonInterpreterError(
+            f"{entry} did not launch directly as a CPython base executable"
+        )
+    sys_platform = payload.get("sys_platform")
+    machine = payload.get("machine")
+    pointer_bits = payload.get("pointer_bits")
+    if (
+        not isinstance(sys_platform, str)
+        or not isinstance(machine, str)
+        or type(pointer_bits) is not int
+        or pointer_bits not in (32, 64)
+    ):
+        raise PythonInterpreterError(
+            f"{entry} emitted incomplete process platform metadata"
+        )
+    host = BenchmarkPythonHost.from_observation(sys_platform, machine, pointer_bits)
+    expected = benchmark_python_host()
+    if (host.sys_platform, host.arch, host.pointer_bits) != (
+        expected.sys_platform,
+        expected.arch,
+        expected.pointer_bits,
+    ):
+        raise PythonInterpreterError(
+            f"{entry} reports {host.sys_platform}/{host.arch}/{host.pointer_bits}-bit, "
+            f"expected {expected.sys_platform}/{expected.arch}/{expected.pointer_bits}-bit"
+        )
+    executable = executable_content_path(entry, label="benchmark CPython executable")
+    image = stable_regular_file_version(
+        executable, label="benchmark CPython executable"
+    )
+    verify_stable_regular_file_identity(
+        image,
+        expected_path_stat=entry_stat,
+        label="probed benchmark CPython executable",
+    )
+    if (
+        executable_content_path(
+            Path(base_executable), label="benchmark CPython base executable"
+        )
+        != executable
+    ):
+        raise PythonInterpreterError(
+            f"{entry} differs from its reported CPython base executable"
+        )
+    return interpreter, host, image
 
 
 def resolve_target_python(

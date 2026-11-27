@@ -54,6 +54,7 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 
 from tools import perf_authority as pa  # noqa: E402
+from tools import perf_schema  # noqa: E402
 
 # Top-level bench result snapshots plus recursive bench/results stores are perf
 # artifacts. Benchmark corpus docs, runner source, and baseline schema docs are
@@ -402,7 +403,7 @@ def evaluate_scoreboard(path: Path, *, max_age_days: float, now: dt.datetime) ->
 
     if (
         not isinstance(payload, dict)
-        or payload.get("kind") != "cpython_floor_scoreboard"
+        or payload.get("kind") != perf_schema.CPYTHON_FLOOR_SCOREBOARD
     ):
         return _classify_artifact(
             path=path,

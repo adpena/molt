@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_metadata,
+    synthetic_workload,
+)
 from tools.bench_evidence import (
+    comparable_metric_errors,
     comparable_run_metadata_errors,
     comparator_time,
+    comparison_metric_value,
     metric_is_comparable,
     native_molt_speedup,
     native_molt_time,
@@ -48,6 +53,8 @@ def test_native_molt_evidence_requires_success_gate() -> None:
     }
     ok = {
         "molt_ok": True,
+        "cpython_ok": True,
+        "cpython_oracle": benchmark_oracle_metadata(),
         "molt_time_s": 0.25,
         "molt_speedup": 4.0,
     }
@@ -81,6 +88,38 @@ def test_metric_comparability_uses_all_required_gates() -> None:
 def test_comparator_time_requires_lane_success_gate() -> None:
     assert comparator_time({"codon_ok": False, "codon_time_s": 0.01}, "codon") is None
     assert comparator_time({"codon_ok": True, "codon_time_s": 0.01}, "codon") == 0.01
+
+
+@pytest.mark.parametrize("metadata", [None, {}, "forged"])
+def test_cpython_values_require_managed_isolated_evidence(metadata: object) -> None:
+    entry = {
+        "cpython_ok": True,
+        "cpython_oracle": metadata,
+        "cpython_time_s": 1.0,
+        "molt_ok": True,
+        "molt_time_s": 0.25,
+        "molt_speedup": 4.0,
+        "molt_cpython_ratio": 0.25,
+        "pypy_ok": True,
+        "pypy_time_s": 0.5,
+    }
+    assert comparator_time(entry, "cpython") is None
+    assert native_molt_speedup(entry) is None
+    assert comparison_metric_value(entry, "molt_cpython_ratio") is None
+    assert native_molt_time(entry) == 0.25
+    assert comparator_time(entry, "pypy") == 0.5
+
+
+def test_cpython_values_require_success_with_valid_oracle_evidence() -> None:
+    entry = {
+        "cpython_ok": False,
+        "cpython_oracle": benchmark_oracle_metadata(),
+        "cpython_time_s": 1.0,
+        "molt_ok": True,
+        "molt_speedup": 4.0,
+    }
+    assert comparator_time(entry, "cpython") is None
+    assert native_molt_speedup(entry) is None
 
 
 def test_validated_runtime_samples_prefers_top_level_samples() -> None:
@@ -322,6 +361,8 @@ def test_external_only_comparison_requires_the_same_admitted_workload(metric, ch
     from tools.bench_evidence import comparable_metric_errors
 
     old = {"workload": synthetic_workload("program.py"), metric: 1.0}
+    if metric == "cpython_time_s":
+        old.update(cpython_oracle=benchmark_oracle_metadata(), cpython_ok=True)
     new = deepcopy(old)
     if changed == "missing":
         new.pop("workload")
@@ -341,6 +382,24 @@ def test_external_only_comparison_requires_the_same_admitted_workload(metric, ch
     )
     assert comparable_metric_errors(current, baseline, metric=metric)
     assert comparable_metric_errors(baseline, baseline, metric=metric) == []
+
+
+def test_comparison_refuses_distinct_cpython_oracles_but_preserves_pypy() -> None:
+    first = {
+        "workload": synthetic_workload("program.py"),
+        "cpython_ok": True,
+        "cpython_oracle": benchmark_oracle_metadata(),
+        "cpython_time_s": 1.0,
+        "pypy_ok": True,
+        "pypy_time_s": 0.5,
+    }
+    second = {**first, "cpython_oracle": benchmark_oracle_metadata(version="3.12.15")}
+    baseline = {"benchmarks": {"program.py": first}}
+    current = {"benchmarks": {"program.py": second}}
+    assert comparable_metric_errors(current, baseline, metric="cpython_time_s") == [
+        "program.py: CPython oracle identities differ"
+    ]
+    assert comparable_metric_errors(current, baseline, metric="pypy_time_s") == []
 
 
 @pytest.mark.parametrize("metric", ["cpython_time_s", "molt_time_s"])

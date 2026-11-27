@@ -13,7 +13,6 @@ import shutil
 import statistics
 import sys
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from collections.abc import Mapping, Sequence
@@ -34,12 +33,19 @@ DEFAULT_BUDGET = ROOT / "bench" / "scoreboard" / "startup_budget.json"
 
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
-from tools.perf_schema import PhaseTimingStats, RUNTIME_INIT_TRACE  # noqa: E402
-from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
+from tools.bench_evidence import benchmark_reference_invocation  # noqa: E402
+from tools.perf_schema import (  # noqa: E402
+    PhaseTimingStats,
+    RUNTIME_INIT_TRACE,
+    benchmark_python_metadata_problems,
+)
+from molt.process_environment import ProcessEnvironment  # noqa: E402
+from molt.python_environment_identity import PythonIdentityVerifier  # noqa: E402
 from molt.python_interpreter import (  # noqa: E402
     PythonInterpreter,
-    probe_python_command,
-    explicit_python_command,
+    benchmark_python_metadata,
+    parse_python_interpreter_request,
+    resolve_benchmark_python,
 )
 from molt.default_paths import (  # noqa: E402
     executable_environment_value,
@@ -47,6 +53,7 @@ from molt.default_paths import (  # noqa: E402
 )
 from molt.wasm_artifact import wasm_runtime_manifest_path  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
+from molt.target_python import TargetPythonVersion, resolve_target_python_for_oracle  # noqa: E402
 
 TMP = scratch_dir(ROOT, "startup_bench")
 
@@ -191,14 +198,16 @@ def _build(
     out_dir: Path,
     env: ProcessEnvironment,
     timeout: float,
-):
+    *,
+    target_python: TargetPythonVersion,
+) -> output_audit.BuildResult:
     result = output_audit._build_molt_artifact(
         case=case,
         script=script,
         out_dir=out_dir,
         env=env,
         timeout=timeout,
-        extra_molt_args=[],
+        extra_molt_args=["--python-version", target_python.short],
     )
     if result.returncode != 0:
         raise RuntimeError(f"build failed for {case.id}: {result.stderr}")
@@ -218,27 +227,18 @@ def _node_command(artifact: Path) -> list[str]:
     ]
 
 
-def _cpython_env(env: ProcessEnvironment) -> ProcessEnvironment:
-    isolated = ProcessEnvironmentBuilder(env)
-    for name in ("PYTHONPATH", "PYTHONHOME", "UV_PROJECT_ENVIRONMENT"):
-        isolated.pop(name, None)
-    isolated["PYTHONNOUSERSITE"] = "1"
-    return ProcessEnvironment(isolated)
-
-
 def _baseline_python(env: ProcessEnvironment) -> PythonInterpreter:
-    selected = executable_environment_value(env, "MOLT_STARTUP_PYTHON", sys.executable)
-    if not selected or "\0" in selected:
+    selected = executable_environment_value(env, "MOLT_STARTUP_PYTHON")
+    present = "MOLT_STARTUP_PYTHON" in env
+    if present and (not selected or "\0" in selected):
         raise ValueError("MOLT_STARTUP_PYTHON must name a CPython executable")
-    path = expand_user_path(selected, environment=env)
-    if not path.is_absolute():
-        path = ROOT / path
-    from molt.python_environment_identity import PythonIdentityVerifier
-
-    command = explicit_python_command(str(path))
+    override = None
+    if present:
+        path = expand_user_path(selected, environment=env)
+        override = str(path if path.is_absolute() else ROOT / path)
     with PythonIdentityVerifier() as verifier:
-        return probe_python_command(
-            (*command, "-I"), verifier=verifier, env=_cpython_env(env), cwd=ROOT
+        return resolve_benchmark_python(
+            override=override, verifier=verifier, env=env, cwd=ROOT
         )
 
 
@@ -248,27 +248,23 @@ def _measure_probe(
     *,
     env: ProcessEnvironment,
     baseline: PythonInterpreter,
+    target_python: TargetPythonVersion,
     samples: int,
     timeout: float,
     build_timeout: float,
 ) -> dict[str, Any]:
     probe_root = TMP / name
-    baseline_env = _cpython_env(env)
-    from molt.python_interpreter import readonly_python_command
-
-    baseline_command = readonly_python_command(
-        baseline.command, environment_root=probe_root
-    )
+    reference = benchmark_reference_invocation(baseline.command, script, env, cwd=ROOT)
     cpython = _measure(
-        [*baseline_command, str(script)],
-        env=baseline_env,
+        list(reference.command),
+        env=reference.environment,
         samples=samples,
         timeout=timeout,
         label=f"{name} cpython",
     )
     cpython["importtime"] = _measure(
-        [*baseline_command, "-X", "importtime", str(script)],
-        env=baseline_env,
+        [*baseline.command, "-X", "importtime", str(script)],
+        env=reference.environment,
         samples=1,
         timeout=timeout,
         label=f"{name} cpython importtime",
@@ -283,6 +279,7 @@ def _measure_probe(
             probe_root / "native",
             env,
             build_timeout,
+            target_python=target_python,
         )
         wasm = _build(
             output_audit.MatrixCase(
@@ -297,6 +294,7 @@ def _measure_probe(
             probe_root / "wasm",
             env,
             build_timeout,
+            target_python=target_python,
         )
     except Exception as exc:
         row["build_blocker"] = {"type": type(exc).__name__, "message": str(exc)}
@@ -373,26 +371,32 @@ def _budget_status(
 
 
 def _attestation(report: dict[str, Any], samples: int) -> dict[str, Any]:
+    def complete(run: dict[str, Any]) -> bool:
+        stats = run.get("stats", {})
+        return (
+            run.get("ok") is True
+            and stats.get("count") == samples
+            and stats.get("median_ms") is not None
+        )
+
     medians_present = len(report["probes"]) == len(PROBES) and all(
-        row.get("cpython", {}).get("stats", {}).get("median_ms") is not None
-        and row.get("native", {}).get("run", {}).get("stats", {}).get("median_ms")
-        is not None
-        and row.get("wasm", {}).get("linked", {}).get("stats", {}).get("median_ms")
-        is not None
+        complete(row.get("cpython", {}))
+        and complete(row.get("native", {}).get("run", {}))
+        and complete(row.get("wasm", {}).get("linked", {}))
         for row in report["probes"]
     )
+    reasons = benchmark_python_metadata_problems(report.get("baseline_python"))
+    if not medians_present or samples < 3:
+        reasons.append("complete release medians unavailable")
+    accepted = not reasons
     return {
-        "grade": "A12-release-median-baseline"
-        if medians_present and samples >= 3
-        else "refused",
+        "grade": "A12-release-median-baseline" if accepted else "refused",
         "release_profile": True,
         "sample_count": samples,
         "median_required": True,
         "serial_execution": True,
-        "accepted": medians_present and samples >= 3,
-        "reasons": []
-        if medians_present and samples >= 3
-        else ["complete release medians unavailable"],
+        "accepted": accepted,
+        "reasons": reasons,
         "variant_ii": "required only for a claimed before/after startup improvement",
     }
 
@@ -410,6 +414,8 @@ def main() -> int:
         parser.error("A12 requires at least 3 samples")
     env = output_audit._canonical_env(os.environ.copy())
     baseline = _baseline_python(env)
+    release = parse_python_interpreter_request(baseline.version)
+    target_python = resolve_target_python_for_oracle((release.major, release.minor))
     TMP.mkdir(parents=True, exist_ok=True)
     RESULTS.mkdir(parents=True, exist_ok=True)
     scripts = {}
@@ -431,12 +437,13 @@ def main() -> int:
         else {"ok": False, "skipped": "node unavailable"}
     )
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "claim": "STARTUP-BASELINE",
         "recorded_at": _stamp(),
-        "baseline_python": asdict(baseline),
+        "baseline_python": benchmark_python_metadata(baseline),
         "methodology": {
             "build_profile": "release",
+            "target_python": target_python.short,
             "samples": args.samples,
             "statistic": "median",
             "same_machine": True,
@@ -459,6 +466,7 @@ def main() -> int:
                 path,
                 env=env,
                 baseline=baseline,
+                target_python=target_python,
                 samples=args.samples,
                 timeout=args.timeout,
                 build_timeout=args.build_timeout,

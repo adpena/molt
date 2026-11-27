@@ -3,8 +3,9 @@
 Molt is performance-obsessed. Every major change must be validated against our benchmark suite.
 
 ## Version Policy
-Benchmarks target **Python 3.12+** semantics. Use 3.12 as the minimum baseline,
-and record any 3.13/3.14 divergences in specs/tests.
+Benchmarks target **Python 3.12+** semantics, including 3.15. Record
+version-dependent behavior against the declared target. The wall-time reference
+follows the canonical guest release; the harness interpreter is independent.
 
 ## Runtime CPU Kernel Fast-Path Matrix
 
@@ -143,20 +144,44 @@ CLI's own read; sealed workload custody enforces this for applications. Other
 compiler validation still occurs at its owning boundary. This changes the
 methodology class; old application observations are not corrected in place.
 
-The standing exact uv-managed, isolated CPython requirement remains an open
-benchmark qualification gap. Default scoreboard discovery can admit a system
-installation and mutable aliases; ordinary timed references filter inherited
-`PYTHON*` settings and request hash seed zero but omit `-I`. Sealed references
-use declared imports with `-P -S -B`. Neither protocol proves compliance with
-isolated mode. An explicit physical managed executable improves identity custody
-but does not repair launch isolation. Migrate the existing interpreter resolver,
-all timed comparator consumers and retained-evidence admission together, preserving
-explicit guest-version intent and plan-mode laziness. Record the hash protocol
-explicitly: [`-I` ignores all `PYTHON*` variables](https://docs.python.org/3/using/cmdline.html#cmdoption-I),
-including `PYTHONHASHSEED`; it cannot substantiate a fixed-seed claim. Repeated
-output parity, local/sealed imports and stock extension loading must pass under
-the selected protocol before quiet performance qualification. The
-[V1 ledger](agent/V1_HANDOFF_FINDINGS.md) owns this remaining acceptance work.
+Primary benchmark CPython references use the existing physical interpreter
+resolver's exact managed-only policy. The default is the canonical guest release;
+the development interpreter remains independent. Scoreboard `--cpython` accepts
+an exact release or managed executable; a minor selects its canonical guest pin.
+An explicit executable retains its observed patch. Discovery refuses missing
+managed releases, virtual environments and host ABI mismatches, with no system
+fallback, environment sync or download. A missing install names the exact
+`uv python install RELEASE` prerequisite. Provision before measuring.
+
+The physical command uses `-I -S -B`: no ambient import path, user/global site
+startup or bytecode writes. Local and sealed dependencies use only admitted
+explicit roots, with unchanged cwd, arguments, native extension checks and golden
+output. Inherited `PYTHON*` and macOS `__PYVENV_LAUNCHER__` are removed.
+[`-I` ignores `PYTHONHASHSEED`](https://docs.python.org/3/using/cmdline.html#cmdoption-I);
+hashing is randomized, and repeated exact output parity must remain stable.
+The instruction comparator retains its separate exact release pin and uses this
+same launch protocol. Optional PyPy and dependency-managed friend suites retain
+their own declared protocols; they do not acquire CPython qualification.
+
+Schema 9 boards require the managed lookup, exact requested/observed release,
+physical command, launch policy, host ABI and matching guest minor. Removing all
+modern host fields cannot downgrade validation. Rebuild/merge preserve recorded
+identity without rediscovery. CPython-dependent diagnostic metrics also require
+successful reference sampling and per-entry oracle evidence; missing or old
+protocols remain unqualified. Instruction records bind their protocol and verify
+their identity digest on every store path. These are measurement prerequisites;
+quiet current-source timing and installed performance acceptance remain owned by
+the [V1 ledger](agent/V1_HANDOFF_FINDINGS.md).
+
+Automatic baseline lookup selects the newest completed snapshot with the same
+admitted oracle, executable bytes and loaded runtime closure. Explicit baselines
+receive the same check before regression or dimensional-win claims. Cross-file
+native/WASM ratios also require the same admitted workload, including source,
+arguments and seals. Independent times remain visible when a join is refused.
+Startup headlines require successful complete sample sets, not positive partial
+statistics. The audit runner shares one workload hold and exact output parity
+across its reference and guest samples. The individual runner emits only the
+canonical `molt_speedup`; the retired `speedup` alias cannot enter numeric diffs.
 
 Automatic and explicit baseline consumers require a valid, completed snapshot;
 a diagnostic merge of partial inputs remains partial even after every selected
@@ -254,13 +279,13 @@ is not the default throughput mode.
 For performance parity work, prefer linked WASM artifacts (`tools/bench_wasm.py --linked`)
 and use the linked runner path by default.
 If you build standalone WASM artifacts for perf validation, use
-`uv run python3 -m molt.cli build --target wasm --require-linked`
+`uv run --no-project python tools/venv_exec.py python -B -m molt.cli build --target wasm --require-linked`
 to ensure only linked output is produced.
 Use `tools/bench_wasm.py --require-linked` to fail fast when linking is unavailable.
 For targeted wasm failure triage, use benchmark filtering plus control-runner checks:
 
 ```bash
-uv run python3 tools/bench_wasm.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_wasm.py \
   --bench bench_async_await \
   --bench bench_channel_throughput \
   --runner node \
@@ -339,24 +364,24 @@ Browser WebGPU rules:
 
 ```bash
 # Basic run
-uv run --python 3.14 python3 tools/bench.py
+uv run --no-project python tools/venv_exec.py python -B tools/bench.py
 
 # One-off script (CLI wrapper or direct harness)
 molt bench --script path/to/script.py
-uv run --python 3.14 python3 tools/bench.py --script path/to/script.py
+uv run --no-project python tools/venv_exec.py python -B tools/bench.py --script path/to/script.py
 
 # Record triage results to JSON (not PR/release authority)
-uv run --python 3.14 python3 tools/bench.py --json-out bench/results/my_change.json
+uv run --no-project python tools/venv_exec.py python -B tools/bench.py --json-out bench/results/my_change.json
 
 # Isolated dynamic-builtin micro-slices (not part of core KPI suite)
-uv run --python 3.14 python3 tools/bench.py --dynamic-builtin-only \
+uv run --no-project python tools/venv_exec.py python -B tools/bench.py --dynamic-builtin-only \
   --json-out bench/results/dynamic_builtins.json
 
 # Increase warmup runs (default: 1, or 0 for --smoke)
-uv run --python 3.14 python3 tools/bench.py --warmup 2
+uv run --no-project python tools/venv_exec.py python -B tools/bench.py --warmup 2
 
 # Comparison vs CPython
-uv run --python 3.14 python3 tools/bench.py --compare cpython
+uv run --no-project python tools/venv_exec.py python -B tools/bench.py --compare cpython
 ```
 
 Without `--json-out`, `tools/bench.py` writes each run under a unique directory
@@ -410,7 +435,7 @@ logical CPUs are available. Other platforms write a schema-versioned
 reported as a failed or noisy performance sample.
 
 ```bash
-uv run --python 3.14 python3 tools/benchmark_cext_trampoline.py \
+uv run --no-project python tools/venv_exec.py python -B tools/benchmark_cext_trampoline.py \
   --out bench/results/cext_trampoline.json
 ```
 
@@ -478,7 +503,7 @@ After writing the benchmark JSON artifacts, generate the canonical combined
 report and refresh the `STATUS.md` benchmark block from the checked-in manifest:
 
 ```bash
-uv run --python 3.14 python3 tools/bench_report.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_report.py \
   --manifest bench/results/docs_manifest.json \
   --update-status-doc
 ```
@@ -491,7 +516,7 @@ the published docs:
 Check freshness without rewriting:
 
 ```bash
-uv run --python 3.14 python3 tools/bench_report.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_report.py \
   --manifest bench/results/docs_manifest.json \
   --check \
   --update-status-doc
@@ -505,7 +530,7 @@ Use `tools/bench_diff.py` to compare two benchmark artifacts and highlight
 regressions/improvements per metric:
 
 ```bash
-python3 tools/bench_diff.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_diff.py \
   bench/results/cluster12_codon_subset_after_stats_coerce_fastpath.json \
   bench/results/cluster13b_codon_subset_samples5_after_setdefault_empty_list_lowering.json \
   --top 10 \
@@ -531,7 +556,7 @@ For apples-to-apples validation against friend priorities, use the
 friend manifest harness:
 
 ```bash
-uv run python3 tools/bench_friends.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --include-disabled \
   --dry-run
@@ -540,7 +565,7 @@ uv run python3 tools/bench_friends.py \
 Then enable and run pinned suites:
 
 ```bash
-uv run python3 tools/bench_friends.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite codon_benchmarks \
   --checkout \
@@ -551,7 +576,7 @@ uv run python3 tools/bench_friends.py \
 PyPerformance lane (uses `molt run --profile dev` for the Molt runner):
 
 ```bash
-uv run python3 tools/bench_friends.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite pyperformance_benchmarks \
   --checkout \
@@ -561,7 +586,7 @@ uv run python3 tools/bench_friends.py \
 Upstream tinygrad lane:
 
 ```bash
-uv run python3 tools/bench_friends.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite tinygrad_off_the_shelf \
   --dry-run
@@ -571,7 +596,7 @@ To run against an already-pinned local checkout without editing the manifest,
 override both the suite root and the expected ref:
 
 ```bash
-uv run python3 tools/bench_friends.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite tinygrad_off_the_shelf \
   --suite-root tinygrad_off_the_shelf=/path/to/tinygrad \
@@ -693,7 +718,7 @@ MLIR/MIL lowering, and profiler work.
 NumPy off-the-shelf lane:
 
 ```bash
-uv run python3 tools/bench_friends.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite numpy_off_the_shelf \
   --dry-run
@@ -748,7 +773,7 @@ but never feed speedup math.
 SciPy off-the-shelf C-API lane:
 
 ```bash
-uv run python3 tools/bench_friends.py \
+uv run --no-project python tools/venv_exec.py python -B tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite scipy_off_the_shelf \
   --runner c_api_scan
@@ -849,15 +874,11 @@ fixes Gatekeeper *trust*, not launch *speed*.
 Run the audit and feed it into the report:
 
 ```bash
-uv run python3 tools/uv_project_env.py \
-  --python 3.14 --purpose output-startup-size -- \
-  uv run --python 3.14 python3 tools/output_startup_size_audit.py \
-  --out-dir bench/results --json
-uv run python3 tools/uv_project_env.py \
-  --python 3.14 --purpose bench-report -- \
-  uv run --python 3.14 python3 tools/bench_report.py \
+uv run --no-project python tools/venv_exec.py python -B tools/output_startup_size_audit.py \
+  --json-out /path/to/output_startup_size_audit.json --json
+uv run --no-project python tools/venv_exec.py python -B tools/bench_report.py \
   --manifest bench/results/docs_manifest.json \
-  --startup-audit bench/results/output_startup_size_audit.json \
+  --startup-audit /path/to/output_startup_size_audit.json \
   --update-status-doc
 ```
 
@@ -907,8 +928,8 @@ gate bundle (no exceptions):
   - guard-trip diagnostics must include incident-only repro context without
     writing success artifacts by default
 - lowering evidence:
-  - `python3 tools/check_stdlib_intrinsics.py`
-  - `python3 tools/check_core_lane_lowering.py`
+  - `uv run --no-project python tools/venv_exec.py python -B tools/check_stdlib_intrinsics.py`
+  - `uv run --no-project python tools/venv_exec.py python -B tools/check_core_lane_lowering.py`
 - documentation sync evidence:
   - same-change updates for optimization status docs
     (`docs/spec/STATUS.md`, `tools/PERF_AUTHORITY.md`,
@@ -945,7 +966,7 @@ For runtime attribution work, emit machine-readable counters from compiled runs:
 ```bash
 PYTHONPATH=src \
 MOLT_PROFILE=1 \
-uv run python3 -m molt.cli run --profile dev --trusted \
+uv run --no-project python tools/venv_exec.py python -B -m molt.cli run --profile dev --trusted \
   bench/friends/repos/codon_benchmarks/bench/codon/sum.py
 ```
 
@@ -1005,7 +1026,7 @@ For production-grade native benchmark runs, enable the native-arch profile:
 
 ```bash
 MOLT_PERF_PROFILE=native-arch \
-uv run --python 3.14 python3 tools/bench.py --compare codon
+uv run --no-project python tools/venv_exec.py python -B tools/bench.py --compare codon
 ```
 
 For a `--target native` build, Molt compiles the native runtime and the backend
@@ -1020,11 +1041,11 @@ like the build host.
 ## Compile Throughput Tuning
 
 - Bootstrap a consistent throughput environment first:
-  - `uv run python -m molt.cli dx env`
+  - `uv run --no-project python tools/venv_exec.py python -B -m molt.cli dx env`
   - or run the command directly under the same facts:
-    `uv run python -m molt.cli dx run -- <command>`
+    `uv run --no-project python tools/venv_exec.py python -B -m molt.cli dx run -- <command>`
   - shell activation remains available with
-    `uv run python -m molt.cli dx env --format posix`
+    `uv run --no-project python tools/venv_exec.py python -B -m molt.cli dx env --format posix`
     or `--format powershell`; `tools/throughput_env.sh --apply` is a POSIX
     compatibility wrapper over that resolver and still runs cache prune policy.
 - Every OS has one automatic artifact authority: the checkout's custody root
@@ -1080,7 +1101,7 @@ like the build host.
     `molt dx env` / `molt dx run`)
 - One-file import/stdlib regression loops should use the first-class diff
   stdlib-profile flag and the persistent diff cache root:
-  - `uv run python3 -u tests/molt_diff.py --jobs 1 --stdlib-profile full --json tests/differential/stdlib/importlib_import_module_basic.py`
+  - `uv run --no-project python tools/venv_exec.py python -B -u tests/molt_diff.py --jobs 1 --stdlib-profile full --json tests/differential/stdlib/importlib_import_module_basic.py`
 - For differential throughput, wrappers are disabled by default for portability; opt in only on stable hosts:
   - `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`
 
@@ -1088,9 +1109,9 @@ like the build host.
 
 ```bash
 export MOLT_SESSION_ID="bench-baseline"
-eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
+eval "$(uv run --no-project python tools/venv_exec.py python -B tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 MOLT_USE_SCCACHE=1 \
-uv run python3 -m molt.cli build examples/hello.py --build-profile dev --cache-report
+uv run --no-project python tools/venv_exec.py python -B -m molt.cli build examples/hello.py --build-profile dev --cache-report
 ```
 
 ### Python Source-Closure Cost
@@ -1117,8 +1138,8 @@ across profile and wrapper modes:
 
 ```bash
 export MOLT_SESSION_ID="throughput-matrix"
-eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
-uv run python3 tools/throughput_matrix.py \
+eval "$(uv run --no-project python tools/venv_exec.py python -B tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
+uv run --no-project python tools/venv_exec.py python -B tools/throughput_matrix.py \
   --concurrency 2 \
   --timeout-sec 75 \
   --shared-target-dir "$CARGO_TARGET_DIR" \
@@ -1149,7 +1170,7 @@ case definitions (cold/warm, cache-hit/no-cache, daemon on/off, and
 `release-fast` iteration lanes):
 
 ```bash
-uv run python3 tools/compile_progress.py --clean-state
+uv run --no-project python tools/venv_exec.py python -B tools/compile_progress.py --clean-state
 ```
 
 Add `--diagnostics` to collect per-case compiler phase timings/module reason
@@ -1180,7 +1201,7 @@ nonzero result; an existing build failure keeps its primary error and code.
   - `--diagnostics`
   - `--diagnostics-file <path>`
   - Example:
-    `uv run python3 -m molt.cli build --build-profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
+    `uv run --no-project python tools/venv_exec.py python -B -m molt.cli build --build-profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
 - Queue lanes (daemon warm queue, opt-in):
   - `--cases dev_queue_daemon_on dev_queue_daemon_off`
   - each queue case performs warmup runs before the measured attempt
@@ -1208,7 +1229,7 @@ allocation diagnostics, and final binary/startup evidence. Existing tools remain
 the producers; the capsule is the coupled schema and cross-check gate.
 
 ```bash
-uv run python tools/analysis_capsule.py \
+uv run --no-project python tools/venv_exec.py python -B tools/analysis_capsule.py \
   --build-diagnostics bench/results/build_diag.json \
   --binary-size-json bench/results/binary_size.json \
   --startup-audit bench/results/output_startup_size_audit.json \

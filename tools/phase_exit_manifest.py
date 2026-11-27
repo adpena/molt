@@ -391,13 +391,14 @@ def _scoreboard_facts(payload: Mapping[str, Any]) -> _ReceiptFacts:
     """
     schema = pa.perf_schema
     if (
-        payload.get("kind") != reg.E2_SCOREBOARD_KIND
+        payload.get("kind") != schema.CPYTHON_FLOOR_SCOREBOARD
         or payload.get("schema_version") != schema.SCHEMA_VERSION
     ):
         return _UNRECOGNIZED
     cells = schema.flatten_cells(payload)
     green = (
         bool(cells)
+        and not schema.validate_board(payload)
         and all(not pa.release_cell_problems(cell) for cell in cells)
         and not pa.scoreboard_observed_toolchain_problems(payload)
     )

@@ -14,7 +14,7 @@ Options:
   --timeout SECS     Per-test timeout in seconds (default: 30)
   --molt PATH        Path to molt binary (default: ./.venv/bin/molt or PATH)
   --molt-profile     Molt run build profile: dev or release (default: dev)
-  --python PATH      Path to CPython binary (default: python3)
+  --python SELECTOR  Managed release/minor/path for benchmarks, executable for diff
   --output PATH      JSON output path (default: bench/results/harness.json)
   --verbose          Show diffs and stderr on failure
   --no-color         Disable colored output
@@ -37,7 +37,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from collections.abc import Mapping
 from contextlib import ExitStack
 
@@ -72,8 +72,19 @@ from tools.bench_evidence import (  # noqa: E402
     workload_identity_problems,
 )
 from tools.bench_reporting import write_json  # noqa: E402
+from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
 from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
+from molt.python_environment_identity import PythonIdentityVerifier  # noqa: E402
+from molt.python_interpreter import (  # noqa: E402
+    BenchmarkPythonMetadata,
+    PythonInterpreter,
+    benchmark_python_metadata,
+    is_python_version_selector,
+    parse_python_interpreter_request,
+    resolve_benchmark_python,
+)
+from molt.target_python import resolve_target_python_for_oracle  # noqa: E402
 
 BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 
@@ -82,16 +93,21 @@ BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 # ---------------------------------------------------------------------------
 
 
+SuiteKind = Literal["bench", "diff"]
+
+
 @dataclass
 class TestResult:
     name: str
-    suite: str  # "bench", "diff"
+    suite: SuiteKind
     status: str  # "pass", "fail", "error", "skip", "timeout"
     workload: BenchmarkWorkloadRecord | None
     cpython_stdout: str = ""
     cpython_stderr: str = ""
     cpython_rc: int | None = None
     cpython_time_s: Optional[float] = None
+    cpython_ok: bool | None = None
+    cpython_oracle: BenchmarkPythonMetadata | None = None
     molt_stdout: str = ""
     molt_stderr: str = ""
     molt_rc: int | None = None
@@ -112,6 +128,9 @@ class TestResult:
             d["workload"] = self.workload
         if self.cpython_time_s is not None:
             d["cpython_time_s"] = round(self.cpython_time_s, 6)
+        if self.suite == "bench":
+            d["cpython_ok"] = self.cpython_ok
+            d["cpython_oracle"] = self.cpython_oracle
         if self.molt_time_s is not None:
             d["molt_time_s"] = round(self.molt_time_s, 6)
         if self.molt_speedup is not None:
@@ -283,25 +302,31 @@ def compute_diff(a: str, b: str) -> str:
 
 def run_single_test(
     script: Path,
-    suite: str,
-    molt_cmd: list,
-    python_cmd: str,
+    suite: SuiteKind,
+    molt_cmd: list[str],
+    python_cmd: str | None,
     timeout_s: float,
     *,
     workload: AdmittedBenchmarkWorkload | None,
+    cpython: PythonInterpreter | None = None,
 ) -> TestResult:
     """Run one test script through CPython and Molt, compare outputs."""
     name = script.name
-    if suite == "bench" and workload is None:
-        raise ValueError("benchmark execution requires an admitted workload")
+    contract = None
     if suite == "bench":
+        if workload is None:
+            raise ValueError("benchmark execution requires an admitted workload")
+        contract = benchmark_reference_contract(str(script))
+        if contract.external_baselines and cpython is None:
+            raise ValueError("benchmark execution requires an admitted CPython oracle")
         molt_cmd = [*molt_cmd, *bench_suites.molt_args_for_benchmark(script)]
-    if workload is not None:
         if script.expanduser().absolute() != workload.script:
             raise ValueError("benchmark source differs from admitted workload")
         workload.verify()
         if workload.record["molt_args"] != molt_cmd[1:]:
             raise ValueError("benchmark command differs from admitted Molt arguments")
+    elif python_cmd is None:
+        raise ValueError("differential execution requires a CPython executable")
     result = TestResult(
         name=name,
         suite=suite,
@@ -310,10 +335,14 @@ def run_single_test(
     )
 
     # --- CPython ---
-    if workload is None:
+    reference_run = None
+    if suite == "diff":
+        assert python_cmd is not None
         reference_run = run_cmd([python_cmd, str(script)], timeout_s)
-    else:
-        reference = workload.reference_invocation([python_cmd], _base_env())
+    elif contract is not None and contract.external_baselines:
+        assert workload is not None and cpython is not None
+        result.cpython_oracle = benchmark_python_metadata(cpython)
+        reference = workload.reference_invocation(cpython.command, _base_env())
         reference_run = run_cmd(
             list(reference.command),
             timeout_s,
@@ -324,26 +353,26 @@ def run_single_test(
             workload.verify_reference_output(
                 reference_run.stdout or "", reference_run.stderr or ""
             )
+        result.cpython_ok = reference_run.ok
     if workload is not None:
         workload.verify()
-    cp_out = result.cpython_stdout = reference_run.stdout or ""
-    cp_err = result.cpython_stderr = reference_run.stderr or ""
-    cp_rc = result.cpython_rc = reference_run.exit_code
-    cp_time = result.cpython_time_s = reference_run.elapsed_s
-
-    if not reference_run.ok:
-        # A failed reference remains a skip only for the documented diff
-        # policy or absent/timeout reference; incomplete custody is an error.
-        result.status = (
-            "skip"
-            if reference_run.status in {"timeout", "not_found"}
-            or (suite == "diff" and reference_run.status == "nonzero")
-            else "error"
-        )
-        result.error_msg = (
-            f"CPython {reference_run.status} (rc={reference_run.exit_code})"
-        )
-        return result
+    if reference_run is not None:
+        result.cpython_stdout = reference_run.stdout or ""
+        result.cpython_stderr = reference_run.stderr or ""
+        result.cpython_rc = reference_run.exit_code
+        result.cpython_time_s = reference_run.elapsed_s
+        if not reference_run.ok:
+            # Preserve the differential skip policy and retain invalid observations.
+            result.status = (
+                "skip"
+                if reference_run.status in {"timeout", "not_found"}
+                or (suite == "diff" and reference_run.status == "nonzero")
+                else "error"
+            )
+            result.error_msg = (
+                f"CPython {reference_run.status} (rc={reference_run.exit_code})"
+            )
+            return result
 
     # --- Molt ---
     molt_full_cmd = molt_cmd + [str(script)]
@@ -374,30 +403,23 @@ def run_single_test(
         return result
 
     # --- Compare ---
-    result.output_match = (
-        compare_outputs(
-            Outputs(cp_out, cp_err, cp_rc),
+    if contract is not None and not contract.external_baselines:
+        result.output_match = contract.molt_output_matches(m_out, m_err)
+    elif suite == "bench":
+        result.output_match = compare_outputs(
+            Outputs(result.cpython_stdout, result.cpython_stderr, result.cpython_rc),
             Outputs(m_out, m_err, m_rc),
             stderr_mode="exact",
         ).equal
-        if suite == "bench"
-        else cp_out == m_out
-    )
-
-    if suite == "bench":
-        # Only complete successful observations can reach ratio calculation.
         if result.output_match:
-            speedup = perf_authority.safe_speedup(cp_time, m_time)
+            speedup = perf_authority.safe_speedup(result.cpython_time_s, m_time)
             result.molt_speedup = round(speedup, 2) if speedup is not None else None
-        result.status = "pass" if result.output_match else "fail"
     else:
-        # For diff tests, pass/fail based on output match
-        if result.output_match:
-            result.status = "pass"
-        else:
-            result.status = "fail"
-            result.diff_snippet = compute_diff(cp_out, m_out)
+        result.output_match = result.cpython_stdout == m_out
+        if not result.output_match:
+            result.diff_snippet = compute_diff(result.cpython_stdout, m_out)
 
+    result.status = "pass" if result.output_match else "fail"
     return result
 
 
@@ -622,7 +644,12 @@ def build_json_report(
             # None (never a finite ratio) and the field carries explicit
             # direction metadata (audit meta-bug item 2).
             cpython_ratio_block = perf_authority.signed_ratio(
-                r.molt_time_s,
+                r.molt_time_s
+                if r.status == "pass"
+                and r.output_match is True
+                and r.cpython_ok is True
+                and r.cpython_oracle is not None
+                else None,
                 r.cpython_time_s,
                 direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
             )
@@ -639,6 +666,8 @@ def build_json_report(
                 or "not found" not in (r.error_msg or ""),
                 "molt_time_s": r.molt_time_s,
                 "cpython_time_s": r.cpython_time_s,
+                "cpython_ok": r.cpython_ok,
+                "cpython_oracle": r.cpython_oracle,
                 "molt_speedup": r.molt_speedup,
                 "molt_cpython_ratio": cpython_ratio_block["value"],
                 "ratio_directions": {
@@ -662,17 +691,18 @@ def build_json_report(
 
 
 def run_suite(
-    suite_name: str,
-    scripts: list,
-    molt_cmd: list,
-    python_cmd: str,
+    suite_name: SuiteKind,
+    scripts: list[Path],
+    molt_cmd: list[str],
+    python_cmd: str | None,
     timeout_s: float,
     parallel: int,
     colors: Colors,
     verbose: bool,
     *,
     workloads: Mapping[Path, AdmittedBenchmarkWorkload],
-) -> tuple:
+    cpython: PythonInterpreter | None = None,
+) -> tuple[list[TestResult], SuiteSummary]:
     """Run a test suite. Returns (results_list, SuiteSummary)."""
     if not scripts:
         return [], SuiteSummary(suite=suite_name)
@@ -694,6 +724,7 @@ def run_suite(
                     python_cmd,
                     timeout_s,
                     workload=workloads[script] if suite_name == "bench" else None,
+                    cpython=cpython,
                 )
                 futures[fut] = script
 
@@ -710,6 +741,7 @@ def run_suite(
                 python_cmd,
                 timeout_s,
                 workload=workloads[script] if suite_name == "bench" else None,
+                cpython=cpython,
             )
             results.append(r)
             print_result_line(colors, r, verbose)
@@ -770,7 +802,9 @@ def _main(workload_custody: ExitStack):
         help="Build profile passed through `molt run`.",
     )
     parser.add_argument(
-        "--python", type=str, default="python3", help="Path to CPython binary"
+        "--python",
+        help="Benchmark managed release/minor/path (default: pinned guest release), "
+        "or differential executable (default: python3).",
     )
     parser.add_argument(
         "--output", type=str, default=str(DEFAULT_OUTPUT), help="JSON output path"
@@ -809,10 +843,10 @@ def _main(workload_custody: ExitStack):
     # Resolve molt command
     molt_bin = resolve_molt_cli(args.molt)
     molt_cmd = [molt_bin, "run", "--profile", args.molt_profile]
+    diff_python = "python3" if args.python is None else args.python
 
     print(f"{colors.BOLD}Molt Test Harness{colors.RESET}")
     print(f"  molt:    {' '.join(molt_cmd)}")
-    print(f"  python:  {args.python}")
     print(f"  timeout: {args.timeout}s")
     print(f"  parallel: {args.parallel}")
     if args.filter:
@@ -837,6 +871,37 @@ def _main(workload_custody: ExitStack):
         if args.bench:
             scripts = collect_bench_scripts(args.filter, applications=args.applications)
             bench_suites.validate_benchmark_selection(scripts)
+            external_references = {
+                script
+                for script in scripts
+                if benchmark_reference_contract(str(script)).external_baselines
+            }
+            cpython = None
+            bench_molt_cmd = molt_cmd
+            if external_references:
+                with PythonIdentityVerifier() as verifier:
+                    cpython = resolve_benchmark_python(
+                        override=args.python,
+                        env=run_env,
+                        cwd=REPO_ROOT,
+                        verifier=verifier,
+                    )
+                release = parse_python_interpreter_request(cpython.version)
+                target = resolve_target_python_for_oracle(
+                    (release.major, release.minor)
+                )
+                bench_molt_cmd = [*molt_cmd, "--python-version", target.short]
+                print(f"  bench python: {cpython.version} ({cpython.executable})")
+            if (
+                args.diff
+                and args.python is not None
+                and is_python_version_selector(args.python)
+            ):
+                if cpython is None:
+                    parser.error(
+                        "combined suites require a CPython executable when no selected benchmark uses a reference"
+                    )
+                diff_python = cpython.executable
             workloads = {
                 script: workload_custody.enter_context(
                     admit_benchmark_workload(
@@ -844,9 +909,14 @@ def _main(workload_custody: ExitStack):
                         project_root=REPO_ROOT,
                         run_args=bench_suites.application_run_args(script),
                         molt_args=[
-                            *molt_cmd[1:],
+                            *bench_molt_cmd[1:],
                             *bench_suites.molt_args_for_benchmark(script),
                         ],
+                        cpython_command=(
+                            cpython.command
+                            if cpython is not None and script in external_references
+                            else None
+                        ),
                     )
                 )
                 for script in scripts
@@ -854,25 +924,27 @@ def _main(workload_custody: ExitStack):
             results, summary = run_suite(
                 "bench",
                 scripts,
-                molt_cmd,
-                args.python,
+                bench_molt_cmd,
+                None,
                 args.timeout,
                 args.parallel,
                 colors,
                 args.verbose,
                 workloads=workloads,
+                cpython=cpython,
             )
             all_results.extend(results)
             summaries.append(summary)
 
         # --- Differential suite ---
         if args.diff:
+            print(f"  diff python: {diff_python}")
             scripts = collect_diff_scripts(args.filter)
             results, summary = run_suite(
                 "diff",
                 scripts,
                 molt_cmd,
-                args.python,
+                diff_python,
                 args.timeout,
                 args.parallel,
                 colors,

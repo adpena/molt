@@ -10,11 +10,82 @@ from __future__ import annotations
 from contextlib import contextmanager
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any
+import sys
+from typing import Any, Literal
 
 from molt.cli.build_results import _observed_build_toolchain
+from molt.python_interpreter import (
+    BENCHMARK_PYTHON_ARGUMENTS,
+    BenchmarkPythonHost,
+    BenchmarkPythonMetadata,
+    ManagedPythonOrigin,
+    PythonInterpreter,
+    benchmark_python_host,
+    benchmark_python_metadata,
+    parse_python_interpreter_request,
+)
 from tools.perf_scoreboard_build_profiles import profile_selection_for_backend
 from tools.bench_evidence import AdmittedBenchmarkWorkload
+
+
+def benchmark_oracle_interpreter(
+    executable: str | Path | None = None,
+    version: str = "3.12.16",
+    *,
+    sys_platform: str | None = None,
+    machine: str | None = None,
+    arch: str | None = None,
+    pointer_bits: Literal[32, 64] | None = None,
+) -> PythonInterpreter:
+    """Model the resolver result at a fixture boundary without probing a Python."""
+    local = benchmark_python_host()
+    platform = sys_platform or local.sys_platform
+    host = BenchmarkPythonHost.from_observation(
+        platform, machine or local.machine, pointer_bits or local.pointer_bits
+    )
+    if arch is not None:
+        host = BenchmarkPythonHost(
+            host.sys_platform, host.machine, arch, host.pointer_bits
+        )
+    if executable is None:
+        if platform == "win32" and sys.platform != "win32":
+            executable = "C:/managed-python/python.exe"
+        elif platform != "win32" and sys.platform == "win32":
+            executable = "/managed-python/python"
+        else:
+            executable = Path(sys.executable).with_name("benchmark-oracle-python")
+    path = Path(executable)
+    uv = path.with_name("uv.exe" if platform == "win32" else "uv")
+    request = parse_python_interpreter_request(version)
+    return PythonInterpreter(
+        (str(path), *BENCHMARK_PYTHON_ARGUMENTS),
+        str(path),
+        version,
+        "CPython",
+        ManagedPythonOrigin(request, path, uv, host),
+    )
+
+
+def benchmark_oracle_metadata(
+    executable: str | Path | None = None,
+    version: str = "3.12.16",
+    *,
+    sys_platform: str | None = None,
+    machine: str | None = None,
+    arch: str | None = None,
+    pointer_bits: Literal[32, 64] | None = None,
+) -> BenchmarkPythonMetadata:
+    """Project synthetic managed oracle data for retained-record reader tests."""
+    return benchmark_python_metadata(
+        benchmark_oracle_interpreter(
+            executable,
+            version,
+            sys_platform=sys_platform,
+            machine=machine,
+            arch=arch,
+            pointer_bits=pointer_bits,
+        )
+    )
 
 
 def synthetic_reference_evidence(benchmark: str) -> dict[str, object]:
@@ -132,6 +203,7 @@ def sealed_workload(
     *,
     molt_args: Sequence[str] = (),
     oracle_bytes: bytes = b"sealed:7\n",
+    driver_source: str | None = None,
 ) -> Iterator[AdmittedBenchmarkWorkload]:
     """Real sealed source/data/oracle custody for benchmark invocation tests."""
     from molt.cli.source_package_seal import (
@@ -142,7 +214,9 @@ def sealed_workload(
 
     original = tmp_path / "original"
     files = {
-        "drivers/program.py": (
+        "drivers/program.py": driver_source
+        if driver_source is not None
+        else (
             "import sys\nfrom pathlib import Path\n"
             "from fixture_package import label\n"
             "print(label + Path(sys.argv[1]).read_text().strip() + ':' + sys.argv[2])\n"

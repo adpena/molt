@@ -574,8 +574,6 @@ def prepare_for_script(script: Path) -> PreparedApplication | None:
 
 
 def main() -> int:
-    from molt.process_environment import ProcessEnvironment
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--write-oracle", required=True, choices=[app.name for app in applications()]
@@ -583,35 +581,35 @@ def main() -> int:
     args = parser.parse_args()
     app = next(app for app in applications() if app.name == args.write_oracle)
     prepared = prepare_application(app, include_oracle=False)
-    env = ProcessEnvironment(os.environ)
-    env = env.without(name for name in env if env.rule.key(name).startswith("PYTHON"))
-    env = env.updated(
-        {
-            "PYTHONPATH": str(prepared.seal.payload_root / "src"),
-            "PYTHONHASHSEED": "0",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
+    from molt.python_environment_identity import PythonIdentityVerifier
+    from molt.python_interpreter import resolve_benchmark_python
+    from tools.bench_evidence import benchmark_reference_invocation
+
+    with PythonIdentityVerifier() as verifier:
+        cpython = resolve_benchmark_python(verifier=verifier, cwd=ROOT)
+    invocation = benchmark_reference_invocation(
+        cpython.command,
+        prepared.seal.payload_root / app.driver,
+        os.environ,
+        run_args=app.run_args,
+        import_roots=(prepared.seal.payload_root / "src",),
+        cwd=prepared.seal.payload_root,
     )
     from tools import harness_memory_guard
 
     result = harness_memory_guard.guarded_completed_process(
-        [
-            sys.executable,
-            "-P",
-            "-S",
-            "-B",
-            str(prepared.seal.payload_root / app.driver),
-            *app.run_args,
-        ],
+        list(invocation.command),
         prefix="MOLT_BENCH",
-        cwd=prepared.seal.payload_root,
-        env=env,
+        cwd=invocation.cwd,
+        env=invocation.environment,
         capture_output=True,
         text=False,
         encoding="utf-8",
         errors="surrogateescape",
         timeout=60,
-        limits=harness_memory_guard.limits_from_env("MOLT_BENCH", env),
+        limits=harness_memory_guard.limits_from_env(
+            "MOLT_BENCH", invocation.environment
+        ),
     )
     from tools.safe_run import observed_run_outcome
 

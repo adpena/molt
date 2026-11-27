@@ -869,7 +869,10 @@ def test_wasm_admitted_guest_arguments_and_complete_output(
 def test_wasm_sealed_producer_uses_reference_oracle_and_payload_invocations(
     tmp_path, monkeypatch, failure
 ):
-    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+    from tests.tools.perf_scoreboard_fixtures import (
+        benchmark_oracle_interpreter,
+        sealed_workload,
+    )
     from tests.wasm_execution_manifest import (
         EMPTY_WASM_MODULE,
         write_wasm_execution_manifest,
@@ -877,7 +880,8 @@ def test_wasm_sealed_producer_uses_reference_oracle_and_payload_invocations(
 
     calls = []
     monkeypatch.setattr(bench_wasm, "_base_env", lambda: {})
-    monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["selected-python"])
+    monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["harness-python"])
+    baseline = benchmark_oracle_interpreter()
     monkeypatch.setattr(bench_wasm, "_prune_backend_daemons", lambda _: None)
     monkeypatch.setattr(
         bench_wasm.harness_memory_guard,
@@ -904,7 +908,7 @@ def test_wasm_sealed_producer_uses_reference_oracle_and_payload_invocations(
         from tools.safe_run import RunOutcome
 
         calls.append((command, dict(kwargs["env"]), kwargs))
-        if command[0] == "selected-python":
+        if command[0] == baseline.executable:
             assert kwargs["guest_stderr_path"] is None
             return RunOutcome(
                 True,
@@ -956,6 +960,7 @@ def test_wasm_sealed_producer_uses_reference_oracle_and_payload_invocations(
                 tty=False,
                 log=None,
                 keep_temp=False,
+                cpython_command=baseline.command,
             )
 
         if failure == "reference":
@@ -976,6 +981,7 @@ def test_wasm_sealed_producer_uses_reference_oracle_and_payload_invocations(
                     == "unsupported_semantic_stream_capture"
                 )
             assert calls[1][0][-1] == str(workload.execution_script)
+            assert calls[1][0][0] == "harness-python"
             assert calls[1][1]["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
             assert calls[1][1]["MOLT_MODULE_ROOTS"] == str(
                 workload.execution_root / "packages"
@@ -986,12 +992,11 @@ def test_wasm_sealed_producer_uses_reference_oracle_and_payload_invocations(
                     "data/input.txt",
                     "7",
                 ]
-        assert calls[0][0] == [
-            "selected-python",
-            "-P",
-            "-S",
-            "-B",
+        assert calls[0][0][:5] == [*baseline.command, "-c"]
+        assert calls[0][0][6:] == [
             str(workload.execution_script),
+            "1",
+            str(workload.execution_root / "packages"),
             "data/input.txt",
             "7",
         ]

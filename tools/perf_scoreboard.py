@@ -51,7 +51,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import platform
 import re
 import shlex
 import subprocess
@@ -115,6 +114,12 @@ from tools.perf_scoreboard_model import (  # noqa: E402
 # loop. bench.py owns the daemon batch build, the memory guard, and the
 # binary-size / compile-time capture; bench_suites owns the curated suite.
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
+from molt.python_environment_identity import PythonIdentityVerifier  # noqa: E402
+from molt.python_interpreter import (  # noqa: E402
+    PythonInterpreterError,
+    benchmark_python_host,
+    resolve_benchmark_python,
+)
 from tools import bench  # noqa: E402
 from tools import bench_suites  # noqa: E402
 from tools import perf_methodology  # noqa: E402
@@ -125,6 +130,7 @@ from molt.backend_executable_names import is_host_tool_executable_name  # noqa: 
 from molt.host_tool_products import HostToolProduct  # noqa: E402
 from tools.perf_schema import (  # noqa: E402
     PlannedCell,
+    CPYTHON_FLOOR_SCOREBOARD,
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
     CLASS_INFRA,
@@ -145,6 +151,7 @@ from tools.perf_schema import (  # noqa: E402
     VERDICT_RUN_ERROR,
     VERDICT_UNSTABLE,
     VERDICT_WARN_COLD_FLOOR,
+    benchmark_oracle_comparison_problem,
     flatten_cells as flatten_cells,
     process_timing_scope,
     scoreboard_coverage,
@@ -202,15 +209,8 @@ from tools.perf_scoreboard_report import (  # noqa: E402
     print_summary as print_summary,
 )
 from tools.perf_scoreboard_resolver import (  # noqa: E402
-    _canonical_interpreter_cmd as _canonical_interpreter_cmd,
-    _format_cmd as _format_cmd,
-    _is_project_managed_interpreter as _is_project_managed_interpreter,
-    _normalize_arch as _normalize_arch,
-    _path_executable_candidates as _path_executable_candidates,
     _probe_codon_version as _probe_codon_version,
     _probe_interp_version as _probe_interp_version,
-    _probe_tail as _probe_tail,
-    _python_version_key as _python_version_key,
     _resolve_codon as _resolve_codon,
     _resolve_pypy as _resolve_pypy,
 )
@@ -1000,20 +1000,24 @@ def apply_classification(
     *,
     quiescent: bool,
     baseline_doc: dict | None = None,
+    cpython_identity: Mapping[str, object] | None = None,
 ) -> None:
     """Set ``classification`` on every cell from quiescence + repeat CI + baseline.
 
     The single entry point the run/rebuild paths call when --classify is on.
-    ``baseline_doc`` (a prior board) enables DIMENSIONAL_WIN; absent, dimensional
-    wins are not asserted (they collapse to TIE — conservative by design).
+    A prior board with matching oracle observations enables DIMENSIONAL_WIN.
     """
     baseline_cells: dict[str, dict] = {}
-    if baseline_doc:
+    if baseline_doc is not None:
         from tools.perf_scoreboard_report import baseline_snapshot_problems
 
         problems = baseline_snapshot_problems(baseline_doc)
         if problems:
             print("[baseline] refused: " + "; ".join(problems), file=sys.stderr)
+        elif problem := benchmark_oracle_comparison_problem(
+            cpython_identity, baseline_doc["host"]["cpython_oracle"]
+        ):
+            print(f"[baseline] refused: {problem}", file=sys.stderr)
         else:
             baseline_cells = {_cell_key(c): c for c in _flatten_cells(baseline_doc)}
     for cell in cells:
@@ -1401,11 +1405,13 @@ def build_scoreboard_doc(
     pypy_version: str | None = None,
     codon_version: str | None = None,
     execution_host: dict | None = None,
+    retained_host: Mapping[str, object] | None = None,
 ) -> dict:
     """Assemble the nested machine-readable scoreboard under the current schema.
 
     Shape: ``benchmark -> target -> backend -> profile -> {cell fields}``.
     Adds the two-dimensional verdict breakdown + the provenance block.
+    Rebuild and merge pass the host metadata from validated source boards.
     """
     from tools.bench_evidence import workload_collection_problems
 
@@ -1446,24 +1452,28 @@ def build_scoreboard_doc(
     # (--classify was used). When inactive the breakdown is empty (no-op for the
     # 2-D-only callers).
     classify_active = any(c.classification is not None for c in cells)
-    host = {
-        "execution_host": execution_host,
-        "platform": sys.platform,
-        "machine": platform.machine(),
-        "arch": _host_arch(),
-        "pointer_bits": _host_pointer_bits(),
-        "python_runner": sys.version.split()[0],
-        "cpython_baseline": cpython_version,
-        "pypy": pypy_version,
-        "codon": codon_version,
-    }
-    if cpython_identity is not None:
-        host["cpython_oracle"] = cpython_identity
-        host["molt_target_python"] = cpython_identity.get("molt_target_python")
+    if retained_host is None:
+        host_abi = benchmark_python_host()
+        host = {
+            "execution_host": execution_host,
+            "platform": host_abi.sys_platform,
+            "machine": host_abi.machine,
+            "arch": host_abi.arch,
+            "pointer_bits": host_abi.pointer_bits,
+            "python_runner": sys.version.split()[0],
+            "cpython_baseline": cpython_version,
+            "pypy": pypy_version,
+            "codon": codon_version,
+        }
+        if cpython_identity is not None:
+            host["cpython_oracle"] = cpython_identity
+            host["molt_target_python"] = cpython_identity.get("molt_target_python")
+    else:
+        host = dict(retained_host)
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "kind": "cpython_floor_scoreboard",
+        "kind": CPYTHON_FLOOR_SCOREBOARD,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": git_rev,
         "planned_cells": [coordinate.as_record() for coordinate in planned_cells],
@@ -1692,10 +1702,8 @@ def _rebuild_summary(
                         or "CPython baseline could not run this script",
                     }
                 )
-    host = prior.get("host", {})
+    host = prior["host"]
     provenance = dict(prior.get("provenance", {}))
-    # Rebuilding projections cannot invent identities for artifacts measured
-    # earlier. Missing producer identities require a new measured receipt.
     doc = build_scoreboard_doc(
         cells,
         planned_cells=tuple(
@@ -1704,19 +1712,17 @@ def _rebuild_summary(
         run_state=prior["run_state"],
         benchmarks_run=prior.get("benchmarks_run", []),
         benchmarks_deferred=deferred,
-        cpython_version=host.get("cpython_baseline", "unknown"),
+        cpython_version=host["cpython_baseline"],
         samples=method.get("samples_per_phase", DEFAULT_SAMPLES),
         warmup=method.get("warmup_runs", DEFAULT_WARMUP),
         provenance=provenance,
         pypy_version=host.get("pypy"),
         codon_version=host.get("codon"),
-        execution_host=host.get("execution_host"),
+        retained_host=host,
     )
     # Preserve the original generation timestamp + git_rev of the measurement.
     doc["generated_at"] = prior.get("generated_at", doc["generated_at"])
     doc["git_rev"] = prior.get("git_rev", doc["git_rev"])
-    if "host" in prior:
-        doc["host"] = prior["host"]
     try:
         _write_scoreboard_doc(path, doc, context=f"rebuild-summary {path}")
     except ScoreboardSchemaError as exc:
@@ -2032,11 +2038,9 @@ def _merge_boards(
         provenance=provenance,
         pypy_version=host.get("pypy"),
         codon_version=host.get("codon"),
-        execution_host=host.get("execution_host"),
+        retained_host=host,
     )
     doc["git_rev"] = git_rev
-    if host:
-        doc["host"] = host
     if generated_at:
         doc["generated_at"] = generated_at
     try:
@@ -2065,14 +2069,17 @@ def main(argv: list[str]) -> int:
 
 
 def _attach_regressions(doc: dict) -> None:
-    """Compute REGRESSIONS FROM LAST GREEN vs the latest committed board.
+    """Compute regressions from the latest comparable committed board.
 
     Surfaced in print_summary's classified output. Best-effort: a missing/older
     baseline simply leaves the section empty. Excludes the board being written
     now (``_out_path``) AND any ``.partial.json`` so it never near-self-diffs.
     """
     out_path = doc.get("_out_path")
-    baseline = _latest_baseline(exclude=Path(out_path) if out_path else None)
+    baseline = _latest_baseline(
+        exclude=Path(out_path) if out_path else None,
+        cpython_identity=doc["host"]["cpython_oracle"],
+    )
     if baseline is None or not baseline.exists():
         return
     _newly, regressed = diff_against_baseline(doc, baseline)
@@ -2080,168 +2087,19 @@ def _attach_regressions(doc: dict) -> None:
         doc["_regressions_from_last_green"] = regressed
 
 
-_CPYTHON_IDENTITY_PROBE = "\n".join(
-    [
-        "import json",
-        "import platform",
-        "import struct",
-        "import sys",
-        "print(json.dumps({",
-        "    'implementation': platform.python_implementation(),",
-        "    'version': platform.python_version(),",
-        "    'executable': sys.executable,",
-        "    'base_executable': sys._base_executable,",
-        "    'sys_platform': sys.platform,",
-        "    'machine': platform.machine(),",
-        "    'pointer_bits': struct.calcsize('P') * 8,",
-        "}, sort_keys=True))",
-    ]
-)
-
-
-def _resolve_system_cpython(explicit: str | None) -> CpythonOracle:
-    """Resolve the host-native CPython oracle used as the performance floor."""
-
-    candidates = [(explicit,)] if explicit else _default_cpython_candidate_cmds()
-    failures: list[str] = []
-    for raw_cmd in candidates:
-        oracle, reason = _probe_cpython_candidate(raw_cmd)
-        if oracle is not None:
-            return oracle
-        if reason:
-            failures.append(f"{_format_cmd(raw_cmd)}: {reason}")
-
-    source = f"explicit --cpython {explicit!r}" if explicit else "default CPython"
-    target = f"{sys.platform}/{_host_arch()}/{_host_pointer_bits()}-bit"
-    detail = "; ".join(failures[:8]) if failures else "no candidates found"
-    if len(failures) > 8:
-        detail += f"; ... {len(failures) - 8} more rejected"
-    raise RuntimeError(f"could not resolve {source} oracle for {target}: {detail}")
-
-
-def _probe_cpython_candidate(
-    raw_cmd: tuple[str, ...],
-) -> tuple[CpythonOracle | None, str]:
+def _resolve_benchmark_cpython(explicit: str | None) -> CpythonOracle:
+    """Admit the installed uv-managed CPython used as the performance floor."""
     try:
-        probe_cmd = _canonical_interpreter_cmd(raw_cmd)
-    except (FileNotFoundError, OSError) as exc:
-        return None, str(exc)
-
-    res = _metadata_probe([*probe_cmd, "-c", _CPYTHON_IDENTITY_PROBE], timeout_s=30)
-    if res is None:
-        return None, "identity probe failed"
-    if res.returncode != 0:
-        return None, f"identity probe exited {res.returncode}: {_probe_tail(res)}"
-
-    lines = [line for line in (res.stdout or "").splitlines() if line.strip()]
-    if not lines:
-        return None, "identity probe emitted no JSON"
-    try:
-        payload = json.loads(lines[-1])
-    except json.JSONDecodeError as exc:
-        return None, f"identity probe emitted invalid JSON: {exc}"
-
-    implementation = str(payload.get("implementation", ""))
-    version = str(payload.get("version", ""))
-    executable = str(payload.get("executable", ""))
-    sys_platform = str(payload.get("sys_platform", ""))
-    machine = str(payload.get("machine", ""))
-    arch = _normalize_arch(machine)
-    try:
-        pointer_bits = int(payload.get("pointer_bits"))
-    except (TypeError, ValueError):
-        return None, f"invalid pointer width {payload.get('pointer_bits')!r}"
-
-    if implementation != "CPython":
-        return None, f"implementation is {implementation!r}, not CPython"
-    if _python_version_key(version) < (3, 12, 0):
-        return None, f"CPython {version} is below the 3.12 floor"
-    if sys_platform != sys.platform:
-        return None, f"platform {sys_platform!r} != host {sys.platform!r}"
-    if arch != _host_arch():
-        return None, f"arch {arch!r} != host {_host_arch()!r}"
-    if pointer_bits != _host_pointer_bits():
-        return None, f"pointer width {pointer_bits} != host {_host_pointer_bits()}"
-    if _is_project_managed_interpreter(executable):
-        return None, f"project-managed interpreter cannot be baseline: {executable}"
-
-    try:
-        runtime_executable = bench._canonical_interpreter(executable)
-    except (FileNotFoundError, OSError) as exc:
-        return None, f"probed executable is not runnable: {exc}"
-
-    return (
-        CpythonOracle(
-            cmd=(runtime_executable,),
-            executable=runtime_executable,
-            version=version,
-            implementation=implementation,
-            sys_platform=sys_platform,
-            machine=machine,
-            arch=arch,
-            pointer_bits=pointer_bits,
-            base_executable=payload.get("base_executable"),
-        ),
-        "",
-    )
-
-
-def _default_cpython_candidate_cmds() -> list[tuple[str, ...]]:
-    """Return host-aware CPython candidates, newest first, no project venvs."""
-
-    candidates: list[tuple[str, ...]] = []
-
-    def add(cmd: tuple[str, ...]) -> None:
-        if cmd and cmd not in candidates:
-            candidates.append(cmd)
-
-    def add_path_name(name: str) -> None:
-        for path in _path_executable_candidates(name):
-            if not _is_project_managed_interpreter(path):
-                add((path,))
-
-    if sys.platform == "darwin":
-        for path in (
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3",
-            "/opt/homebrew/bin/python3.14",
-            "/usr/local/bin/python3.14",
-            "/opt/homebrew/bin/python3.13",
-            "/usr/local/bin/python3.13",
-            "/opt/homebrew/bin/python3.12",
-            "/usr/local/bin/python3.12",
-        ):
-            add((path,))
-
-    for name in ("python3.14", "python3.13", "python3.12", "python3", "python"):
-        add_path_name(name)
-
-    if os.name == "nt":
-        for launcher in _path_executable_candidates("py"):
-            for version in ("-3.14", "-3.13", "-3.12"):
-                add((launcher, version))
-    else:
-        for path in (
-            "/usr/local/bin/python3.14",
-            "/usr/local/bin/python3.13",
-            "/usr/local/bin/python3.12",
-            "/usr/local/bin/python3",
-            "/usr/bin/python3.14",
-            "/usr/bin/python3.13",
-            "/usr/bin/python3.12",
-            "/usr/bin/python3",
-        ):
-            add((path,))
-
-    return candidates
-
-
-def _host_arch() -> str:
-    return _normalize_arch(platform.machine())
-
-
-def _host_pointer_bits() -> int:
-    return 64 if sys.maxsize > 2**32 else 32
+        with PythonIdentityVerifier() as verifier:
+            selected = resolve_benchmark_python(
+                override=explicit, cwd=Path.cwd(), verifier=verifier
+            )
+    except PythonInterpreterError as exc:
+        source = f"explicit --cpython {explicit!r}" if explicit else "default CPython"
+        raise PythonInterpreterError(
+            f"could not resolve {source} oracle: {exc}"
+        ) from exc
+    return CpythonOracle(selected)
 
 
 if __name__ == "__main__":

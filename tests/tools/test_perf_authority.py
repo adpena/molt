@@ -380,6 +380,55 @@ def test_current_scoreboard_problems_accepts_current_green_authoritative_board(
     )
 
 
+def test_current_and_release_authorities_reject_missing_managed_oracle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.tools.test_perf_schema import _cell, _doc
+
+    doc = _doc(_cell())
+    host = doc["host"]
+    assert isinstance(host, dict)
+    oracle = host["cpython_oracle"]
+    oracle.pop("managed_origin")
+    monkeypatch.setattr(pa, "current_origin_main_rev", lambda: "a" * 40)
+
+    assert any(
+        "schema invalid" in problem and "managed_origin" in problem
+        for problem in pa.current_scoreboard_problems(doc)
+    )
+    release_problems = pa.release_scoreboard_problems(doc, expected_source_sha="a" * 40)
+    assert any(
+        "schema invalid" in problem and "managed_origin" in problem
+        for problem in release_problems
+    )
+    observed_cell = _cell()
+    observed_cell["build_observation"] = {"kind": "molt-build-observation-v1"}
+    valid_doc = _doc(observed_cell)
+    assert any(
+        "used-byte admission receipt" in problem
+        for problem in pa.release_scoreboard_problems(
+            valid_doc, expected_source_sha="a" * 40
+        )
+    )
+
+
+def test_release_refuses_distinct_command_and_base_image_observations() -> None:
+    command_image = {"size": 10, "sha256": "a" * 64}
+    base_image = {"size": 10, "sha256": "b" * 64}
+    doc = {
+        "host": {
+            "cpython_oracle": {
+                "command_executable_identity": command_image,
+                "base_executable_identity": base_image,
+            }
+        }
+    }
+
+    assert "CPython command and base executable observations differ" in (
+        pa.scoreboard_observed_toolchain_problems(doc)
+    )
+
+
 @pytest.mark.parametrize(
     "override", [["--build-timeout", "600"], ["--build-timeout=2.5"]]
 )

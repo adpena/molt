@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_metadata,
+    synthetic_workload,
+)
 import pytest
 
 import tools.bench_dashboard as bench_dashboard
@@ -9,6 +12,8 @@ import tools.bench_dashboard as bench_dashboard
 def test_dashboard_suppresses_stale_failed_native_values() -> None:
     entry = {
         "molt_ok": False,
+        "cpython_ok": True,
+        "cpython_oracle": benchmark_oracle_metadata(),
         "cpython_time_s": 1.0,
         "molt_time_s": 0.01,
         "molt_speedup": 100.0,
@@ -33,6 +38,8 @@ def test_dashboard_suppresses_stale_failed_native_values() -> None:
 def test_dashboard_uses_valid_native_evidence() -> None:
     entry = {
         "molt_ok": True,
+        "cpython_ok": True,
+        "cpython_oracle": benchmark_oracle_metadata(),
         "cpython_time_s": 1.0,
         "molt_time_s": 0.25,
         "molt_speedup": 4.0,
@@ -48,6 +55,8 @@ def _bound_dashboard_entry(speedup: float, runtime: str = "release-output") -> d
     return {
         "workload": synthetic_workload("bench.py"),
         "molt_ok": True,
+        "cpython_ok": True,
+        "cpython_oracle": benchmark_oracle_metadata(),
         "molt_time_s": 1.0 / speedup,
         "cpython_time_s": 1.0,
         "molt_speedup": speedup,
@@ -70,6 +79,8 @@ def test_dashboard_refuses_unbound_baseline_and_preserves_raw_display() -> None:
     entry = {
         "workload": synthetic_workload("bench.py"),
         "molt_ok": True,
+        "cpython_ok": True,
+        "cpython_oracle": benchmark_oracle_metadata(),
         "molt_time_s": 0.5,
         "cpython_time_s": 1.0,
     }
@@ -80,6 +91,27 @@ def test_dashboard_refuses_unbound_baseline_and_preserves_raw_display() -> None:
     summary = bench_dashboard.compute_summary(rows)
     assert "observed=`unbound`" in bench_dashboard.render_markdown(rows, summary, None)
     assert "observed=unbound" in bench_dashboard.render_html(rows, summary, None)
+
+
+def test_dashboard_rejects_cpython_fallback_without_admitted_oracle() -> None:
+    entry = _bound_dashboard_entry(2.0)
+    entry.pop("cpython_oracle")
+
+    assert bench_dashboard.speedup_value(entry) is None
+    assert bench_dashboard.ratio_value(entry) is None
+    row = bench_dashboard.build_rows({"bench.py": entry})[0]
+    assert row["cpython_time"] is None
+    assert row["molt_time"] == 0.5
+
+
+def test_dashboard_refuses_comparisons_between_distinct_oracles() -> None:
+    current = _bound_dashboard_entry(2.0)
+    baseline = _bound_dashboard_entry(1.0)
+    baseline["cpython_oracle"] = benchmark_oracle_metadata(version="3.12.15")
+    rows = bench_dashboard.build_rows({"bench.py": current})
+
+    with pytest.raises(ValueError, match="CPython oracle identities differ"):
+        bench_dashboard.compute_baseline_diff(rows, {"bench.py": baseline})
 
 
 def test_dashboard_compares_only_matching_observed_profile_identity() -> None:

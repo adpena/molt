@@ -22,7 +22,10 @@ blob read.
 
 from __future__ import annotations
 
-from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_metadata,
+    synthetic_workload,
+)
 
 import base64
 import hashlib
@@ -588,16 +591,6 @@ def _board(
             cell.finalize(budget_ms=100.0, authoritative=True)
             cells.append(cell)
     ps.apply_classification(cells, quiescent=True)
-    oracle = ps.CpythonOracle(
-        cmd=(sys.executable,),
-        executable=sys.executable,
-        version=CPYTHON_BASELINE,
-        implementation="CPython",
-        sys_platform=sys.platform,
-        machine=ps.platform.machine(),
-        arch=ps._host_arch(),
-        pointer_bits=ps._host_pointer_bits(),
-    )
     doc = ps.build_scoreboard_doc(
         cells,
         planned_cells=tuple(
@@ -610,7 +603,10 @@ def _board(
         samples=int(pa.CANONICAL_PERF_SAMPLES),
         warmup=int(pa.CANONICAL_PERF_WARMUP),
         provenance=_perf_provenance(),
-        cpython_identity={**oracle.host_metadata(), "molt_target_python": "3.12"},
+        cpython_identity={
+            **benchmark_oracle_metadata(sys.executable, CPYTHON_BASELINE),
+            "molt_target_python": "3.12",
+        },
     )
     doc.update(extra or {})
     ps._write_scoreboard_doc(path, doc, context="phase-exit fixture board")
@@ -1405,6 +1401,20 @@ def test_fixture_release_admission_is_scoped_away_from_phase_toolchain_checks(
             payload, expected_source_sha=SOURCE_SHA
         )
     )
+
+
+def test_phase_scoreboard_rejects_missing_oracle_even_with_toolchain_admission(
+    workspace: Mapping[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = workspace["board"]
+    assert isinstance(board, Path)
+    payload = _load(board)
+    monkeypatch.setattr(pa, "scoreboard_observed_toolchain_problems", lambda _doc: [])
+    assert pem._receipt_facts("e2_scoreboard", payload).status == pem.STATUS_PASS
+
+    payload["host"]["cpython_oracle"].pop("managed_origin")
+
+    assert pem._receipt_facts("e2_scoreboard", payload).status == pem.STATUS_FAIL
 
 
 @pytest.mark.parametrize("backend", ["native", "llvm"])

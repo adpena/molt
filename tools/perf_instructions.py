@@ -49,6 +49,7 @@ from tools.bench_evidence import (  # noqa: E402
     admit_benchmark_workload,
     workloads_comparable,
 )
+from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
 from tools.bench_suites import (  # noqa: E402
     BENCHMARKS,
     application_run_args,
@@ -68,8 +69,15 @@ from tools.perf_scoreboard_measure import _cpython_run_env  # noqa: E402
 from tools.perf_primitives import EMPTY, PRIMITIVES, Primitive  # noqa: E402
 from tools.resource_pressure import plan_resource_pressure  # noqa: E402
 from tools.shard_partition import lpt_shards  # noqa: E402
+from tools.safe_run import observed_run_outcome  # noqa: E402
+from molt.python_interpreter import (  # noqa: E402
+    BENCHMARK_PYTHON_ARGUMENTS,
+    PythonInterpreter,
+    benchmark_python_environment,
+    benchmark_python_metadata,
+)
 
-RECORD_SCHEMA = "molt.instruction-record.v1"
+RECORD_SCHEMA = "molt.instruction-record.v2"
 VERDICT_SCHEMA = "molt.perf-verdict.v1"
 MIN_REPEATS = 5
 CPYTHON_VERSION = (3, 12, 16)
@@ -96,6 +104,7 @@ INSTRUMENT = (
     "tools/bench.py",
     "tools/harness_memory_guard.py",
     "tools/bench_evidence.py",
+    "tools/bench_metadata.py",
     "tools/bench_suites.py",
     "tools/compat/comparison.py",
     "tools/perf_scoreboard_build_profiles.py",
@@ -103,6 +112,8 @@ INSTRUMENT = (
     "tools/perf_primitives.py",
     "tools/resource_pressure.py",
     "tools/shard_partition.py",
+    "tools/safe_run.py",
+    "tools/perf_schema.py",
     "src/molt/cli/build_request.py",
     "src/molt/cli/build_request_resolution.py",
     "src/molt/cli/config_resolution.py",
@@ -110,6 +121,8 @@ INSTRUMENT = (
     "src/molt/cli/build_output_layout.py",
     "src/molt/cli/run_tier.py",
     "src/molt/wasm_optimization.py",
+    "src/molt/python_interpreter.py",
+    "src/molt/python_environment_location.py",
 )
 # Tiers (decision 4: an hourly run fits 10 minutes through trunk_loop's real
 # path). Measured on molt-gate, 2026-11-10: the path itself costs 287 s
@@ -340,28 +353,36 @@ def observe(
         env=env,
         cwd=cwd or ROOT,
         timeout=timeout,
-        text=True,
+        text=False,
         errors="surrogateescape",
     )
-    if result.infrastructure_failure or result.orphaned_process_groups:
+    if (
+        result.infrastructure_failure
+        or result.orphaned_process_groups
+        or result.descendants_closed is not True
+        or result.cancelled
+        or result.guard_signal
+    ):
         raise RuntimeError(
             f"instruction measurement infrastructure failed: {argv!r}; "
             f"{result.infrastructure_failure or result.orphaned_process_groups}"
         )
+    completion = observed_run_outcome(result, captured_stderr=result.child_stderr)
     if result.timed_out or result.violation is not None or result.returncode != 0:
         return ProgramFailed(
             None if result.timed_out else result.returncode,
             bool(result.timed_out),
             f"rc={result.returncode} timed_out={bool(result.timed_out)} "
-            f"memory={result.violation is not None}: " + (result.stderr or "")[-1000:],
+            f"memory={result.violation is not None}: "
+            + (completion.stderr or "")[-1000:],
         )
     count = parse_count(counter, report.read_text(encoding="utf-8"))
     return Measured(
         Observation(
             count,
-            result.child_elapsed_s or result.elapsed_s or 0.0,
-            result.stdout or "",
-            result.stderr or "",
+            completion.elapsed_s or 0.0,
+            completion.stdout or "",
+            completion.stderr or "",
         )
     )
 
@@ -385,6 +406,20 @@ def run_identity(counter: Counter, tier: Tier) -> dict[str, Any]:
         "counter": counter.value,
         "selected_profiles": lane.as_record(),
         "tier": tier.value,
+        "reference": _reference_protocol(),
+    }
+
+
+def _reference_protocol() -> dict[str, object]:
+    from molt.python_interpreter import (
+        BENCHMARK_PYTHON_ARGUMENTS,
+        BENCHMARK_PYTHON_LAUNCH_POLICY,
+    )
+
+    return {
+        "release": CPYTHON_SELECTOR,
+        "arguments": list(BENCHMARK_PYTHON_ARGUMENTS),
+        "launch_policy": BENCHMARK_PYTHON_LAUNCH_POLICY,
     }
 
 
@@ -439,6 +474,8 @@ def compare(
     measure it, it is NEW. A measured base axis that the head could not
     measure is LOST.
     """
+    _validate_record(base)
+    _validate_record(head)
     if base["identity_digest"] != head["identity_digest"]:
         raise ValueError("records of different run identities never compare")
     prior = {axis["axis"]: axis for axis in base["axes"]}
@@ -510,6 +547,40 @@ def _git(repo: Path, *argv: str) -> str:
     return (_git_process(repo, argv).stdout or "").strip()
 
 
+def _validate_record(
+    record: object,
+    *,
+    commit: str | None = None,
+    digest: str | None = None,
+) -> None:
+    from tools.perf_schema import benchmark_python_metadata_problems
+
+    if not isinstance(record, Mapping) or record.get("schema") != RECORD_SCHEMA:
+        raise ValueError("stored instruction record has no current protocol")
+    identity = record.get("identity")
+    if (
+        not isinstance(identity, Mapping)
+        or identity.get("reference") != _reference_protocol()
+    ):
+        raise ValueError("stored instruction record reference protocol is invalid")
+    if record.get("identity_digest") != identity_digest(identity):
+        raise ValueError("stored instruction record identity digest is inconsistent")
+    if (commit is not None and record.get("commit") != commit) or (
+        digest is not None and record.get("identity_digest") != digest
+    ):
+        raise ValueError("stored instruction record does not bind its key")
+    oracle = record.get("cpython_oracle")
+    problems = benchmark_python_metadata_problems(oracle)
+    if (
+        problems
+        or not isinstance(oracle, Mapping)
+        or oracle.get("version") != CPYTHON_SELECTOR
+    ):
+        raise ValueError(
+            "stored instruction reference is unqualified: " + "; ".join(problems)
+        )
+
+
 class RecordStore:
     """The farm store, the one authority: write-once records by (commit, identity)."""
 
@@ -529,12 +600,7 @@ class RecordStore:
         if not path.is_file():
             return None
         record = json.loads(path.read_text(encoding="utf-8"))
-        if (
-            record.get("schema") != RECORD_SCHEMA
-            or record.get("commit") != commit
-            or record.get("identity_digest") != digest
-        ):
-            raise ValueError(f"stored record does not bind its key: {path}")
+        _validate_record(record, commit=commit, digest=digest)
         return record
 
     def put(self, record: Mapping[str, Any]) -> Path:
@@ -542,15 +608,19 @@ class RecordStore:
         from molt.file_publication import atomic_write_bytes
 
         path = self.path(record["commit"], record["identity_digest"])
+        _validate_record(record)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_bytes(path, _json_bytes(record), exclusive=True)
         return path
 
     def of_identity(self, digest: str) -> list[dict[str, Any]]:
-        records = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in sorted(self.records.glob(f"*.{digest}.json"))
-        ]
+        self.path("0" * 40, digest)
+        records = []
+        for path in sorted(self.records.glob(f"*.{digest}.json")):
+            commit = path.name.split(".", 1)[0]
+            record = self.get(commit, digest)
+            assert record is not None
+            records.append(record)
         return sorted(records, key=lambda record: record["recorded_at"])
 
     def nearest_measured_ancestor(
@@ -675,43 +745,21 @@ def verdict(store: RecordStore, repo: Path, head: Mapping[str, Any]) -> dict[str
 # --- measurement -------------------------------------------------------------
 
 
-def _resolve_cpython(env: Mapping[str, str]) -> Path:
+def _resolve_cpython(env: Mapping[str, str]) -> PythonInterpreter:
     from molt.python_environment_identity import PythonIdentityVerifier
     from molt.python_interpreter import (
         PythonInterpreterRequest,
-        resolve_python_interpreter,
+        resolve_benchmark_python,
     )
 
     with PythonIdentityVerifier() as verifier:
-        interpreter = resolve_python_interpreter(
-            PythonInterpreterRequest(*CPYTHON_VERSION),
-            override=None,
+        interpreter = resolve_benchmark_python(
+            request=PythonInterpreterRequest(*CPYTHON_VERSION),
             verifier=verifier,
             env=dict(env),
             cwd=ROOT,
         )
-    if len(interpreter.command) != 1:
-        raise ValueError("the output reference requires one physical executable")
-    # uv discovery may select a virtualenv symlink; use the physical base.
-    oracle = Path(interpreter.command[0]).resolve(strict=True)
-    probe = harness_memory_guard.guarded_completed_process(
-        [
-            str(oracle),
-            "-I",
-            "-S",
-            "-c",
-            "import platform; print(platform.python_implementation(), platform.python_version())",
-        ],
-        prefix="MOLT_BENCH",
-        env=env,
-        timeout=30,
-    )
-    if probe.returncode or probe.stdout.strip() != f"CPython {CPYTHON_SELECTOR}":
-        raise ValueError(
-            f"output reference must be CPython {CPYTHON_SELECTOR}, got "
-            f"{probe.stdout!r} {probe.stderr!r}"
-        )
-    return oracle
+    return interpreter
 
 
 def _run_env() -> dict[str, str]:
@@ -728,29 +776,40 @@ def _reference(
     env: Mapping[str, str],
     timeout: float,
 ) -> Outputs:
-    """CPython's observable result; its count is not taken (design invariant 8)."""
-    if n is None:
-        invocation = admitted.reference_invocation([cpython, "-I"], env)
-        command, child_env, cwd = (
-            list(invocation.command),
-            dict(invocation.environment),
-            invocation.cwd,
-        )
-    else:
-        command = [cpython, "-I", "-S", str(admitted.execution_script), str(n)]
-        child_env, cwd = dict(env), None
+    """Declared semantic oracle; its count is not taken (design invariant 8)."""
+    contract = benchmark_reference_contract(str(admitted.script))
+    if not contract.external_baselines:
+        if contract.expected_stdout is None:
+            raise RuntimeError(f"{workload.name}: intrinsic output oracle is absent")
+        return Outputs(contract.expected_stdout, "", 0)
+    from molt.python_interpreter import BENCHMARK_PYTHON_ARGUMENTS
+
+    invocation = admitted.reference_invocation(
+        [cpython, *BENCHMARK_PYTHON_ARGUMENTS],
+        env,
+        run_args=None if n is None else (str(n),),
+    )
+    command, child_env, cwd = (
+        list(invocation.command),
+        dict(invocation.environment),
+        invocation.cwd,
+    )
     result = harness_memory_guard.guarded_completed_process(
         command,
         prefix="MOLT_BENCH",
         env=child_env,
         cwd=cwd or ROOT,
         timeout=timeout,
-        text=True,
+        text=False,
         errors="surrogateescape",
     )
-    if result.timed_out or result.infrastructure_failure:
-        raise RuntimeError(f"{workload.name}: the CPython output reference failed")
-    return Outputs(result.stdout or "", result.stderr or "", result.returncode)
+    outcome = observed_run_outcome(result, captured_stderr=result.child_stderr)
+    if not outcome.ok or outcome.exit_code != 0:
+        raise RuntimeError(
+            f"{workload.name}: CPython reference failed before semantic comparison: "
+            f"{outcome.status}, exit_code={outcome.exit_code}"
+        )
+    return Outputs(outcome.stdout or "", outcome.stderr or "", 0)
 
 
 def primitive_build_env(
@@ -809,7 +868,7 @@ def _measure(workload: Workload, ctx: Mapping[str, Any]) -> dict[str, Any]:
         project_root=ROOT,
         run_args=run_args,
         molt_args=molt_args,
-        cpython_command=(ctx["cpython"], "-I"),
+        cpython_command=(ctx["cpython"], *BENCHMARK_PYTHON_ARGUMENTS),
     ) as admitted:
         identity = admitted.record
 
@@ -967,9 +1026,9 @@ def measure_record(
         # Prove the counter with the actual child environment before any build.
         preflight = observe(
             counter,
-            [str(cpython), "-I", "-S", "-c", "pass"],
+            [*cpython.command, "-c", "pass"],
             scratch / "counter-preflight",
-            env,
+            benchmark_python_environment(env),
             min(timeout, 30),
         )
         if isinstance(preflight, ProgramFailed):
@@ -1008,7 +1067,7 @@ def measure_record(
         )
         ctx = {
             "counter": counter.value,
-            "cpython": str(cpython),
+            "cpython": cpython.executable,
             "programs": str(programs),
             "scratch": str(scratch),
             "timeout": timeout,
@@ -1034,6 +1093,7 @@ def measure_record(
         "commit": commit,
         "identity": dict(identity),
         "identity_digest": identity_digest(identity),
+        "cpython_oracle": benchmark_python_metadata(cpython),
         "recorded_at": datetime.now(UTC).isoformat(),
         "repeats": repeats,
         "build_slots": slots,

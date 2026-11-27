@@ -82,6 +82,7 @@ MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 from tools import perf_authority  # noqa: E402
 from molt.default_paths import expand_user_path  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
+from molt.python_interpreter import PythonInterpreter  # noqa: E402
 from molt.cli.build_request import build_request_to_payload  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
@@ -402,20 +403,13 @@ def _canonical_interpreter(executable: str) -> str:
     return harness_memory_guard.canonical_interpreter(executable)
 
 
-def cpython_reference_command() -> list[str]:
-    """The CPython that benchmarks are timed against: the uv-managed base
-    interpreter, without user site-packages.
+def _select_cpython_reference() -> PythonInterpreter:
+    """Admit the guest's exact managed reference independently of the harness."""
+    from molt.python_environment_identity import PythonIdentityVerifier
+    from molt.python_interpreter import resolve_benchmark_python
 
-    The development environment's interpreter (``sys.executable``) loads the
-    venv's site-packages and the checkout's ``src/sitecustomize.py`` before
-    the script: 157 ms against 12.5 ms for ``-c pass`` on 2026-11-14, which
-    pulled every Molt/CPython ratio toward 1 (bench_struct reported 0.42x
-    where direct timing gives 0.12x). ``reference_invocation`` gives the
-    command an environment without ``PYTHON*`` settings except a fixed hash
-    seed, which output parity needs; that is ``-I`` less ``-P``, so a script
-    still sees its own directory, as on PyPy.
-    """
-    return [_canonical_interpreter(sys._base_executable), "-s"]
+    with PythonIdentityVerifier() as verifier:
+        return resolve_benchmark_python(verifier=verifier, cwd=REPO_ROOT)
 
 
 def _backend_daemon_record_payload(
@@ -2261,6 +2255,7 @@ def bench_results(
     pyodide_cmd: str | None,
     use_molt_build_cache: bool = True,
     artifact_root: Path | None = None,
+    cpython: PythonInterpreter | None = None,
 ):
     base_env = _base_python_env()
     if artifact_root is not None:
@@ -2277,7 +2272,8 @@ def bench_results(
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
     runtimes = {}
     if use_cpython:
-        runtimes["cpython"] = cpython_reference_command()
+        cpython = cpython or _select_cpython_reference()
+        runtimes["cpython"] = list(cpython.command)
     if use_pypy:
         pypy_cmd = _pypy_command(base_env, limits)
         if pypy_cmd:
@@ -2351,6 +2347,12 @@ def bench_results(
         finally:
             batch_server.close()
 
+    if use_cpython and cpython is not None:
+        from molt.python_interpreter import benchmark_python_metadata
+
+        metadata = benchmark_python_metadata(cpython)
+        for entry in data.values():
+            entry["cpython_oracle"] = metadata
     return data
 
 
@@ -2403,7 +2405,9 @@ def _bench_one(
                 file=sys.stderr,
             )
             continue
-        reference = workload.reference_invocation(cmd, base_env)
+        reference = workload.reference_invocation(
+            cmd, base_env, isolated=rt_name == "cpython"
+        )
         batch = collect_samples(
             lambda: measure_runtime(
                 list(reference.command),
@@ -2761,6 +2765,7 @@ def _bench_one(
     data[name] = {
         "workload": workload.record,
         "cpython_time_s": cpython_time,
+        "cpython_ok": runtime_ok.get("cpython", False),
         "cpython_samples_s": _runtime_samples("cpython"),
         "cpython_warmup_samples_s": _runtime_warmup_samples("cpython"),
         "pypy_time_s": pypy_time,
@@ -3002,7 +3007,15 @@ def _main(workload_custody: ExitStack):
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
     bench_suites.validate_benchmark_selection([Path(script) for script in benchmarks])
-    cpython_command = cpython_reference_command() if use_cpython else None
+    use_cpython = use_cpython and any(
+        benchmark_reference_contract(script).external_baselines for script in benchmarks
+    )
+    try:
+        cpython = _select_cpython_reference() if use_cpython else None
+    except RuntimeError as exc:
+        print(f"benchmark CPython admission failed: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    cpython_command = cpython.command if cpython is not None else None
     workloads = {
         script: workload_custody.enter_context(
             admit_benchmark_workload(
@@ -3087,6 +3100,7 @@ def _main(workload_custody: ExitStack):
         pyodide_cmd=args.pyodide_cmd,
         use_molt_build_cache=not args.no_molt_build_cache,
         artifact_root=artifact_root,
+        cpython=cpython,
     )
 
     load_avg = None
