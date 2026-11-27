@@ -62,6 +62,7 @@ use super::passes::drop_insertion::DROP_INSERTED_ATTR;
 use super::passes::fast_path_expansion::{self, GuardedTargets};
 use super::target_info::TargetInfo;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+use molt_ir::content_digest::CompilationCacheKey;
 use std::time::Instant;
 
 const FINAL_TIR_CACHE_MAGIC: &[u8] = b"MOLT:FINAL-TIR:v2\0";
@@ -71,18 +72,17 @@ const FINAL_TIR_CACHE_MAGIC: &[u8] = b"MOLT:FINAL-TIR:v2\0";
 /// exhaustive TargetInfo fingerprint, never a second target projection.
 pub struct FinalizationCache<'a> {
     store: &'a mut super::cache::CompilationCache,
-    target_contract: &'a str,
-    semantic_environment: backend_env::SemanticBackendIdentity,
+    key_prefix: CompilationCacheKey,
 }
 
 impl<'a> FinalizationCache<'a> {
-    pub fn new(store: &'a mut super::cache::CompilationCache, target_contract: &'a str) -> Self {
-        Self {
-            store,
-            target_contract,
-            semantic_environment: backend_env::current_semantic_environment()
-                .expect("terminal TIR cache requires valid backend settings"),
-        }
+    pub fn new(store: &'a mut super::cache::CompilationCache, target_contract: &str) -> Self {
+        let mut key_prefix = CompilationCacheKey::new(b"molt-post-admission-final-tir-v2");
+        key_prefix.field(b"target-contract", target_contract.as_bytes());
+        let semantic_environment = backend_env::current_semantic_environment()
+            .expect("terminal TIR cache requires valid backend settings");
+        key_prefix.field(b"semantic-environment", semantic_environment.as_bytes());
+        Self { store, key_prefix }
     }
 
     fn key(
@@ -92,13 +92,7 @@ impl<'a> FinalizationCache<'a> {
         targets: &GuardedTargets,
         linkage_present: bool,
     ) -> String {
-        let mut key =
-            molt_ir::content_digest::CompilationCacheKey::new(b"molt-post-admission-final-tir-v2");
-        key.field(b"target-contract", self.target_contract.as_bytes());
-        key.field(
-            b"semantic-environment",
-            self.semantic_environment.as_bytes(),
-        );
+        let mut key = self.key_prefix.clone();
         let body = super::serialize::serialize_tir_function(func, table)
             .unwrap_or_else(|error| panic!("final TIR input serialization: {error}"));
         key.field(b"post-admission-body", &body);

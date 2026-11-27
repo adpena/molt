@@ -159,8 +159,7 @@ impl<'a> PreparedTirFunction<'a> {
     fn new<F>(
         source: &'a FunctionIR,
         table: &molt_ir::FunctionTable,
-        cache_flavor: TirPipelineCacheFlavor,
-        target_info: &TargetInfo,
+        cache_prefix: &CompilationCacheKey,
         preprocess_before_lowering: &F,
     ) -> Self
     where
@@ -171,7 +170,7 @@ impl<'a> PreparedTirFunction<'a> {
         let mut function = Cow::Borrowed(source);
         trace_tir_function_stage(&function.name, "start", function.ops.len());
         preprocess_before_lowering(&mut function);
-        let content_hash = content_hash_for_function(&function, table, cache_flavor, target_info);
+        let content_hash = function_content_hash(&function, table, cache_prefix);
         Self {
             function,
             content_hash,
@@ -201,11 +200,31 @@ pub fn content_hash_for_function(
     cache_flavor: TirPipelineCacheFlavor,
     target_info: &TargetInfo,
 ) -> String {
+    function_content_hash(
+        func_ir,
+        table,
+        &preparation_key_prefix(cache_flavor, target_info),
+    )
+}
+
+fn preparation_key_prefix(
+    cache_flavor: TirPipelineCacheFlavor,
+    target_info: &TargetInfo,
+) -> CompilationCacheKey {
     let mut key = CompilationCacheKey::new(b"molt-cached-tir-prepared-function-key-v1");
     key.field(b"pipeline-semantic-epoch", TIR_PIPELINE_SEMANTIC_EPOCH);
     key.field(b"cache-flavor", cache_flavor.cache_discriminant());
     let target_fingerprint = tir_pipeline_target_fingerprint(target_info);
     key.field(b"target-contract", target_fingerprint.as_bytes());
+    key
+}
+
+fn function_content_hash(
+    func_ir: &FunctionIR,
+    table: &molt_ir::FunctionTable,
+    prefix: &CompilationCacheKey,
+) -> String {
+    let mut key = prefix.clone();
     key.digest_field(b"function-ir-contract", |writer| {
         crate::write_function_ir_contract(func_ir, table, writer)
     })
@@ -609,6 +628,7 @@ where
         );
         let batch_count = work_batches.len();
         let tir_start = std::time::Instant::now();
+        let cache_prefix = preparation_key_prefix(options.cache_flavor, &options.target_info);
         // Pool workers serve concurrent compiles, so each work item runs
         // under its own compile's backend request scope.
         let request = backend_env::carry();
@@ -623,8 +643,7 @@ where
                             prepared_function: PreparedTirFunction::new(
                                 &functions[work_item.index],
                                 &table,
-                                options.cache_flavor,
-                                &options.target_info,
+                                &cache_prefix,
                                 &preprocess_before_lowering,
                             ),
                         })
