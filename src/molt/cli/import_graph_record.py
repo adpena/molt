@@ -769,7 +769,7 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
     if source_lines.keys() != {source.sha256 for source in query_sources}:
         return None
     snapshots: dict[Path, PythonSourceSnapshot] = {}
-    changed_sources: set[Path] = set()
+    source_changed = False
     locations = _ReplayLocations()
     relocated: set[tuple[str, Path]] = set()
     for source in query_sources:
@@ -781,7 +781,7 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
             if len(snapshot.content) != source.size:
                 return None
             continue
-        changed_sources.add(source.path)
+        source_changed = True
         old = source_lines[source.sha256]
         if snapshot.sha256 not in source_lines:
             lines = _source_line_identity(snapshot, context.target_python)
@@ -798,6 +798,12 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         for source in query_sources
     ):
         return None
+    relocated_roots: dict[tuple[str, Path], set[tuple[str, ...]]] = {}
+    for source in query_sources:
+        owner = (source.module, source.path)
+        if owner in relocated:
+            relocated_roots.setdefault(owner, set()).add(source.selection.roots)
+    current_owner_digests: dict[tuple[str, Path], str] = {}
 
     def current_custody(
         custody: _RuntimeImportScanCustody | None,
@@ -806,16 +812,16 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
             return None
         digests = dict(custody.owner_ast_digests)
         for module, path in custody.owners:
-            if (module, path) not in relocated:
+            owner = (module, path)
+            roots = relocated_roots.get(owner)
+            if roots is None:
                 continue
-            (native_roots,) = {
-                source.selection.roots
-                for source in query_sources
-                if source.module == module and source.path == path
-            }
-            digests[module] = resolver.module_ast_digest(
-                path, native_roots=native_roots, target_python=context.target_python
-            )
+            if owner not in current_owner_digests:
+                (native_roots,) = roots
+                current_owner_digests[owner] = resolver.module_ast_digest(
+                    path, native_roots=native_roots, target_python=context.target_python
+                )
+            digests[module] = current_owner_digests[owner]
         new = tuple(digests.items())
         return (
             custody
@@ -823,13 +829,12 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
             else replace(custody, owner_ast_digests=new)
         )
 
-    query_contexts = tuple(
-        replace(decoded, custody=current_custody(decoded.custody))
-        for raw in _list(value["contexts"])
-        for decoded in (
-            _RecordedQueryContext.decode(raw, context.entry.module_root_aliases),
+    query_contexts = []
+    for raw in _list(value["contexts"]):
+        decoded = _RecordedQueryContext.decode(raw, context.entry.module_root_aliases)
+        query_contexts.append(
+            replace(decoded, custody=current_custody(decoded.custody))
         )
-    )
     escape_writes = _list(value["escape_writes"])
     if locations.by_module:
         escape_writes = [
@@ -1052,7 +1057,7 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         stdlib_root=context.stdlib_root,
         entry_module=context.entry.entry_module,
     )
-    if changed_sources:
+    if source_changed:
         try:
             # Republish from the verified query closure so result digests,
             # scoped premises and source generations advance together.

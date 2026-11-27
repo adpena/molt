@@ -192,7 +192,13 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
     entry = tmp_path / "app.py"
     entry.write_text("import peer\nprint(peer.compute())\n", encoding="utf-8")
     peer = tmp_path / "peer.py"
-    peer.write_text("def compute():\n    return 5\n", encoding="utf-8")
+    peer_source = (
+        "import sys\n"
+        "def compute():\n"
+        "    sys.modules['relocated_victim'] = sys\n"
+        "    return {}\n"
+    )
+    peer.write_text(peer_source.format(5), encoding="utf-8")
     resolved, error = _resolve_entry(tmp_path, file_path=str(entry))
     assert error is None and resolved is not None
     context = import_graph_record.ImportGraphContext(
@@ -282,7 +288,7 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         assert import_graph_record.replay_import_graph(context) is None, defect
 
     assert files.put("import-graph", key, stored.payload)
-    peer.write_text("def compute():\n    return 7\n", encoding="utf-8")
+    peer.write_text(peer_source.format(7), encoding="utf-8")
     replayed = import_graph_record.replay_import_graph(context)
     assert replayed is not None
     fresh = _materialize_plan(tmp_path, entry, "app", image_scope=resolved.image_scope)
@@ -304,7 +310,10 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         assert again.closure_payload() == fresh.closure_payload()
 
     # Move a demanded body and its end position without changing syntax.
-    peer.write_text("\ndef compute():\n\n    return 7\n", encoding="utf-8")
+    peer.write_text(
+        "\n" + peer_source.format(7).replace("compute():\n", "compute():\n\n"),
+        encoding="utf-8",
+    )
     moved = import_graph_record.replay_import_graph(context)
     assert moved is not None
     fresh_moved = _materialize_plan(
@@ -313,6 +322,14 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
     assert moved.closure_payload() == fresh_moved.closure_payload()
     assert moved.scan_authority == fresh_moved.scan_authority
     assert moved.scan_authority != fresh.scan_authority
+    original_writers = fresh.settled_graph.namespace_import_redirects.redirect(
+        "relocated_victim"
+    )
+    moved_writers = moved.settled_graph.namespace_import_redirects.redirect(
+        "relocated_victim"
+    )
+    assert any(writer.site == "peer:3" for writer in original_writers)
+    assert any(writer.site == "peer:5" for writer in moved_writers)
 
     peer.write_text(
         "\ndef compute():\n    import new_demand\n    return 7\n", encoding="utf-8"
@@ -323,7 +340,7 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         tmp_path, entry, "app", image_scope=resolved.image_scope
     )
     assert "new_demand" in changed.module_graph
-    peer.write_text("def compute():\n    return 7\n", encoding="utf-8")
+    peer.write_text(peer_source.format(7), encoding="utf-8")
     package = tmp_path / "peer"
     package.mkdir()
     provider = package / "__init__.py"
