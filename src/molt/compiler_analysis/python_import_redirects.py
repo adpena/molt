@@ -234,6 +234,88 @@ def import_redirects(
 
 
 NO_IMPORT_REDIRECTS = ImportRedirects()
+
+
+class ImportRedirectIndex:
+    """Accumulate newly reached writer rows while discovery is still open."""
+
+    def __init__(self) -> None:
+        self._global_writers: set[ImportWriter] = set()
+        self._key_writers: dict[str, set[ImportWriter]] = {}
+        self._bound_writers: dict[PythonStringBound, set[ImportWriter]] = {}
+        self._guarded: set[GuardedImport] = set()
+        self._spec_writers: set[tuple[str | None, ImportWriter]] = set()
+        self._spec_member_stores: set[ImportWriter] = set()
+        self._escaped: set[str] | None = set()
+        self._import_hook_writers: set[ImportWriter] = set()
+        self._snapshot = NO_IMPORT_REDIRECTS
+        self._dirty = False
+        self.canonical_redirected: tuple[str, ...] = ()
+
+    def merge(self, batch: ImportRedirects) -> bool:
+        """Merge a batch and report whether any canonical provider changed."""
+        if batch == NO_IMPORT_REDIRECTS:
+            return False
+        self._dirty = True
+        self._global_writers.update(batch.global_writers)
+        for key, writer in batch.key_writers:
+            self._key_writers.setdefault(key, set()).add(writer)
+        for bound, writer in batch.bound_writers:
+            self._bound_writers.setdefault(bound, set()).add(writer)
+        self._guarded.update(batch.guarded)
+        self._spec_writers.update(batch.spec_writers)
+        self._spec_member_stores.update(batch.spec_member_stores)
+        if batch.escaped is None:
+            self._escaped = None
+        elif self._escaped is not None:
+            self._escaped.update(batch.escaped)
+        self._import_hook_writers.update(batch.import_hook_writers)
+
+        # A redirect is existential and the union is monotone. Only the
+        # incoming facts can invalidate a canonical provider.
+        previous = self.canonical_redirected
+        if len(previous) == len(_CANONICAL_IMPORT_NAMES):
+            return False
+        added = set(batch.canonical_redirected()).difference(previous)
+        if not added:
+            return False
+        self.canonical_redirected = tuple(sorted(added.union(previous)))
+        return True
+
+    def may_redirect(self, module: str) -> bool:
+        if self._global_writers:
+            return True
+        return any(
+            ancestor in self._key_writers
+            or any(bound.admits(ancestor) for bound in self._bound_writers)
+            for ancestor in _ancestors(module)
+        )
+
+    def snapshot(self) -> ImportRedirects:
+        """Publish the canonical ordered evidence for a settled graph."""
+        if self._dirty:
+            self._snapshot = import_redirects(
+                self._global_writers,
+                (
+                    (key, writer)
+                    for key, writers in self._key_writers.items()
+                    for writer in writers
+                ),
+                (
+                    (bound, writer)
+                    for bound, writers in self._bound_writers.items()
+                    for writer in writers
+                ),
+                self._guarded,
+                self._spec_writers,
+                self._spec_member_stores,
+                self._escaped,
+                self._import_hook_writers,
+            )
+            self._dirty = False
+        return self._snapshot
+
+
 # No verified graph: every row may be redirected.
 UNKNOWN_IMPORT_REDIRECTS = ImportRedirects(
     global_writers=(ImportWriter("<no closed graph>", "an unverified program"),),

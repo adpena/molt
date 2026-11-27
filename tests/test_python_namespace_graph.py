@@ -12,6 +12,12 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     NO_INVALID_MEMBERS,
     PythonMember,
 )
+from molt.compiler_analysis.python_import_redirects import (
+    NO_IMPORT_REDIRECTS,
+    ImportWriter,
+    import_redirects,
+)
+from molt.compiler_analysis.python_string_facts import PythonStringBound
 from molt.compiler_analysis.python_namespace_graph import (
     NO_GRAPH_NAMESPACE_WRITES,
     UNKNOWN_GRAPH_NAMESPACE_WRITES,
@@ -27,6 +33,41 @@ from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 
 # A global import redirect makes every canonical provider noncanonical (M7).
 ALL_CANONICAL = tuple(sorted(CANONICAL_IMPORT_IDENTITIES))
+
+
+def test_import_writer_deltas_match_immutable_join_in_every_order() -> None:
+    first = ImportWriter("m:4", "a registry write")
+    second = ImportWriter("m:5", "a protocol write")
+    batches = (
+        import_redirects(key_writers=(("typing", first),), escaped=("target",)),
+        import_redirects(
+            bound_writers=((PythonStringBound("target.", "", 8), first),),
+            guarded=(("target", second, ("os",)),),
+            spec_writers=((None, second), ("target", first)),
+        ),
+        import_redirects(
+            global_writers=(second,),
+            spec_member_stores=(second,),
+            escaped=None,
+            import_hook_writers=(second,),
+        ),
+    )
+    for order in permutations(batches):
+        index = PythonGraphNamespaceIndex()
+        expected = NO_IMPORT_REDIRECTS
+        for batch in (*order, order[0]):
+            before = expected.canonical_redirected()
+            expected = expected.join(batch)
+            affected = index.merge(
+                replace(NO_GRAPH_NAMESPACE_WRITES, import_redirects=batch)
+            )
+            assert (affected is None) == (expected.canonical_redirected() != before)
+            assert index.premise(
+                Path("target.py"), frozenset()
+            ).noncanonical_imports == (expected.canonical_redirected())
+            for name in ("typing", "typing.io", "target.module", "unrelated"):
+                assert index.has_import_redirect(name) == bool(expected.redirect(name))
+            assert index.import_redirects == expected
 
 
 def test_namespace_graph_groups_source_aliases_and_package_bindings() -> None:

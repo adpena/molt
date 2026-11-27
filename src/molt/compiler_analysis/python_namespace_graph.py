@@ -33,6 +33,7 @@ from molt.compiler_analysis.python_import_redirects import (
     IMPORT_SPEC_ATTRIBUTES,
     NO_IMPORT_REDIRECTS,
     UNKNOWN_IMPORT_REDIRECTS,
+    ImportRedirectIndex,
     ImportRedirects,
     ImportWriter,
     import_redirects,
@@ -471,7 +472,9 @@ class PythonGraphNamespaceWrites:
             self.members,
             self.entry_members,
             children,
-            _redirected_canonical(noncanonical_imports, self.import_redirects),
+            _redirected_canonical(
+                noncanonical_imports, self.import_redirects.canonical_redirected()
+            ),
             opaque_activation_sources,
             self.reflected is None or source in self.reflected,
             self.code_rebinding or native_code,
@@ -498,10 +501,9 @@ class PythonGraphNamespaceWrites:
 
 
 def _redirected_canonical(
-    noncanonical_imports: tuple[str, ...], redirects: ImportRedirects
+    noncanonical_imports: tuple[str, ...], redirected: tuple[str, ...]
 ) -> tuple[str, ...]:
     """A canonical provider some writer redirects is not canonical (M7)."""
-    redirected = redirects.canonical_redirected()
     if not redirected:
         return noncanonical_imports
     return tuple(sorted({*noncanonical_imports, *redirected}))
@@ -706,18 +708,20 @@ class PythonGraphNamespaceIndex:
         self.computed_member_writes: dict[str, str] = {}
         self.frame_locals_writer: str | None = None
         self.escaped: set[Path] | None = set()
-        self.import_redirects = NO_IMPORT_REDIRECTS
+        self._import_redirects = ImportRedirectIndex()
+
+    @property
+    def import_redirects(self) -> ImportRedirects:
+        return self._import_redirects.snapshot()
+
+    def has_import_redirect(self, module: str) -> bool:
+        return self._import_redirects.may_redirect(module)
 
     def merge(self, batch: PythonGraphNamespaceWrites) -> frozenset[Path] | None:
         changed: set[Path] = set()
         # The graph fact is stored once here; a premise sees only its
         # canonical projection (M7), so only that projection wakes scans.
-        redirects = self.import_redirects.join(batch.import_redirects)
-        canonical_change = (
-            redirects.canonical_redirected()
-            != self.import_redirects.canonical_redirected()
-        )
-        self.import_redirects = redirects
+        canonical_change = self._import_redirects.merge(batch.import_redirects)
         new_stores = _earlier_sites(self.member_stores, batch.member_stores)
         self.member_stores.update(new_stores)
         new_local_stores = _earlier_sites(
@@ -826,7 +830,9 @@ class PythonGraphNamespaceIndex:
             self.members,
             self.entry_members,
             children,
-            _redirected_canonical(noncanonical_imports, self.import_redirects),
+            _redirected_canonical(
+                noncanonical_imports, self._import_redirects.canonical_redirected
+            ),
             opaque_activation_sources,
             self.reflected is None or source in self.reflected,
             self.code_rebinding or native_code,

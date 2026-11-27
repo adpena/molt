@@ -1707,7 +1707,7 @@ def _discovery_pass(
             module is None
             or premise is None
             or module in premise.noncanonical_imports
-            or namespace_index.import_redirects.redirect(module)
+            or namespace_index.has_import_redirect(module)
             or python_namespace_stability_reason(
                 authority.namespace_own_names, premise, binding
             )
