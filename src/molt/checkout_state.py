@@ -786,7 +786,13 @@ def checkout_state_environment_roots(
                 pin, environment, cwd=working
             )
             for prefix in (*prefixes, search_prefix):
-                if prefix is not None and (owner := _toolchain_owner_root(prefix)):
+                # A reader can retain an existing SDK. Only the provider's
+                # explicit publication operation may claim an absent prefix.
+                if (
+                    prefix is not None
+                    and prefix.is_dir()
+                    and (owner := _toolchain_owner_root(prefix)) is not None
+                ):
                     roots.setdefault(prefix, CheckoutOwner(owner, "toolchains"))
     import sys
 
