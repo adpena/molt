@@ -63,7 +63,11 @@ proof never extends to foreign imports.
 
 from __future__ import annotations
 
-from molt.frontend.sema.funcmeta import CALLABLE_TASK_KINDS
+from molt.frontend.sema.funcmeta import (
+    CALLABLE_TASK_KINDS,
+    stateful_function_task_kind,
+)
+from molt.compiler_analysis.python_function_kind import FunctionKind
 
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -79,7 +83,10 @@ from molt._public_objects_generated import (
     PUBLIC_OBJECTS,
     PublicObjectKind,
 )
-from molt._wasm_abi_generated import wasm_runtime_callable_arity
+from molt._wasm_abi_generated import (
+    WASM_RUNTIME_EXPORT_BY_IMPORT,
+    wasm_runtime_callable_arity,
+)
 from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.typed_cache import typed_cache
 from molt.compiler_analysis.builtin_binding_guards_generated import (
@@ -1095,6 +1102,51 @@ def _task_constructor(
     return [*packing, task]
 
 
+def _checked_coroutine_await_alias(
+    ops: Sequence[dict[str, Any]],
+    call_index: int,
+    allocation: Mapping[str, Any],
+) -> tuple[int, dict[str, Any]] | None:
+    """Keep the checked task identity through native await acquisition.
+
+    Allocation can return a failure sentinel. The normal successor of its
+    Origin check has passed that failure, with only a location update before
+    acquisition. No label or intervening operation can join another path.
+    A native coroutine's acquisition just retains it; the owned alias leaves
+    the same lifetime and keeps the await's poll and exception edges.
+    """
+    if allocation.get("task_kind") != stateful_function_task_kind(FunctionKind.ASYNC):
+        return None
+    result = allocation.get("out")
+    if not isinstance(result, str) or result == "none":
+        return None
+    check_index = call_index + 1
+    if check_index >= len(ops):
+        return None
+    check = ops[check_index]
+    if (
+        check.get("kind") != "check_exception"
+        or check.get("exception_edge") != "origin"
+    ):
+        return None
+    index = check_index + 1
+    if index < len(ops) and ops[index].get("kind") == "frame_set_location":
+        index += 1
+    if index >= len(ops):
+        return None
+    acquire = ops[index]
+    if (
+        acquire.get("kind") != "call"
+        or acquire.get("s_value") != WASM_RUNTIME_EXPORT_BY_IMPORT["get_awaitable"]
+        or acquire.get("args") != [result]
+        or acquire.get("argument_custody")
+    ):
+        return None
+    alias = {key: value for key, value in acquire.items() if key != "s_value"}
+    alias["kind"] = "binding_alias"
+    return index, alias
+
+
 def _captured_intrinsic_abi(
     producer: Mapping[str, Any], initializer: ModuleInitializerFacts, function: str
 ) -> tuple[str, int] | str:
@@ -1359,6 +1411,12 @@ def prove_init_once_calls(
                         )
                     elif task is not None:
                         changed[index] = task
+                        acquisition = _checked_coroutine_await_alias(
+                            ops, index, task[-1]
+                        )
+                        if acquisition is not None:
+                            acquire_index, alias = acquisition
+                            changed[acquire_index] = [alias]
                     continue
                 target = str(op.get("s_value"))
                 callee = functions[position[target]] if target in position else None

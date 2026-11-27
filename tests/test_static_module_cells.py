@@ -928,6 +928,58 @@ def test_a_proven_task_call_allocates_its_frame(task_kind: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("factory", "edge", "between", "dominates", "folded"),
+    [
+        ("coroutine", "origin", "frame_set_location", True, True),
+        ("coroutine", "origin", None, True, True),
+        ("coroutine", "unwind", None, True, False),
+        ("coroutine", None, None, True, False),
+        ("coroutine", "origin", "label", True, False),
+        ("coroutine", "origin", None, False, False),
+        ("generator", "origin", None, True, False),
+        ("async_generator", "origin", None, True, False),
+    ],
+)
+def test_checked_native_coroutine_await_acquisition(
+    factory: str,
+    edge: str | None,
+    between: str | None,
+    dominates: bool,
+    folded: bool,
+) -> None:
+    from molt._wasm_abi_generated import WASM_RUNTIME_EXPORT_BY_IMPORT
+
+    funcs = _task_call_program(task_kind=factory, caller_before_store=not dominates)
+    caller = funcs[1]["ops"]
+    if edge is not None:
+        caller.append({"kind": "check_exception", "exception_edge": edge, "value": 7})
+    if between is not None:
+        caller.append({"kind": between, "value": 50})
+    acquire = {
+        "kind": "call",
+        "s_value": WASM_RUNTIME_EXPORT_BY_IMPORT["get_awaitable"],
+        "args": ["r"],
+        "out": "awaitable",
+        "source_line": 20,
+    }
+    await_check = {"kind": "check_exception", "exception_edge": "origin", "value": 7}
+    caller.extend((acquire, await_check))
+    functions, diagnostics = _prove(funcs)
+    assert diagnostics == []
+    assert functions[1]["ops"][-1] == await_check
+    if folded:
+        assert functions[1]["ops"][-2] == {
+            "kind": "binding_alias",
+            "args": ["r"],
+            "out": "awaitable",
+            "source_line": 20,
+        }
+    else:
+        assert functions[1]["ops"][-2] == acquire
+    assert acquire["kind"] == "call"
+
+
+@pytest.mark.parametrize(
     ("change", "reason"),
     [
         ({"shape": False}, "parameter shape that needs binding"),

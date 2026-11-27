@@ -22,6 +22,14 @@ class Tick:
         yield "suspended in cleanup"
 
 
+async def direct_cleanup():
+    try:
+        return Result("direct coroutine")
+    finally:
+        await Tick()
+        print("direct cleanup resumed")
+
+
 class Worker:
     async def ready(self):
         try:
@@ -48,6 +56,10 @@ async def main():
     await consume_once(source.__anext__())
     await source.aclose()
     await consume_once(Worker().ready())
+    result = await direct_cleanup()
+    print("returned", result.label)
+    del result
+    print("after direct release")
 
 
 task = main()
