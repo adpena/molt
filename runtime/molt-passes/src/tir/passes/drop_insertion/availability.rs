@@ -281,23 +281,56 @@ impl PhiTransport {
     }
 }
 
+/// Definitions and initialization in the original program-point topology.
+pub(super) struct DefinitionAvailability<'a> {
+    dominance: ProgramPointDominance,
+    locations: HashMap<ValueId, ValueDefinition>,
+    root_facts: &'a OwnershipRootFacts,
+}
+
+impl DefinitionAvailability<'_> {
+    fn defined_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
+        self.locations.get(&root).is_some_and(|definition| {
+            self.dominance.definition_available(
+                definition.block,
+                definition.op_index,
+                block,
+                op_index,
+            )
+        })
+    }
+
+    fn valid_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
+        !self.root_facts.is_conditionally_valid_result_root(root)
+            || self
+                .root_facts
+                .conditionally_valid_region(root)
+                .is_some_and(|region| {
+                    self.dominance
+                        .definition_available(region, None, block, op_index)
+                })
+    }
+
+    pub(super) fn available_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
+        self.defined_before(root, block, op_index) && self.valid_before(root, block, op_index)
+    }
+
+    pub(super) fn transfer_position_from_end(&self, block: BlockId, ordinal: usize) -> usize {
+        self.dominance
+            .transfer_position_from_end(block, ordinal)
+            .expect("RC placement preserves each original transfer in order")
+    }
+}
+
 /// Where an RC operation may name an owned root.
 pub(super) struct PointAvailability<'a> {
-    dominance: ProgramPointDominance,
-    definitions: HashMap<ValueId, ValueDefinition>,
-    root_facts: &'a OwnershipRootFacts,
+    definitions: DefinitionAvailability<'a>,
     transport: PhiTransport,
 }
 
 impl<'a> PointAvailability<'a> {
-    /// Definitions and initialization only, for the landing pass.
-    pub(super) fn compute(func: &TirFunction, root_facts: &'a OwnershipRootFacts) -> Self {
-        Self {
-            dominance: ProgramPointDominance::compute(func),
-            definitions: value_definitions(func),
-            root_facts,
-            transport: PhiTransport::default(),
-        }
+    pub(super) fn into_definitions(self) -> DefinitionAvailability<'a> {
+        self.definitions
     }
 
     /// Definitions, initialization and custody over every control arc that
@@ -310,7 +343,14 @@ impl<'a> PointAvailability<'a> {
         labels: &HashMap<i64, BlockId>,
         reachable: &HashSet<BlockId>,
     ) -> Self {
-        let mut points = Self::compute(func, root_facts);
+        let mut points = Self {
+            definitions: DefinitionAvailability {
+                dominance: ProgramPointDominance::compute(func),
+                locations: value_definitions(func),
+                root_facts,
+            },
+            transport: PhiTransport::default(),
+        };
         points.transport =
             PhiTransport::compute(func, &points, eligibility, live, labels, reachable);
         points
@@ -369,34 +409,12 @@ impl<'a> PointAvailability<'a> {
         }
     }
 
-    fn defined_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
-        self.definitions.get(&root).is_some_and(|definition| {
-            self.dominance.definition_available(
-                definition.block,
-                definition.op_index,
-                block,
-                op_index,
-            )
-        })
-    }
-
-    fn valid_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
-        !self.root_facts.is_conditionally_valid_result_root(root)
-            || self
-                .root_facts
-                .conditionally_valid_region(root)
-                .is_some_and(|region| {
-                    self.dominance
-                        .definition_available(region, None, block, op_index)
-                })
-    }
-
     /// Whether `root`'s name still owns its object immediately before
     /// `block.ops[op_index]`: no path reaches that point after a move, an
     /// explicit release or an adoption of its own +1, unless its definition
     /// ran again on the way.
     fn owned_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
-        let definition = self.definitions.get(&root).copied();
+        let definition = self.definitions.locations.get(&root).copied();
         let retired_here = self
             .transport
             .retirements
@@ -419,8 +437,7 @@ impl<'a> PointAvailability<'a> {
     /// Whether an RC operation immediately before `block.ops[op_index]` may name
     /// `root`. `usize::MAX` queries the terminator boundary.
     pub(super) fn available_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
-        self.defined_before(root, block, op_index)
-            && self.valid_before(root, block, op_index)
+        self.definitions.available_before(root, block, op_index)
             && self.owned_before(root, block, op_index)
     }
 
@@ -435,7 +452,7 @@ impl<'a> PointAvailability<'a> {
     /// Whether a release placed on the normal arc `pred -> target` may name
     /// `root`.
     pub(super) fn available_on_arc(&self, root: ValueId, pred: BlockId, target: BlockId) -> bool {
-        self.defined_before(root, pred, usize::MAX)
+        self.definitions.defined_before(root, pred, usize::MAX)
             && self.valid_on_arc(root, pred, target)
             && self.owned_before(root, pred, usize::MAX)
     }
@@ -443,14 +460,15 @@ impl<'a> PointAvailability<'a> {
     /// Validity alone, for a retain of a value the arc already forwards: the
     /// arc's source has initialized it, or the arc is the edge that does.
     pub(super) fn valid_on_arc(&self, root: ValueId, pred: BlockId, target: BlockId) -> bool {
-        self.valid_before(root, pred, usize::MAX)
-            || self.root_facts.conditionally_valid_region(root) == Some(target)
+        self.definitions.valid_before(root, pred, usize::MAX)
+            || self.definitions.root_facts.conditionally_valid_region(root) == Some(target)
     }
 
     /// The block that defines `value`: the block it is an argument of, or the
     /// block of the operation producing it.
     pub(super) fn definition_block(&self, value: ValueId) -> Option<BlockId> {
         self.definitions
+            .locations
             .get(&value)
             .map(|definition| definition.block)
     }
@@ -458,6 +476,7 @@ impl<'a> PointAvailability<'a> {
     /// The block whose operation produces `value`; `None` for a block argument.
     pub(super) fn result_block(&self, value: ValueId) -> Option<BlockId> {
         self.definitions
+            .locations
             .get(&value)
             .filter(|definition| definition.op_index.is_some())
             .map(|definition| definition.block)
@@ -585,7 +604,9 @@ impl<'a> PointAvailability<'a> {
                 let root = eligibility.root(value);
                 let initialized = match arc.site {
                     ArcSite::Terminator(_) => self.valid_on_arc(root, source, arc.target),
-                    ArcSite::Exception(op_index) => self.valid_before(root, source, op_index),
+                    ArcSite::Exception(op_index) => {
+                        self.definitions.valid_before(root, source, op_index)
+                    }
                     ArcSite::Registration(_) => {
                         unreachable!("a region registration binds no handler argument")
                     }

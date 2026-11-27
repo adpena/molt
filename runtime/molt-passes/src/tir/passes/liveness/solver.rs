@@ -194,6 +194,9 @@ struct Solution {
 /// abandons. The exceptional roots come from the handler and this check's
 /// operands, each already in the canonical owner domain.
 pub(crate) struct ExceptionDemand<'a> {
+    /// Ordinal among resolved transfers in this block, newest first,
+    /// including region registrations used by the conservative graph.
+    pub(crate) transfer_from_end: usize,
     normal: &'a HashSet<ValueId>,
     handler: &'a HashSet<ValueId>,
     operands: &'a HashSet<ValueId>,
@@ -271,6 +274,7 @@ pub(crate) fn visit_exception_liveness(
     let mut operands = HashSet::default();
     for block in observations {
         let mut normal = live.live_out.remove(&block).unwrap();
+        let mut transfers = 0;
         problem.replay(
             &func.blocks[&block],
             &mut normal,
@@ -289,12 +293,14 @@ pub(crate) fn visit_exception_liveness(
                         index,
                         target,
                         ExceptionDemand {
+                            transfer_from_end: transfers,
                             normal,
                             handler,
                             operands: &operands,
                         },
                     );
                 }
+                transfers += 1;
                 normal.extend(handler);
             },
             |_, _| {},

@@ -1532,7 +1532,7 @@ fn run_planned(
 
     // ── Apply the plans ──────────────────────────────────────────────────────
     let mut inserted = stats.ops_added;
-    // Each check's landing retains, keyed by its index in the rebuilt block.
+    let definitions = points.into_definitions();
     let mut observation_retains: HashMap<(BlockId, usize), Vec<usize>> =
         HashMap::with_capacity_and_hasher(landing_retains.len(), Default::default());
     let mut plan_block_ids: Vec<BlockId> = plans.keys().copied().collect();
@@ -1545,13 +1545,14 @@ fn run_planned(
             continue;
         };
         // Rebuild the op vector inserting before_op (IncRef) / after_op (DecRef).
-        let mut new_ops: Vec<TirOp> = Vec::with_capacity(block.ops.len() + 8);
+        let old_ops = std::mem::take(&mut block.ops);
+        let mut new_ops: Vec<TirOp> = Vec::with_capacity(old_ops.len() + 8);
         // at_entry DecRefs first.
         for v in sorted_unique_values(&plan.at_entry) {
             new_ops.push(make_op(OpCode::DecRef, vec![v]));
             inserted += 1;
         }
-        for (idx, op) in block.ops.iter().enumerate() {
+        for (idx, op) in old_ops.into_iter().enumerate() {
             // before_op IncRefs, with multiplicity (adoption retains).
             if let Some(vals) = plan.before_op.get(&idx) {
                 for v in sorted_values(vals) {
@@ -1559,10 +1560,11 @@ fn run_planned(
                     inserted += 1;
                 }
             }
+            let position = new_ops.len();
             if let Some(positions) = landing_retains.remove(&(bid, idx)) {
-                observation_retains.insert((bid, new_ops.len()), positions);
+                observation_retains.insert((bid, position), positions);
             }
-            new_ops.push(op.clone());
+            new_ops.push(op);
             if let Some(values) = after_observation.remove(&(bid, idx)) {
                 for value in values {
                     new_ops.push(make_op(OpCode::DecRef, vec![value]));
@@ -1571,7 +1573,7 @@ fn run_planned(
             }
             // after_op DecRefs (straight-line last use).
             if let Some(vals) = plan.after_op.get(&idx) {
-                for v in ordered_unique_after_op_values(vals, op, &canon) {
+                for v in ordered_unique_after_op_values(vals, &new_ops[position], &canon) {
                     new_ops.push(make_op(OpCode::DecRef, vec![v]));
                     inserted += 1;
                 }
@@ -1661,17 +1663,18 @@ fn run_planned(
     // Close paths that bypass them at an exact exception observation, using the
     // shared liveness/ownership domain and explicit landing-block payloads. The
     // same landings retain the handler arguments that §2b planned.
-    // Only no-result RC operations and argument-free edge blocks were added
-    // since this domain was computed; definitions, aliases and representations
-    // are unchanged. Reuse it instead of repeating carrier/value-range analysis.
+    // The inserted RC operations define no values and the new argument-free
+    // blocks subdivide only ordinary edges. Existing points keep their
+    // dominance and initialization facts. Read the updated operands for
+    // liveness and translate each observation back to its proof coordinates.
     drop(live);
     inserted += super::exception_edges::insert_exception_edge_releases(
         func,
         &drop_eligibility,
-        &ownership_root_facts,
+        &definitions,
         &aliases,
         &raw_scalars,
-        &observation_retains,
+        observation_retains,
     );
 
     // Full-function drop authority is a semantic fact, not a mutation count.
