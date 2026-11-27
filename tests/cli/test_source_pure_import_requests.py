@@ -1492,6 +1492,63 @@ def test_inherited_source_projection_wakes_only_for_new_owners(
     select.assert_not_called()
 
 
+@pytest.mark.parametrize("cyclic_bases", [False, True])
+def test_inherited_providers_share_search_and_rebind_after_shadowing(
+    monkeypatch: pytest.MonkeyPatch, cyclic_bases: bool
+) -> None:
+    from unittest.mock import Mock
+
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+        _SourceNamespace,
+    )
+
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    module = "provider"
+    parent, intermediate, left, right = (
+        SourceCandidate(module, (line, 0, line, 1, "ClassDef")) for line in range(1, 5)
+    )
+    original = SourceCandidate(module, (5, 0, 5, 1, "FunctionDef"), "class_descriptor")
+    shadow = SourceCandidate(module, (6, 0, 6, 1, "FunctionDef"), "class_descriptor")
+    for candidate in (parent, intermediate, left, right, original, shadow):
+        engine.value_candidates[candidate.value] = {candidate}
+    for child, base in (
+        (intermediate, parent),
+        (left, intermediate),
+        (right, intermediate),
+    ):
+        engine.bases[child.value] = frozenset({base.source})
+    if cyclic_bases:
+        # A may-provenance edge can refer back to its consumer's class.
+        engine.bases[intermediate.value] |= {left.source}
+    engine.namespaces[parent.value] = _SourceNamespace(
+        {"factory": frozenset({original.source})}
+    )
+
+    follow = Mock(wraps=engine._watch_inherited_sources)
+    monkeypatch.setattr(engine, "_watch_inherited_sources", follow)
+    for receiver in (left, right):
+        assert engine._select_class_members(
+            receiver, "factory", ("consumer", None), strict=False
+        ) == {original._replace(kind="bound_class_method", receiver=receiver.value)}
+    assert sum(call.args[0] == parent.value for call in follow.call_args_list) == 1
+
+    engine._publish(
+        engine.namespaces,
+        intermediate.value,
+        _SourceNamespace({"factory": frozenset({shadow.source})}),
+    )
+    for receiver in (left, right):
+        assert engine._select_class_members(
+            receiver, "factory", ("consumer", None), strict=False
+        ) == {shadow._replace(kind="bound_class_method", receiver=receiver.value)}
+
+
 def test_class_member_query_shares_selection_and_replays_property_origins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
