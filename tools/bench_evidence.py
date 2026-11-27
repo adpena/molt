@@ -524,6 +524,10 @@ def workloads_comparable(left: object, right: object) -> bool:
     )
 
 
+class BenchmarkOracleMismatch(ValueError):
+    """A successful reference execution disagreed with the sealed oracle."""
+
+
 @dataclass(frozen=True)
 class BenchmarkInvocation:
     command: tuple[str, ...]
@@ -711,7 +715,9 @@ class AdmittedBenchmarkWorkload:
                 stderr_mode="exact",
             )
             if not verdict.equal:
-                raise ValueError("reference output differs from sealed semantic oracle")
+                raise BenchmarkOracleMismatch(
+                    "reference output differs from sealed semantic oracle"
+                )
 
 
 @contextmanager

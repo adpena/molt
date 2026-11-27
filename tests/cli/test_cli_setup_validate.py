@@ -28,7 +28,7 @@ from molt.cli import deps as cli_deps
 from molt.cli import debug_helpers as cli_debug_helpers
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import wrapper_build as cli_wrapper_build
-from molt import process_environment, toolchain_identity
+from molt import dx, process_environment, toolchain_identity
 from molt.cli.toolchain_validation import _MaintenanceStep, _ValidationStep
 from molt.cli.wrapper_build import _WrapperBuildContract
 
@@ -534,9 +534,7 @@ def test_maybe_enable_sccache_installs_shared_dx_cache_defaults(
             "MOLT_USE_SCCACHE": "1",
         }
     )
-    monkeypatch.setattr(
-        CARGO_EXECUTION, "pinned_sccache", lambda _env: "/usr/bin/sccache"
-    )
+    monkeypatch.setattr(dx, "pinned_sccache", lambda _env: "/usr/bin/sccache")
 
     CARGO_EXECUTION._maybe_enable_sccache(env)
 
