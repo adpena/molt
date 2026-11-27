@@ -1501,6 +1501,66 @@ def test_class_member_query_shares_selection_and_replays_property_origins(
     assert engine._property_results[second] == {member}
 
 
+def test_attribute_receiver_delta_and_structural_wake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+        _SourceNamespace,
+    )
+
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    module = "provider"
+    engine.modules.add(module)
+    argument = (1, 0, 1, 1, "arg")
+    operand = (module, argument)
+    user = (module, (2, 0, 2, 1, "Attribute"))
+    engine.attributes[user] = {"member": frozenset({argument})}
+    first = SourceCandidate(module, (3, 0, 3, 1, "ClassDef"))
+    second = SourceCandidate(module, (4, 0, 4, 1, "ClassDef"))
+    first_origin = (5, 0, 5, 1, "FunctionDef")
+    second_origin = (6, 0, 6, 1, "FunctionDef")
+    first_member = SourceCandidate(module, first_origin)
+    second_member = SourceCandidate(module, second_origin)
+    for owner, origin, member in (
+        (first, first_origin, first_member),
+        (second, second_origin, second_member),
+    ):
+        engine.value_candidates[owner.value] = {owner}
+        engine.value_candidates[member.value] = {member}
+        engine.namespaces[owner.value] = _SourceNamespace(
+            {"member": frozenset({origin})}
+        )
+
+    select = Mock(wraps=engine._select_class_members)
+    monkeypatch.setattr(engine, "_select_class_members", select)
+    engine.arguments[operand] = {first}
+    engine.queue_value(operand)
+    engine.queue_value(user)
+    engine.drain()
+    assert engine.value_candidates[user] == {first_member}
+    assert [row.args[0] for row in select.call_args_list] == [first]
+
+    select.reset_mock()
+    engine.arguments[operand].add(second)
+    engine.queue_value(operand)
+    engine.drain()
+    assert engine.value_candidates[user] == {first_member, second_member}
+    assert [row.args[0] for row in select.call_args_list] == [second]
+
+    select.reset_mock()
+    engine._invalidate_value(operand)
+    engine.drain()
+    assert {row.args[0] for row in select.call_args_list} == {first, second}
+
+
 @pytest.mark.parametrize("escape", [False, True])
 def test_unrelated_member_class_is_exposure_not_an_inherited_base(
     tmp_path, monkeypatch, escape

@@ -241,6 +241,7 @@ SourceValue = tuple[
     | SourceSubclassInvocation
     | None,
 ]
+_OperandDeltas = dict[SourceValue, set[SourceCandidate]]
 
 
 class SourceDemand(NamedTuple):
@@ -336,6 +337,8 @@ class PythonSourceDemands:
         self.imported_modules: set[str] = set()
         self.value_candidates: dict[SourceValue, set[SourceCandidate]] = {}
         self.value_users: dict[SourceValue, set[SourceValue]] = {}
+        self.operand_users: dict[SourceValue, set[SourceValue]] = {}
+        self.pending_operands: dict[SourceValue, _OperandDeltas] = {}
         # Operand transfers read candidate membership and callable shape.
         # Outcome facts such as a growing return set have their own users.
         self.candidate_users: dict[SourceValue, set[SourceValue]] = {}
@@ -407,7 +410,7 @@ class PythonSourceDemands:
         self.attributes: dict[SourceValue, dict[str, frozenset[PythonSourceKey]]] = {}
         self.import_bindings: dict[SourceValue, _SourceImportBinding] = {}
         # Pending values carry whether their candidate transfer must run.
-        # Demand-only work can activate the current candidates directly.
+        # Additive operand work and demand-only work need no full refresh.
         self.value_jobs: dict[SourceValue, bool] = {}
         # Body scans by class representative, and every argument tuple that
         # activated each body, so a changed parameter fact re-maps them.
@@ -459,6 +462,24 @@ class PythonSourceDemands:
         self.candidate_users.setdefault(origin, set()).add(user)
         return self._ensure_value(origin)
 
+    def _operand_candidates(
+        self, origin: SourceValue, user: SourceValue, deltas: _OperandDeltas | None
+    ) -> Collection[SourceCandidate]:
+        if deltas is not None:
+            return deltas.get(origin, ())
+        self.operand_users.setdefault(origin, set()).add(user)
+        return tuple(self._ensure_value(origin))
+
+    def _add_operand_candidates(
+        self, origin: SourceValue, added: Collection[SourceCandidate]
+    ) -> None:
+        for user in self.operand_users.get(origin, ()):
+            if self.value_jobs.get(user, False):
+                continue
+            pending = self.pending_operands.setdefault(user, {})
+            pending.setdefault(origin, set()).update(added)
+            self.queue_value(user, refresh=False)
+
     def _ensure_value(self, origin: SourceValue) -> set[SourceCandidate]:
         if origin not in self.value_candidates:
             self.value_candidates[origin] = set()
@@ -468,8 +489,9 @@ class PythonSourceDemands:
     def _invalidate_value(self, value: SourceValue) -> None:
         if value in self.value_candidates:
             self.queue_value(value)
-        for user in self.value_users.get(value, ()):
-            self.queue_value(user)
+        for subscribers in (self.value_users, self.operand_users):
+            for user in subscribers.get(value, ()):
+                self.queue_value(user)
 
     def _publish[T](
         self, table: dict[SourceValue, T], value: SourceValue, fact: T
@@ -1073,14 +1095,31 @@ class PythonSourceDemands:
                 owner, name, value, property_results=property_results
             )
         result = _ClassMemberResult(frozenset(members), frozenset(property_results))
-        if result != self._class_members.get(lookup):
+        previous = self._class_members.get(lookup)
+        if result != previous:
             self._class_members[lookup] = result
             for user in self.value_users.get(value, ()):
                 self.queue_value(user)
+            if (
+                previous is not None
+                and previous.property_results == result.property_results
+                and previous.members <= result.members
+            ):
+                self._add_operand_candidates(value, result.members - previous.members)
+            else:
+                for user in self.operand_users.get(value, ()):
+                    self.queue_value(user)
         return result
 
     def _select_class_members(
-        self, owner: SourceCandidate, name: str, user: SourceValue, *, strict: bool
+        self,
+        owner: SourceCandidate,
+        name: str,
+        user: SourceValue,
+        *,
+        strict: bool,
+        operand: bool = False,
+        deltas: _OperandDeltas | None = None,
     ) -> frozenset[SourceCandidate]:
         lookup = _ClassMemberLookup(owner, name, strict)
         value = (owner.module, lookup)
@@ -1091,11 +1130,14 @@ class PythonSourceDemands:
             if value in self.value_jobs:
                 self.value_jobs[value] = False
             result = self._refresh_class_members(lookup, value)
-        self.value_users.setdefault(value, set()).add(user)
+        subscribers = self.operand_users if operand else self.value_users
+        subscribers.setdefault(value, set()).add(user)
         if result.property_results:
             self._property_results.setdefault(user, set()).update(
                 result.property_results
             )
+        if deltas is not None:
+            return result.members.intersection(deltas.get(value, ()))
         return result.members
 
     def _select_attribute(
@@ -1103,6 +1145,7 @@ class PythonSourceDemands:
         owner_value: SourceValue,
         name: str,
         user: SourceValue,
+        deltas: _OperandDeltas | None,
     ) -> set[SourceCandidate]:
         """Select `name` on each candidate of one attribute owner, bind an
         instance receiver, and escape a method receiver it cannot bind."""
@@ -1119,7 +1162,7 @@ class PythonSourceDemands:
         )
         selected: set[SourceCandidate] = set()
         binding_changed = False
-        for candidate in tuple(self.watch(owner_value, user)):
+        for candidate in self._operand_candidates(owner_value, user, deltas):
             source_class = self._source_class_candidate(candidate)
             if source_class:
                 members = self._select_class_members(
@@ -2095,12 +2138,15 @@ class PythonSourceDemands:
 
     def process_value(self, value: SourceValue) -> None:
         refresh = self.value_jobs.pop(value)
+        deltas = self.pending_operands.pop(value, None)
+        if refresh:
+            deltas = None
         module_name, source = value
         if isinstance(source, _ClassMemberLookup):
             if refresh:
                 self._refresh_class_members(source, value)
             return
-        if not refresh:
+        if not refresh and deltas is None:
             self._activate_pending(value, self.value_candidates[value], ())
             return
         if module_name not in self.modules and not isinstance(source, SourceCacheItem):
@@ -2133,17 +2179,17 @@ class PythonSourceDemands:
                         for item in self.watch((module_name, default), value)
                     )
         elif isinstance(source, SourceCallArguments):
-            self._route_call_arguments(module_name, source, value)
+            self._route_call_arguments(module_name, source, value, deltas)
         elif isinstance(source, SourceIteratorItems):
             candidates.update(self._iterator_items(module_name, source, value))
         elif isinstance(source, SourceReturn):
-            for callee in tuple(self.watch(source.callee, value)):
+            for callee in self._operand_candidates(source.callee, value, deltas):
                 candidates.update(self._returned_values(callee, value))
         elif isinstance(source, SourceAwait):
-            for awaited in tuple(self.watch(source.value, value)):
+            for awaited in self._operand_candidates(source.value, value, deltas):
                 candidates.update(self._awaited_values(awaited, value))
         elif isinstance(source, SourceGeneratorCompletion):
-            for generator in tuple(self.watch(source.value, value)):
+            for generator in self._operand_candidates(source.value, value, deltas):
                 candidates.update(self._generator_completion_values(generator, value))
         elif isinstance(source, SourceSubclassInvocation):
             self._call_init_subclass(source.owner, value)
@@ -2151,7 +2197,12 @@ class PythonSourceDemands:
             if self._source_class_candidate(source.owner):
                 candidates.update(
                     self._select_class_members(
-                        source.owner, source.name, value, strict=False
+                        source.owner,
+                        source.name,
+                        value,
+                        strict=False,
+                        operand=True,
+                        deltas=deltas,
                     )
                 )
             else:
@@ -2495,7 +2546,9 @@ class PythonSourceDemands:
                     candidates.add(_INTERPRETER_BUILTINS)
                 for owner in sorted(owners):
                     candidates.update(
-                        self._select_attribute((module_name, owner), name, value)
+                        self._select_attribute(
+                            (module_name, owner), name, value, deltas
+                        )
                     )
         elif value in self.import_bindings:
             binding = self.import_bindings[value]
@@ -2526,6 +2579,7 @@ class PythonSourceDemands:
             for users in (self.value_users, self.candidate_users):
                 for user in users.get(value, ()):
                     self.queue_value(user)
+            self._add_operand_candidates(value, added)
         self._activate_pending(value, known, added)
 
     def _activate_pending(
@@ -2548,7 +2602,11 @@ class PythonSourceDemands:
                     self._activate_demand(value, candidate, incidence)
 
     def _route_call_arguments(
-        self, module: str, inputs: SourceCallArguments, user: SourceValue
+        self,
+        module: str,
+        inputs: SourceCallArguments,
+        user: SourceValue,
+        deltas: _OperandDeltas | None,
     ) -> None:
         # Return values can grow without changing a call's actuals. Watch
         # operand and declaration changes from the argument transfer alone.
@@ -2571,7 +2629,9 @@ class PythonSourceDemands:
             selected = {
                 candidate._replace(contained=packed or source not in direct)
                 for source in exposed
-                for candidate in self._watch_candidates((user[0], source), user)
+                for candidate in self._operand_candidates(
+                    (module, source), user, deltas
+                )
             }
             actuals[key] = selected
             return selected
