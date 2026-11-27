@@ -175,7 +175,8 @@ over stale prose or precedent.
   with validated `DispatchBounds` via `tools/dispatch_prompt.py`; record ownership and handoffs in
   coordination records. `docs/ops/MULTI_AGENT_COORDINATION.md` owns brief review, budgets,
   proofs, stop rules and parent-controlled expansion. Task messages and worktrees are not source locks.
-- Name Codex `gpt-6.1-sol` at `high` on each dispatch and resume; Astra for the hardest work; no `ultra`.
+- Use Codex `gpt-6.2-sol` at `high` for dispatches and resumes. Use `gpt-6.2-astra` for the hardest work.
+  Do not use `ultra`.
   Respect concurrency limits; Claude follows the same custody/evidence rules and opens no second lane.
 - Only the integrator dispatches. Workers never delegate to subagents, forks or other agents;
   the integrator runs each lane's Goldfish design review (`tools/subagent_contract.py` DESIGN_REVIEW).
