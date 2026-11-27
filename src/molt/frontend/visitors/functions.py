@@ -472,20 +472,25 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
             self._publish_python_frame_context()
             self._push_qualname(python_definition_name(node), True, qualname=qualname)
+            body_terminated = False
             try:
                 for item in reachable_statement_prefix(
                     node.body, self.python_binding_index
                 ):
+                    self.block_terminated = False
                     self.visit(item)
+                    if self.block_terminated:
+                        body_terminated = True
+                        break
             finally:
                 self._pop_qualname()
             if self.return_label is not None:
-                if not self._ends_with_return_jump():
+                if not body_terminated and not self._ends_with_return_jump():
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                     self._emit_return_value(res, node.body[-1])
                 self._emit_return_label()
-            elif not (
+            elif not body_terminated and not (
                 self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret
             ):
                 res = MoltValue(self.next_var(), type_hint="None")
