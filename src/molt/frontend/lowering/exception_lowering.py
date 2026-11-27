@@ -358,9 +358,10 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
     def _emit_guarded_body(
         self,
         body: list[ast.stmt],
-    ) -> None:
+    ) -> bool:
+        """Emit cleanup and report whether every normal source path leaves."""
         if not body:
-            return
+            return False
         # Handler, else and finally bodies need a real cleanup continuation.
         # Per-statement checks miss exceptions inside a nonlocal unwind and
         # can dispatch past the enclosing finally. One scope also avoids the
@@ -374,7 +375,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             MoltOp(kind="TRY_START", args=[cleanup_label], result=MoltValue("none"))
         )
         try:
-            self._visit_block(body)
+            terminated = self._visit_block(body)
         finally:
             self.try_end_labels.pop()
             self.try_scopes.pop()
@@ -386,6 +387,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         # Successful nonlocal exits already left. The failure continuation is
         # reachable even if every source-level path ends with return/raise.
         self.block_terminated = False
+        return terminated
 
     def _emit_finalbody(
         self,
@@ -798,7 +800,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         handlers: list[ast.ExceptHandler],
         exc_val: MoltValue,
         scope: TryScope,
-    ) -> None:
+    ) -> bool:
         """Run the first clause that matches the caught exception.
 
         As in CPython, where PUSH_EXC_INFO precedes CHECK_EXC_MATCH, the caught
@@ -814,17 +816,17 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                 kind="EXCEPTION_CONTEXT_SET", args=[exc_val], result=MoltValue("none")
             )
         )
-        self._emit_handler_clauses(handlers, exc_val, scope)
+        return self._emit_handler_clauses(handlers, exc_val, scope)
 
     def _emit_handler_clauses(
         self,
         handlers: list[ast.ExceptHandler],
         exc_val: MoltValue,
         scope: TryScope,
-    ) -> None:
+    ) -> bool:
         if not handlers:
             self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
-            return
+            return True
         handler = handlers[0]
         match_val = self._emit_exception_match(handler, exc_val)
         self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
@@ -841,13 +843,14 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             handler_try_depth=len(self.try_end_labels),
         )
         self.active_exceptions.append(exc_entry)
-        self._emit_guarded_body(handler.body)
+        matched_terminated = self._emit_guarded_body(handler.body)
         if not self.block_terminated:
             self._emit_exception_handler_exit_cleanup(exc_entry)
         self.active_exceptions.pop()
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self._emit_handler_clauses(handlers[1:], exc_val, scope)
+        unmatched_terminated = self._emit_handler_clauses(handlers[1:], exc_val, scope)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        return matched_terminated and unmatched_terminated
 
     def _emit_sync_try_except_split(
         self,
@@ -859,7 +862,6 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_exc_label = self.next_label()
         try_normal_label = self.next_label()
-        try_clean_cleanup_label = self.next_label()
         try_pending_cleanup_label = self.next_label()
         try_done_label = self.next_label()
         scope.handler_label = try_exc_label
@@ -907,7 +909,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
 
-        self._emit_handler_dispatch(node.handlers, exc_val, scope)
+        handlers_terminated = self._emit_handler_dispatch(node.handlers, exc_val, scope)
         self.emit(
             MoltOp(
                 kind="JUMP",
@@ -916,41 +918,26 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             )
         )
 
-        self.emit(
-            MoltOp(
-                kind="LABEL",
-                args=[try_normal_label],
-                result=MoltValue("none"),
-            )
-        )
-        if node.orelse:
-            self._emit_guarded_body(node.orelse)
+        normal_terminated = body_terminated
+        if not body_terminated:
             self.emit(
                 MoltOp(
-                    kind="JUMP",
-                    args=[try_pending_cleanup_label],
+                    kind="LABEL",
+                    args=[try_normal_label],
                     result=MoltValue("none"),
                 )
             )
-        else:
-            self.emit(
-                MoltOp(
-                    kind="JUMP",
-                    args=[try_clean_cleanup_label],
-                    result=MoltValue("none"),
+            if node.orelse:
+                normal_terminated = self._emit_guarded_body(node.orelse)
+            else:
+                self.emit(
+                    MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none"))
                 )
-            )
+                self.emit(
+                    MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none"))
+                )
         self.try_handler_scopes.pop()
         self.try_suppress_depth = prior_suppress
-        self.emit(
-            MoltOp(
-                kind="LABEL",
-                args=[try_clean_cleanup_label],
-                result=MoltValue("none"),
-            )
-        )
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
         self.emit(
             MoltOp(
                 kind="LABEL",
@@ -959,16 +946,21 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             )
         )
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
-        self.emit(
-            MoltOp(
-                kind="LABEL",
-                args=[try_done_label],
-                result=MoltValue("none"),
+        terminated = normal_terminated and handlers_terminated
+        if terminated:
+            # Every executable entry to this cleanup already has a pending
+            # exception. Keep the exceptional exit explicit in the CFG.
+            self._emit_raise_exit()
+        else:
+            self._emit_raise_if_pending()
+            self.emit(
+                MoltOp(
+                    kind="LABEL",
+                    args=[try_done_label],
+                    result=MoltValue("none"),
+                )
             )
-        )
         self.try_scopes.pop()
         self.unbound_check_names = unbound_snapshot_try
         self.control_flow_depth -= 1
-        self.block_terminated = prior_terminated
+        self.block_terminated = prior_terminated or terminated
