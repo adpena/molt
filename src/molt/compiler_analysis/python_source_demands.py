@@ -364,7 +364,7 @@ class PythonSourceDemands:
         self.admitted_call_imports: set[tuple[SourceValue, PythonIdentity, str]] = set()
         self.completions: dict[SourceValue, frozenset[PythonSourceKey]] = {}
         self.declarations: dict[SourceValue, PythonSourceCallableDeclaration] = {}
-        self.arguments: dict[SourceValue, set[SourceCandidate]] = {}
+        self.pending_arguments: dict[SourceValue, set[SourceCandidate]] = {}
         self.functions: dict[SourceValue, PythonFunctionResult] = {}
         self.activation_partitions: dict[
             SourceValue, tuple[frozenset[str] | None, ...]
@@ -485,6 +485,20 @@ class PythonSourceDemands:
             self.value_candidates[origin] = set()
             self.queue_value(origin)
         return self.value_candidates[origin]
+
+    def _queue_arguments(
+        self, formal: SourceValue, candidates: set[SourceCandidate]
+    ) -> None:
+        added = candidates.difference(self.value_candidates.get(formal, ()))
+        if not added:
+            return
+        # Only the unprocessed wave is staged. The ordinary value publication
+        # owns committed candidates and the module admission fence.
+        pending = self.pending_arguments.setdefault(formal, set())
+        before = len(pending)
+        pending.update(added)
+        if len(pending) != before:
+            self.queue_value(formal)
 
     def _invalidate_value(self, value: SourceValue) -> None:
         if value in self.value_candidates:
@@ -1252,10 +1266,7 @@ class PythonSourceDemands:
         if parameter is not None:
             formal = (callee.module, parameter)
             argument = receiver._replace(contained=receiver.contained or not positional)
-            known = self.arguments.setdefault(formal, set())
-            if argument not in known:
-                known.add(argument)
-                self.queue_value(formal)
+            self._queue_arguments(formal, {argument})
 
     def select_member(
         self,
@@ -2213,7 +2224,7 @@ class PythonSourceDemands:
                     if callee.kind not in {"bound_class_method", "bound_static_method"}:
                         self._bind_receiver(callee, source.owner)
         elif source is not None and source[-1] == "arg":
-            candidates.update(self.arguments.get(value, ()))
+            candidates.update(self.pending_arguments.pop(value, ()))
         elif source is None or source[-1] == "Module":
             candidates.add(SourceCandidate(module_name, None))
         elif source[-1] == PythonSourceProjection.CALL_NATIVE_BUILTINS:
@@ -2723,14 +2734,7 @@ class PythonSourceDemands:
                     )
                 )
             for target, packed in targets:
-                values = candidates(index, packed)
-                if not values:
-                    continue
-                formal = (callee[0], target)
-                known = self.arguments.setdefault(formal, set())
-                if added := values - known:
-                    known.update(added)
-                    self.queue_value(formal)
+                self._queue_arguments((callee[0], target), candidates(index, packed))
 
     def _bind_native_call(self, site: SourceValue, callee: SourceCandidate) -> None:
         uses = self.native_calls.setdefault(callee.value, set())
@@ -2913,17 +2917,13 @@ class PythonSourceDemands:
                         else:
                             targets = []
                         for target, contained in targets:
-                            formal = (method.module, target)
-                            arguments = self.arguments.setdefault(formal, set())
                             selected = {
                                 candidate._replace(
                                     contained=contained or candidate.contained
                                 )
                                 for candidate in values
                             }
-                            if selected - arguments:
-                                arguments.update(selected)
-                                self.queue_value(formal)
+                            self._queue_arguments((method.module, target), selected)
                 self.activate(method, "call")
 
     def _function_kind(self, callee: SourceCandidate) -> FunctionKind:
