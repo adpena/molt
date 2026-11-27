@@ -160,6 +160,43 @@ struct Trace {
     events: Vec<Event>,
     calls: Vec<Invocation>,
     returned: Source,
+    forwarded: Option<ForwardedReceiver>,
+}
+
+#[derive(Clone, Copy)]
+struct ForwardedReceiver {
+    call: Site,
+    parameter: usize,
+    formal: usize,
+}
+
+impl ForwardedReceiver {
+    fn prove(wrapper: &TirFunction, call: &Invocation, callee: &TirFunction) -> Option<Self> {
+        let scalar = ExactScalarPlan::new(callee);
+        let parameter = scalar
+            .return_parameter_search()?
+            .advance(&scalar, |_| Ok::<_, ()>(None))
+            .ok()??;
+        let Source::Formal(formal) = call.arguments.get(parameter)?.source else {
+            return None;
+        };
+        let class @ TirType::Class(_) = wrapper.exact_param_types.get(formal)? else {
+            return None;
+        };
+        if callee.exact_param_types.get(parameter) != Some(class)
+            || !call
+                .arguments
+                .iter()
+                .all(|arg| matches!(arg.source, Source::Formal(_) | Source::Literal(_)))
+        {
+            return None;
+        }
+        Some(Self {
+            call: call.site,
+            parameter,
+            formal,
+        })
+    }
 }
 
 /// A committed packed read can leave through the captured frame chain. This
@@ -220,6 +257,7 @@ fn snapshot(
     state: &SyncFrame,
     site: Site,
     sources: &HashMap<ValueId, Source>,
+    forwarded: Option<ForwardedReceiver>,
 ) -> Option<(Option<i64>, Vec<(i64, usize)>)> {
     let point = state.point(site.block, site.index)?;
     if point.published {
@@ -228,11 +266,13 @@ fn snapshot(
     let homes = point
         .homes
         .iter()
-        .map(|&(slot, word)| {
-            let Source::Formal(position) = sources.get(&word)? else {
-                return None;
-            };
-            Some((slot, *position))
+        .map(|&(slot, word)| match *sources.get(&word)? {
+            Source::Formal(position) => Some((slot, position)),
+            Source::CallResult(call) => {
+                let proof = forwarded.filter(|proof| proof.call == call)?;
+                Some((slot, proof.formal))
+            }
+            _ => None,
         })
         .collect::<Option<_>>()?;
     Some((point.location, homes))
@@ -260,6 +300,7 @@ fn trace<'a>(
     let mut visited = HashSet::default();
     let mut calls: Vec<Invocation> = Vec::new();
     let mut events = Vec::new();
+    let mut forwarded = None;
     let mut id = func.entry_block;
     let mut retired = false;
     // Some effects require an immediately authored check. Its successful
@@ -296,7 +337,7 @@ fn trace<'a>(
                 {
                     return None;
                 }
-                let (location, homes) = snapshot(&state, site, &sources)?;
+                let (location, homes) = snapshot(&state, site, &sources, forwarded)?;
                 events.push(Event::Check(Check {
                     site,
                     exceptional: checked_exception_observer(op, |l| labels.get(&l).copied())?,
@@ -310,7 +351,7 @@ fn trace<'a>(
                 events.push(Event::Enter(site));
                 required = Some((None, false));
             } else if op.opcode == OpCode::Copy && op.origin == Some(OpKind::TraceExit) {
-                let (location, homes) = snapshot(&state, site, &sources)?;
+                let (location, homes) = snapshot(&state, site, &sources, forwarded)?;
                 events.push(Event::Retire {
                     site,
                     location,
@@ -418,15 +459,19 @@ fn trace<'a>(
                     .iter()
                     .map(|&value| arg(value))
                     .collect::<Option<_>>()?;
-                let (location, homes) = snapshot(&state, site, &sources)?;
-                calls.push(Invocation {
+                let (location, homes) = snapshot(&state, site, &sources, forwarded)?;
+                let invocation = Invocation {
                     location,
                     homes,
                     site,
                     target: call.callee,
                     callable: arg(function)?,
                     arguments,
-                });
+                };
+                if calls.is_empty() {
+                    forwarded = Some(ForwardedReceiver::prove(func, &invocation, callee)?);
+                }
+                calls.push(invocation);
                 sources.insert(word, Source::CallResult(site));
                 events.push(Event::Invoke(site));
                 required = Some((Some(word), async_work_poll::is_call_return_poll(op)));
@@ -455,6 +500,7 @@ fn trace<'a>(
                     events,
                     calls,
                     returned: *sources.get(&v)?,
+                    forwarded,
                 });
             }
             Terminator::CondBranch { .. }
@@ -486,6 +532,11 @@ pub(crate) fn summarize<'a>(
 ) -> Option<PackedWrapper> {
     let wrapper_frame = frame(wrapper, wrapper_id, FramePrefix::default())?;
     let outer = trace(wrapper, &wrapper_frame, Role::Wrapper, &resolve)?;
+    let ForwardedReceiver {
+        formal: receiver,
+        parameter: forwarded,
+        ..
+    } = outer.forwarded?;
     let [identity_call, leaf_call]: [Invocation; 2] = outer.calls.try_into().ok()?;
     if identity_call.target == wrapper_id
         || leaf_call.target == wrapper_id
@@ -507,20 +558,7 @@ pub(crate) fn summarize<'a>(
     let helper = resolve(identity_call.target)?;
     let identity = frame(helper, identity_call.target, nested_prefix)?;
     let mut helper_path = trace(helper, &identity, Role::Identity, &resolve)?;
-    let scalar = ExactScalarPlan::new(helper);
-    let forwarded = scalar
-        .return_parameter_search()?
-        .advance(&scalar, |_| Ok::<_, ()>(None))
-        .ok()??;
-    let Source::Formal(receiver) = identity_call.arguments.get(forwarded)?.source else {
-        return None;
-    };
-    if helper_path.returned != Source::Formal(forwarded)
-        || !identity_call
-            .arguments
-            .iter()
-            .all(|arg| matches!(arg.source, Source::Formal(_) | Source::Literal(_)))
-    {
+    if helper_path.returned != Source::Formal(forwarded) {
         return None;
     }
 
@@ -529,7 +567,6 @@ pub(crate) fn summarize<'a>(
     let packed = packed_read::extract(body)?;
     let class = TirType::Class(packed.class);
     if wrapper.exact_param_types.get(receiver) != Some(&class)
-        || helper.exact_param_types.get(forwarded) != Some(&class)
         || leaf_call.arguments.get(packed.receiver)?.source
             != Source::CallResult(identity_call.site)
     {
@@ -694,9 +731,10 @@ mod tests {
                 {"kind":"frame_set_location","value":3},
                 {"kind":"call","s_value":"second","args":["first_cell","literal","h_object"],"out":"checked"},
                 {"kind":"check_exception","exception_edge":"origin","value":90},
+                {"kind":"frame_home_store","value":3,"args":["checked"],"out":"checked_home"},
                 {"kind":"const_none","out":"second_cell"},
                 {"kind":"binding_alias","args":["second_cell"],"out":"held_fn"},
-                {"kind":"binding_alias","args":["checked"],"out":"held_object"},
+                {"kind":"binding_alias","args":["checked_home"],"out":"held_object"},
                 {"kind":"frame_set_location","value":5},
                 {"kind":"call","s_value":"third","args":["held_fn","h_column","held_object","h_row"],"out":"got"},
                 {"kind":"check_exception","exception_edge":"origin","value":90},
@@ -707,7 +745,9 @@ mod tests {
 
         // Install the same typed publications supplied by module integration.
         for op in wrapper.blocks.values_mut().flat_map(|b| &mut b.ops) {
-            if op.opcode == OpCode::ConstNone {
+            if op.origin == Some(OpKind::TraceEnterSlot) {
+                op.attrs.insert("value".into(), AttrValue::Int(4));
+            } else if op.opcode == OpCode::ConstNone {
                 let Some(AttrValue::Str(name)) = op.attrs.get("_simple_out") else {
                     continue;
                 };
@@ -759,6 +799,15 @@ mod tests {
             plan.leaf_call.arguments[1].source,
             Source::CallResult(plan.identity_call.site)
         );
+        assert_eq!(plan.identity_call.homes, [(0, 0), (1, 1), (2, 2)]);
+        assert_eq!(plan.leaf_call.homes, [(0, 0), (1, 1), (2, 2), (3, 2)]);
+        assert!(plan.events.iter().any(|event| matches!(
+            event,
+            Event::Check(check)
+                if check.site.function == outer_id
+                    && check.location == Some(5)
+                    && check.homes == plan.leaf_call.homes
+        )));
         let sites: Vec<_> = plan
             .events
             .iter()
