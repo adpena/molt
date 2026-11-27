@@ -43,13 +43,28 @@ impl ApplicationPlanRecord {
         batch_size: usize,
         batch_ops_budget: usize,
     ) -> io::Result<Self> {
+        // Every option requires an explicit decision here. Artifact kind and
+        // stdlib selection already acted on the admitted IR and routed this
+        // request to the batch archive producer. The store and log sink cannot
+        // affect that producer's objects.
+        let NativeApplicationArtifactOptions {
+            object_cache: _,
+            code_slots,
+            native_output_kind: _,
+            target_triple,
+            stdlib_split_enabled: _,
+            app_callable_manifest,
+            log_prefix: _,
+            module_registry,
+            module_context,
+        } = options;
         let key = cache.application_plan_key(&ApplicationPlanInput {
             ir,
-            target: options.target_triple,
-            module_context: options.module_context.as_ref(),
-            app_callable_manifest: options.app_callable_manifest.as_ref(),
-            module_registry: options.module_registry.as_ref(),
-            code_slots: &options.code_slots,
+            target: *target_triple,
+            module_context: module_context.as_ref(),
+            app_callable_manifest: app_callable_manifest.as_ref(),
+            module_registry: module_registry.as_ref(),
+            code_slots,
             environment,
             batch_size,
             batch_ops_budget,
