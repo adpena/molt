@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.wasm_execution_manifest import wasm_execution_launch
 
 from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_metadata,
     synthetic_reference_evidence,
     synthetic_workload,
 )
@@ -312,13 +313,20 @@ def _write_scoreboard(
 ) -> Path:
     suite = gate.pa.CANONICAL_PERF_BENCHMARKS
     backends = sorted(gate.pa.CANONICAL_PERF_BACKENDS)
+    oracle = benchmark_oracle_metadata()
     payload = {
         "schema_version": gate.pa.perf_schema.SCHEMA_VERSION,
-        "kind": gate.E2_SCOREBOARD_KIND,
+        "kind": gate.pa.perf_schema.CPYTHON_FLOOR_SCOREBOARD,
         "generated_at": generated_at,
         "git_rev": source_sha,
         "host": {
-            "cpython_oracle": {"version": "3.12.13"},
+            "platform": oracle["sys_platform"],
+            "machine": oracle["machine"],
+            "arch": oracle["arch"],
+            "pointer_bits": oracle["pointer_bits"],
+            "python_runner": "3.12.16",
+            "cpython_baseline": oracle["version"],
+            "cpython_oracle": oracle,
             "molt_target_python": "3.12",
         },
         "provenance": {

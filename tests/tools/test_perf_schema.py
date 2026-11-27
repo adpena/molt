@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_metadata,
     synthetic_workload,
 )
 
@@ -104,23 +105,18 @@ def test_native_runtime_variant_binds_per_cell_without_promoting_legacy_data() -
 
 
 def _modern_host(**overrides: object) -> dict[str, object]:
+    oracle = benchmark_oracle_metadata(
+        "C:/Python314/python.exe", "3.14.3", sys_platform="win32", machine="AMD64"
+    )
     host: dict[str, object] = {
-        "platform": "win32",
-        "machine": "AMD64",
-        "arch": "x86_64",
-        "pointer_bits": 64,
+        "platform": oracle["sys_platform"],
+        "machine": oracle["machine"],
+        "arch": oracle["arch"],
+        "pointer_bits": oracle["pointer_bits"],
         "python_runner": "3.12.13",
-        "cpython_baseline": "3.14.3",
-        "cpython_oracle": {
-            "cmd": ["C:/Python314/python.exe"],
-            "executable": "C:/Python314/python.exe",
-            "implementation": "CPython",
-            "version": "3.14.3",
-            "sys_platform": "win32",
-            "machine": "AMD64",
-            "arch": "x86_64",
-            "pointer_bits": 64,
-        },
+        "cpython_baseline": oracle["version"],
+        "molt_target_python": "3.14",
+        "cpython_oracle": oracle,
         "pypy": None,
         "codon": None,
     }
@@ -148,7 +144,7 @@ def _doc(cell: dict[str, object]) -> dict[str, object]:
             "runtime_identity": {},
             "authoritative": True,
         },
-        "host": _minimal_host(),
+        "host": _modern_host(),
         "direction": "speedup = cpython_time / molt_time",
         "red_threshold": 1.0,
         "verdict_legend": {},
@@ -319,6 +315,68 @@ def test_schema_rejects_incomplete_or_inconsistent_cpython_oracle_host() -> None
     problems = schema.validate_board(doc)
 
     assert any("host.cpython_oracle must be an object" in p for p in problems)
+
+
+def test_current_board_cannot_omit_all_managed_host_fields() -> None:
+    doc = _doc(_cell())
+    doc["host"] = _minimal_host()
+
+    assert any("cpython_oracle" in problem for problem in schema.validate_board(doc))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "field"),
+    [
+        ("missing_origin", "managed_origin"),
+        ("wrong_origin", "managed_origin.kind"),
+        ("wrong_request", "requested_release"),
+        ("wrong_managed_path", "managed_origin.executable"),
+        ("system_lookup", "lookup_command"),
+        ("relative_uv", "lookup_command"),
+        ("nonisolated", "cmd"),
+        ("seeded_hash", "launch_policy"),
+        ("minor_only", "version"),
+    ],
+)
+def test_retained_oracle_rejects_missing_or_forged_protocol(
+    mutation: str, field: str
+) -> None:
+    authentic = benchmark_oracle_metadata()
+    oracle: dict[str, object] = dict(authentic)
+    origin: dict[str, object] = dict(authentic["managed_origin"])
+    oracle["managed_origin"] = origin
+    assert schema.benchmark_python_metadata_problems(oracle) == []
+
+    if mutation == "missing_origin":
+        oracle.pop("managed_origin")
+    elif mutation == "wrong_origin":
+        origin["kind"] = "system"
+    elif mutation == "wrong_request":
+        origin["requested_release"] = "3.12.15"
+    elif mutation == "wrong_managed_path":
+        origin["executable"] = "/another/python"
+    elif mutation == "system_lookup":
+        origin["lookup_command"] = [
+            token
+            for token in authentic["managed_origin"]["lookup_command"]
+            if token != "--managed-python"
+        ]
+    elif mutation == "relative_uv":
+        origin["lookup_command"] = [
+            "uv",
+            *authentic["managed_origin"]["lookup_command"][1:],
+        ]
+    elif mutation == "nonisolated":
+        oracle["cmd"] = [authentic["executable"], "-S", "-B"]
+    elif mutation == "seeded_hash":
+        oracle["launch_policy"] = "fixed-hash"
+    else:
+        oracle["version"] = "3.12"
+
+    assert any(
+        field in problem
+        for problem in schema.benchmark_python_metadata_problems(oracle)
+    )
 
 
 def test_schema_rejects_cpython_oracle_launcher_command() -> None:

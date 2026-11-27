@@ -354,7 +354,8 @@ def editable_direct_url_path(data: bytes, *, distribution: str) -> Path:
     return root
 
 
-def _pyvenv_config_candidates(selected: Path) -> tuple[Path, Path]:
+def python_venv_config_candidates(selected: Path) -> tuple[Path, Path]:
+    """Return CPython's startup config locations relative to its lexical entry."""
     return selected.parent / "pyvenv.cfg", selected.parent.parent / "pyvenv.cfg"
 
 
@@ -372,7 +373,7 @@ def python_startup_configuration_paths(
         path
         for executable in executables
         for path in (
-            *_pyvenv_config_candidates(executable),
+            *python_venv_config_candidates(executable),
             executable.with_suffix("._pth"),
             executable.parent / "pybuilddir.txt",
         )
@@ -386,7 +387,7 @@ def _active_environment_prefix() -> Path:
     """Derive venv ownership without importing ``site`` or executing ``.pth``."""
 
     selected = Path(os.path.abspath(sys.executable))
-    candidates = _pyvenv_config_candidates(selected)
+    candidates = python_venv_config_candidates(selected)
     pyvenv_roots = [
         candidate.parent
         for candidate in candidates

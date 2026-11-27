@@ -17,13 +17,22 @@ from typing import Any
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
+from tests.tools.perf_scoreboard_fixtures import benchmark_oracle_metadata
 
 from tools import perf_instructions as pi
 from tools.bench_suites import BENCHMARKS
 from tools.perf_primitives import per_op_axes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DIGEST = "d" * 64
+REFERENCE_IDENTITY = {
+    "tier": "hourly",
+    "reference": {
+        "release": "3.12.16",
+        "arguments": ["-I", "-S", "-B"],
+        "launch_policy": "isolated-randomized-hash",
+    },
+}
+DIGEST = pi.identity_digest(REFERENCE_IDENTITY)
 
 
 # --- counters ----------------------------------------------------------------
@@ -184,8 +193,16 @@ def test_instruction_identity_changes_with_build_normalization(
     assert pi.identity_digest(before) != pi.identity_digest(after)
     with pytest.raises(ValueError, match="different run identities"):
         pi.compare(
-            {**_record("a" * 40, []), "identity_digest": pi.identity_digest(before)},
-            {**_record("b" * 40, []), "identity_digest": pi.identity_digest(after)},
+            {
+                **_record("a" * 40, []),
+                "identity": before,
+                "identity_digest": pi.identity_digest(before),
+            },
+            {
+                **_record("b" * 40, []),
+                "identity": after,
+                "identity_digest": pi.identity_digest(after),
+            },
             {},
         )
 
@@ -336,12 +353,130 @@ def _record(
     return {
         "schema": pi.RECORD_SCHEMA,
         "commit": commit,
-        "identity": {"tier": "hourly"},
+        "identity": json.loads(json.dumps(REFERENCE_IDENTITY)),
         "identity_digest": DIGEST,
+        "cpython_oracle": benchmark_oracle_metadata(),
         "recorded_at": recorded_at,
         "workloads": [],
         "axes": list(axes),
     }
+
+
+@pytest.mark.parametrize("mutation", ["identity", "launch", "origin", "schema"])
+def test_instruction_store_refuses_forged_or_obsolete_reference_protocol(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    store = pi.RecordStore(tmp_path)
+    record = _record("a" * 40, [])
+    path = store.put(record)
+    changed = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "identity":
+        changed["identity"]["tier"] = "nightly"
+    elif mutation == "launch":
+        changed["cpython_oracle"]["cmd"].remove("-I")
+    elif mutation == "origin":
+        del changed["cpython_oracle"]["managed_origin"]
+    else:
+        changed["schema"] = "molt.instruction-record.v1"
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    for read in (
+        lambda: store.get("a" * 40, DIGEST),
+        lambda: store.of_identity(DIGEST),
+    ):
+        with pytest.raises(ValueError):
+            read()
+
+
+def test_failed_cpython_reference_stops_before_a_compiler_verdict(
+    tmp_path: Path,
+) -> None:
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "broken.py"
+    script.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    workload = pi.Workload("broken", pi.Tier.HOURLY)
+    with admit_benchmark_workload(
+        script,
+        project_root=tmp_path,
+        run_args=[],
+        molt_args=[],
+    ) as admitted:
+        with pytest.raises(
+            RuntimeError, match="CPython reference failed before semantic comparison"
+        ):
+            pi._reference(workload, admitted, sys.executable, None, os.environ, 20)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("bench_channel_throughput", "1249975000\n"), ("bench_ptr_registry", "100000\n")],
+)
+def test_instruction_intrinsics_use_the_declared_oracle_without_cpython(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, expected: str
+) -> None:
+    from tools.bench_evidence import admit_benchmark_workload
+
+    def refuse_launch(*args: object, **kwargs: object) -> None:
+        pytest.fail("intrinsic oracle must not launch CPython")
+
+    with admit_benchmark_workload(
+        REPO_ROOT / "tests/benchmarks" / f"{name}.py",
+        project_root=REPO_ROOT,
+        run_args=[],
+        molt_args=[],
+    ) as admitted:
+        monkeypatch.setattr(
+            pi.harness_memory_guard, "guarded_completed_process", refuse_launch
+        )
+        reference = pi._reference(
+            pi.Workload(name, pi.Tier.NIGHTLY), admitted, "unavailable", None, {}, 20
+        )
+    assert reference == pi.Outputs(expected, "", 0)
+
+
+def test_counted_and_reference_output_preserve_bytes_and_line_endings(
+    tmp_path: Path,
+) -> None:
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "bytes.py"
+    script.write_text(
+        "import os\nos.write(1, b'line\\r\\n\\xff')\nos.write(2, b'warning\\r\\n\\xfe')\n",
+        encoding="utf-8",
+    )
+    with admit_benchmark_workload(
+        script,
+        project_root=tmp_path,
+        run_args=[],
+        molt_args=[],
+    ) as admitted:
+        reference = pi._reference(
+            pi.Workload("bytes", pi.Tier.HOURLY),
+            admitted,
+            sys.executable,
+            None,
+            os.environ,
+            20,
+        )
+        counted = pi.observe(
+            _host_counter(),
+            [sys.executable, "-I", "-S", "-B", str(script)],
+            tmp_path / "counted",
+            os.environ,
+            20,
+        )
+    assert isinstance(counted, pi.Measured)
+    for result in (reference, counted.observation):
+        assert result.stdout == "line\r\n\udcff"
+        assert result.stderr == "warning\r\n\udcfe"
+
+
+def test_instruction_compare_refuses_missing_digest_as_protocol_error() -> None:
+    record = _record("a" * 40, [])
+    record.pop("identity_digest")
+    with pytest.raises(ValueError, match="identity digest"):
+        pi.compare(record, _record("b" * 40, []), {})
 
 
 def _verdicts(
@@ -406,7 +541,12 @@ def test_incomparable_or_unmeasured_base_axes_are_new() -> None:
 
 
 def test_records_of_different_identities_never_compare() -> None:
-    other = {**_record("b" * 40, []), "identity_digest": "e" * 64}
+    identity = {**REFERENCE_IDENTITY, "tier": "nightly"}
+    other = {
+        **_record("b" * 40, []),
+        "identity": identity,
+        "identity_digest": pi.identity_digest(identity),
+    }
     with pytest.raises(ValueError, match="different run identities"):
         pi.compare(_record("a" * 40, []), other, {})
 

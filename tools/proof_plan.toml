@@ -5783,6 +5783,14 @@ name = "performance-measurement"
 toolchains = ["python", "uv"]
 description = "Typed sample transport, deployment selection and complete benchmark artifact lifetimes."
 globs = [
+  "src/molt/python_interpreter.py", "src/molt/python_environment_location.py",
+  "bench/harness.py", "tests/test_bench_harness.py",
+  "tools/bench_individual.py", "tools/bench_wasm.py",
+  "tools/output_startup_size_audit.py", "tools/startup_bench.py",
+  "tools/bench_diff.py", "tools/bench_dashboard.py", "tools/bench_report.py",
+  "tests/test_bench_individual_tool.py", "tests/test_bench_wasm_runtime_build_flags.py",
+  "tests/test_bench_diff.py", "tests/test_bench_dashboard.py",
+  "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_startup_bench.py",
   "src/molt/cli/build_request.py", "src/molt/cli/build_request_resolution.py",
   "src/molt/cli/config_resolution.py", "src/molt/cli/entrypoint_parser.py",
   "src/molt/cli/build_output_layout.py", "src/molt/cli/run_tier.py",

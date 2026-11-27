@@ -19,10 +19,11 @@ import shutil
 import statistics
 import sys
 from collections.abc import Callable, Iterable
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -31,6 +32,19 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+
+from molt.python_environment_identity import PythonIdentityVerifier  # noqa: E402
+from molt.python_interpreter import (  # noqa: E402
+    PythonInterpreter,
+    benchmark_python_metadata,
+    resolve_benchmark_python,
+)
+from tools.bench_evidence import (  # noqa: E402
+    AdmittedBenchmarkWorkload,
+    admit_benchmark_workload,
+)
+from tools.bench_reporting import write_json  # noqa: E402
+from tools.bench_suites import application_run_args  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = ROOT / "tools"
@@ -50,6 +64,7 @@ from molt.wasm_artifact import (  # noqa: E402
 )
 
 DEFAULT_PROBE_SOURCE = 'print("hello world")\n'
+SCHEMA_VERSION: Literal["3.0"] = "3.0"
 DEFAULT_TARGETS = ("native", "wasm", "mlir")
 ALL_TARGETS = ("native", "wasm", "wasm-freestanding", "mlir")
 DEFAULT_BUILD_PROFILES = ("dev", "release")
@@ -131,13 +146,14 @@ def _run_guarded(
     *,
     env: ProcessEnvironment,
     timeout: float | None,
+    cwd: Path | None = None,
     prefix: str = "MOLT_BENCH",
     progress_label: str | None = None,
 ) -> harness_memory_guard.GuardedCompletedProcess:
     result = harness_memory_guard.guarded_completed_process(
         command,
         prefix=prefix,
-        cwd=ROOT,
+        cwd=ROOT if cwd is None else cwd,
         env=env,
         capture_output=True,
         timeout=timeout,
@@ -165,6 +181,44 @@ def _stats(samples: list[float]) -> dict[str, Any]:
         "max_s": round(max(samples), 6),
         "samples_s": [round(sample, 6) for sample in samples],
     }
+
+
+def completed_baseline_median(report: Mapping[str, object], key: str) -> float | None:
+    """Only a complete baseline can supply a displayed process time."""
+    from tools.perf_schema import benchmark_python_metadata_problems
+    from tools.bench_evidence import valid_positive_number
+
+    if key == "cpython" and report.get("schema_version") != SCHEMA_VERSION:
+        return None
+    config = report.get("config")
+    baselines = report.get("baselines")
+    if not isinstance(config, Mapping) or not isinstance(baselines, Mapping):
+        return None
+    count = config.get("samples")
+    baseline = baselines.get(key)
+    if type(count) is not int or count <= 0 or not isinstance(baseline, Mapping):
+        return None
+    if baseline.get("ok") is not True:
+        return None
+    if key == "cpython" and benchmark_python_metadata_problems(
+        baseline.get("cpython_oracle")
+    ):
+        return None
+    stats = baseline.get("stats")
+    if (
+        not isinstance(stats, Mapping)
+        or type(stats.get("count")) is not int
+        or stats["count"] != count
+    ):
+        return None
+    samples = stats.get("samples_s")
+    if (
+        not isinstance(samples, list)
+        or len(samples) != count
+        or any(valid_positive_number(value) is None for value in samples)
+    ):
+        return None
+    return valid_positive_number(stats.get("median_s"))
 
 
 def _ensure_default_probe(path: Path) -> None:
@@ -372,7 +426,9 @@ def _build_molt_artifact(
     env: ProcessEnvironment,
     timeout: float,
     extra_molt_args: list[str],
+    cwd: Path | None = None,
 ) -> BuildResult:
+    out_dir = out_dir.absolute()
     out_dir.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
@@ -414,6 +470,7 @@ def _build_molt_artifact(
     result = _run_guarded(
         command,
         env=env,
+        cwd=cwd,
         timeout=timeout,
         progress_label=f"output-audit build {case.id}",
     )
@@ -516,6 +573,8 @@ def _measure_artifact(
     label: str,
     runner_factory: RunnerFactory,
     executable_copy: bool = False,
+    cwd: Path | None = None,
+    run_args: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     elapsed: list[float] = []
@@ -536,11 +595,13 @@ def _measure_artifact(
         run_env = env
         try:
             command, env_overrides = runner_factory(run_path, env)
+            command.extend(run_args)
             if env_overrides:
                 run_env = env.updated(env_overrides)
             result = _run_guarded(
                 command,
                 env=run_env,
+                cwd=cwd,
                 timeout=timeout,
                 progress_label=progress_label,
             )
@@ -574,6 +635,8 @@ def _measure_executable(
     timeout: float,
     fresh_copies: bool,
     label: str,
+    cwd: Path | None = None,
+    run_args: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return _measure_artifact(
         binary,
@@ -584,6 +647,8 @@ def _measure_executable(
         label=label,
         runner_factory=_native_runner_factory(),
         executable_copy=True,
+        cwd=cwd,
+        run_args=run_args,
     )
 
 
@@ -617,6 +682,8 @@ def _measure_cold_first_sighting(
     timeout: float,
     label: str,
     runner_factory: RunnerFactory,
+    cwd: Path | None = None,
+    run_args: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Record the single TRUE-cold first run of a freshly built artifact.
 
@@ -632,10 +699,12 @@ def _measure_cold_first_sighting(
     ordinary builds, so the artifact is unprimed when this runs.
     """
     command, env_overrides = runner_factory(artifact, env)
+    command.extend(run_args)
     run_env = env.updated(env_overrides) if env_overrides else env
     result = _run_guarded(
         command,
         env=run_env,
+        cwd=cwd,
         timeout=timeout,
         progress_label=f"output-audit startup {label} cold-first",
     )
@@ -661,6 +730,8 @@ def _measure_case_startup(
     samples: int,
     env: ProcessEnvironment,
     timeout: float,
+    cwd: Path | None = None,
+    run_args: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if case.target == "native":
         native_runner = _native_runner_factory()
@@ -671,6 +742,8 @@ def _measure_case_startup(
             timeout=timeout,
             label="molt_cold_first_sighting",
             runner_factory=native_runner,
+            cwd=cwd,
+            run_args=run_args,
         )
         return {
             "runner": "native-exec",
@@ -682,6 +755,8 @@ def _measure_case_startup(
                 timeout=timeout,
                 fresh_copies=False,
                 label="molt_same_path",
+                cwd=cwd,
+                run_args=run_args,
             ),
             "page_cache_cold": _measure_executable(
                 artifact,
@@ -690,6 +765,8 @@ def _measure_case_startup(
                 timeout=timeout,
                 fresh_copies=True,
                 label="molt_page_cache_cold",
+                cwd=cwd,
+                run_args=run_args,
             ),
         }
     if case.target == "wasm":
@@ -712,6 +789,8 @@ def _measure_case_startup(
             timeout=timeout,
             label="molt_wasm_cold_first_sighting",
             runner_factory=runner,
+            cwd=cwd,
+            run_args=run_args,
         )
         return {
             "runner": "node",
@@ -725,6 +804,8 @@ def _measure_case_startup(
                 fresh_copies=False,
                 label="molt_wasm_same_path",
                 runner_factory=runner,
+                cwd=cwd,
+                run_args=run_args,
             ),
             "page_cache_cold": _measure_artifact(
                 artifact,
@@ -734,6 +815,8 @@ def _measure_case_startup(
                 fresh_copies=True,
                 label="molt_wasm_page_cache_cold",
                 runner_factory=runner,
+                cwd=cwd,
+                run_args=run_args,
             ),
         }
     if case.target == "wasm-freestanding":
@@ -750,24 +833,28 @@ def _measure_case_startup(
 
 
 def _measure_cpython(
-    script: Path,
+    workload: AdmittedBenchmarkWorkload,
     *,
+    baseline: PythonInterpreter,
     samples: int,
     env: ProcessEnvironment,
     timeout: float,
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     elapsed: list[float] = []
-    interpreter = harness_memory_guard.canonical_interpreter(sys.executable)
+    invocation = workload.reference_invocation(baseline.command, env)
+    command = list(invocation.command)
     for index in range(samples):
-        command = [interpreter, str(script)]
+        workload.verify()
         result = _run_guarded(
             command,
-            env=env,
+            env=invocation.environment,
+            cwd=invocation.cwd,
             timeout=timeout,
             prefix="MOLT_BENCH",
             progress_label=f"output-audit cpython run {index + 1}/{samples}",
         )
+        workload.verify()
         records.append(_sample_record(index=index, command=command, result=result))
         sample_elapsed = _execution_elapsed(result)
         if sample_elapsed is not None:
@@ -775,6 +862,7 @@ def _measure_cpython(
     return {
         "label": "cpython",
         "mode": "interpreter_process",
+        "cpython_oracle": benchmark_python_metadata(baseline),
         "ok": len(elapsed) == samples,
         "stats": _stats(elapsed),
         "records": records,
@@ -906,19 +994,23 @@ def _startup_ok(startup: dict[str, Any], *, require_runners: bool) -> bool:
 def _build_case_row(
     *,
     case: MatrixCase,
-    script: Path,
+    workload: AdmittedBenchmarkWorkload,
     out_dir: Path,
     env: ProcessEnvironment,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
+    workload.verify()
+    record = workload.record
     build = _build_molt_artifact(
         case=case,
-        script=script,
+        script=workload.execution_script,
         out_dir=out_dir,
-        env=env,
+        env=workload.compiler_environment(env),
+        cwd=workload.source_cwd,
         timeout=args.build_timeout_sec,
-        extra_molt_args=args.molt_arg,
+        extra_molt_args=record["molt_args"],
     )
+    workload.verify()
     build_record = {
         "command": build.command,
         "returncode": build.returncode,
@@ -953,7 +1045,10 @@ def _build_case_row(
         samples=args.samples,
         env=env,
         timeout=args.run_timeout_sec,
+        cwd=workload.source_cwd,
+        run_args=tuple(record["run_args"]),
     )
+    workload.verify()
     budgets = _budget_status(
         binary_bytes=artifact_bytes,
         fresh_start_stats=_startup_fresh_stats(startup),
@@ -1019,7 +1114,9 @@ def _summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_report(args: argparse.Namespace) -> dict[str, Any]:
+def build_report(
+    args: argparse.Namespace, *, workload_custody: ExitStack
+) -> tuple[dict[str, Any], AdmittedBenchmarkWorkload]:
     stamp = _utc_stamp()
     work_dir = args.work_dir or (scratch_dir(ROOT, "output_startup_size_audit") / stamp)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -1027,6 +1124,19 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     _ensure_default_probe(script)
 
     env = _canonical_env()
+    baseline = None
+    if not args.no_cpython_baseline:
+        with PythonIdentityVerifier() as verifier:
+            baseline = resolve_benchmark_python(env=env, cwd=ROOT, verifier=verifier)
+    workload = workload_custody.enter_context(
+        admit_benchmark_workload(
+            script,
+            project_root=ROOT,
+            run_args=application_run_args(script),
+            molt_args=args.molt_arg,
+            cpython_command=baseline.command if baseline is not None else None,
+        )
+    )
     targets = _csv_values(args.targets, default=DEFAULT_TARGETS, all_values=ALL_TARGETS)
     profiles = _csv_values(
         args.build_profiles,
@@ -1051,7 +1161,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         _progress("case_start", case=case.id)
         row = _build_case_row(
             case=case,
-            script=script,
+            workload=workload,
             out_dir=out_dir,
             env=env,
             args=args,
@@ -1069,9 +1179,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     )
     cpython = (
         None
-        if args.no_cpython_baseline
+        if baseline is None
         else _measure_cpython(
-            script,
+            workload,
+            baseline=baseline,
             samples=args.samples,
             env=env,
             timeout=args.run_timeout_sec,
@@ -1090,10 +1201,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
     _progress("baseline_done", baseline="c", measured=c_baseline is not None)
+    workload.verify()
+    probe_source = workload.execution_script.read_text(encoding="utf-8")
+    workload.verify()
     summary = _summary(rows)
     strict_ok = all(bool(row.get("ok")) for row in rows)
-    return {
-        "schema_version": "2.0",
+    report = {
+        "schema_version": SCHEMA_VERSION,
         "event": "output_startup_size_audit",
         "recorded_at": stamp,
         "ok": strict_ok,
@@ -1104,8 +1218,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "machine": platform.machine(),
             "python": sys.version.split()[0],
         },
-        "script": str(script),
-        "probe_source": script.read_text(encoding="utf-8"),
+        "script": str(workload.script),
+        "probe_source": probe_source,
+        "workload": workload.record,
         "config": {
             "targets": list(targets),
             "build_profiles": list(profiles),
@@ -1123,6 +1238,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "c": c_baseline,
         },
     }
+    return report, workload
 
 
 def _format_optional_seconds(value: object) -> str:
@@ -1183,18 +1299,12 @@ def format_report(report: dict[str, Any]) -> str:
                 f"  {label}: {size}; same={same}; "
                 f"page_cache_cold={page_cold}; cold_first_sighting={cold}"
             )
-    cpython = report.get("baselines", {}).get("cpython")
+    cpython = completed_baseline_median(report, "cpython")
     if cpython is not None:
-        lines.append(
-            "  CPython process median: "
-            f"{_format_optional_seconds(cpython['stats'].get('median_s'))}"
-        )
-    c_baseline = report.get("baselines", {}).get("c")
-    if c_baseline is not None and c_baseline.get("ok"):
-        lines.append(
-            "  C fresh-path median: "
-            f"{_format_optional_seconds(c_baseline['stats'].get('median_s'))}"
-        )
+        lines.append(f"  CPython process median: {_format_optional_seconds(cpython)}")
+    c_baseline = completed_baseline_median(report, "c")
+    if c_baseline is not None:
+        lines.append(f"  C fresh-path median: {_format_optional_seconds(c_baseline)}")
     failed = [
         f"{row['id']}={row['status']}" for row in report["cases"] if not row.get("ok")
     ]
@@ -1292,15 +1402,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     args.samples = max(1, args.samples)
-    report = build_report(args)
-    json_out = args.json_out or (
-        BENCH_RESULTS_ROOT
-        / f"output_startup_size_audit_{report.get('recorded_at', _utc_stamp())}.json"
-    )
-    json_out.parent.mkdir(parents=True, exist_ok=True)
-    json_out.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    with ExitStack() as workload_custody:
+        report, workload = build_report(args, workload_custody=workload_custody)
+        json_out = args.json_out or (
+            BENCH_RESULTS_ROOT
+            / f"output_startup_size_audit_{report.get('recorded_at', _utc_stamp())}.json"
+        )
+
+        def finish_workload_custody() -> None:
+            workload.verify()
+            workload_custody.close()
+
+        write_json(json_out, report, validate_inputs=finish_workload_custody)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

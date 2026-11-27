@@ -39,6 +39,8 @@ from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
+from molt.python_environment_identity import PythonIdentityVerifier  # noqa: E402
+from molt.python_interpreter import benchmark_python_metadata, resolve_benchmark_python  # noqa: E402
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -1167,6 +1169,7 @@ def bench_results(
     log: TextIO | None,
     keep_temp: bool,
     use_molt_build_cache: bool = True,
+    cpython_command: tuple[str, ...] | None = None,
 ) -> dict[str, dict]:
     data: dict[str, dict] = {}
     print(f"{'Benchmark':<30} | {'WASM (s)':<12} | {'WASM size':<10}")
@@ -1185,7 +1188,11 @@ def bench_results(
             workload.verify()
             expected_output = None
             if workload.source_cwd is not None:
-                reference = workload.reference_invocation(_python_cmd(), _base_env())
+                if cpython_command is None:
+                    raise ValueError(
+                        "sealed WASM benchmark requires an admitted CPython reference command"
+                    )
+                reference = workload.reference_invocation(cpython_command, _base_env())
                 _log_command(log, list(reference.command))
                 reference_result = _run_observation(
                     list(reference.command),
@@ -1546,6 +1553,13 @@ def _main(workload_custody: ExitStack) -> None:
                 if bench not in benchmarks:
                     benchmarks.append(bench)
     bench_suites.validate_benchmark_selection([Path(script) for script in benchmarks])
+    baseline = None
+    if args.applications:
+        with PythonIdentityVerifier() as verifier:
+            baseline = resolve_benchmark_python(
+                env=os.environ, cwd=REPO_ROOT, verifier=verifier
+            )
+    cpython_command = baseline.command if baseline is not None else None
     workloads = {
         script: workload_custody.enter_context(
             admit_benchmark_workload(
@@ -1553,6 +1567,7 @@ def _main(workload_custody: ExitStack) -> None:
                 project_root=REPO_ROOT,
                 run_args=bench_suites.application_run_args(script),
                 molt_args=molt_args_for_benchmark(script),
+                cpython_command=cpython_command,
             )
         )
         for script in benchmarks
@@ -1584,6 +1599,7 @@ def _main(workload_custody: ExitStack) -> None:
             log=log_file,
             keep_temp=keep_temp,
             use_molt_build_cache=not args.no_molt_build_cache,
+            cpython_command=cpython_command,
         )
     except RuntimeError as exc:
         print(f"WASM bench aborted: {exc}", file=sys.stderr)
@@ -1598,7 +1614,7 @@ def _main(workload_custody: ExitStack) -> None:
         load_avg = None
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": _git_rev(),
         "runner": args.runner,
@@ -1607,6 +1623,9 @@ def _main(workload_custody: ExitStack) -> None:
         "super_run": args.super,
         "samples": samples,
         "warmup": warmup,
+        "cpython_oracle": benchmark_python_metadata(baseline)
+        if baseline is not None
+        else None,
         "system": {
             "platform": platform.platform(),
             "python": platform.python_version(),

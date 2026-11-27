@@ -33,6 +33,8 @@ TOOLS_ROOT = Path(__file__).resolve().parent
 from tools import perf_authority  # noqa: E402
 from tools.bench_evidence import (  # noqa: E402
     comparable_metric_errors,
+    comparator_time,
+    comparison_metric_value,
     format_observed_build_profiles,
     native_molt_speedup,
     native_molt_time,
@@ -74,7 +76,7 @@ def speedup_value(entry: dict) -> float | None:
     # Fall back to computing from times through the single guarded authority
     # (SPEEDUP direction: cpython/molt, >1 = molt faster) so a None/0/NaN time
     # can never become a finite ratio.
-    cpython = entry.get("cpython_time_s")
+    cpython = comparator_time(entry, "cpython")
     molt = native_molt_time(entry)
     return perf_authority.signed_ratio_value(
         cpython, molt, direction=perf_authority.RatioDirection.SPEEDUP
@@ -83,15 +85,12 @@ def speedup_value(entry: dict) -> float | None:
 
 def ratio_value(entry: dict) -> float | None:
     """Extract the molt/cpython ratio (>1 means slower than CPython)."""
-    if not entry.get("molt_ok"):
-        return None
-    r = entry.get("molt_cpython_ratio")
-    if r is not None and r > 0:
-        return float(r)
+    if (ratio := comparison_metric_value(entry, "molt_cpython_ratio")) is not None:
+        return ratio
     # Fall back through the single guarded authority (MOLT_OVER_BASELINE
     # direction: molt/cpython, >1 = slower) so a None/0/NaN time can never
     # become a finite ratio.
-    cpython = entry.get("cpython_time_s")
+    cpython = comparator_time(entry, "cpython")
     molt = native_molt_time(entry)
     return perf_authority.signed_ratio_value(
         molt, cpython, direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE
@@ -130,7 +129,7 @@ def build_rows(results: dict) -> list[dict]:
     for name in sorted(results):
         entry = results[name]
         st = status_label(entry)
-        cpython_t = entry.get("cpython_time_s")
+        cpython_t = comparator_time(entry, "cpython")
         molt_t = native_molt_time(entry)
         sp = speedup_value(entry)
         rows.append(

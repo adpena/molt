@@ -298,25 +298,25 @@ measures absolute-vs-CPython-floor and gates on it.
 
 ```bash
 export MOLT_SESSION_ID=perfscore
-eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
+eval "$(uv run --no-project python tools/venv_exec.py python -B tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 
 # Self-test: 1 benchmark × 1 backend, proves the pipeline + schema.
-uv run python3 tools/perf_scoreboard.py --self-test
+uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py --self-test
 
 # Full baseline run (the gate): core suite × native+llvm × release-fast.
-uv run python3 tools/perf_scoreboard.py \
+uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py \
     --set core --backend native --backend llvm --profile release-fast \
     --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent
 
 # Diff a fresh run against the last stored scoreboard (newly-red / regressed).
-uv run python3 tools/perf_scoreboard.py --set core --backend native --baseline
+uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py --set core --backend native --baseline
 
 # Measure-only (do not fail CI on RED): add --no-gate.
 
 # WARM-HOT cycle attribution (#76): looped + symbolicated sample of the warm
 # hot path (NOT a speedup gate). One backend; writes hot_profile_<backend>_<rev>.json.
 # Exits 1 if ANY benchmark is REFUSED (launch still dominated, or not loopable).
-uv run python3 tools/perf_scoreboard.py --sample-hot-only \
+uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py --sample-hot-only \
     --backend native --inner-repeat 40 \
     --benchmark tests/benchmarks/bench_exception_heavy.py \
     --benchmark tests/benchmarks/bench_etl_orders.py
@@ -332,13 +332,14 @@ allocation exceeds the RSS cap, then investigate the cause. `--profile-build` (i
 retained. Treat that as a diagnostic build variant; do not assume its bytes or
 timing equal an ordinary build.
 
-- The **CPython oracle is a probed host-native CPython 3.12+ interpreter**,
-  resolved explicitly via `--cpython` or by OS-aware candidate discovery on
-  Windows, macOS, and Linux. The resolver rejects non-CPython, wrong-OS,
-  wrong-arch, wrong-pointer-width, too-old, broken launcher, and project
-  `.venv`/session interpreters before any benchmark cell runs. The accepted
-  executable, OS, normalized architecture, and pointer width are recorded in
-  `host.cpython_oracle`.
+- The **CPython oracle is an exact installed uv-managed base interpreter**,
+  selected from the canonical guest release or `--cpython` release/minor/path.
+  The shared resolver refuses system fallback, unavailable exact patches,
+  virtual environments and host ABI mismatches before measurement. It binds the
+  physical executable and launches `-I -S -B`; hashing is randomized. Declared
+  imports use admitted roots, not inherited Python startup settings. Schema 9
+  `host.cpython_oracle` retains the exact managed lookup, release, command and
+  process ABI. See [oracle admission](../BENCHMARKING.md#running-benchmarks).
 - `MOLT_SESSION_ID=perfscore` isolates the build cache (the constitution's
   concurrent-dev contract): the DX authority places its `CARGO_TARGET_DIR` at
   `<artifact root>/target/sessions/perfscore`, outside the checkout.
@@ -360,15 +361,15 @@ can still fail the command.
 
 ```bash
 # Add the PyPy + Codon comparator lanes (auto-detect, or pass an explicit path).
-uv run python3 tools/perf_scoreboard.py --set core --backend native \
+uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py --set core --backend native \
     --pypy --codon
 
 # Local debugging on a divergent tree (e.g. an in-flight scoreboard-tool commit):
 #   classifies real numbers, board stays authoritative=false, gate won't FAIL_STALE.
-uv run python3 tools/perf_scoreboard.py --set core --allow-nonauthoritative
+uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py --set core --allow-nonauthoritative
 
 # Make cold-floor warnings hard-fail too:
-uv run python3 tools/perf_scoreboard.py --set core --strict-cold
+uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py --set core --strict-cold
 ```
 
 ### Recoverability
@@ -424,11 +425,10 @@ historical; `--rebuild-summary` and `--merge` refuse to promote them without a
 fresh measurement.
  A
 `RED_STABLE` classification must also carry `measured_quiescent=true` plus a
-numeric repeat CI clearing below the CPython floor. When a board carries modern
-host metadata, `validate_board()` also verifies that `host.cpython_oracle` is
-CPython, matches the board OS/architecture/pointer width, matches
-`cpython_baseline`, and uses the resolved executable as `cmd[0]` rather than a
-launcher wrapper. `tools/perf_scoreboard.py` validates every CPython scoreboard
+numeric repeat CI clearing below the CPython floor. Every schema-9 floor board
+requires managed oracle metadata; deleting the whole block cannot downgrade
+validation. `validate_board()` verifies the exact release, isolated launch,
+managed lookup and host/guest ABI agreement. `tools/perf_scoreboard.py` validates every CPython scoreboard
 document before writing it, including checkpoint partials, rebuild-summary
 rewrites, merge outputs, and final run artifacts; a schema violation raises
 `ScoreboardSchemaError` and leaves the target artifact untouched.
@@ -491,7 +491,7 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 
 ```jsonc
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "kind": "cpython_floor_scoreboard",
   "generated_at": "<iso8601 utc>",
   "git_rev": "<full sha>",
@@ -510,17 +510,25 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
     "machine": "arm64",
     "arch": "aarch64",
     "pointer_bits": 64,
-    "python_runner": "3.12.x",        // interpreter the TOOL ran under
-    "cpython_baseline": "3.14.5",     // the accepted CPython oracle version
+    "python_runner": "3.12.16",      // independent tool harness (example)
+    "cpython_baseline": "3.15.2",    // observed exact guest reference (example)
+    "molt_target_python": "3.15",
     "cpython_oracle": {
-      "cmd": ["/opt/homebrew/bin/python3"],
-      "executable": "/opt/homebrew/bin/python3",
+      "cmd": ["/managed/cpython-3.15.2/bin/python3.15", "-I", "-S", "-B"],
+      "executable": "/managed/cpython-3.15.2/bin/python3.15",
       "implementation": "CPython",
-      "version": "3.14.5",
+      "version": "3.15.2",
       "sys_platform": "darwin",
       "machine": "arm64",
       "arch": "aarch64",
-      "pointer_bits": 64
+      "pointer_bits": 64,
+      "managed_origin": {
+        "kind": "uv-managed", "requested_release": "3.15.2",
+        "executable": "/managed/cpython-3.15.2/bin/python3.15",
+        "lookup_command": ["/tools/uv", "python", "find", "--managed-python", "--no-project", "--no-python-downloads", "--system", "--no-config", "3.15.2"]
+      },
+      "launch_policy": "isolated-randomized-hash"
+      // Measured boards also retain executable byte identities and loaded runtime closure.
     },
     "pypy": "3.10.14 (… PyPy 7.3.17)",// null if --pypy not used
     "codon": "codon 0.19.6"           // null if --codon not used
@@ -629,7 +637,7 @@ artifact, **not** a speedup board, and never feeds the release gate.
 
 ```jsonc
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "kind": "hot_only_cycle_profile",
   "git_rev": "<full sha>",
   "backend": "native", "target": "native", "profile": "release-fast",
@@ -637,7 +645,7 @@ artifact, **not** a speedup board, and never feeds the release gate.
   "symbolicated": true,
   "symbolicate_mechanism": "MOLT_KEEP_SYMBOLS=1 (link-strip + post-link strip skipped)",
   "launch_refusal_fraction": 0.40,   // launch >= this => REFUSE a hot-path claim
-  "cpython_baseline": "3.14.5",
+  "cpython_baseline": "3.15.2",
   "quiescence": { /* the #69 quiescence block, same shape */ },
   "methodology": "inner-repeat main() N times in one process; MOLT_KEEP_SYMBOLS=1; …",
   "cells": [ {

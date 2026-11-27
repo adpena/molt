@@ -6,9 +6,9 @@ from pathlib import Path
 
 from tools.bench_evidence import (
     comparable_run_metadata_errors,
+    comparator_time,
+    comparison_metric_value,
     format_observed_build_profiles,
-    metric_is_comparable,
-    valid_positive_number,
 )
 
 
@@ -41,7 +41,9 @@ def compare_baseline(
     baseline: dict,
     max_regression: float,
 ) -> list[str]:
-    metadata_errors = comparable_run_metadata_errors(current, baseline)
+    metadata_errors = comparable_run_metadata_errors(
+        current, baseline, metric="molt_cpython_ratio"
+    )
     if metadata_errors:
         return [
             "incompatible benchmark baseline: "
@@ -54,13 +56,8 @@ def compare_baseline(
     baseline_bench = baseline.get("benchmarks", {})
     for name, stats in current.get("benchmarks", {}).items():
         baseline_stats = baseline_bench.get(name, {})
-        if not (
-            metric_is_comparable(stats, "molt_cpython_ratio")
-            and metric_is_comparable(baseline_stats, "molt_cpython_ratio")
-        ):
-            continue
-        current_ratio = valid_positive_number(stats.get("molt_cpython_ratio"))
-        base_ratio = valid_positive_number(baseline_stats.get("molt_cpython_ratio"))
+        current_ratio = comparison_metric_value(stats, "molt_cpython_ratio")
+        base_ratio = comparison_metric_value(baseline_stats, "molt_cpython_ratio")
         if current_ratio is None or base_ratio is None:
             continue
         compared += 1
@@ -217,12 +214,14 @@ def render_bench_summary_markdown(
                 failure_text = str(failure.get("status", "failed"))
                 if detail:
                     failure_text = f"{failure_text} ({detail})"
+            cpython = comparator_time(raw_stats, "cpython")
+            ratio = comparison_metric_value(raw_stats, "molt_cpython_ratio")
             lines.append(
                 "| "
                 f"{name} | {raw_stats.get('molt_status', 'unknown')} | "
-                f"{format_summary_seconds(raw_stats.get('cpython_time_s'))} | "
+                f"{format_summary_seconds(cpython)} | "
                 f"{format_summary_seconds(raw_stats.get('molt_time_s'))} | "
-                f"{format_summary_seconds(raw_stats.get('molt_cpython_ratio'))} | "
+                f"{format_summary_seconds(ratio)} | "
                 f"{failure_text} |"
             )
 

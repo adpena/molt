@@ -3,10 +3,17 @@ from __future__ import annotations
 
 import json
 import statistics
-from typing import Any
+from typing import Any, Literal
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from molt.python_interpreter import (
+    BenchmarkPythonHost,
+    PythonInterpreter,
+    PythonInterpreterError,
+    benchmark_python_metadata,
+    format_python_command,
+)
 from tools import perf_causality
 from tools.bench_metadata import benchmark_reference_contract
 from tools.perf_schema import (
@@ -545,35 +552,49 @@ class Cell:
         self.verdict = VERDICT_GREEN
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CpythonOracle:
     """Host-native CPython interpreter chosen for the perf floor."""
 
-    cmd: tuple[str, ...]
-    executable: str
-    version: str
-    implementation: str
-    sys_platform: str
-    machine: str
-    arch: str
-    pointer_bits: int
-    base_executable: str | None = None
+    interpreter: PythonInterpreter
+
+    @property
+    def cmd(self) -> tuple[str, ...]:
+        return self.interpreter.command
+
+    @property
+    def version(self) -> str:
+        return self.interpreter.version
+
+    @property
+    def base_executable(self) -> str:
+        return self.interpreter.executable
+
+    @property
+    def _host(self) -> BenchmarkPythonHost:
+        origin = self.interpreter.managed_origin
+        if origin is None:
+            raise PythonInterpreterError("benchmark CPython has no managed origin")
+        return origin.host
+
+    @property
+    def sys_platform(self) -> str:
+        return self._host.sys_platform
+
+    @property
+    def arch(self) -> str:
+        return self._host.arch
+
+    @property
+    def pointer_bits(self) -> Literal[32, 64]:
+        return self._host.pointer_bits
 
     @property
     def display(self) -> str:
-        return " ".join(self.cmd)
+        return format_python_command(self.cmd)
 
-    def host_metadata(self) -> dict:
-        return {
-            "cmd": list(self.cmd),
-            "executable": self.executable,
-            "implementation": self.implementation,
-            "version": self.version,
-            "sys_platform": self.sys_platform,
-            "machine": self.machine,
-            "arch": self.arch,
-            "pointer_bits": self.pointer_bits,
-        }
+    def host_metadata(self) -> dict[str, object]:
+        return dict(benchmark_python_metadata(self.interpreter))
 
 
 def _safe_ratio(numerator: float | None, denominator: float | None) -> float | None:

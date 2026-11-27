@@ -54,7 +54,6 @@ SCHEMA_VERSION = 4
 KIND = "molt-release-exit"
 STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
-E2_SCOREBOARD_KIND = "cpython_floor_scoreboard"
 E4_KINDS = frozenset(
     {
         rcr.KIND_CANONICALIZATION_CONTRACT,

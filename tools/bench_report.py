@@ -7,6 +7,7 @@ import argparse
 import json
 import statistics
 import sys
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,10 @@ from tools.bench_evidence import (  # noqa: E402
     native_molt_time,
     valid_positive_number,
     wasm_molt_time,
+    workloads_comparable,
+)
+from tools.output_startup_size_audit import (  # noqa: E402
+    completed_baseline_median,
 )
 
 
@@ -139,6 +144,12 @@ def _collect_benchmarks(
     }
     names = sorted(set(native_bench) | set(wasm_bench))
     return names, native_bench, wasm_bench
+
+
+def _cross_runtime_workload_matches(
+    native: Mapping[str, object], wasm: Mapping[str, object]
+) -> bool:
+    return workloads_comparable(native.get("workload"), wasm.get("workload"))
 
 
 def _extract_date(value: str | None) -> str:
@@ -314,10 +325,8 @@ def _startup_audit_rows(startup_audit: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _startup_baseline_ms(startup_audit: dict[str, Any], key: str) -> float | None:
-    baselines = startup_audit.get("baselines", {})
-    if not isinstance(baselines, dict):
-        return None
-    return _startup_stat_ms(baselines.get(key))
+    seconds = completed_baseline_median(startup_audit, key)
+    return seconds * 1000.0 if seconds is not None else None
 
 
 def _format_bytes(value: int | None) -> str:
@@ -366,7 +375,10 @@ def _status_summary(
     wasm_ratios = []
     for name, entry in wasm_bench.items():
         wasm_time = _wasm_time_if_ok(entry)
-        cpython_time = native_bench.get(name, {}).get("cpython_time_s")
+        native_entry = native_bench.get(name, {})
+        if not _cross_runtime_workload_matches(native_entry, entry):
+            continue
+        cpython_time = comparator_time(native_entry, "cpython")
         ratio = _safe_div(wasm_time, cpython_time)
         if ratio is not None:
             wasm_ratios.append((name, ratio))
@@ -480,12 +492,15 @@ def _render_report_markdown(
         n_entry = native_bench.get(name, {})
         w_entry = wasm_bench.get(name, {})
         molt_time = native_molt_time(n_entry)
-        cpython_time = n_entry.get("cpython_time_s")
+        cpython_time = comparator_time(n_entry, "cpython")
         speedup = native_molt_speedup(n_entry)
         wasm_time = _wasm_time_if_ok(w_entry)
 
-        wasm_speedup = _safe_div(cpython_time, wasm_time)
-        wasm_native_ratio = _safe_div(wasm_time, molt_time)
+        matching_workload = _cross_runtime_workload_matches(n_entry, w_entry)
+        wasm_speedup = _safe_div(cpython_time, wasm_time) if matching_workload else None
+        wasm_native_ratio = (
+            _safe_div(wasm_time, molt_time) if matching_workload else None
+        )
         if wasm_speedup is not None:
             wasm_speedups.append(wasm_speedup)
         if (
@@ -626,7 +641,7 @@ def _render_report_markdown(
     for name in names:
         n_entry = native_bench.get(name, {})
         w_entry = wasm_bench.get(name, {})
-        cpython_time = n_entry.get("cpython_time_s")
+        cpython_time = comparator_time(n_entry, "cpython")
         pypy_time = comparator_time(n_entry, "pypy")
         codon_build = n_entry.get("codon_build_s")
         codon_time = comparator_time(n_entry, "codon")
@@ -639,8 +654,13 @@ def _render_report_markdown(
         molt_time = native_molt_time(n_entry)
         molt_size = n_entry.get("molt_size_kb")
         wasm_time = _wasm_time_if_ok(w_entry)
-        wasm_native_ratio = _safe_div(wasm_time, molt_time)
-        wasm_cpython_ratio = _safe_div(wasm_time, cpython_time)
+        matching_workload = _cross_runtime_workload_matches(n_entry, w_entry)
+        wasm_native_ratio = (
+            _safe_div(wasm_time, molt_time) if matching_workload else None
+        )
+        wasm_cpython_ratio = (
+            _safe_div(wasm_time, cpython_time) if matching_workload else None
+        )
         lines.append(
             "| "
             f"{name} | {'yes' if n_entry.get('molt_ok') else 'no'} | "

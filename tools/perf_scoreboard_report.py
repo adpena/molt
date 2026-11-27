@@ -19,7 +19,11 @@ from tools.perf_schema import (
     CLASS_RED_NOISY,
     CLASS_RED_STABLE,
     CLASS_TIE,
+    CPYTHON_FLOOR_SCOREBOARD,
+    SCHEMA_VERSION,
     PlannedCell,
+    benchmark_oracle_comparison_key,
+    benchmark_oracle_comparison_problem,
     flatten_cells,
     output_parity_passes,
     planned_cell_from_observation,
@@ -1048,6 +1052,19 @@ def diff_against_baseline(
     if problems := baseline_snapshot_problems(prior):
         return (["baseline refused: " + "; ".join(problems)], [])
 
+    if (
+        doc.get("kind") != CPYTHON_FLOOR_SCOREBOARD
+        or doc.get("schema_version") != SCHEMA_VERSION
+    ):
+        return (["current scoreboard refused: unsupported comparison schema"], [])
+
+    host = doc.get("host")
+    if problem := benchmark_oracle_comparison_problem(
+        host.get("cpython_oracle") if isinstance(host, Mapping) else None,
+        prior["host"]["cpython_oracle"],
+    ):
+        return ([f"baseline refused: {problem}"], [])
+
     prior_cells = {_cell_key(c): c for c in _flatten_cells(prior)}
     newly_red: list[str] = []
     regressed: list[str] = []
@@ -1107,10 +1124,19 @@ def baseline_snapshot_problems(doc: object) -> list[str]:
     return problems
 
 
-def _latest_baseline(exclude: Path | None = None) -> Path | None:
-    """Find the latest valid, complete snapshot, regardless of its filename."""
+def _latest_baseline(
+    exclude: Path | None = None,
+    *,
+    cpython_identity: Mapping[str, object] | None = None,
+) -> Path | None:
+    """Find the latest complete snapshot for the supplied oracle observations."""
     if not SCOREBOARD_DIR.exists():
         return None
+    oracle_key = None
+    if cpython_identity is not None:
+        oracle_key = benchmark_oracle_comparison_key(cpython_identity)
+        if oracle_key is None:
+            return None
     exclude_resolved = exclude.resolve() if exclude is not None else None
     candidates = [
         p
@@ -1118,22 +1144,31 @@ def _latest_baseline(exclude: Path | None = None) -> Path | None:
         if not p.name.endswith(".partial.json")
         and (exclude_resolved is None or p.resolve() != exclude_resolved)
     ]
-    admitted: list[tuple[dt.datetime, Path]] = []
+    latest: tuple[dt.datetime, Path] | None = None
     for candidate in candidates:
         try:
             doc = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             continue
-        if not baseline_snapshot_problems(doc):
-            try:
-                generated_at = dt.datetime.fromisoformat(doc["generated_at"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if generated_at.tzinfo is not None:
-                admitted.append((generated_at, candidate))
-    return (
-        max(admitted, key=lambda item: (item[0], item[1].name))[1] if admitted else None
-    )
+        if baseline_snapshot_problems(doc):
+            continue
+        try:
+            generated_at = dt.datetime.fromisoformat(doc["generated_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if generated_at.tzinfo is None:
+            continue
+        if latest is not None and (generated_at, candidate.name) <= (
+            latest[0],
+            latest[1].name,
+        ):
+            continue
+        if oracle_key is not None and oracle_key != benchmark_oracle_comparison_key(
+            doc["host"]["cpython_oracle"]
+        ):
+            continue
+        latest = (generated_at, candidate)
+    return latest[1] if latest is not None else None
 
 
 def _gate_exit_code(

@@ -13,8 +13,19 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Literal, TypedDict, cast
 
+from molt.native_target_shape import normalize_native_architecture
+from molt.python_interpreter import (
+    BENCHMARK_PYTHON_ARGUMENTS,
+    BENCHMARK_PYTHON_LAUNCH_POLICY,
+    MANAGED_PYTHON_LOOKUP_ARGS,
+    MANAGED_PYTHON_ORIGIN_KIND,
+    BenchmarkPythonMetadata,
+    ManagedPythonOriginRecord,
+    parse_python_interpreter_request,
+)
 from tools.compat.comparison import (
     COMPARISON_LAW_VERSION,
     ComparisonMode,
@@ -24,7 +35,11 @@ from tools.compat.comparison import (
     compare_outputs,
 )
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
+
+CPYTHON_FLOOR_SCOREBOARD: Literal["cpython_floor_scoreboard"] = (
+    "cpython_floor_scoreboard"
+)
 
 
 class ProcessTimingScope(TypedDict):
@@ -358,28 +373,11 @@ REQUIRED_HOST_FIELDS = frozenset(
         "platform",
         "python_runner",
         "cpython_baseline",
-    }
-)
-
-MODERN_HOST_FIELDS = frozenset(
-    {
         "machine",
         "arch",
         "pointer_bits",
         "cpython_oracle",
-    }
-)
-
-REQUIRED_CPYTHON_ORACLE_FIELDS = frozenset(
-    {
-        "cmd",
-        "executable",
-        "implementation",
-        "version",
-        "sys_platform",
-        "machine",
-        "arch",
-        "pointer_bits",
+        "molt_target_python",
     }
 )
 
@@ -1283,6 +1281,8 @@ def validate_board(doc: Mapping[str, Any]) -> list[str]:
             f"schema_version must be {SCHEMA_VERSION}, got "
             f"{doc.get('schema_version')!r}"
         )
+    if doc.get("kind") != CPYTHON_FLOOR_SCOREBOARD:
+        problems.append(f"kind must be {CPYTHON_FLOOR_SCOREBOARD!r}")
     pmiss = REQUIRED_PROVENANCE_FIELDS - set(_mapping(doc.get("provenance")))
     if pmiss:
         problems.append(f"provenance missing fields: {sorted(pmiss)}")
@@ -1384,112 +1384,220 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _validate_host_payload(host: Mapping[str, Any]) -> list[str]:
-    problems: list[str] = []
+def _validate_host_payload(host: Mapping[str, object]) -> list[str]:
     missing = REQUIRED_HOST_FIELDS - set(host)
     if missing:
-        problems.append(f"host missing fields: {sorted(missing)}")
-        return problems
+        return [f"host missing fields: {sorted(missing)}"]
 
-    for field in sorted(REQUIRED_HOST_FIELDS):
-        value = host.get(field)
-        if not isinstance(value, str) or not value:
-            problems.append(f"host field {field} must be a non-empty string")
-
-    has_modern_field = any(field in host for field in MODERN_HOST_FIELDS)
-    if not has_modern_field:
-        return problems
-
-    modern_missing = MODERN_HOST_FIELDS - set(host)
-    if modern_missing:
-        problems.append(f"host missing current oracle fields: {sorted(modern_missing)}")
-        return problems
-
-    machine = host.get("machine")
-    arch = host.get("arch")
-    pointer_bits = host.get("pointer_bits")
-    if not isinstance(machine, str) or not machine:
-        problems.append("host field machine must be a non-empty string")
-    if not isinstance(arch, str) or not arch:
-        problems.append("host field arch must be a non-empty string")
-    if not _is_pointer_width(pointer_bits):
-        problems.append(
-            f"host field pointer_bits must be 32 or 64, got {pointer_bits!r}"
+    problems = [
+        f"host field {field} must be a non-empty string"
+        for field in (
+            "platform",
+            "python_runner",
+            "cpython_baseline",
+            "molt_target_python",
         )
-
-    oracle = _mapping(host.get("cpython_oracle"))
-    if not oracle:
-        problems.append("host.cpython_oracle must be an object")
+        if not isinstance(host[field], str) or not host[field]
+    ]
+    oracle = host["cpython_oracle"]
+    oracle_problems = benchmark_python_metadata_problems(oracle)
+    if oracle_problems:
+        problems.extend(f"host.{problem}" for problem in oracle_problems)
         return problems
-    problems.extend(_validate_cpython_oracle(host, oracle))
+    oracle = cast(BenchmarkPythonMetadata, oracle)
+    for host_field, oracle_field, value in (
+        ("cpython_baseline", "version", oracle["version"]),
+        ("platform", "sys_platform", oracle["sys_platform"]),
+        ("machine", "machine", oracle["machine"]),
+        ("arch", "arch", oracle["arch"]),
+        ("pointer_bits", "pointer_bits", oracle["pointer_bits"]),
+    ):
+        if type(host[host_field]) is not type(value) or host[host_field] != value:
+            problems.append(
+                f"host.cpython_oracle.{oracle_field} must match host.{host_field}"
+            )
+    if host["molt_target_python"] != oracle["version"].rsplit(".", 1)[0]:
+        problems.append("host.molt_target_python does not match the oracle release")
     return problems
 
 
-def _validate_cpython_oracle(
-    host: Mapping[str, Any], oracle: Mapping[str, Any]
-) -> list[str]:
+def _recorded_absolute_path(value: object, sys_platform: object) -> bool:
+    if not isinstance(value, str) or not value or "\0" in value:
+        return False
+    path = PureWindowsPath(value) if sys_platform == "win32" else PurePosixPath(value)
+    return path.is_absolute() and bool(path.name) and ".." not in path.parts
+
+
+def benchmark_python_metadata_problems(record: object) -> list[str]:
+    """Validate the retained managed launch projection without locating a Python."""
+    if not isinstance(record, Mapping):
+        return ["cpython_oracle must be an object"]
+    oracle: Mapping[object, object] = record
     problems: list[str] = []
-    missing = REQUIRED_CPYTHON_ORACLE_FIELDS - set(oracle)
+    missing = BenchmarkPythonMetadata.__required_keys__ - set(oracle)
     if missing:
-        problems.append(f"host.cpython_oracle missing fields: {sorted(missing)}")
-        return problems
+        return [f"cpython_oracle missing fields: {sorted(missing)}"]
 
-    for field in (
-        "executable",
-        "implementation",
-        "version",
-        "sys_platform",
-        "machine",
-        "arch",
-    ):
+    for field in ("sys_platform", "machine", "arch"):
         value = oracle.get(field)
-        if not isinstance(value, str) or not value:
-            problems.append(f"host.cpython_oracle.{field} must be a non-empty string")
-
-    cmd = oracle.get("cmd")
-    if (
-        not isinstance(cmd, list)
-        or not cmd
-        or any(not isinstance(part, str) or not part for part in cmd)
-    ):
-        problems.append("host.cpython_oracle.cmd must be a non-empty string list")
-    elif cmd[0] != oracle.get("executable"):
-        problems.append(
-            "host.cpython_oracle.cmd[0] must be the resolved executable, "
-            f"got {cmd[0]!r} vs {oracle.get('executable')!r}"
-        )
-
-    if oracle.get("implementation") != "CPython":
-        problems.append(
-            "host.cpython_oracle.implementation must be 'CPython', "
-            f"got {oracle.get('implementation')!r}"
-        )
-    if oracle.get("version") != host.get("cpython_baseline"):
-        problems.append(
-            "host.cpython_oracle.version must match host.cpython_baseline, "
-            f"got {oracle.get('version')!r} vs {host.get('cpython_baseline')!r}"
-        )
-    if oracle.get("sys_platform") != host.get("platform"):
-        problems.append(
-            "host.cpython_oracle.sys_platform must match host.platform, "
-            f"got {oracle.get('sys_platform')!r} vs {host.get('platform')!r}"
-        )
-    if oracle.get("arch") != host.get("arch"):
-        problems.append(
-            "host.cpython_oracle.arch must match host.arch, "
-            f"got {oracle.get('arch')!r} vs {host.get('arch')!r}"
-        )
-    if oracle.get("pointer_bits") != host.get("pointer_bits"):
-        problems.append(
-            "host.cpython_oracle.pointer_bits must match host.pointer_bits, "
-            f"got {oracle.get('pointer_bits')!r} vs {host.get('pointer_bits')!r}"
-        )
+        if not isinstance(value, str) or not value or value != value.strip():
+            problems.append(f"cpython_oracle.{field} must be a non-empty string")
+    machine = oracle.get("machine")
+    if isinstance(machine, str) and machine:
+        try:
+            arch = normalize_native_architecture(machine)
+        except RuntimeError:
+            problems.append(
+                "cpython_oracle.machine must identify a native architecture"
+            )
+        else:
+            if oracle.get("arch") != arch:
+                problems.append("cpython_oracle.arch must match its machine")
     if not _is_pointer_width(oracle.get("pointer_bits")):
+        problems.append("cpython_oracle.pointer_bits must be 32 or 64")
+    if oracle.get("implementation") != "CPython":
+        problems.append("cpython_oracle.implementation must be 'CPython'")
+
+    executable = oracle.get("executable")
+    sys_platform = oracle.get("sys_platform")
+    if not _recorded_absolute_path(executable, sys_platform):
+        problems.append("cpython_oracle.executable must be an absolute executable path")
+    command = oracle.get("cmd")
+    if not isinstance(command, list) or not command or command[0] != executable:
+        problems.append("cpython_oracle.cmd[0] must be the resolved executable")
+    elif tuple(command[1:]) != BENCHMARK_PYTHON_ARGUMENTS:
+        problems.append("cpython_oracle.cmd must use the isolated launch arguments")
+    if oracle.get("launch_policy") != BENCHMARK_PYTHON_LAUNCH_POLICY:
         problems.append(
-            "host.cpython_oracle.pointer_bits must be 32 or 64, "
-            f"got {oracle.get('pointer_bits')!r}"
+            "cpython_oracle.launch_policy must declare isolated randomized hashing"
+        )
+
+    version = oracle.get("version")
+    try:
+        if not isinstance(version, str):
+            raise ValueError("version must be a string")
+        request = parse_python_interpreter_request(version)
+        if request.micro is None:
+            raise ValueError("patch release is required")
+    except ValueError:
+        problems.append("cpython_oracle.version must be an exact CPython release")
+
+    origin = oracle.get("managed_origin")
+    if (
+        not isinstance(origin, Mapping)
+        or set(origin) != ManagedPythonOriginRecord.__required_keys__
+    ):
+        problems.append(
+            "cpython_oracle.managed_origin must record the managed lookup and its selected release and executable"
+        )
+        return problems
+    if origin["kind"] != MANAGED_PYTHON_ORIGIN_KIND:
+        problems.append("cpython_oracle.managed_origin.kind must be 'uv-managed'")
+    if origin["requested_release"] != version:
+        problems.append(
+            "cpython_oracle.managed_origin.requested_release must match the realized release"
+        )
+    if origin["executable"] != executable:
+        problems.append(
+            "cpython_oracle.managed_origin.executable must match the resolved executable"
+        )
+    lookup = origin["lookup_command"]
+    if (
+        not isinstance(lookup, list)
+        or not lookup
+        or not _recorded_absolute_path(lookup[0], sys_platform)
+        or tuple(lookup[1:]) != (*MANAGED_PYTHON_LOOKUP_ARGS, version)
+    ):
+        problems.append(
+            "cpython_oracle.managed_origin.lookup_command must use the exact uv managed-only lookup"
         )
     return problems
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkOracleComparisonKey:
+    release: str
+    sys_platform: str
+    arch: str
+    pointer_bits: Literal[32, 64]
+    launch_policy: Literal["isolated-randomized-hash"]
+    executable_size: int
+    executable_sha256: str
+    runtime_closure_sha256: str
+
+
+def benchmark_oracle_comparison_key(
+    record: object,
+) -> BenchmarkOracleComparisonKey | None:
+    """Bind a retained oracle to the executable and runtime bytes it records."""
+    from molt.python_runtime_identity import (
+        runtime_explicit_file_content,
+        validate_python_runtime_identity,
+    )
+    from tools.perf_scoreboard_build_profiles import canonical_content_identity
+
+    if benchmark_python_metadata_problems(record):
+        return None
+    fields = cast(Mapping[str, object], record)
+    oracle = cast(BenchmarkPythonMetadata, record)
+    image_fields = frozenset({"entrypoint", "content_filename", "size", "sha256"})
+    command_image = fields.get("command_executable_identity")
+    base_image = fields.get("base_executable_identity")
+    if command_image != base_image or not all(
+        canonical_content_identity(image, image_fields)
+        for image in (command_image, base_image)
+    ):
+        return None
+    command_image = cast(Mapping[str, object], command_image)
+    try:
+        runtime = validate_python_runtime_identity(fields.get("runtime_closure"))
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return None
+    runtime_platform = {"darwin": "macos", "win32": "windows"}.get(
+        oracle["sys_platform"], oracle["sys_platform"]
+    )
+    if (
+        runtime["version"] != oracle["version"]
+        or runtime["operating_system"] != runtime_platform
+        or normalize_native_architecture(str(runtime["architecture"])) != oracle["arch"]
+        or runtime["pointer_bits"] != oracle["pointer_bits"]
+    ):
+        return None
+    runtime_base = runtime_explicit_file_content(runtime, "base-executable")
+    if runtime_base is None:
+        return None
+    filename = cast(str, runtime_base["filename"])
+    if oracle["sys_platform"] == "win32":
+        filename = filename.casefold()
+    if command_image["content_filename"] != filename or any(
+        command_image[field] != runtime_base[field] for field in ("size", "sha256")
+    ):
+        return None
+    return BenchmarkOracleComparisonKey(
+        release=oracle["version"],
+        sys_platform=oracle["sys_platform"],
+        arch=oracle["arch"],
+        pointer_bits=oracle["pointer_bits"],
+        launch_policy=oracle["launch_policy"],
+        executable_size=cast(int, command_image["size"]),
+        executable_sha256=cast(str, command_image["sha256"]),
+        runtime_closure_sha256=cast(str, runtime["runtime_closure_sha256"]),
+    )
+
+
+def benchmark_oracle_comparison_problem(
+    current: object, baseline: object
+) -> str | None:
+    """Explain why two retained CPython denominators cannot be compared."""
+    current_key = benchmark_oracle_comparison_key(current)
+    if current_key is None:
+        return "current CPython oracle lacks valid executable and runtime observations"
+    baseline_key = benchmark_oracle_comparison_key(baseline)
+    if baseline_key is None:
+        return "baseline CPython oracle lacks valid executable and runtime observations"
+    if current_key != baseline_key:
+        return "CPython oracle observations differ"
+    return None
 
 
 def _validate_measured_run_cell(cell: Mapping[str, Any], verdict: str) -> list[str]:

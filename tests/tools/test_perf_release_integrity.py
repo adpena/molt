@@ -1,6 +1,7 @@
 """Adversarial checks for canonical evidence acceptance (no benchmark builds)."""
 
 from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_metadata,
     synthetic_workload,
     measure_admitted_cell,
 )
@@ -120,7 +121,9 @@ def test_merge_rejects_provenance_laundering_and_overwrite(tmp_path, mutation):
     if mutation == "revision":
         b["git_rev"] = "c" * 40
     elif mutation == "host":
-        b["host"]["cpython_baseline"] = "3.13"
+        oracle = benchmark_oracle_metadata(version="3.14.1")
+        b["host"]["cpython_baseline"] = oracle["version"]
+        b["host"]["cpython_oracle"] = {**oracle, "molt_target_python": "3.14"}
     elif mutation == "method":
         b["methodology"]["samples_per_phase"] = 6
     elif mutation == "dirty":
@@ -799,9 +802,12 @@ def test_release_receiver_requires_engine_facts_without_relaxing_other_holds():
     )
 
 
-def test_schema_four_is_never_promoted_by_merge(tmp_path):
+@pytest.mark.parametrize("historical_schema", [4, 8])
+def test_historical_schema_is_never_promoted_by_merge(
+    tmp_path: Path, historical_schema: int
+) -> None:
     doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
-    doc["schema_version"] = 4
+    doc["schema_version"] = historical_schema
     rc, merged = _merge(tmp_path, [doc])
     assert rc == 3 and merged is None
 

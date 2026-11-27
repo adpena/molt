@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
+
+import pytest
+
+from molt import file_publication
 from molt.node_runtime import NodeRuntime
 from molt.process_environment import ProcessEnvironment
+from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_interpreter,
+    sealed_workload,
+)
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tools import output_startup_size_audit
 
@@ -512,7 +523,11 @@ def test_main_writes_json_report_without_running_real_build(
 
     monkeypatch.setattr(audit, "_build_molt_artifact", fake_build)
     monkeypatch.setattr(audit, "_measure_case_startup", fake_startup)
-    monkeypatch.setattr(audit, "_measure_cpython", lambda *a, **k: None)
+
+    def unexpected_python(**kwargs: object) -> None:
+        raise AssertionError("disabled CPython baseline resolved an interpreter")
+
+    monkeypatch.setattr(audit, "resolve_benchmark_python", unexpected_python)
     monkeypatch.setattr(audit, "_measure_c_baseline", lambda *a, **k: None)
 
     rc = audit.main(
@@ -552,11 +567,207 @@ def test_main_writes_json_report_without_running_real_build(
         "output_startup_size_audit.baseline_done",
     ]
     assert payload["event"] == "output_startup_size_audit"
+    assert payload["workload"]["entry"] == str(script)
+    assert payload["workload"]["entry_source"] == "probe.py"
+    assert payload["probe_source"] == "print(1)\n"
     assert payload["summary"]["cases"] == 1
     assert payload["cases"][0]["artifact"]["bytes"] == len(b"molt-binary")
     startup = payload["cases"][0]["startup"]
     assert startup["page_cache_cold"]["mode"] == "page_cache_cold_copy"
     assert startup["cold_first_sighting"]["mode"] == "cold_first_sighting"
+
+
+@pytest.mark.parametrize("stage", ["build", "publication", "closure"])
+def test_source_drift_refuses_output_audit_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: Literal["build", "publication", "closure"],
+) -> None:
+    audit = output_startup_size_audit
+    script = tmp_path / "probe.py"
+    script.write_text("from helper import value\nprint(value)\n", encoding="utf-8")
+    helper = tmp_path / "helper.py"
+    helper.write_text("value = 1\n", encoding="utf-8")
+    artifact = tmp_path / "probe.mlir"
+    artifact.write_bytes(b"compiled fixture")
+    json_out = tmp_path / "audit.json"
+    json_out.write_text('{"previous": true}\n', encoding="utf-8")
+    baseline_calls: list[audit.AdmittedBenchmarkWorkload] = []
+
+    def build(**kwargs: object) -> audit.BuildResult:
+        case = kwargs["case"]
+        assert isinstance(case, audit.MatrixCase)
+        assert kwargs["script"] == script
+        if stage == "build":
+            helper.write_text("value = 1000\n", encoding="utf-8")
+        return audit.BuildResult(
+            case, ["molt", "build", str(script)], artifact, {}, 0, 0.1, "", "", None
+        )
+
+    def measure_cpython(
+        workload: audit.AdmittedBenchmarkWorkload, **kwargs: object
+    ) -> dict[str, object]:
+        baseline_calls.append(workload)
+        assert workload.execution_script == script
+        assert {item["path"] for item in workload.record["sources"]} == {
+            "probe.py",
+            "helper.py",
+        }
+        return {"ok": True}
+
+    monkeypatch.setattr(audit, "_build_molt_artifact", build)
+    monkeypatch.setattr(audit, "_measure_cpython", measure_cpython)
+    monkeypatch.setattr(
+        audit, "resolve_benchmark_python", lambda **_: benchmark_oracle_interpreter()
+    )
+    atomic_write = file_publication.atomic_write_bytes
+
+    def change_at_replace(
+        path: Path,
+        data: bytes,
+        *,
+        replace: Callable[[Path, Path], None] | None = None,
+        **kwargs: object,
+    ) -> None:
+        if path != json_out:
+            atomic_write(path, data, replace=replace, **kwargs)
+            return
+        assert replace is not None
+
+        def mutate(staged: Path, destination: Path) -> None:
+            helper.write_text("value = 1000\n", encoding="utf-8")
+            replace(staged, destination)
+
+        atomic_write(path, data, replace=mutate, **kwargs)
+
+    if stage == "publication":
+        monkeypatch.setattr(file_publication, "atomic_write_bytes", change_at_replace)
+    if stage == "closure":
+        admit_workload = audit.admit_benchmark_workload
+
+        @contextmanager
+        def change_at_close(
+            script: Path,
+            *,
+            project_root: Path,
+            run_args: Sequence[str],
+            molt_args: Sequence[str],
+            cpython_command: Sequence[str] | None,
+        ) -> Iterator[audit.AdmittedBenchmarkWorkload]:
+            with admit_workload(
+                script,
+                project_root=project_root,
+                run_args=run_args,
+                molt_args=molt_args,
+                cpython_command=cpython_command,
+            ) as workload:
+                yield workload
+                helper.write_text("value = 1000\n", encoding="utf-8")
+
+        monkeypatch.setattr(audit, "admit_benchmark_workload", change_at_close)
+
+    with pytest.raises(ValueError, match="benchmark source.*changed"):
+        audit.main(
+            [
+                "--script",
+                str(script),
+                "--targets",
+                "mlir",
+                "--samples",
+                "1",
+                "--build-profile",
+                "dev",
+                "--work-dir",
+                str(tmp_path / "work"),
+                "--json-out",
+                str(json_out),
+                "--no-c-baseline",
+                "--json",
+            ]
+        )
+
+    assert len(baseline_calls) == (0 if stage == "build" else 1)
+    assert json_out.read_text(encoding="utf-8") == '{"previous": true}\n'
+
+
+def test_startup_matrix_uses_sealed_execution_source_and_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = output_startup_size_audit
+    artifact = tmp_path / "program"
+    artifact.write_bytes(b"compiled fixture")
+    calls: list[tuple[list[str], Path]] = []
+    baseline = benchmark_oracle_interpreter()
+    with sealed_workload(tmp_path, molt_args=["--profile", "dev"]) as workload:
+        record = workload.record
+        root = workload.execution_root
+        roots = str(root / "packages")
+
+        def build(**kwargs: object) -> audit.BuildResult:
+            case = kwargs["case"]
+            assert isinstance(case, audit.MatrixCase)
+            assert kwargs["script"] == workload.execution_script
+            assert kwargs["cwd"] == root
+            assert kwargs["extra_molt_args"] == record["molt_args"]
+            env = kwargs["env"]
+            assert isinstance(env, ProcessEnvironment)
+            assert env["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
+            assert env["MOLT_MODULE_ROOTS"] == roots
+            return audit.BuildResult(
+                case,
+                ["molt", "build", str(workload.execution_script)],
+                artifact,
+                {},
+                0,
+                0.1,
+                "",
+                "",
+                None,
+            )
+
+        def launch(
+            command: list[str], *, cwd: Path, **kwargs: object
+        ) -> SimpleNamespace:
+            calls.append((command, cwd))
+            return SimpleNamespace(
+                returncode=0,
+                stdout="sealed:7\n",
+                stderr="",
+                child_elapsed_s=0.02,
+            )
+
+        monkeypatch.setattr(audit, "_build_molt_artifact", build)
+        monkeypatch.setattr(audit, "_run_guarded", launch)
+        args = audit._parse_args(["--samples", "1"])
+        env = ProcessEnvironment({})
+        row = audit._build_case_row(
+            case=audit.MatrixCase("native", "release", "auto"),
+            workload=workload,
+            out_dir=tmp_path / "out",
+            env=env,
+            args=args,
+        )
+        reference = audit._measure_cpython(
+            workload,
+            baseline=baseline,
+            samples=1,
+            env=env,
+            timeout=1,
+        )
+
+    assert row["status"] == "ok"
+    assert reference["ok"] is True
+    assert len(calls) == 4
+    assert all(cwd == root for _, cwd in calls)
+    assert all(command[1:] == record["run_args"] for command, _ in calls[:3])
+    cpython_command, _ = calls[-1]
+    assert cpython_command[:5] == [*baseline.command, "-c"]
+    assert cpython_command[6:] == [
+        str(workload.execution_script),
+        "1",
+        roots,
+        *record["run_args"],
+    ]
 
 
 def test_startup_samples_exclude_descendant_cleanup_wall_time():
@@ -619,7 +830,6 @@ def test_successful_startup_rejects_invalid_child_clock():
 
 
 def test_serial_startup_samples_propagate_operator_signal_only(monkeypatch, tmp_path):
-    import pytest
     import signal
 
     calls = []
@@ -640,22 +850,36 @@ def test_serial_startup_samples_propagate_operator_signal_only(monkeypatch, tmp_
     monkeypatch.setattr(
         audit.harness_memory_guard, "guarded_completed_process", guarded
     )
-    result = audit._measure_cpython(
-        tmp_path / "probe.py",
-        samples=2,
-        env=ProcessEnvironment({}),
-        timeout=1,
-    )
-    assert len(calls) == 2 and not result["ok"]
-    assert [r["returncode"] for r in result["records"]] == [143, 143]
-    calls.clear()
-    terminal.guard_signal = signal.SIGTERM
-    with pytest.raises(SystemExit) as caught:
-        audit._measure_cpython(
-            tmp_path / "probe.py",
+    script = tmp_path / "probe.py"
+    script.write_text("print('probe')\n", encoding="utf-8")
+    baseline = benchmark_oracle_interpreter()
+    with audit.admit_benchmark_workload(
+        script,
+        project_root=tmp_path,
+        run_args=(),
+        molt_args=(),
+        cpython_command=baseline.command,
+    ) as workload:
+        result = audit._measure_cpython(
+            workload,
+            baseline=baseline,
             samples=2,
             env=ProcessEnvironment({}),
             timeout=1,
         )
-    assert caught.value.guarded_result is terminal
-    assert len(calls) == 1
+        assert len(calls) == 2 and not result["ok"]
+        assert calls == [[*baseline.command, str(script)]] * 2
+        assert result["cpython_oracle"]["cmd"] == list(baseline.command)
+        assert [r["returncode"] for r in result["records"]] == [143, 143]
+        calls.clear()
+        terminal.guard_signal = signal.SIGTERM
+        with pytest.raises(SystemExit) as caught:
+            audit._measure_cpython(
+                workload,
+                baseline=baseline,
+                samples=2,
+                env=ProcessEnvironment({}),
+                timeout=1,
+            )
+        assert caught.value.guarded_result is terminal
+        assert len(calls) == 1

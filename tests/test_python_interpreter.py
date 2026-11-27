@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -457,6 +459,259 @@ def test_explicit_host_patch_mismatch_refuses_after_only_identity_probe(
     assert len(calls) == 1
 
 
+def _benchmark_executable(path: Path) -> Path:
+    path.write_bytes(b"deterministic resolver fixture")
+    path.chmod(0o755)
+    return path
+
+
+def _benchmark_identity_payload(executable: Path, release: str) -> dict[str, object]:
+    host = python_interpreter.benchmark_python_host()
+    return {
+        "implementation": "CPython",
+        "version": release,
+        "executable": str(executable),
+        "base_executable": str(executable),
+        "prefix": str(executable.parent),
+        "base_prefix": str(executable.parent),
+        "sys_platform": host.sys_platform,
+        "machine": host.machine,
+        "pointer_bits": host.pointer_bits,
+    }
+
+
+@pytest.mark.parametrize(
+    "override,release",
+    [(None, "3.15.2"), ("3.15", "3.15.2"), ("3.12.16", "3.12.16")],
+)
+def test_benchmark_oracle_records_exact_managed_lookup(
+    verifier: PythonIdentityVerifier,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    override: str | None,
+    release: str,
+) -> None:
+    uv = tmp_path / "uv"
+    managed = _benchmark_executable(tmp_path / "managed-python")
+    calls: list[tuple[str, ...]] = []
+
+    def find(name: str, **kwargs: object) -> Path:
+        assert name == "uv"
+        return uv
+
+    def run(command: Sequence[str], **kwargs: object) -> tuple[str, str, int]:
+        calls.append(tuple(command))
+        if command[0] == str(uv):
+            return str(managed) + "\n", "", 0
+        assert tuple(command[:-1]) == (
+            str(managed),
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={verifier.prefix}",
+            "-S",
+            "-c",
+        )
+        return json.dumps(_benchmark_identity_payload(managed, release)), "", 0
+
+    monkeypatch.setattr(toolchain_identity, "find_executable", find)
+    monkeypatch.setattr(python_interpreter, "_run_command", run)
+    interpreter = python_interpreter.resolve_benchmark_python(
+        override=override, cwd=tmp_path, verifier=verifier
+    )
+
+    expected_lookup = [
+        str(uv),
+        "python",
+        "find",
+        "--managed-python",
+        "--no-project",
+        "--no-python-downloads",
+        "--system",
+        "--no-config",
+        release,
+    ]
+    assert calls[0] == tuple(expected_lookup)
+    assert len(calls) == 2
+    assert interpreter.command == (str(managed), "-I", "-S", "-B")
+    metadata = python_interpreter.benchmark_python_metadata(interpreter)
+    assert metadata["version"] == release
+    assert metadata["launch_policy"] == "isolated-randomized-hash"
+    assert metadata["managed_origin"] == {
+        "kind": "uv-managed",
+        "requested_release": release,
+        "executable": str(managed),
+        "lookup_command": expected_lookup,
+    }
+
+
+@pytest.mark.parametrize(
+    "defect,message",
+    [
+        ("missing", "no installed uv-managed CPython 3.12.16"),
+        ("different_patch", "reports CPython 3.12.15, expected 3.12.16"),
+        ("foreign_path", "is not the uv-managed CPython 3.12.16"),
+        ("foreign_arch", "reports .*"),
+        ("foreign_pointer_width", "reports .*"),
+        ("replaced_image", "changed since identity capture"),
+        ("venv_report", "virtual environment"),
+    ],
+)
+def test_benchmark_oracle_fails_closed_for_mismatched_discovery(
+    verifier: PythonIdentityVerifier,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    defect: str,
+    message: str,
+) -> None:
+    uv = tmp_path / "uv"
+    managed = _benchmark_executable(tmp_path / "managed-python")
+    foreign = _benchmark_executable(tmp_path / "python3.12")
+    calls: list[str] = []
+
+    def find(name: str, **kwargs: object) -> Path:
+        assert name == "uv"
+        return uv
+
+    def run(command: Sequence[str], **kwargs: object) -> tuple[str, str, int]:
+        calls.append(command[0])
+        if command[0] == str(uv):
+            if defect == "missing":
+                return "", "exact patch unavailable", 1
+            if defect == "replaced_image":
+                _benchmark_executable(tmp_path / "replacement").replace(managed)
+            return str(managed) + "\n", "", 0
+        executable = Path(command[0])
+        release = "3.12.15" if defect == "different_patch" else "3.12.16"
+        payload = _benchmark_identity_payload(executable, release)
+        if defect == "foreign_arch":
+            host = python_interpreter.benchmark_python_host()
+            payload["machine"] = "arm64" if host.arch == "x86_64" else "amd64"
+        if defect == "foreign_pointer_width":
+            payload["pointer_bits"] = 32 if payload["pointer_bits"] == 64 else 64
+        if defect == "venv_report":
+            payload["prefix"] = str(tmp_path / "observed-virtual-environment")
+        return json.dumps(payload), "", 0
+
+    monkeypatch.setattr(toolchain_identity, "find_executable", find)
+    monkeypatch.setattr(python_interpreter, "_run_command", run)
+    override = {
+        "foreign_path": str(foreign),
+        "replaced_image": str(managed),
+    }.get(defect, "3.12.16")
+    with pytest.raises(python_interpreter.PythonInterpreterError, match=message):
+        python_interpreter.resolve_benchmark_python(
+            override=override,
+            cwd=tmp_path,
+            env={**os.environ, "PATH": str(tmp_path)},
+            verifier=verifier,
+        )
+
+    if defect == "missing":
+        assert calls == [str(uv)]
+    elif defect == "foreign_path":
+        assert calls == [str(foreign), str(uv)]
+    elif defect == "replaced_image":
+        assert calls == [str(managed), str(uv)]
+    else:
+        assert calls == [str(uv), str(managed)]
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="requires POSIX interpreter symlink semantics"
+)
+@pytest.mark.parametrize("adjacent", [False, True])
+def test_benchmark_oracle_rejects_custom_venv_before_startup(
+    verifier: PythonIdentityVerifier,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    adjacent: bool,
+) -> None:
+    base = Path(sys._base_executable).resolve(strict=True)
+    venv = tmp_path / "custom-image"
+    entry = venv / "bin" / "python"
+    entry.parent.mkdir(parents=True)
+    entry.symlink_to(base)
+    config = (entry.parent if adjacent else venv) / "pyvenv.cfg"
+    config.write_text(
+        f"home = {base.parent}\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
+    )
+
+    def unexpected_launch(*args: object, **kwargs: object) -> None:
+        pytest.fail("a lexical virtual environment reached interpreter startup")
+
+    monkeypatch.setattr(python_interpreter, "_run_command", unexpected_launch)
+    with pytest.raises(
+        python_interpreter.PythonInterpreterError, match="virtual environment"
+    ):
+        python_interpreter.resolve_benchmark_python(
+            override=str(entry), cwd=tmp_path, verifier=verifier
+        )
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="requires POSIX interpreter symlink semantics"
+)
+def test_benchmark_oracle_keeps_explicit_alias_patch_and_ignores_python_env(
+    verifier: PythonIdentityVerifier,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = Path(sys._base_executable).resolve(strict=True)
+    alias = tmp_path / "python-current"
+    alias.symlink_to(base)
+    marker = tmp_path / "sitecustomize-ran"
+    (tmp_path / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n", encoding="utf-8"
+    )
+    version = ".".join(map(str, sys.version_info[:3]))
+    uv = tmp_path / "uv"
+    original_run = python_interpreter._run_command
+    original_find = toolchain_identity.find_executable
+
+    def find(
+        name: str, *, environment: Mapping[str, str], cwd: Path | None = None
+    ) -> Path | None:
+        if name == "uv":
+            return uv
+        return original_find(name, environment=environment, cwd=cwd)
+
+    def lookup_or_probe(
+        command: Sequence[str],
+        *,
+        verifier: PythonIdentityVerifier,
+        timeout: float,
+        env: Mapping[str, str],
+        cwd: Path,
+    ) -> tuple[str, str, int]:
+        if command[0] == str(uv):
+            assert command[-1] == version
+            return str(base) + "\n", "", 0
+        return original_run(
+            command, verifier=verifier, timeout=timeout, env=env, cwd=cwd
+        )
+
+    monkeypatch.setattr(toolchain_identity, "find_executable", find)
+    monkeypatch.setattr(python_interpreter, "_run_command", lookup_or_probe)
+    interpreter = python_interpreter.resolve_benchmark_python(
+        override=str(alias),
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(tmp_path),
+            "PYTHONHOME": str(tmp_path),
+            "__PYVENV_LAUNCHER__": str(tmp_path / "fake-launcher"),
+        },
+        verifier=verifier,
+    )
+    alias.unlink()
+    alias.symlink_to(_benchmark_executable(tmp_path / "replacement-python"))
+    assert interpreter.command == (str(base), "-I", "-S", "-B")
+    assert interpreter.version == version
+    assert not marker.exists()
+
+
 def test_guest_oracle_cannot_admit_host_only_minor(verifier, monkeypatch):
     monkeypatch.setattr(
         python_interpreter,
@@ -693,8 +948,6 @@ def test_target_verification_requires_pinned_cpython_release(
     implementation: str,
     accepted: bool,
 ) -> None:
-    from collections.abc import Sequence
-
     def identity(command: Sequence[str], **kwargs: object) -> tuple[str, str, int]:
         assert command[1:7] == [
             "-B",

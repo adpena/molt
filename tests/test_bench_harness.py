@@ -3,13 +3,20 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from collections.abc import Sequence
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
+from typing import Literal
 
 import molt.dx as molt_dx
 from molt import custody_layout
 from molt.checkout_state import scratch_state_root
+from molt.python_interpreter import PythonInterpreter
 import pytest
-from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_interpreter,
+    synthetic_workload,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +25,11 @@ SPEC = importlib.util.spec_from_file_location("bench_harness_under_test", HARNES
 assert SPEC is not None and SPEC.loader is not None
 bench_harness = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bench_harness)
+
+
+@pytest.fixture
+def cpython() -> PythonInterpreter:
+    return benchmark_oracle_interpreter()
 
 
 def test_bench_harness_run_cmd_uses_memory_guard(
@@ -99,12 +111,46 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     )
 
 
+@pytest.mark.parametrize("selector", [None, "3.12.16"])
 def test_bench_harness_supports_explicit_molt_profile(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cpython: PythonInterpreter,
+    selector: str | None,
 ) -> None:
     captured: dict[str, object] = {}
     script = tmp_path / "driver.py"
     script.write_text("print(1)\n", encoding="utf-8")
+    second_script = tmp_path / "driver_two.py"
+    second_script.write_text("print(2)\n", encoding="utf-8")
+    resolutions = []
+
+    def resolve(**kwargs: object) -> PythonInterpreter:
+        resolutions.append(kwargs["override"])
+        return cpython
+
+    monkeypatch.setattr(bench_harness, "resolve_benchmark_python", resolve)
+    admit = bench_harness.admit_benchmark_workload
+    admitted_commands = []
+
+    def capture_admission(
+        script: Path,
+        *,
+        project_root: Path,
+        run_args: Sequence[str],
+        molt_args: Sequence[str],
+        cpython_command: Sequence[str] | None,
+    ) -> AbstractContextManager[bench_harness.AdmittedBenchmarkWorkload]:
+        admitted_commands.append(cpython_command)
+        return admit(
+            script,
+            project_root=project_root,
+            run_args=run_args,
+            molt_args=molt_args,
+            cpython_command=cpython_command,
+        )
+
+    monkeypatch.setattr(bench_harness, "admit_benchmark_workload", capture_admission)
     monkeypatch.setattr(bench_harness, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(
         bench_harness.bench_suites,
@@ -123,22 +169,28 @@ def test_bench_harness_supports_explicit_molt_profile(
         verbose,
         *,
         workloads,
+        cpython: PythonInterpreter,
     ):
-        assert list(workloads) == [script]
-        assert workloads[script].record["molt_args"] == [
-            "run",
-            "--profile",
-            "release",
-            "--capabilities",
-            "fs.read",
-        ]
+        assert list(workloads) == [script, second_script]
+        for workload in workloads.values():
+            assert workload.record["molt_args"] == [
+                "run",
+                "--profile",
+                "release",
+                "--python-version",
+                "3.12",
+                "--capabilities",
+                "fs.read",
+            ]
+        assert python_cmd is None
+        assert cpython is not None and cpython.command[1:] == ("-I", "-S", "-B")
         captured["molt_cmd"] = molt_cmd
         return [], bench_harness.SuiteSummary(suite=suite_name)
 
     monkeypatch.setattr(
         bench_harness,
         "collect_bench_scripts",
-        lambda filter_pat=None, applications=False: [script],
+        lambda filter_pat=None, applications=False: [script, second_script],
     )
     monkeypatch.setattr(bench_harness, "run_suite", fake_run_suite)
     monkeypatch.setattr(bench_harness, "detect_regressions", lambda *args, **kwargs: [])
@@ -182,6 +234,7 @@ def test_bench_harness_supports_explicit_molt_profile(
             "release",
             "--output",
             str(tmp_path / "bench.json"),
+            *([] if selector is None else ["--python", selector]),
         ],
     )
 
@@ -189,11 +242,15 @@ def test_bench_harness_supports_explicit_molt_profile(
         bench_harness.main()
 
     assert excinfo.value.code == 0
+    assert resolutions == [selector]
+    assert admitted_commands == [cpython.command, cpython.command]
     assert captured["molt_cmd"] == [
         ".venv/bin/molt",
         "run",
         "--profile",
         "release",
+        "--python-version",
+        "3.12",
     ]
     assert sentinel_calls[0]["repo_root"] == bench_harness.REPO_ROOT
     harness_scratch = sentinel_calls[0]["artifact_root"]
@@ -210,6 +267,87 @@ def test_bench_harness_uses_canonical_defaults() -> None:
     assert bench_harness.DEFAULT_BASELINE == (
         bench_harness.BENCH_DIR / "results" / "harness-baseline.json"
     )
+
+
+@pytest.mark.parametrize("mode", ["--bench", "--diff", "--full"])
+def test_harness_modes_keep_reference_and_target_selection_distinct(
+    mode: Literal["--bench", "--diff", "--full"],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cpython: PythonInterpreter,
+) -> None:
+    bench_script = tmp_path / "bench_script.py"
+    bench_script.write_text("print(1)\n", encoding="utf-8")
+    diff_script = tmp_path / "diff_script.py"
+    diff_script.write_text("print(1)\n", encoding="utf-8")
+    intrinsic = REPO_ROOT / "tests/benchmarks/bench_ptr_registry.py"
+    commands: list[list[str]] = []
+    resolutions = []
+
+    def resolve(**kwargs: object) -> PythonInterpreter:
+        assert mode == "--full"
+        resolutions.append(kwargs["override"])
+        return cpython
+
+    def run(
+        command: list[str], timeout: float, **kwargs: object
+    ) -> bench_harness.RunOutcome:
+        commands.append(command)
+        return bench_harness.RunOutcome(
+            True, 0.1, 1.0, "ok", 0, "100000\n" if mode == "--bench" else "1\n", ""
+        )
+
+    monkeypatch.setattr(bench_harness, "resolve_benchmark_python", resolve)
+    monkeypatch.setattr(bench_harness, "run_cmd", run)
+    monkeypatch.setattr(
+        bench_harness,
+        "collect_bench_scripts",
+        lambda *args, **kwargs: [intrinsic if mode == "--bench" else bench_script],
+    )
+    monkeypatch.setattr(bench_harness, "collect_diff_scripts", lambda _: [diff_script])
+    monkeypatch.setattr(
+        bench_harness.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_: nullcontext(),
+    )
+    output = tmp_path / "report.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(HARNESS_PATH),
+            mode,
+            "--molt",
+            "fixture-molt",
+            "--output",
+            str(output),
+            "--baseline",
+            str(tmp_path / "baseline.json"),
+            *(["--python", cpython.version] if mode == "--full" else []),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        bench_harness.main()
+
+    assert caught.value.code == 0
+    moltc = ["fixture-molt", "run", "--profile", "dev"]
+    report = json.loads(output.read_text(encoding="utf-8"))
+    if mode == "--bench":
+        extra_args = bench_harness.bench_suites.molt_args_for_benchmark(intrinsic)
+        assert commands == [[*moltc, *extra_args, str(intrinsic)]]
+        (cell,) = report["benchmarks"].values()
+        assert cell["cpython_oracle"] is None and cell["molt_cpython_ratio"] is None
+    elif mode == "--diff":
+        assert commands == [["python3", str(diff_script)], [*moltc, str(diff_script)]]
+    else:
+        assert commands == [
+            [*cpython.command, str(bench_script)],
+            [*moltc, "--python-version", cpython.major_minor, str(bench_script)],
+            [cpython.executable, str(diff_script)],
+            [*moltc, str(diff_script)],
+        ]
+    assert resolutions == ([cpython.version] if mode == "--full" else [])
 
 
 @pytest.mark.parametrize("current_time", [0.01, 2.0])
@@ -286,8 +424,8 @@ def test_legacy_harness_keeps_status_regression_independent_of_unbound_profiles(
 
 
 def test_harness_fresh_cpython_comparison_retains_actual_source_identity(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpython: PythonInterpreter
+) -> None:
     from contextlib import ExitStack
     from tools.bench_evidence import admit_benchmark_workload
     from tools import bench_diff
@@ -308,41 +446,55 @@ def test_harness_fresh_cpython_comparison_retains_actual_source_identity(
                 project_root=tmp_path,
                 run_args=[],
                 molt_args=["run", "--profile", "dev"],
+                cpython_command=cpython.command,
             )
         )
         result = bench_harness.run_single_test(
             source,
             "bench",
             ["molt", "run", "--profile", "dev"],
-            "python",
+            None,
             1,
             workload=admitted,
+            cpython=cpython,
         )
         report = bench_harness.build_json_report([result], [], [])
     assert commands == [
-        ["python", str(source)],
+        [*cpython.command, str(source)],
         ["molt", "run", "--profile", "dev", str(source)],
     ]
     cells = report["benchmarks"]
     assert cells[str(source)]["workload"] == admitted.record
+    assert cells[str(source)]["cpython_ok"] is True
+    assert cells[str(source)]["cpython_oracle"]["cmd"] == list(cpython.command)
     rows = bench_diff._compute_metric_diffs("cpython_time_s", cells, cells)
     assert len(rows) == 1 and rows[0].delta == 0
     assert cells[str(source)]["build_observation"] is None
 
 
 @pytest.mark.parametrize(
-    "run_args,molt_args,diagnostic",
+    "molt_args,has_oracle,diagnostic",
     [
         (
-            [],
             ["run", "--profile", "release"],
+            True,
             "command differs from admitted Molt arguments",
+        ),
+        (
+            ["run", "--profile", "dev"],
+            False,
+            "requires an admitted CPython oracle",
         ),
     ],
 )
 def test_harness_refuses_admitted_arguments_it_will_not_execute(
-    tmp_path, monkeypatch, run_args, molt_args, diagnostic
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    molt_args: list[str],
+    has_oracle: bool,
+    diagnostic: str,
+    cpython: PythonInterpreter,
+) -> None:
     from tools.bench_evidence import admit_benchmark_workload
 
     script = tmp_path / "program.py"
@@ -353,20 +505,23 @@ def test_harness_refuses_admitted_arguments_it_will_not_execute(
         lambda *a, **k: pytest.fail("unexecuted admitted argv reached child"),
     )
     with admit_benchmark_workload(
-        script, project_root=tmp_path, run_args=run_args, molt_args=molt_args
+        script, project_root=tmp_path, run_args=[], molt_args=molt_args
     ) as admitted:
         with pytest.raises(ValueError, match=diagnostic):
             bench_harness.run_single_test(
                 script,
                 "bench",
                 ["molt", "run", "--profile", "dev"],
-                "python",
+                None if has_oracle else "python3",
                 1.0,
                 workload=admitted,
+                cpython=cpython if has_oracle else None,
             )
 
 
-def test_harness_executes_admitted_guest_arguments(tmp_path, monkeypatch):
+def test_harness_executes_admitted_guest_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpython: PythonInterpreter
+) -> None:
     from tools.bench_evidence import admit_benchmark_workload
 
     script = tmp_path / "program.py"
@@ -388,12 +543,13 @@ def test_harness_executes_admitted_guest_arguments(tmp_path, monkeypatch):
             script,
             "bench",
             ["molt", "run", "--profile", "dev"],
-            "python",
+            None,
             1,
             workload=admitted,
+            cpython=cpython,
         )
     assert result.status == "pass"
-    assert calls[0][0] == ["python", str(script), "--count", "7"]
+    assert calls[0][0] == [*cpython.command, str(script), "--count", "7"]
     assert calls[1][0] == [
         "molt",
         "run",
@@ -407,8 +563,8 @@ def test_harness_executes_admitted_guest_arguments(tmp_path, monkeypatch):
 
 
 def test_harness_sealed_invocations_use_payload_cwd_and_import_roots(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpython: PythonInterpreter
+) -> None:
     from tests.tools.perf_scoreboard_fixtures import sealed_workload
 
     calls = []
@@ -431,18 +587,18 @@ def test_harness_sealed_invocations_use_payload_cwd_and_import_roots(
             workload.script,
             "bench",
             ["molt", "run", "--profile", "dev"],
-            "python",
+            None,
             1,
             workload=workload,
+            cpython=cpython,
         )
         assert result.status == "pass"
         assert result.workload["entry"] == str(workload.script)
-        assert calls[0][0] == [
-            "python",
-            "-P",
-            "-S",
-            "-B",
+        assert calls[0][0][:5] == [*cpython.command, "-c"]
+        assert calls[0][0][6:] == [
             str(workload.execution_script),
+            "1",
+            str(workload.execution_root / "packages"),
             "data/input.txt",
             "7",
         ]
@@ -459,9 +615,8 @@ def test_harness_sealed_invocations_use_payload_cwd_and_import_roots(
             "7",
         ]
         assert all(kwargs["cwd"] == workload.execution_root for _, kwargs in calls)
-        assert calls[0][1]["env"]["PYTHONPATH"] == str(
-            workload.execution_root / "packages"
-        )
+        assert "PYTHONPATH" not in calls[0][1]["env"]
+        assert "PYTHONHASHSEED" not in calls[0][1]["env"]
         assert calls[1][1]["env"]["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
         assert calls[1][1]["env"]["MOLT_MODULE_ROOTS"] == str(
             workload.execution_root / "packages"
@@ -473,8 +628,13 @@ def test_harness_sealed_invocations_use_payload_cwd_and_import_roots(
     [("sealed:7", "", 0), ("sealed:7\n", "unexpected\n", 0), ("sealed:7\n", "", 2)],
 )
 def test_benchmark_harness_never_scores_incomplete_output(
-    monkeypatch, tmp_path, stdout, stderr, returncode
-):
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stdout: str,
+    stderr: str,
+    returncode: int,
+    cpython: PythonInterpreter,
+) -> None:
     from tests.tools.perf_scoreboard_fixtures import sealed_workload
 
     observations = iter(
@@ -497,9 +657,10 @@ def test_benchmark_harness_never_scores_incomplete_output(
             workload.script,
             "bench",
             ["molt", "run"],
-            "python",
+            None,
             1,
             workload=workload,
+            cpython=cpython,
         )
     assert not result.output_match
     assert result.status in {"fail", "error"}
@@ -522,6 +683,7 @@ def test_benchmark_harness_actual_guard_refuses_distinct_invalid_output_bytes(
     # A real child replaces only the compiler in this observation test. Neither
     # run_cmd nor the shared process guard is mocked.
     guest_code = f"import os; os.write({descriptor}, b'raw\\xfe\\r\\nno-final-newline')"
+    cpython = benchmark_oracle_interpreter(Path(sys.executable).resolve())
     with admit_benchmark_workload(
         script, project_root=tmp_path, run_args=[], molt_args=["-c", guest_code]
     ) as workload:
@@ -529,9 +691,10 @@ def test_benchmark_harness_actual_guard_refuses_distinct_invalid_output_bytes(
             script,
             "bench",
             [sys.executable, "-c", guest_code],
-            sys.executable,
+            None,
             15,
             workload=workload,
+            cpython=cpython,
         )
     assert result.cpython_rc == result.molt_rc == 0
     reference = result.cpython_stdout if descriptor == 1 else result.cpython_stderr
@@ -548,8 +711,12 @@ def test_benchmark_harness_actual_guard_refuses_distinct_invalid_output_bytes(
 @pytest.mark.parametrize("failed_side", ["reference", "guest"])
 @pytest.mark.parametrize("condition", ["unclosed", "clock", "timeout", "nonzero"])
 def test_harness_preserves_failed_observation_without_scoring(
-    tmp_path, monkeypatch, failed_side, condition
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_side: Literal["reference", "guest"],
+    condition: Literal["unclosed", "clock", "timeout", "nonzero"],
+    cpython: PythonInterpreter,
+) -> None:
     from tools.bench_evidence import admit_benchmark_workload
 
     script = tmp_path / "observation.py"
@@ -592,12 +759,19 @@ def test_harness_preserves_failed_observation_without_scoring(
         script, project_root=tmp_path, run_args=[], molt_args=["run"]
     ) as workload:
         result = bench_harness.run_single_test(
-            script, "bench", ["molt", "run"], "python", 1, workload=workload
+            script,
+            "bench",
+            ["molt", "run"],
+            None,
+            1,
+            workload=workload,
+            cpython=cpython,
         )
     assert result.status != "pass"
     assert result.molt_speedup is None
     prefix = "cpython" if failed_side == "reference" else "molt"
     serialized = result.to_dict()
+    assert serialized["cpython_ok"] is (failed_side != "reference")
     assert serialized[f"{prefix}_stdout"] == raw_out
     assert serialized[f"{prefix}_stderr"] == raw_err
     assert getattr(result, f"{prefix}_time_s") == (
