@@ -151,6 +151,21 @@ def test_wasm_preparation_checks_host_profile_locks_and_joint_memory(
     assert not CARGO_EXEC._cargo_plans_can_overlap(compiler, runtime)
     (intermediates / "wasm-release").unlink()
 
+    explicit_host = _cargo_plan(
+        tmp_path,
+        "dev-fast",
+        compiler.host_target,
+        "cargo",
+        "build",
+        "--target",
+        compiler.host_target,
+    )
+    target_profile = intermediates / compiler.host_target / explicit_host.cargo_profile
+    target_profile.parent.mkdir()
+    assert CARGO_EXEC._cargo_plans_can_overlap(compiler, explicit_host)
+    target_profile.symlink_to(intermediates / "release-fast", target_is_directory=True)
+    assert not CARGO_EXEC._cargo_plans_can_overlap(compiler, explicit_host)
+
     monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(10 * gib))
     assert not CARGO_EXEC._cargo_plans_can_overlap(compiler, runtime)
     monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(16 * gib))

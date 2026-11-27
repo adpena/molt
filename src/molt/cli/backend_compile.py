@@ -345,7 +345,11 @@ def _prepare_backend_setup(
             cargo_preparation=preparation,
         )
         _record_pipeline_stage_ms(
-            stage_timings_ms, "backend_setup_ensure_backend_binary", started
+            stage_timings_ms,
+            "backend_setup_ensure_backend_binary"
+            if preparation is None
+            else "backend_setup_prerequisite_join",
+            started,
         )
         backend_ensure_result = result
         return result
@@ -386,7 +390,9 @@ def _prepare_backend_setup(
     )
     _record_pipeline_stage_ms(
         stage_timings_ms,
-        "backend_setup_runtime_callable_symbols",
+        "backend_setup_runtime_callable_symbols"
+        if backend_ensure_result is None
+        else "backend_setup_native_codegen_join",
         callable_symbols_start,
     )
     if backend_ensure_result is not None and not backend_ensure_result:

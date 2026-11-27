@@ -642,7 +642,7 @@ def _run_resolved_cargo_plan(
 def _cargo_plans_can_overlap(
     compiler: RuntimeCargoPlan, runtime: RuntimeCargoPlan
 ) -> bool:
-    """Check the resolved host and Wasm output coordinates and joint memory."""
+    """Check both output coordinates and the joint memory budget."""
     if _build_slot_count() < 2:
         return False
 
@@ -651,12 +651,13 @@ def _cargo_plans_can_overlap(
         roots = cargo_output_paths(
             plan.command, cwd=plan.project_root, env=plan.environment
         )
-        # Cargo's cross-target build also takes host profile locks for build
-        # scripts and proc macros. Resolve symlink aliases at the profile
-        # directories as well as at the two output roots.
-        paths = [root / profile for root in roots]
-        if plan.target != plan.host_target:
-            paths.extend(root / plan.target / profile for root in roots)
+        # An explicitly selected host triple still uses its target directory.
+        # Cargo also takes host profile locks for build scripts and proc macros.
+        paths = [
+            path
+            for root in roots
+            for path in (root / profile, root / plan.target / profile)
+        ]
         return {Path(os.fspath(path.resolve()).casefold()) for path in paths}
 
     try:

@@ -1350,7 +1350,16 @@ def _ensure_backend_binary(
             )
         finally:
             _record_backend_binary_stage_ms(
-                stage_timings_ms, "backend_binary_cargo_build", stage_start
+                stage_timings_ms,
+                "backend_binary_cargo_build"
+                if cargo_preparation is None
+                else "backend_binary_cargo_preparation_join",
+                stage_start,
+            )
+        if stage_timings_ms is not None and cargo_preparation is not None:
+            # The runtime may hold the join open beyond the compiler attempt.
+            stage_timings_ms["backend_binary_cargo_build"] = round(
+                build.elapsed_s * 1000.0, 6
             )
         if build.returncode != 0:
             return _backend_ensure_failure(

@@ -85,6 +85,49 @@ def test_cargo_spawn_failure_is_structured(tmp_path, monkeypatch, capsys):
     assert payload["data"]["stage_timings_ms"]["backend_binary_cargo_build"] >= 0
 
 
+def test_overlapped_compiler_cargo_time_uses_the_attempt_receipt(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    from molt.cli import backend_compile, cargo_execution
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
+
+    root = _isolated_molt_root(tmp_path, monkeypatch)
+    _fake_backend_toolchain(monkeypatch)
+    selection = backend_compile._select_backend_binary(
+        molt_root=root,
+        backend_cargo_profile="release",
+        is_wasm=False,
+        codegen_backend="cranelift",
+        rust_cpu=RustCpuPolicy.BASELINE,
+    )
+    preparation = cargo_execution._CargoPreparation(SimpleNamespace(), lambda: None)
+
+    def cargo(plan, *, preparation: cargo_execution._CargoPreparation, **_kwargs):
+        preparation.materialize()
+        terminal = subprocess.CompletedProcess(plan.command, 1, "", "fixture failure")
+        attempt = cargo_execution._cargo_attempt(
+            terminal, index=1, wrapper=None, duration_seconds=0.125, failure_kind=None
+        )
+        return cargo_execution.CargoExecutionResult(
+            terminal, attempts=(attempt,), retry_reason=None
+        )
+
+    monkeypatch.setattr(backend_binary, "_run_resolved_cargo_plan", cargo)
+    timings: dict[str, float] = {}
+    result = backend_compile._ensure_selected_backend_binary(
+        selection,
+        molt_root=root,
+        cargo_timeout=None,
+        json_output=True,
+        stage_timings_ms=timings,
+        cargo_preparation=preparation,
+    )
+    assert result.phase == "backend_cargo_build"
+    assert timings["backend_binary_cargo_build"] == 125.0
+    assert timings["backend_binary_cargo_preparation_join"] >= 0
+
+
 @pytest.mark.parametrize("target", ["native", "wasm"])
 @pytest.mark.parametrize("failure_stage", ["initial", "wrapper", "feature-probe"])
 def test_backend_admission_preserves_lockfile_on_its_single_cargo_attempt(
