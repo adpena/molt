@@ -18,8 +18,7 @@
 //! The pass only adds attrs and deletes `frame_set_location`, so it is
 //! idempotent. A target without `cold_origin_frame_location` never runs it.
 
-use molt_ir::deterministic_hash::HashMap;
-use std::collections::BTreeMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -165,9 +164,8 @@ fn entry_slots(func: &TirFunction, count: usize) -> Slots {
 /// Classify a binding release and update the slot facts.
 ///
 /// Only this activation's own home operations and a `frame_locals_set` write
-/// its homes. A callback that rebinds a local through a PEP 667 proxy is the
-/// documented boundary of M2.1: it does not clear these facts, so a finalizer
-/// of a value injected that way sees the last surviving publication.
+/// its homes in a body admitted for this analysis. The closed-program frame
+/// writer fact is checked by `binding_releases` before using this transfer.
 fn slot_transfer(
     op: &TirOp,
     func: &TirFunction,
@@ -261,7 +259,6 @@ fn join_slots<T: Copy + Eq>(
 fn reaching_slot_entries<T: Copy + Eq>(
     func: &TirFunction,
     labels: &HashMap<i64, BlockId>,
-    order: &[BlockId],
     initial: Vec<T>,
     meet: impl Fn(T, T) -> T + Copy,
     transfer: impl Fn(&TirOp, &mut Vec<T>),
@@ -269,24 +266,26 @@ fn reaching_slot_entries<T: Copy + Eq>(
     let mut entry: HashMap<BlockId, Vec<T>> = HashMap::default();
     // Before the activation's own entry operation nothing is proven.
     entry.insert(func.entry_block, initial);
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for bid in order {
-            let Some(mut slots) = entry.get(bid).cloned() else {
-                continue;
-            };
-            let block = &func.blocks[bid];
-            for op in &block.ops {
-                if let Some(handler) = check_handler(op, labels) {
-                    changed |= join_slots(&mut entry, handler, &slots, meet);
-                }
-                transfer(op, &mut slots);
+    let mut pending = vec![func.entry_block];
+    let mut enqueued = HashSet::default();
+    while let Some(bid) = pending.pop() {
+        enqueued.remove(&bid);
+        let mut slots = entry[&bid].clone();
+        let block = &func.blocks[&bid];
+        let mut propagate = |succ, state: &[T]| {
+            if join_slots(&mut entry, succ, state, meet) && enqueued.insert(succ) {
+                pending.push(succ);
             }
-            for succ in dominators::terminator_successors(&block.terminator) {
-                if func.blocks.contains_key(&succ) {
-                    changed |= join_slots(&mut entry, succ, &slots, meet);
-                }
+        };
+        for op in &block.ops {
+            if let Some(handler) = check_handler(op, labels) {
+                propagate(handler, &slots);
+            }
+            transfer(op, &mut slots);
+        }
+        for succ in dominators::terminator_successors(&block.terminator) {
+            if func.blocks.contains_key(&succ) {
+                propagate(succ, &slots);
             }
         }
     }
@@ -301,10 +300,19 @@ pub(super) fn binding_releases(
     labels: &HashMap<i64, BlockId>,
     order: &[BlockId],
 ) -> HashMap<(BlockId, usize), bool> {
+    // A frame proxy can replace even a previously proven scalar with a
+    // reference-bearing value. All consumers share this admission decision.
+    if func.frame_locals_exposed() {
+        return HashMap::default();
+    }
+    // A frame proxy can replace even a previously proven scalar with a
+    // reference-bearing value. All consumers share this admission decision.
+    if func.frame_locals_exposed() {
+        return HashMap::default();
+    }
     let entry = reaching_slot_entries(
         func,
         labels,
-        order,
         vec![false; slot_count(func)],
         |a, b| a && b,
         |op, state| {
@@ -475,7 +483,6 @@ pub(super) fn held_call_arguments(
     let entries = reaching_slot_entries(
         func,
         &labels,
-        &order,
         vec![None; tracked_slots.len()],
         |a, b| if a == b { a } else { None },
         transfer,
@@ -557,31 +564,32 @@ fn for_each_reaching_word(
 ) {
     let mut entry: HashMap<BlockId, Option<Word>> = HashMap::default();
     entry.insert(func.entry_block, Some(Word::Unknown));
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for bid in order {
-            let Some(Some(mut word)) = entry.get(bid).copied() else {
-                continue;
-            };
-            let block = &func.blocks[bid];
-            for op in &block.ops {
-                if op.opcode == OpCode::FrameSetLocation {
-                    if let Some(AttrValue::Int(location)) = op.attrs.get("value") {
-                        word = Word::Known(*location);
-                    }
-                    continue;
-                }
-                if let Some(handler) = check_handler(op, labels) {
-                    let edge = op.frame_location().map_or(word, Word::Known);
-                    changed |= join_word(entry.entry(handler).or_default(), edge);
-                }
-                word = word.after_poll(op);
+    // A block moves from unreached to one known publication, then possibly
+    // to unknown. Each transition visits only its own ops and successors.
+    let mut pending = vec![func.entry_block];
+    while let Some(bid) = pending.pop() {
+        let mut word = entry[&bid].expect("queued block has a location fact");
+        let block = &func.blocks[&bid];
+        let mut propagate = |succ, word| {
+            if join_word(entry.entry(succ).or_default(), word) {
+                pending.push(succ);
             }
-            for succ in dominators::terminator_successors(&block.terminator) {
-                if func.blocks.contains_key(&succ) {
-                    changed |= join_word(entry.entry(succ).or_default(), word);
+        };
+        for op in &block.ops {
+            if op.opcode == OpCode::FrameSetLocation {
+                if let Some(AttrValue::Int(location)) = op.attrs.get("value") {
+                    word = Word::Known(*location);
                 }
+                continue;
+            }
+            if let Some(handler) = check_handler(op, labels) {
+                propagate(handler, op.frame_location().map_or(word, Word::Known));
+            }
+            word = word.after_poll(op);
+        }
+        for succ in dominators::terminator_successors(&block.terminator) {
+            if func.blocks.contains_key(&succ) {
+                propagate(succ, word);
             }
         }
     }
@@ -659,48 +667,50 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // 2. Slot contents for binding releases.
     let releases = binding_releases(func, &types, &labels, &order);
 
-    // 3. Backward liveness of the word.
-    let mut live_in: HashMap<BlockId, bool> = HashMap::default();
-    let mut needed: BTreeMap<(BlockId, usize), bool> = BTreeMap::new();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for bid in order.iter().rev() {
-            let block = &func.blocks[bid];
-            let mut live = match &block.terminator {
-                // Every frame-retiring path ends here; exit freezes the word.
-                Terminator::Return { .. } | Terminator::Unwind => true,
-                terminator => dominators::terminator_successors(terminator)
-                    .into_iter()
-                    .any(|succ| live_in.get(&succ).copied().unwrap_or(false)),
-            };
-            for (index, op) in block.ops.iter().enumerate().rev() {
-                if op.opcode == OpCode::FrameSetLocation {
-                    needed.insert((*bid, index), live);
-                    live = false;
-                    continue;
+    // 3. Backward liveness through the last write or block-entry join.
+    // A reader only depends on its current definition. Trace live entries
+    // through their incoming definitions once, even at a loop or handler.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum Publication {
+        Entry(BlockId),
+        Store(BlockId, usize),
+    }
+    let mut incoming: HashMap<BlockId, Vec<Publication>> = HashMap::default();
+    let mut pending = Vec::new();
+    for &bid in &order {
+        let block = &func.blocks[&bid];
+        let mut definition = Publication::Entry(bid);
+        for (index, op) in block.ops.iter().enumerate() {
+            if op.opcode == OpCode::FrameSetLocation {
+                definition = Publication::Store(bid, index);
+            } else if op.opcode == OpCode::CheckException {
+                let (materializes, reads) = check_uses(op);
+                if reads {
+                    pending.push(definition);
+                } else if !materializes && let Some(handler) = check_handler(op, &labels) {
+                    incoming.entry(handler).or_default().push(definition);
                 }
-                if op.opcode == OpCode::CheckException {
-                    let (materializes, reads) = check_uses(op);
-                    let edge = if materializes {
-                        false
-                    } else {
-                        reads
-                            || check_handler(op, &labels).is_some_and(|handler| {
-                                live_in.get(&handler).copied().unwrap_or(false)
-                            })
-                    };
-                    live |= edge;
-                    continue;
-                }
-                if operation_reads(op, &types, releases.get(&(*bid, index)).copied()) {
-                    live = true;
+            } else if operation_reads(op, &types, releases.get(&(bid, index)).copied()) {
+                pending.push(definition);
+            }
+        }
+        match &block.terminator {
+            // Every frame-retiring path ends here; exit freezes the word.
+            Terminator::Return { .. } | Terminator::Unwind => pending.push(definition),
+            terminator => {
+                for succ in dominators::terminator_successors(terminator) {
+                    incoming.entry(succ).or_default().push(definition);
                 }
             }
-            if live_in.get(bid).copied() != Some(live) {
-                live_in.insert(*bid, live);
-                changed = true;
-            }
+        }
+    }
+    let mut live = HashSet::default();
+    while let Some(definition) = pending.pop() {
+        if live.insert(definition)
+            && let Publication::Entry(bid) = definition
+            && let Some(definitions) = incoming.remove(&bid)
+        {
+            pending.extend(definitions);
         }
     }
     for bid in &order {
@@ -709,7 +719,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         let mut index = 0usize;
         block.ops.retain(|op| {
             let keep = op.opcode != OpCode::FrameSetLocation
-                || needed.get(&(*bid, index)).copied().unwrap_or(true);
+                || live.contains(&Publication::Store(*bid, index));
             index += 1;
             keep
         });

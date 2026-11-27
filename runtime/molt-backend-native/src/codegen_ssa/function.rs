@@ -64,7 +64,7 @@ impl ResultCustody {
 /// One function being lowered: its TIR, carrier plan, lowered values and
 /// diagnostics; the program facts it reads (the runtime entries the selected
 /// runtime provides, each compiled function's linkage row, the function
-/// table); and the count of inline-cache call sites numbered so far.
+/// table); and the count of emitted inline-cache sites.
 pub(crate) struct FunctionCx<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
@@ -96,10 +96,11 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             .push(format!("{}: {}", self.func.name, message.into()));
     }
 
-    /// The boxed inline-int id of the next inline-cache call site of `lane`
-    /// in this function (`molt_codegen_abi::stable_ic_site_id`). Site ids fit
-    /// the inline window by construction, so the word owns nothing.
-    pub(crate) fn next_call_site(&self, b: &mut B, lane: &str) -> B::Word {
+    /// Allocate one site in deterministic executable emission order. The
+    /// shared walker uses it for calls and attribute accesses. A site in
+    /// an inlined body gets its own slot in the new owner, and a source
+    /// operation erased before emission consumes no slot.
+    pub(crate) fn next_inline_cache_site(&self, b: &mut B, lane: &str) -> B::Word {
         let index = self.call_sites.get();
         self.call_sites.set(index + 1);
         let site = molt_codegen_abi::stable_ic_site_id(self.func.name.as_str(), index, lane);

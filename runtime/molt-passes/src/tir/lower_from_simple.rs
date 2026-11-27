@@ -208,7 +208,7 @@ fn lower_prepared_function(ir: &FunctionIR) -> TirFunction {
 /// Lower a placement preview whose source indices are exact positions in the
 /// prepared SimpleIR stream, materialize against that same stream, then restore
 /// durable source provenance on the returned TIR. `OpIR::source_op_idx` is an
-/// origin/inline-cache identity and must never be dereferenced as a current
+/// source origin and must never be dereferenced as a current
 /// array position after a TIR round trip.
 fn lower_prepared_with_async_work_materialization(
     ir: &mut FunctionIR,

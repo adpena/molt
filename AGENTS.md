@@ -75,7 +75,9 @@ from development load. Add process only for a measured bottleneck.
 - Keep one authority per fact, transition, owner, protocol or table. **Incomplete consumer migration
   blocks landing:** reconcile WIP and migrate callers, generated projections, fixtures, build/install/
   release paths, docs and target cells together. Delete replaced implementations, dead consumers
-  and obsolete projections in the same migration. Search obsolete contracts before expensive validation. No internal compatibility
+  and obsolete projections in the same migration. Before expensive validation, inventory producers,
+  callers, readers, fixtures and documentation examples affected by shared protocol/default changes,
+  including legacy tools; search obsolete contracts. No internal compatibility
   lanes, shims, duplicate registries or speculative fallbacks. No aliases, adapters or permissive
   validators may hide unfinished migration. Exercise real consumers; a green producer is insufficient.
 - Define operation semantics once in late-TIR primitives every backend lowers, otherwise one
@@ -93,6 +95,9 @@ from development load. Add process only for a measured bottleneck.
   attributes and representations travel as typed IDs, slots, offsets or guarded code addresses;
   strings serve reflection/messages. Spelled-identity sites only decrease. Apply “Typed facts at the
   gate” in `docs/design/presubmit_test_strategy.md` to signatures and fact representation.
+  Admit source, toolchain, environment and invocation facts once at the boundary; pass typed facts
+  through preparation, execution and reporting. Defer probes, acquisition and materialization until
+  the selected operation requires them.
 - Every registered entity needs a proven producer; retire consumers with its last producer.
   `tools/op_kinds/census.py` owns op-kind proof; test filters need a producer in selected crate/features.
   Generated files are projections: change their source/generator and regenerate in the same arc.
@@ -104,6 +109,8 @@ from development load. Add process only for a measured bottleneck.
   weakened oracles or unbounded memory. The bar is equivalent C
   (`clang -O2`, within 2x instructions per loop iteration); CPython is semantic oracle and floor.
   Work above that bar may land as progress, with its ledger row open.
+  Timeouts, missing measurements and noisy observations direct admission or diagnosis work;
+  they do not establish compiler slowness or its cause.
 - Read stage status in `docs/design/foundation/call_anatomy.md` before performance analysis,
   ordering or speed claims. Whole-program facts no code can change are compile-time constants:
   proven sites emit the instruction, fixed-offset load or direct compiled call, with no runtime
@@ -125,9 +132,10 @@ from development load. Add process only for a measured bottleneck.
   millisecond unchanged rebuild bar. Measure affected before/after latency/throughput/startup, syscalls/flushes/locks/I/O/
   spawns/serialization, allocation, peak live/process-tree memory, caches/atomics/contention,
   code/artifact size, link time and failure atomicity.
-- Time exact uv-managed CPython in isolated mode (`-I`), not the guarded dev environment. Cost
-  attribution needs agreeing source, per-module profile and interleaved A/B. Recover purpose and
-  measured Molt/CPython value before deletion; a fast path needs a general replacement. Recover speed
+- Time exact uv-managed CPython with `-I -S -B` under `docs/BENCHMARKING.md`;
+  the harness interpreter is independent. Cost attribution needs agreeing source, per-module
+  profile and interleaved A/B. Recover purpose and measured Molt/CPython value before deletion;
+  a fast path needs a general replacement. Recover speed
   through proven/guarded bindings and inlining, never name matching. Use typed platform/architecture
   capability plans, never retry/fallback feature detection.
 - Instrument only to shorten decisions or remove measured recurring bottlenecks. Build profiling:
@@ -143,7 +151,8 @@ from development load. Add process only for a measured bottleneck.
   success or count/coverage quotas. Every test file belongs to a proof cell that runs it. Load-bearing
   changes get adversarial review; recurse on findings, not quotas. Prose/scratch needs no new tests/apparatus.
 - One proof owner selects affected obligations under `tools/proof_plan.toml` and
-  `docs/agent/PROOF_QUEUE.md`, inspecting receipts first. Reuse only matching source/tool/environment/
+  `docs/agent/PROOF_QUEUE.md`, inspecting receipts first. Reconcile upstream before long proofs,
+  then freeze inputs through receipt generation. Reuse only matching source/tool/environment/
   workload/artifacts and proven process closure; declare remaining obligations. Repeat/widen only
   for changed inputs, new failure or uncovered obligation; one cell cannot prove a family. Stop at
   sufficient development evidence; mandatory landing/release gates still run once, CI qualifies releases.
@@ -151,8 +160,9 @@ from development load. Add process only for a measured bottleneck.
   (static gates, reached Rust lib tests and first-hop importers, presubmit `-n auto --skip-slow`).
   Mark median >=60 s tests `@pytest.mark.slow` for postsubmit. Worker handoff uses
   `tools/molt_dev.py land --repo <checkout> --precheck-only` and changed tests in the runner's plain
-  environment, not lane `env.sh`. The integrator reuses matching receipts where admitted and lets
-  the landing runner execute required gates on the actual merge candidate. Queue submission and
+  environment, not lane `env.sh`. Use the documented integrator receipt-reuse and bounded
+  pre-commit paths in `docs/ops/INTEGRATION.md` with explicit remaining obligations; the landing
+  runner executes all required gates on the actual merge candidate. Queue submission and
   publication are separate states; CI arbitrates release candidates. Read-only findings have no per-turn proof quota.
 - Preflight prerequisites in the actual child environment; parsing is not readiness. Validate mutations
   at their canonical boundary. Reuse compatible compiled producers/affected selectors; avoid unrelated
@@ -216,6 +226,7 @@ from development load. Add process only for a measured bottleneck.
 | TIR generation | `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py` |
 | Runtime/ABI | `runtime/molt-runtime/src/intrinsics/manifest.pyi`, `runtime/runtime_abi.toml` |
 | CI/JUnit triage | `tools/ci_triage.py RUN_ID` or `tools/ci_triage.py --junit FILE` |
+| Benchmark planning/triage | `tools/perf_scoreboard.py --plan` / `--signals`; `docs/BENCHMARKING.md` |
 | Loop anatomy/cost buckets | `tools/opt_explorer.py`, `tools/PERF_AUTHORITY.md` |
 
 Load only what the task needs; update the owning authority when its facts change.

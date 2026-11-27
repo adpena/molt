@@ -433,6 +433,7 @@ _OPCODE_FACT_SETS = (
     "alias_memory_inert_opcodes",
     "alias_typed_slot_load_opcodes",
     "alias_typed_slot_store_opcodes",
+    "alias_read_only_access_opcodes",
     "alias_transparent_copy_opcodes",
     "alias_region_copy_refinement_opcodes",
     "alias_region_container_element_opcodes",

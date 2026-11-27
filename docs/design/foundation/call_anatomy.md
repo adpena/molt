@@ -1387,14 +1387,12 @@ for native, LLVM and WASM; MLIR captures no Origin.
    the pass proves it. The activation's own entry (`trace_enter_slot`) starts a fresh
    synchronous frame with every home unbound (the arena zeroes them); a stateful or inherited
    frame starts unknown. A store records whether its value is an exact scalar; a clear or take
-   leaves the home unbound; `frame_locals_set` makes every home unknown. Only those operations
-   write this activation's homes.
+   leaves the home unbound. A `frame_locals_set` makes every home unknown.
 
-   The second boundary: a callback that rebinds a local through a PEP 667 proxy does not clear
-   these facts. A finalizer of a value injected that way, released by a later compiled rebinding,
-   sees the last surviving publication. Clearing the facts at every callback is not affordable:
-   `range(n)` converts its bound with `operator.index`, which may call Python, so every counted
-   loop would keep a store before its first rebinding of the loop variable, in every iteration.
+   Where the closed program can rebind a local through a PEP 667 frame proxy, the shared
+   slot-content analysis supplies no finalizer-free binding proof. A release at a later
+   compiled rebinding therefore sees that rebinding's location. Other activations retain the
+   slot proof across callbacks, including an `operator.index` callback in a counted loop.
 
 Every other release keeps its read: rebinding or `del` of a value not proven finalizer-free
 (`ResourceWarning` lines depend on it), `DeleteVar` and `DelBoundary`. The classification is
@@ -1437,8 +1435,7 @@ two publications per iteration).
 **Invariants.**
 
 1. At every read, the word holds the value the conservative stream held there (M2 liveness),
-   except a finalizer of a release that M2.1 exempts or of a value injected through a PEP 667
-   proxy, which sees the last surviving publication.
+   except a finalizer of a release that M2.1 exempts, which sees the last surviving publication.
 2. An Origin capture records the failing site's own LocationId on native, LLVM and WASM when one
    publication reaches its check, and otherwise reads the preserved word (M1).
 3. Measured gate, per backend: the normal path of a loop whose operations cannot call Python,
@@ -2498,9 +2495,9 @@ three frame-home stores and the checks after them are about 24 of the 51. Plan, 
    the binding before each reader (`frame_elision::op_observer`, a Python truth test, `Return`, a
    release that may finalize, and `frame_home_load`/`frame_home_take` of the slot), in the poll's
    cold block and on every loop exit edge. A non-poll check is not a reader: the raising operation
-   wrote the homes, so a traceback shows the bindings at the raise. The PEP 667 boundary of M2.1
-   extends to it: a value a proxy injects into a home the loop keeps stale is released at the next
-   write of that home. `while_counter` (200k to 4.2M iterations, slope, release, macOS arm64):
+   wrote the homes, so a traceback shows the bindings at the raise. The same writer fact
+   used in M2.1 keeps stores eager where a callback can replace a home through a frame proxy.
+   `while_counter` (200k to 4.2M iterations, slope, release, macOS arm64):
    LLVM 32.0 to 18.9 instructions per iteration, Cranelift 191 to 176; CPython 757, C 1.26. A
    slot whose home a reader in a block every iteration runs would need keeps its stores (no gain).
    The location word is placed by the same pass, as a constant write whose readers are location

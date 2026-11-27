@@ -1470,17 +1470,6 @@ impl OpIR {
             })
         })
     }
-
-    /// Return the transported source identity required by inline-cache sites.
-    /// Backends share this validation so native and WASM cannot drift on
-    /// fallback or malformed-index behavior.
-    pub fn required_source_op_index(&self, current_index: usize, kind: crate::OpKind) -> usize {
-        assert!(
-            self.source_op_idx.is_some(),
-            "{kind} at stream op {current_index} requires transported source_op_idx"
-        );
-        self.source_op_index_or(current_index)
-    }
 }
 
 impl PgoProfileIR {

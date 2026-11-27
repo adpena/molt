@@ -451,10 +451,18 @@ pub enum OpCode {
     /// Check the packed layout and integer operands, then commit one store.
     /// False means no memory was changed. True leaves only post-call work.
     TryBuffer2dStoreI64,
+    /// Borrow packed backing on the success edge of a bounded region guard.
+    TryAcquirePackedBuffer2d,
+    /// Load a raw word through an admitted packed view.
+    LoadPackedBuffer2d,
+    /// Store a raw word through an admitted packed view.
+    StorePackedBuffer2d,
     /// An inline field borrowed from a held, layout-proven receiver.
     ProbeInlineField,
     /// A captured function and synchronous frame shape can use the current arena.
     FrameEntryAdmits,
+    /// The current thread's frame arena has room for a whole region.
+    FrameArenaAdmits,
     /// An owned literal's cell in this output object has already been filled.
     StringLiteralCellReady,
 }
