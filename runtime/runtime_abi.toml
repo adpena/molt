@@ -921,6 +921,12 @@ return_contract = "raw_bits"
 type = 0
 
 [[import]]
+name = "exception_virtual_level_ready"
+effects = "nothrow_read"
+return_contract = "raw_bits"
+type = 0
+
+[[import]]
 name = "exception_set_last"
 type = 2
 

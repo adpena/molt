@@ -142,6 +142,8 @@ pub fn run_inliner(
     let final_tir = tti.lowering.final_lowering == crate::tir::target_info::FinalLowering::FinalTir;
     let mut wrappers = HashMap::default();
     let mut pending_wrappers = HashSet::default();
+    let mut scalars = HashMap::default();
+    let mut pending_scalars = HashSet::default();
 
     let budget_for =
         |id, body: &TirFunction, wrapper: Option<&super::packed_wrapper::PackedWrapper>| {
@@ -169,6 +171,14 @@ pub fn run_inliner(
         .filter_map(|(idx, (body, id))| {
             if final_tir
                 && body.execution_context == molt_ir::ExecutionContextPolicy::Local
+                && body.return_type == crate::tir::types::TirType::I64
+                && body.has_exception_handlers()
+                && !call_graph.in_static_cycle(id)
+            {
+                pending_scalars.insert(id);
+            }
+            if final_tir
+                && body.execution_context == molt_ir::ExecutionContextPolicy::Local
                 && !call_graph.in_static_cycle(id)
                 && call_graph.callees(id).len() >= 2
                 && body
@@ -181,7 +191,11 @@ pub fn run_inliner(
             Some((id, (idx, budget_for(id, body, None)?)))
         })
         .collect();
-    if inlinable.is_empty() && pending_wrappers.is_empty() && diagnostics.is_none() {
+    if inlinable.is_empty()
+        && pending_wrappers.is_empty()
+        && pending_scalars.is_empty()
+        && diagnostics.is_none()
+    {
         return stats;
     }
 
@@ -209,6 +223,17 @@ pub fn run_inliner(
             // (its `Call` survives, conservative-correct) and does NOT block the
             // remaining inlinable sites in the same caller.
             let callees = call_graph.callees(caller_id);
+            for &id in callees {
+                if pending_scalars.remove(&id) {
+                    let idx = index_of[id.index()].expect("checked scalar body");
+                    if let Some(proof) =
+                        super::checked_scalar::CheckedScalar::summarize(&module.functions[idx])
+                    {
+                        inlinable.insert(id, (idx, InlineBudget::Ordinary));
+                        scalars.insert(id, proof);
+                    }
+                }
+            }
             // The proof carries operation positions and exceptional transfers
             // in the wrapper and its dependencies. Bottom-up order makes those
             // bodies final before their first caller reads the proof.
@@ -325,7 +350,11 @@ pub fn run_inliner(
                     (&mut right[0], &left[callee_idx])
                 };
                 let callee_has_exception_handling = callee.has_exception_handling;
-                let splice = if let Some(summary) = wrappers.get(&site.callee) {
+                let splice = if let Some(proof) = scalars.get(&site.callee) {
+                    proof
+                        .splice(caller, callee, &site, &mut activations)
+                        .map(|block| (block, true))
+                } else if let Some(summary) = wrappers.get(&site.callee) {
                     let continuation = super::packed_wrapper_resume::splice(
                         caller,
                         callee,

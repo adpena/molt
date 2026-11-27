@@ -173,10 +173,7 @@ struct ForwardedReceiver {
 impl ForwardedReceiver {
     fn prove(wrapper: &TirFunction, call: &Invocation, callee: &TirFunction) -> Option<Self> {
         let scalar = ExactScalarPlan::new(callee);
-        let parameter = scalar
-            .return_parameter_search()?
-            .advance(&scalar, |_| Ok::<_, ()>(None))
-            .ok()??;
+        let parameter = scalar.forwarded_return_parameter()?;
         let Source::Formal(formal) = call.arguments.get(parameter)?.source else {
             return None;
         };

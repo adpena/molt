@@ -76,6 +76,7 @@ pub struct FramePrefix {
 }
 
 impl FramePrefix {
+    const VIRTUAL_LEVEL_ATTR: &str = "frame_virtual_lexical_level";
     const HOMES_ATTR: &str = "frame_reservation_homes";
     const DEPTH_ATTR: &str = "frame_reservation_depth";
 
@@ -91,6 +92,19 @@ impl FramePrefix {
             (Self::HOMES_ATTR, AttrValue::Int(i64::from(self.homes))),
             (Self::DEPTH_ATTR, AttrValue::Int(i64::from(self.depth))),
         ]
+    }
+
+    /// A framed fast path can omit an unobserved lexical exception level
+    /// only when its physical admission would leave the active stack aligned.
+    pub fn require_virtual_level(attrs: &mut AttrDict) {
+        attrs.insert(Self::VIRTUAL_LEVEL_ATTR.into(), AttrValue::Bool(true));
+    }
+
+    pub fn requires_virtual_level(attrs: &AttrDict) -> bool {
+        matches!(
+            attrs.get(Self::VIRTUAL_LEVEL_ATTR),
+            Some(AttrValue::Bool(true))
+        )
     }
 
     pub fn reservation_from_attrs(attrs: &AttrDict) -> Option<Self> {
