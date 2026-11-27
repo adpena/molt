@@ -1187,16 +1187,34 @@ def _discovery_pass(
             native_code=native_code,
         )
 
+    # The active premise and the pinned body premise account for repeated
+    # checks within a pass. Keep at most those two projections per module.
+    scan_views: dict[
+        str,
+        tuple[
+            tuple[
+                PythonNamespacePremise, frozenset[str] | None, PythonNamespacePremise
+            ],
+            ...,
+        ],
+    ] = {}
+
     def scan_view(
         module: str, premise: PythonNamespacePremise | None
     ) -> PythonNamespacePremise | None:
-        """The premise a module's scans read: its receipt and revision key."""
         if premise is None:
             return None
-        return premise.scan_view(scan_universes.get(module))
+        universe = scan_universes.get(module)
+        recent = scan_views.get(module, ())
+        for origin, names, projection in recent:
+            if origin is premise and names is universe:
+                return projection
+        projection = premise.scan_view(universe)
+        scan_views[module] = ((premise, universe, projection), *recent[:1])
+        return projection
 
     def refresh_namespace_premises(affected):
-        for module in sorted(set(affected) & set(scan_sources)):
+        for module in sorted(set(affected).intersection(scan_sources)):
             prior = scan_sources[module]
             premise = namespace_premise(
                 prior.source_path, prior.package_paths, state.contexts[module], module
