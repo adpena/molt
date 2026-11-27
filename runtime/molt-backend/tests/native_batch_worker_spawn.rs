@@ -554,9 +554,10 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     assert!(
         warm_stderr.contains("incremental -- compiling")
             && warm_stderr.contains("2 stdlib extern from")
-            && warm_stderr.contains("application object reuse: 6 hits, 0 misses")
+            && warm_stderr.contains(
+                "application archive plan reuse (6 objects, no terminal TIR preparation)"
+            )
             && !warm_stderr.contains("compiling materialized batch")
-            && warm_stderr.contains("6 functions, 6 batches")
             && !warm_stderr.contains("compiling 0 functions"),
         "warm forced-batch run must retain its application objects; stderr:\n{warm_stderr}"
     );
@@ -610,6 +611,42 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     assert_eq!(content_entries(), 1);
     assert_ne!(archive_for(&initial_key), archive_for(&other_key));
     assert!(cache_root.join("native-stdlib-objects-v1").is_dir());
+
+    assert!(
+        content_stderr
+            .contains("application archive plan reuse (6 objects, no terminal TIR preparation)"),
+        "a changed stdlib key must reuse the unchanged application plan: {content_stderr}"
+    );
+    let app_bytes = std::fs::read(&output_path).unwrap();
+    assert_eq!(std::fs::read(&warm_output_path).unwrap(), app_bytes);
+    assert_eq!(std::fs::read(&other_output_path).unwrap(), app_bytes);
+
+    // Retention can retire an object independently of the plan. Find one
+    // application object by its actual archive bytes, then simulate eviction.
+    let app = object::read::archive::ArchiveFile::parse(app_bytes.as_slice()).unwrap();
+    let first_member = app.members().next().unwrap().unwrap();
+    let object = first_member.data(app_bytes.as_slice()).unwrap();
+    let object_paths: Vec<_> = std::fs::read_dir(cache_root.join("native-stdlib-objects-v1"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("object.entry"))
+        .filter(|path| std::fs::read(path).is_ok_and(|bytes| bytes.ends_with(object)))
+        .collect();
+    assert_eq!(
+        object_paths.len(),
+        1,
+        "the emitted application object has one entry"
+    );
+    std::fs::remove_file(&object_paths[0]).unwrap();
+    let recovered_path = tmp.path().join("recovered-app.a");
+    let recovered = run_backend(&recovered_path, other_key.as_str(), "speed", false);
+    let recovered_stderr = String::from_utf8_lossy(&recovered.stderr);
+    assert!(recovered.status.success(), "{recovered_stderr}");
+    assert!(
+        recovered_stderr.contains("application object reuse: 5 hits, 1 misses")
+            && !recovered_stderr.contains("application archive plan reuse"),
+        "a missing object makes the plan a miss: {recovered_stderr}"
+    );
+    assert_eq!(std::fs::read(&recovered_path).unwrap(), app_bytes);
 
     // A corrupt content generation is a miss, never a transfer: constituent
     // admission then avoids BOTH production workers and reproduces the archive.
