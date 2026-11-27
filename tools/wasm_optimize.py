@@ -101,7 +101,7 @@ def optimize(
     *,
     converge: bool | None = None,
     required_exports: set[str] | frozenset[str] | None = None,
-    apply_level: bool = True,
+    apply_level: bool | None = None,
     preserve_debug: bool = False,
     timeout: float | None = None,
     optimizer_identity: WasmOptimizerExecutableIdentity | None = None,
@@ -130,6 +130,20 @@ def optimize(
             status="invalid-level",
             input_bytes=input_path.stat().st_size,
             error=f"Invalid optimization level: {level!r} (valid: {VALID_LEVELS})",
+        )
+    try:
+        pipeline = wasm_opt_pipeline(
+            level,
+            extra_passes=extra_passes or (),
+            converge=converge,
+            apply_level=apply_level,
+            preserve_debug=preserve_debug,
+        )
+    except ValueError as exc:
+        return _optimizer_failure(
+            status="invalid-pipeline",
+            input_bytes=input_path.stat().st_size if input_path.exists() else 0,
+            error=str(exc),
         )
 
     selected = (
@@ -217,13 +231,6 @@ def optimize(
             ),
         )
 
-    pipeline = wasm_opt_pipeline(
-        level,
-        extra_passes=extra_passes or (),
-        converge=converge,
-        apply_level=apply_level,
-        preserve_debug=preserve_debug,
-    )
     staged_output = artifact_publication.staged_output_path(
         output_path,
         purpose="wasm-opt",

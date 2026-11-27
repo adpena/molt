@@ -206,7 +206,8 @@ def _add_build_parser(
         choices=WASM_OPT_LEVELS,
         default=None,
         help=(
-            "Binaryen optimization level for monolithic WASM. Dev builds run no "
+            "Post-link optimization for monolithic WASM. Use bounded for a "
+            "short pass sequence with a lower build cost. Dev builds run no "
             "post-link optimizer unless a level is named; release builds default "
             "to the selected deployment profile's shipping level."
         ),

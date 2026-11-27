@@ -19,7 +19,9 @@ pub(super) fn collect_rc_inert_values(
     alias: &AliasAnalysisResult,
     ranges: &ValueRangeResult,
 ) -> HashSet<ValueId> {
-    crate::representation_facts::non_heap_values_for(func, ranges)
+    let facts =
+        super::super::value_identity::ScalarFacts::with_types(func, alias.exact_scalar_types());
+    crate::representation_facts::non_heap_values_from(&facts, ranges)
         .into_iter()
         .map(|value| alias.root(value))
         .collect()
@@ -30,12 +32,11 @@ pub(super) fn collect_rc_inert_values(
 /// that can also be reached without that edge the release is still needed.
 pub(super) fn collect_guarded_rc_sites(
     func: &TirFunction,
-    am: &mut AnalysisManager,
+    am: &AnalysisManager,
     alias: &AliasAnalysisResult,
 ) -> HashSet<(BlockId, usize)> {
     let mut sites = HashSet::default();
     let mut tests = HashMap::default();
-    let mut has_rc = false;
     for block in func.blocks.values() {
         for op in &block.ops {
             if opcode_proves_immediate_on_true(op.opcode)
@@ -43,14 +44,13 @@ pub(super) fn collect_guarded_rc_sites(
             {
                 tests.insert(*result, alias.root(*operand));
             }
-            has_rc |= refcount_balance_role(op.opcode).is_refcount_balance();
         }
     }
-    if tests.is_empty() || !has_rc {
+    if tests.is_empty() {
         return sites;
     }
 
-    let predecessors = am.get::<PredMap>(func);
+    let predecessors = am.cached::<PredMap>().expect("prepared predecessors");
     let labels = exception_label_to_block(func);
     let mut guards = HashMap::default();
     for (&source, block) in &func.blocks {
@@ -82,7 +82,9 @@ pub(super) fn collect_guarded_rc_sites(
         return sites;
     }
 
-    let children = am.get::<DomChildren>(func);
+    let children = am
+        .cached::<DomChildren>()
+        .expect("prepared dominator children");
     let mut active = HashSet::default();
     let mut pending = vec![(func.entry_block, None)];
     while let Some((block_id, exit)) = pending.pop() {
