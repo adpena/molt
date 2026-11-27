@@ -19,9 +19,10 @@ use super::function::TirFunction;
 use super::values::ValueId;
 
 use self::path_state::{
-    AnonymousHandlerDestinations, StateResumeStacks, compute_state_resume_stacks,
-    is_match_ref_source, iter_ops, label_value, lexical_handlers_before, match_ref_release_owner,
-    original_kind, path_states_before, reachable_region_pops,
+    AnonymousHandlerDestinations, ExceptionPathInputs, StateResumeStacks,
+    compute_state_resume_stacks, is_match_ref_source, iter_ops, label_value,
+    lexical_handlers_before, match_ref_release_owner, original_kind, path_states_before,
+    reachable_region_pops,
 };
 
 mod path_state;
@@ -217,8 +218,7 @@ fn observe_anonymous_handler_destinations(
 }
 
 fn exception_region_path_authority(
-    func: &TirFunction,
-    label_to_block: &BTreeMap<i64, BlockId>,
+    inputs: &ExceptionPathInputs<'_>,
 ) -> Result<
     (
         StateResumeStacks,
@@ -229,15 +229,10 @@ fn exception_region_path_authority(
 > {
     let mut anonymous_destinations = AnonymousHandlerDestinations::new();
     loop {
-        let state_resume_stacks =
-            compute_state_resume_stacks(func, label_to_block, &anonymous_destinations)?;
-        let handlers = lexical_handlers_before(
-            func,
-            label_to_block,
-            &state_resume_stacks,
-            &anonymous_destinations,
-        );
-        let observed = observe_anonymous_handler_destinations(func, &handlers);
+        let state_resume_stacks = compute_state_resume_stacks(inputs, &anonymous_destinations)?;
+        let handlers =
+            lexical_handlers_before(inputs, &state_resume_stacks, &anonymous_destinations);
+        let observed = observe_anonymous_handler_destinations(inputs.func, &handlers);
         let mut changed = false;
         for (owner, labels) in observed {
             let destinations = anonymous_destinations.entry(owner).or_default();
@@ -271,11 +266,9 @@ impl Analysis for ExceptionRegions {
 }
 
 pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFacts {
-    let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(func)
-        .into_iter()
-        .collect();
+    let inputs = ExceptionPathInputs::new(func);
     let (state_resume_stacks, lexical_handlers_before, anonymous_handler_destinations) =
-        match exception_region_path_authority(func, &label_to_block) {
+        match exception_region_path_authority(&inputs) {
             Ok(authority) => authority,
             Err(diagnostics) => {
                 return ExceptionRegionFacts {
@@ -290,8 +283,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         ..ExceptionRegionFacts::default()
     };
     let event_sources = path_state::event_sources_before(
-        func,
-        &label_to_block,
+        &inputs,
         &state_resume_stacks,
         &anonymous_handler_destinations,
     );
@@ -303,9 +295,6 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         else {
             continue;
         };
-        if op.opcode != super::ops::OpCode::CheckException {
-            continue;
-        }
         use path_state::PendingSource;
         let origin = sources.contains(&PendingSource::Origin);
         let unwind = sources.contains(&PendingSource::Unwind);
@@ -333,8 +322,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
             continue;
         };
         let producer_states: Vec<_> = path_states_before(
-            func,
-            &label_to_block,
+            &inputs,
             &state_resume_stacks,
             &anonymous_handler_destinations,
             producer,
@@ -440,8 +428,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         let diagnostics_before = facts.diagnostics.len();
         for (owner, owner_states) in producer_states_by_owner {
             let release_candidates = reachable_region_pops(
-                func,
-                &label_to_block,
+                &inputs,
                 &state_resume_stacks,
                 &anonymous_handler_destinations,
                 producer,
