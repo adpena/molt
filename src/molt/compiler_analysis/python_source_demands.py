@@ -2390,21 +2390,25 @@ class PythonSourceDemands:
             for origin, contained in tuple(self.cache_origins.get(source, ())):
                 candidates.update(
                     item._replace(contained=item.contained or contained)
-                    for item in self.watch(origin, value)
+                    for item in self._operand_candidates(origin, value, deltas)
                 )
         elif value in self.cache_reads:
             for keys, defaults, default_contents, contained in self.cache_reads[value]:
                 for item in _import_cache_items(keys):
                     candidates.update(
                         item._replace(contained=contained or item.contained)
-                        for item in self.watch(("", item), value)
+                        for item in self._operand_candidates(("", item), value, deltas)
                     )
                 for default in defaults:
-                    candidates.update(self.watch((module_name, default), value))
+                    candidates.update(
+                        self._operand_candidates((module_name, default), value, deltas)
+                    )
                 for default in default_contents:
                     candidates.update(
                         item._replace(contained=True)
-                        for item in self.watch((module_name, default), value)
+                        for item in self._operand_candidates(
+                            (module_name, default), value, deltas
+                        )
                     )
         elif isinstance(source, SourceCallableOutcome):
             function = self.functions.get((module_name, source.owner))
@@ -2415,11 +2419,15 @@ class PythonSourceDemands:
                     else (function.returned, function.returned_exposed)
                 )
                 for origin in direct:
-                    candidates.update(self.watch((module_name, origin), value))
+                    candidates.update(
+                        self._operand_candidates((module_name, origin), value, deltas)
+                    )
                 for origin in exposed - direct:
                     candidates.update(
                         candidate._replace(contained=True)
-                        for candidate in self.watch((module_name, origin), value)
+                        for candidate in self._operand_candidates(
+                            (module_name, origin), value, deltas
+                        )
                     )
         elif isinstance(source, SourceCallArguments):
             self._route_call_arguments(module_name, source, value, deltas)
@@ -2636,7 +2644,9 @@ class PythonSourceDemands:
                     SourceAwait if source[-1] == "Await" else SourceGeneratorCompletion
                 )
                 candidates.update(
-                    self.watch((module_name, operation((module_name, owner))), value)
+                    self._operand_candidates(
+                        (module_name, operation((module_name, owner))), value, deltas
+                    )
                 )
         elif value in self.calls and value not in self.import_bindings:
             call = self.calls[value]
