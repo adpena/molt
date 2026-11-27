@@ -1533,6 +1533,26 @@ pub(crate) fn molt_int_from_str_of_obj_attached_body(
     has_base_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
+        if obj_from_bits(has_base_bits).as_bool() == Some(false) {
+            let object = obj_from_bits(val_bits);
+            let inline = if object.as_int().is_some() {
+                Some(val_bits)
+            } else {
+                crate::builtins::exceptions::rendering::builtin_exception_inline_decimal_arg(
+                    _py, object,
+                )
+            };
+            // The exact integer's decimal representation round trips, fits
+            // below the digit limit, and cannot call Python code. Only the
+            // enclosing conversion could observe the intermediate string.
+            if let Some(bits) = inline {
+                return if exception_pending(_py) {
+                    MoltObject::none().bits()
+                } else {
+                    bits
+                };
+            }
+        }
         let str_bits = molt_str_from_obj_attached_body(_py, val_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1784,6 +1804,49 @@ include!("../attached_exports_generated/object/ops_convert.rs");
 mod int_literal_tests {
     use super::parse_int_literal;
     use num_bigint::BigInt;
+
+    #[test]
+    fn decimal_roundtrip_retains_base_and_exception_string_semantics() {
+        use crate::builtins::exceptions::molt_exception_new_builtin_one_attached_body;
+        use crate::{BuiltinExc, MoltObject};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let decimal = MoltObject::from_bool(false).bits();
+            let explicit = MoltObject::from_bool(true).bits();
+            let hexadecimal = MoltObject::from_int(16).bits();
+            let none = MoltObject::none().bits();
+            let number = MoltObject::from_int(-17).bits();
+            let wrapped = molt_exception_new_builtin_one_attached_body(
+                py,
+                BuiltinExc::ValueError as u64,
+                number,
+            );
+            for input in [number, wrapped] {
+                assert_eq!(
+                    super::molt_int_from_str_of_obj_attached_body(py, input, none, decimal),
+                    number,
+                );
+                assert_eq!(
+                    super::molt_int_from_str_of_obj_attached_body(py, input, hexadecimal, explicit),
+                    MoltObject::from_int(-23).bits(),
+                );
+            }
+            crate::dec_ref_bits(py, wrapped);
+
+            let wrapped_bool = molt_exception_new_builtin_one_attached_body(
+                py,
+                BuiltinExc::ValueError as u64,
+                explicit,
+            );
+            assert_eq!(
+                super::molt_int_from_str_of_obj_attached_body(py, wrapped_bool, none, decimal),
+                none,
+            );
+            assert!(crate::exception_pending(py));
+            crate::clear_exception(py);
+            crate::dec_ref_bits(py, wrapped_bool);
+        });
+    }
 
     #[test]
     fn numeric_whitespace_preserves_python_string_and_bytes_domains() {

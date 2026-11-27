@@ -19,6 +19,31 @@ fn declaring_spec(_py: &PyToken<'_>, class: u64) -> Option<&'static BuiltinExcep
     unsafe { crate::object::class_storage::class_builtin_exception_kind(ptr) }.map(BuiltinExc::spec)
 }
 
+fn exact_builtin_str_slot(class: *mut u8) -> Option<ExceptionStrSlot> {
+    unsafe { crate::object::class_storage::class_builtin_exception_kind(class) }
+        .map(effective_str_slot)
+}
+
+/// The value forwarded by the immutable BaseException string slot when its
+/// managed receiver still holds a single inline integer argument.
+pub(crate) fn builtin_exception_inline_decimal_arg(
+    _py: &PyToken<'_>,
+    object: MoltObject,
+) -> Option<u64> {
+    let ptr = object.as_ptr()?;
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_EXCEPTION
+            || !exception_args_is_lazy_single(exception_args_bits(ptr))
+        {
+            return None;
+        }
+        let argument = exception_args_payload_bits(ptr);
+        obj_from_bits(argument).as_int()?;
+        let class = obj_from_bits(object_class_bits(ptr)).as_ptr()?;
+        (exact_builtin_str_slot(class) == Some(ExceptionStrSlot::Base)).then_some(argument)
+    }
+}
+
 crate::builtins::methods::native_method_table!(
     exception_render_method_bits, publish_exception_render_methods, py, name, [owner], {
         let Some(declaration) = declaring_spec(py, owner) else { return Ok(None); };
@@ -83,10 +108,7 @@ pub(crate) fn builtin_exception_str(py: &PyToken<'_>, object: u64) -> Result<Opt
     };
     // An exact builtin exception class is immutable, and so is every builtin
     // in its MRO: its `__str__` is the schema's effective slot. No lookup.
-    if let Some(kind) =
-        unsafe { crate::object::class_storage::class_builtin_exception_kind(class_ptr) }
-    {
-        let slot = effective_str_slot(kind);
+    if let Some(slot) = exact_builtin_str_slot(class_ptr) {
         return Ok(Some(invoke(py, object, Some(slot))));
     }
     let name = crate::NameId::DunderStr.bits(py);
