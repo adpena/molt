@@ -127,6 +127,34 @@ fn binding_release_reads_only_an_unproven_previous_binding() {
     assert_eq!(publications(&func), vec![6]);
 }
 
+#[test]
+fn a_proxy_writer_preserves_the_publication_for_releasing_its_value() {
+    let mut closed = lift(
+        "local",
+        serde_json::json!([
+            {"kind": "const", "value": 1, "out": "x"},
+            {"kind": "frame_home_store", "args": ["x"], "out": "a", "value": 1},
+            {"kind": "frame_set_location", "value": 21},
+            {"kind": "call", "s_value": "callback", "args": [], "out": "r"},
+            {"kind": "check_exception", "exception_edge": "origin", "value": 9},
+            {"kind": "frame_set_location", "value": 22},
+            {"kind": "frame_home_store", "args": ["x"], "out": "b", "value": 1},
+            {"kind": "check_exception", "exception_edge": "origin", "value": 9},
+            {"kind": "frame_set_location", "value": 23},
+        ]),
+    );
+    let mut exposed = closed.clone();
+    exposed.attrs.insert(
+        molt_ir::tir::function::FRAME_LOCALS_EXPOSED_ATTR.into(),
+        AttrValue::Bool(true),
+    );
+
+    run(&mut closed);
+    run(&mut exposed);
+    assert_eq!(publications(&closed), vec![21, 23]);
+    assert_eq!(publications(&exposed), vec![21, 22, 23]);
+}
+
 /// A resumed or inherited activation proves nothing about its homes.
 #[test]
 fn an_inherited_activation_reads_its_first_binding_release() {
