@@ -21,7 +21,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -36,9 +36,12 @@ from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.build_output_layout import _resolve_build_output_layout
 from molt.cli.build_request import BuildRequest
 from molt.cli.cargo_execution import _CargoPreparation
-from molt.cli.models import _BackendCacheSetup
+from molt.cli.models import _BackendCacheSetup, _RuntimeArtifactState
+from molt.cli.output import CliFailure
 from molt.cli.project_roots import _find_project_root
 from molt.cli.runtime_paths import _cargo_target_root
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
+from molt.cli.runtime_native_build import PrepareNativeRuntimeBuild
 from molt.cli.runtime_wasm_pair_build import _PreparedRuntimeWasmPair
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
@@ -317,7 +320,9 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    stage: str,
+    stage: Literal[
+        "validator-readiness", "identity-provisioning", "combined-cdylib-validation"
+    ],
     overlap: bool,
     admitted_validator_for_backend_controls: ToolDiscovery,
 ) -> None:
@@ -415,7 +420,7 @@ def test_native_runtime_miss_shares_compiler_preparation(
     from types import SimpleNamespace
 
     _isolated_molt_root(tmp_path, monkeypatch)
-    plan = SimpleNamespace()
+    plan = cast(RuntimeCargoPlan, SimpleNamespace())
     operations: list[str] = []
 
     def materialize() -> bool:
@@ -434,7 +439,12 @@ def test_native_runtime_miss_shares_compiler_preparation(
             ok=True, binary=tmp_path / "backend"
         )
 
-    def stage_runtime(_state, *, prepare_runtime_build, **_kwargs):
+    def stage_runtime(
+        _state: _RuntimeArtifactState,
+        *,
+        prepare_runtime_build: PrepareNativeRuntimeBuild,
+        **_kwargs: object,
+    ) -> tuple[str, CliFailure]:
         assert not prepare_runtime_build(plan, materialize)
         return "", cli_backend_compile._fail(
             "native runtime failed to materialize", True, command="build"

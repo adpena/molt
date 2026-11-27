@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import time
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 
@@ -177,7 +178,9 @@ def test_wasm_preparation_checks_host_profile_locks_and_joint_memory(
 @pytest.mark.usefixtures("no_ambient_guard_caps")
 @pytest.mark.parametrize("mode", ["parallel", "serialized", "busy", "interrupt"])
 def test_wasm_preparation_owns_real_overlapping_children(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: Literal["parallel", "serialized", "busy", "interrupt"],
 ) -> None:
     gib = 1024**3
     monkeypatch.setattr(

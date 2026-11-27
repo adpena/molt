@@ -15,7 +15,7 @@ from contextlib import nullcontext, ExitStack
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, ContextManager, Mapping
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Literal, Mapping
 
 from molt.backend_environment import (
     CodegenSelection,
@@ -355,7 +355,13 @@ def _prepare_backend_setup(
         return result
 
     def prepare_runtime(
-        plan: RuntimeCargoPlan | None, materialize: Callable[[], bool], *, stage: str
+        plan: RuntimeCargoPlan | None,
+        materialize: Callable[[], bool],
+        *,
+        stage: Literal[
+            "backend_setup_native_runtime_materialization",
+            "backend_setup_runtime_wasm_materialization",
+        ],
     ) -> bool:
         ready: bool | None = None
 

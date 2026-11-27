@@ -14,6 +14,7 @@ from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
 from contextlib import contextmanager
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -85,11 +86,14 @@ def test_cargo_spawn_failure_is_structured(tmp_path, monkeypatch, capsys):
     assert payload["data"]["stage_timings_ms"]["backend_binary_cargo_build"] >= 0
 
 
-def test_overlapped_compiler_cargo_time_uses_the_attempt_receipt(tmp_path, monkeypatch):
+def test_overlapped_compiler_cargo_time_uses_the_attempt_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import subprocess
     from types import SimpleNamespace
 
     from molt.cli import backend_compile, cargo_execution
+    from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
     from molt.cli.rust_cpu_policy import RustCpuPolicy
 
     root = _isolated_molt_root(tmp_path, monkeypatch)
@@ -101,9 +105,16 @@ def test_overlapped_compiler_cargo_time_uses_the_attempt_receipt(tmp_path, monke
         codegen_backend="cranelift",
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-    preparation = cargo_execution._CargoPreparation(SimpleNamespace(), lambda: None)
+    preparation = cargo_execution._CargoPreparation(
+        cast(RuntimeCargoPlan, SimpleNamespace()), lambda: None
+    )
 
-    def cargo(plan, *, preparation: cargo_execution._CargoPreparation, **_kwargs):
+    def cargo(
+        plan: RuntimeCargoPlan,
+        *,
+        preparation: cargo_execution._CargoPreparation,
+        **_kwargs: object,
+    ) -> cargo_execution.CargoExecutionResult:
         preparation.materialize()
         terminal = subprocess.CompletedProcess(plan.command, 1, "", "fixture failure")
         attempt = cargo_execution._cargo_attempt(
