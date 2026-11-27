@@ -137,11 +137,11 @@ permission to omit cells or raise every timeout without diagnosis.
    compiles and executes an existing differential guest. This does not replace
    the complete installed native/WASM/version/profile campaign.
    Installed compilation selects, admits and
-   retains only those cells and never runs Cargo. For an explicit stdlib
-   tier, the build rejects an absent runtime coordinate before reading the
-   user program. The exact runtime features are still admitted against the
-   lowered program's closure, which also chooses the tier for automatic
-   profile selection. The same assembled tree is
+   retains only those cells and never runs Cargo. The build checks the known
+   runtime coordinates before reading the user program, including the stdlib
+   tier when specified. The lowered program's closure determines the tier for
+   automatic selection and the exact runtime feature requirements for every
+   build. The same assembled tree is
    projected into a `py3-none-<platform>` wheel for pip. Its tag is derived
    from the shipped binaries by the exact-pinned audit tools: auditwheel for
    Linux (library closure, GLIBC/GLIBCXX/CXXABI versions, ISA level) and

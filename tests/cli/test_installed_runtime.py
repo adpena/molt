@@ -504,22 +504,27 @@ def test_unshipped_cell_fails_with_the_shipped_matrix(bundle):
 
 
 @pytest.mark.parametrize(
-    ("target_name", "tier", "expected"),
+    ("target_name", "tier", "cargo_profile", "missing_coordinate"),
     (
-        ("native", "server", "native-staticlib"),
-        ("wasm", "server", "wasm-pair"),
-        ("native", "micro", None),
-        ("native", "auto", None),
+        ("native", "server", "dev-fast", "stdlib_profile=server"),
+        ("wasm", "server", "wasm-release", "stdlib_profile=server"),
+        ("native", "auto", "unshipped", "cargo_profile=unshipped"),
+        ("wasm", "auto", "unshipped", "cargo_profile=unshipped"),
+        ("wasm32-unknown-unknown", "auto", "wasm-release", "freestanding=True"),
+        ("native", "micro", "dev-fast", None),
+        ("native", "auto", "dev-fast", None),
+        ("wasm", "auto", "wasm-release", None),
     ),
 )
-def test_installed_build_rejects_missing_explicit_runtime_before_source(
+def test_installed_build_rejects_impossible_runtime_before_source(
     bundle: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     target_name: str,
     tier: StdlibProfile,
-    expected: str | None,
+    cargo_profile: str,
+    missing_coordinate: str | None,
 ) -> None:
     from molt.cli import build_inputs
     from molt.cli.build_command import build
@@ -532,6 +537,12 @@ def test_installed_build_rejects_missing_explicit_runtime_before_source(
     def record_entry(**_kwargs: object) -> Never:
         raise EntryReached
 
+    native = target_name == "native"
+    if not native:
+        _ship_installed_wasm_cell(bundle, tmp_path)
+    monkeypatch.setenv("MOLT_DEV_CARGO_PROFILE", cargo_profile)
+    monkeypatch.delenv("MOLT_WASM_CARGO_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_BUILD_PROFILE", raising=False)
     # Use the real, validated release inventory and stop at the first read of
     # the user's source. Compiler and lock-file admission have separate tests.
     monkeypatch.setattr(build_inputs, "compiler_source_root", lambda: bundle / "source")
@@ -545,14 +556,15 @@ def test_installed_build_rejects_missing_explicit_runtime_before_source(
         profile="dev",
         cache=False,
     )
-    if expected is None:
+    if missing_coordinate is None:
         with pytest.raises(EntryReached):
             build(request)
     else:
         assert build(request) == 2
         error = capsys.readouterr().err
-        assert f"does not ship a {expected} runtime" in error
-        assert "stdlib_profile=server" in error
+        kind = "native-staticlib" if native else "wasm-pair"
+        assert f"does not ship a {kind} runtime" in error
+        assert missing_coordinate in error
         assert not (tmp_path / "home" / "installed-runtime").exists()
 
 

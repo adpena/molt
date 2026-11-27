@@ -44,8 +44,9 @@ from molt._wasm_runtime_exports import wasm_cpython_abi_distribution_export_name
 from molt.cli import installed_runtime_contract as _runtime_contract
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
 from molt.cli.config_resolution import (
+    AUTO_STDLIB_PROFILE,
     DEFAULT_RUNTIME_STDLIB_PROFILE,
-    RuntimeStdlibProfile,
+    StdlibProfile,
 )
 from molt.default_paths import _default_installed_runtime_store
 from molt.cli.native_link_custody import (
@@ -358,26 +359,27 @@ def _missing_runtime_cell(
     )
 
 
-def require_installed_runtime_profile(
+def admit_installed_runtime_coordinate(
     project_root: Path,
     *,
     target: Target,
     cargo_profile: str,
-    stdlib_profile: RuntimeStdlibProfile,
-) -> None:
-    """Reject an impossible explicit profile without discovering user code.
+    stdlib_profile: StdlibProfile,
+) -> InstalledCompiler | None:
+    """Require a shipped cell compatible with the known request coordinates.
 
-    Feature admission still belongs to the final closure and exact cell
-    selection. Here the profile and target already prove there can be no cell.
+    Exact cell selection still uses the lowered program's required features
+    and the concrete tier they determine for an automatic request.
     """
     installed = _installed(project_root)
     if installed is None:
-        return
+        return None
+    tier = None if stdlib_profile == AUTO_STDLIB_PROFILE else stdlib_profile
     if is_wasm_target(target):
         kind = WASM_RUNTIME_CELL
         coordinate = wasm_runtime_cell_key(
             runtime_profile=_resolve_wasm_cargo_profile(cargo_profile),
-            stdlib_profile=stdlib_profile,
+            stdlib_profile=tier,
             simd_enabled=runtime_wasm_simd_policy(),
             freestanding=resolve_artifact_target(target) is TargetKind.WASM_UNKNOWN,
         )
@@ -386,16 +388,19 @@ def require_installed_runtime_profile(
         coordinate = native_runtime_cell_key(
             target_triple=None if target is TargetKind.NATIVE else target_name(target),
             cargo_profile=cargo_profile,
-            stdlib_profile=stdlib_profile,
+            stdlib_profile=tier,
             extra_runtime_features=None,
         )
     del coordinate["runtime_features"]
+    if tier is None:
+        del coordinate["stdlib_profile"]
     if not any(
         row["kind"] == kind
         and all(row["key"].get(name) == value for name, value in coordinate.items())
         for row in installed.runtime["cells"]
     ):
         raise _missing_runtime_cell(installed, kind, coordinate)
+    return installed
 
 
 def select_installed_runtime_cell(
