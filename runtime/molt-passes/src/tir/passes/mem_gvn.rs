@@ -110,8 +110,8 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::deterministic_hash::HashMap;
 
 use super::PassStats;
-use super::alias_analysis::{AliasAnalysis, AliasAnalysisResult};
-use super::memory_ssa::{MemAccess, MemorySSA, MemorySsaResult, typed_slot_store_value};
+use super::alias_analysis::AliasAnalysis;
+use super::memory_ssa::{MemAccess, MemorySSA, typed_slot_store_value};
 use super::ownership_lattice_min::Replacements;
 use super::value_range::ValueRange;
 use crate::tir::analysis::{AnalysisManager, ImmediateDoms, StrictReachable};
@@ -131,31 +131,38 @@ struct Forward {
 }
 
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-    run_with(func, am)
-}
-
-fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "mem_gvn",
         ..Default::default()
     };
 
-    // Trivial functions have no memory redundancy to eliminate.
-    if func.blocks.values().all(|b| b.ops.is_empty()) {
+    // Only direct typed-slot loads can consume the reaching definitions here.
+    // The diagnostic also inspects other memory operations.
+    let diag = backend_env::var(BackendEnv::MOLT_MEMGVN_DIAG).as_deref() == Ok("1");
+    if !func
+        .blocks
+        .values()
+        .flat_map(|b| &b.ops)
+        .any(|op| diag || op.plain_typed_slot_load().is_some())
+    {
         return stats;
     }
 
-    // Analyses (cloned, as gvn.rs does — `am.get` borrows are released before
-    // we mutate `func`). MemorySSA depends on AliasAnalysis (computed first via
-    // the lower AnalysisId ordinal); both are dropped by `invalidate_ops` after
-    // this OpsOnly pass.
-    let alias: AliasAnalysisResult = am.get::<AliasAnalysis>(func).clone();
-    let mem: MemorySsaResult = am.get::<MemorySSA>(func).clone();
-    let tree = am.get::<ImmediateDoms>(func).clone();
+    am.get::<MemorySSA>(func);
     // Strict-CFG reachability (terminator-only): forwarded copies stay within
     // blocks reachable via terminators, the same conservative rule `gvn.rs`
     // applies to cross-block copies (it came from the deleted LIR verifier).
-    let strict_reachable = am.get::<StrictReachable>(func).clone();
+    am.get::<StrictReachable>(func);
+    let strict_reachable = am
+        .cached::<StrictReachable>()
+        .expect("computed reachability");
+    let alias = am
+        .cached::<AliasAnalysis>()
+        .expect("MemorySSA alias dependency");
+    let mem = am.cached::<MemorySSA>().expect("computed MemorySSA");
+    let tree = am
+        .cached::<ImmediateDoms>()
+        .expect("MemorySSA dominator dependency");
 
     // Map every stored memory version to the (target_root, offset, value) it
     // wrote, so a load's reaching def can be matched against the must-alias
@@ -186,7 +193,6 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let mut forwards: Vec<Forward> = Vec::new();
 
-    let diag = backend_env::var(BackendEnv::MOLT_MEMGVN_DIAG).as_deref() == Ok("1");
     if diag {
         let mut n_load = 0usize;
         let mut n_store = 0usize;
@@ -230,7 +236,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                         bid.0,
                         o.opcode,
                         o.origin,
-                        mem.slot_access.region_at(&alias, (bid, oi), o),
+                        mem.slot_access.region_at(alias, (bid, oi), o),
                     );
                 }
             }
@@ -299,7 +305,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if let Some(MemAccess::Def {
                 block: store_block, ..
             }) = mem.access(reaching)
-                && value_reaches_use(*store_block, block, &tree, &strict_reachable)
+                && value_reaches_use(*store_block, block, tree, strict_reachable)
             {
                 forwards.push(Forward {
                     block,
@@ -323,7 +329,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         // source for a Copy.
         let key = (reaching.0, load_root, load_offset);
         if let Some(&(leader_block, leader_result)) = load_leader.get(&key) {
-            if value_reaches_use(leader_block, block, &tree, &strict_reachable)
+            if value_reaches_use(leader_block, block, tree, strict_reachable)
                 && leader_result != load_result
             {
                 forwards.push(Forward {
