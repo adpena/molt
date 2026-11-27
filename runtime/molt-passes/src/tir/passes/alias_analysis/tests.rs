@@ -142,7 +142,7 @@ fn exception_control_transfer_ops_are_rc_barriers() {
 fn dse_observe_is_conservative_superset_of_old_may_observe() {
     let root = ValueId(3);
     let res = AliasAnalysisResult {
-        exact_scalar_types: HashMap::default(),
+        exact_scalar_types: Default::default(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::default(),
         alloc_roots: HashSet::default(),
@@ -224,7 +224,7 @@ fn typed_slot_store_requires_contextual_release_proof() {
     let root = ValueId(3);
     let val = ValueId(4);
     let res = AliasAnalysisResult {
-        exact_scalar_types: HashMap::default(),
+        exact_scalar_types: Default::default(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::default(),
         alloc_roots: HashSet::default(),
@@ -869,7 +869,7 @@ fn escape_map_matches_escape_analysis_and_caches() {
 fn region_of_gates_coarse_regions_on_arbitrary_heap_effects() {
     let add = op(OpCode::Add, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]);
     let dynamic = AliasAnalysisResult {
-        exact_scalar_types: HashMap::default(),
+        exact_scalar_types: Default::default(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::default(),
         alloc_roots: HashSet::default(),
@@ -895,7 +895,8 @@ fn region_of_gates_coarse_regions_on_arbitrary_heap_effects() {
         exact_scalar_types: HashMap::from_iter([
             (ValueId(0), TirType::I64),
             (ValueId(1), TirType::I64),
-        ]),
+        ])
+        .into(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::default(),
         alloc_roots: HashSet::default(),
@@ -1029,7 +1030,7 @@ fn with_field_attrs(mut o: TirOp, offset: i64) -> TirOp {
 
 fn empty_res() -> AliasAnalysisResult {
     AliasAnalysisResult {
-        exact_scalar_types: HashMap::default(),
+        exact_scalar_types: Default::default(),
         aliases: AliasUnionFind::default(),
         escape: HashMap::default(),
         alloc_roots: HashSet::default(),
@@ -1288,7 +1289,7 @@ fn exact_allocation_field_keeps_identity_independent_of_escape() {
     let mut escape = HashMap::default();
     escape.insert(root, EscapeState::GlobalEscape);
     let res = AliasAnalysisResult {
-        exact_scalar_types: HashMap::default(),
+        exact_scalar_types: Default::default(),
         aliases: AliasUnionFind::default(),
         escape,
         alloc_roots: [root].into_iter().collect(),

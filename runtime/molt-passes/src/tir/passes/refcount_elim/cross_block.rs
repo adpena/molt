@@ -14,14 +14,14 @@ use super::balance::refcount_balance_role;
 /// Conditional successors and implicit exception transfers cannot establish it.
 pub(super) fn eliminate_cross_block_pairs(
     func: &mut TirFunction,
-    am: &mut AnalysisManager,
+    am: &AnalysisManager,
     alias: &AliasAnalysisResult,
     stats: &mut PassStats,
 ) {
     if func.blocks.len() <= 1 {
         return;
     }
-    let pred_map = am.get::<PredMap>(func).clone();
+    let pred_map = am.cached::<PredMap>().expect("prepared predecessors");
     let exception_targets = exception_label_to_block(func);
     let mut removals: BTreeMap<BlockId, BTreeSet<usize>> = BTreeMap::new();
     for (&pred_id, pred) in &func.blocks {

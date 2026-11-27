@@ -1056,10 +1056,14 @@ pub(crate) fn non_heap_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
-    non_heap_values_in_domain(
-        repr_by_value_for(tir_func, Some(vr)),
-        RefcountDomain::Carrier,
-    )
+    non_heap_values_from(&ScalarFacts::new(tir_func), vr)
+}
+
+pub(crate) fn non_heap_values_from(
+    facts: &ScalarFacts<'_>,
+    vr: &crate::tir::ValueRangeResult,
+) -> HashSet<ValueId> {
+    non_heap_values_in_domain(repr_by_value_from(facts, Some(vr)), RefcountDomain::Carrier)
 }
 
 /// Values that remain non-owning after boxing into an object field. A checked
