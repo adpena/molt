@@ -65,6 +65,112 @@ fn block_opcodes(func: &TirFunction, block: BlockId) -> Vec<OpCode> {
 }
 
 #[test]
+fn inline_payload_bypasses_the_boxed_continuation_after_its_observer() {
+    use super::{branch, cond_branch, fresh_typed, new_block, thread_inline_int_edges};
+
+    let mut func = TirFunction::new(
+        "guarded_read".into(),
+        vec![TirType::Bool, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let hit = func.fresh_block();
+    let miss = func.fresh_block();
+    let dispatch = func.fresh_block();
+    let success = func.fresh_block();
+    let failure = func.fresh_block();
+    let raw = fresh_typed(&mut func, TirType::I64);
+    let word = fresh_typed(&mut func, TirType::DynBox);
+    let inline = fresh_typed(&mut func, TirType::Bool);
+    let payload = fresh_typed(&mut func, TirType::I64);
+    let wide = fresh_typed(&mut func, TirType::DynBox);
+    let arg = |id, ty| crate::tir::values::TirValue { id, ty };
+    let ret = |value| Terminator::Return {
+        values: vec![value],
+    };
+    let mut literal = TirOp::new(OpCode::ConstInt, vec![], vec![raw]);
+    literal.attrs.insert("value".into(), AttrValue::Int(23));
+    let observer = TirOp::new(
+        OpCode::AsyncWorkPending,
+        vec![],
+        vec![fresh_typed(&mut func, TirType::Bool)],
+    );
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator = cond_branch(ValueId(0), hit, miss);
+    func.blocks.insert(
+        hit,
+        new_block(hit, vec![literal, observer], branch(dispatch, raw)),
+    );
+    func.blocks
+        .insert(miss, new_block(miss, vec![], branch(dispatch, ValueId(1))));
+    let mut test = new_block(
+        dispatch,
+        vec![TirOp::new(OpCode::IsInlineInt, vec![word], vec![inline])],
+        Terminator::CondBranch {
+            cond: inline,
+            then_block: success,
+            then_args: vec![],
+            else_block: failure,
+            else_args: vec![word],
+        },
+    );
+    test.args.push(arg(word, TirType::DynBox));
+    func.blocks.insert(dispatch, test);
+    func.blocks.insert(
+        success,
+        new_block(
+            success,
+            vec![TirOp::new(
+                OpCode::UnboxInlineInt,
+                vec![word],
+                vec![payload],
+            )],
+            ret(payload),
+        ),
+    );
+    let mut wide_arm = new_block(failure, vec![], ret(wide));
+    wide_arm.args.push(arg(wide, TirType::DynBox));
+    func.blocks.insert(failure, wide_arm);
+    assert_valid(&func);
+
+    let mut exposed_test = func.clone();
+    exposed_test.blocks.get_mut(&success).unwrap().terminator = ret(inline);
+    assert_valid(&exposed_test);
+    assert_eq!(
+        thread_inline_int_edges(&mut exposed_test, &Default::default()),
+        0
+    );
+
+    assert_eq!(thread_inline_int_edges(&mut func, &Default::default()), 1);
+    assert!(matches!(
+        &func.blocks[&hit].terminator,
+        Terminator::Branch { target, args } if *target == success && args == &[raw]
+    ));
+    assert_eq!(
+        block_opcodes(&func, hit),
+        [OpCode::ConstInt, OpCode::AsyncWorkPending]
+    );
+    assert!(matches!(
+        &func.blocks[&miss].terminator,
+        Terminator::Branch { target, args } if *target == dispatch && args == &[ValueId(1)]
+    ));
+    let Terminator::CondBranch {
+        then_block,
+        else_block,
+        ref else_args,
+        ..
+    } = func.blocks[&dispatch].terminator
+    else {
+        panic!("boxed residual still needs its tag test");
+    };
+    assert_eq!(else_block, failure);
+    assert_eq!(else_args, &[word]);
+    assert_eq!(block_opcodes(&func, then_block), [OpCode::UnboxInlineInt]);
+    assert_eq!(func.blocks[&success].args[0].id, payload);
+    assert!(func.blocks[&success].ops.is_empty());
+    assert_valid(&func);
+}
+
+#[test]
 fn boxed_add_tests_int_then_float_words() {
     let (mut func, result) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
     let stats = run(&mut func);
@@ -1902,7 +2008,7 @@ fn a_raw_int_meets_a_boxed_block_argument_on_its_own_edge() {
         },
     );
     assert_eq!(plan(&func)[&wide], Repr::RawI64FullDeopt);
-    assert_eq!(super::box_raw_edge_args(&mut func), 1);
+    assert_eq!(super::box_raw_edge_args(&mut func, &Default::default()), 1);
     assert_valid(&func);
     let Terminator::CondBranch {
         then_block,
@@ -1924,7 +2030,7 @@ fn a_raw_int_meets_a_boxed_block_argument_on_its_own_edge() {
     ));
     assert_eq!(plan(&func)[&wide], Repr::RawI64FullDeopt);
     // A second run finds nothing left to box.
-    assert_eq!(super::box_raw_edge_args(&mut func), 0);
+    assert_eq!(super::box_raw_edge_args(&mut func, &Default::default()), 0);
 }
 
 #[test]

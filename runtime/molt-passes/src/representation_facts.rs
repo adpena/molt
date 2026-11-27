@@ -197,7 +197,7 @@ fn repr_by_value_with_types(
     }
     let full_deopt_values =
         raw_i64_full_deopt_values_for_with_types(tir_func, vr, &overflow_safe_values, value_types);
-    for &id in &full_deopt_values {
+    for id in full_deopt_values.difference(&overflow_safe_values).copied() {
         repr_by_value.insert(id, Repr::RawI64FullDeopt);
     }
     constrain_boxed_binding_observations(tir_func, &mut repr_by_value, value_types);
@@ -1418,11 +1418,18 @@ fn propagate_checked_identity_values(
             .filter(|incomings| !incomings.is_empty())
             .map(Vec::as_slice)
     };
-    // Optimistic start: every identity value of int type may be checked.
+    // A range-refining copy can be inline-safe even when its source spans
+    // all of i64. Inline-safe values support the full-width solution without
+    // participating in it. In particular, a phi of inline-safe values cannot
+    // inherit a wider representation through a checked predecessor of one.
     let candidates: Vec<_> = all_value_ids
         .iter()
         .copied()
-        .filter(|id| !seed.contains(id) && is_raw_i64_semantic_candidate(value_types, *id))
+        .filter(|id| {
+            !seed.contains(id)
+                && !support.contains(id)
+                && is_raw_i64_semantic_candidate(value_types, *id)
+        })
         .filter_map(|id| sources(id).map(|srcs| (id, srcs)))
         .collect();
     let mut assumed: HashSet<ValueId> = seed.clone();
@@ -1470,6 +1477,7 @@ fn raw_carrier_worklist_requires_support_and_seed_reachability() {
     let seed = HashSet::from_iter([value(0)]);
     let support = HashSet::from_iter([value(1)]);
     let copies = HashMap::from_iter([
+        (value(1), value(0)),
         (value(3), value(2)),
         (value(5), value(6)),
         (value(9), value(8)),
