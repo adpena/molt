@@ -81,6 +81,23 @@ or merging preserves the declared scope; it cannot upgrade an old board to
 current evidence. Catalog intentions, primary runnable suites, application
 recipes and friend-runner lanes retain distinct denominators.
 
+Inspect a retained current-schema board without starting a workload:
+
+```bash
+uv run --no-project python tools/venv_exec.py python tools/perf_scoreboard.py --signals /path/to/board.json
+```
+
+The default is a ranked eight-item evidence inbox with omitted counts. Use
+`--signals-format json` for typed machine records, `--signal-limit N` to bound
+output and `--expected-source SHA` to require the recorded source. Items carry
+coordinates, confidence, evidence/log pointers and next diagnostic actions.
+Correctness mismatches, build/runtime diagnostic leads, qualified performance
+losses, measurement problems and missing coverage remain distinct. The header
+names the retained snapshot and methodology; it does not verify current main.
+Historical schemas are refused rather than upgraded. See the
+[signal contract](design/foundation/69_benchmark_corpus_union_and_dynamic_calibration.md#optimization-and-correctness-signals)
+for admission thresholds and the optimization/correctness response loop.
+
 Every ordinary timing sample starts a fresh process. Legacy `cold_*` fields
 mean first invocation, `warm_*` means repeated processes after discarded
 launches, and `startup_tax_ms` is the observational first-minus-repeat delta.

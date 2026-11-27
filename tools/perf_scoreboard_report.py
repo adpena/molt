@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from enum import Enum
 
 import json
+import math
 import sys
 from pathlib import Path
+from typing import Literal, cast
 
 from tools.perf_schema import (
     CLASS_DIMENSIONAL_WIN,
@@ -16,6 +20,8 @@ from tools.perf_schema import (
     CLASS_TIE,
     PlannedCell,
     flatten_cells,
+    output_parity_passes,
+    planned_cell_from_observation,
     validate_board,
 )
 from tools.perf_scoreboard_model import (
@@ -37,7 +43,591 @@ from tools.perf_scoreboard_model import (
     _budget_ms_for,
     _load_cold_start_budgets,
     _robust_cell_stable,
+    _warm_speedup_ci,
 )
+
+
+AGENT_SIGNAL_KIND: Literal["molt.benchmark-signals.v1"] = "molt.benchmark-signals.v1"
+
+
+class SignalKind(str, Enum):
+    OUTPUT_MISMATCH = "output_mismatch"
+    BUILD_FAILURE = "build_failure"
+    RUNTIME_FAILURE = "runtime_failure"
+    MEASUREMENT_FAILURE = "measurement_failure"
+    UNSUPPORTED = "unsupported"
+    PERFORMANCE_LOSS = "performance_loss"
+    QUALIFICATION = "qualification"
+    MISSING_COVERAGE = "missing_coverage"
+
+
+class SignalSeverity(str, Enum):
+    CORRECTNESS = "correctness"
+    DIAGNOSTIC = "diagnostic"
+    PERFORMANCE = "performance"
+    QUALIFICATION = "qualification"
+    COVERAGE = "coverage"
+
+
+class SignalConfidence(str, Enum):
+    OBSERVED = "observed"
+    QUALIFIED = "qualified_snapshot"
+    UNQUALIFIED = "unqualified"
+
+
+class SignalAction(str, Enum):
+    REPRODUCE_OUTPUT = "reproduce_output"
+    INSPECT_BUILD = "inspect_build"
+    INSPECT_RUNTIME = "inspect_runtime"
+    REPAIR_MEASUREMENT = "repair_measurement"
+    REVIEW_SUPPORT = "review_support"
+    PROFILE_LOSS = "profile_loss"
+    QUALIFY_MEASUREMENT = "qualify_measurement"
+    RUN_MISSING = "run_missing"
+
+
+@dataclass(frozen=True)
+class AgentSignal:
+    kind: SignalKind
+    severity: SignalSeverity
+    confidence: SignalConfidence
+    action_code: SignalAction
+    finding: str
+    action: str
+    coordinate: PlannedCell | None
+    evidence_pointer: str
+    log_artifact: str | None
+    warm_speedup: float | None = None
+    repeat_median_warm: float | None = None
+
+    def as_record(self) -> dict[str, object]:
+        """Project closed internal facts onto the existing JSON boundary."""
+        return {
+            "kind": self.kind.value,
+            "severity": self.severity.value,
+            "confidence": self.confidence.value,
+            "action_code": self.action_code.value,
+            "finding": self.finding,
+            "action": self.action,
+            "coordinate": self.coordinate.as_record() if self.coordinate else None,
+            "evidence_pointer": self.evidence_pointer,
+            "log_artifact": self.log_artifact,
+            "warm_speedup": self.warm_speedup,
+            "repeat_median_warm": self.repeat_median_warm,
+        }
+
+
+@dataclass(frozen=True)
+class AgentSignalCoverage:
+    selected: int
+    attempted: int
+    parity_qualified: int
+    measured: int
+    release_qualified: int
+    not_run: tuple[PlannedCell, ...]
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "selected": self.selected,
+            "attempted": self.attempted,
+            "parity_qualified": self.parity_qualified,
+            "measured": self.measured,
+            "release_qualified": self.release_qualified,
+            "not_run": len(self.not_run),
+        }
+
+
+@dataclass(frozen=True)
+class AgentSignalReport:
+    evidence_path: str
+    generated_at: str
+    source_revisions: tuple[tuple[str, str], ...]
+    methodology_schema: str | None
+    methodology_version: int | None
+    methodology_sha256: str | None
+    methodology_locked: bool
+    qualification_problems: tuple[str, ...]
+    coverage: AgentSignalCoverage
+    signals: tuple[AgentSignal, ...]
+    total: int
+    omitted: int
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "kind": AGENT_SIGNAL_KIND,
+            "snapshot": {
+                "evidence_path": self.evidence_path,
+                "generated_at": self.generated_at,
+                "source_revisions": dict(self.source_revisions),
+                "methodology_schema": self.methodology_schema,
+                "methodology_version": self.methodology_version,
+                "methodology_sha256": self.methodology_sha256,
+                "methodology_locked": self.methodology_locked,
+                "qualification_problems": list(self.qualification_problems),
+                "scope": "retained_snapshot",
+                "current_main_proof": False,
+            },
+            "coverage": self.coverage.as_record(),
+            "signals": [signal.as_record() for signal in self.signals],
+            "total": self.total,
+            "omitted": self.omitted,
+        }
+
+
+def _signal_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _signal_mapping(value: object) -> Mapping[str, object]:
+    # Stored JSON objects are open at this boundary; facts are closed on projection.
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+
+
+def _signal_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _signal_pointer(
+    doc: Mapping[str, object], coordinate: PlannedCell, cell: Mapping[str, object]
+) -> str:
+    def escape(value: str) -> str:
+        return value.replace("~", "~0").replace("/", "~1")
+
+    keys = (
+        coordinate.benchmark,
+        coordinate.target,
+        coordinate.backend,
+        coordinate.profile,
+    )
+    node: object = doc.get("scoreboard")
+    for key in keys:
+        node = _signal_mapping(node).get(key)
+    if node is not cell:
+        raise ScoreboardSchemaError(
+            "signals require coordinate-bound evidence pointers",
+            ["scoreboard nesting does not match the recorded cell coordinate"],
+        )
+    return "/scoreboard/" + "/".join(escape(value) for value in keys)
+
+
+def _signal_repeat_problems(cell: Mapping[str, object]) -> tuple[str, ...]:
+    passes = cell.get("repeat_passes")
+    ratios = cell.get("repeat_warm_speedups")
+    if (
+        type(passes) is not int
+        or passes < 2
+        or not isinstance(ratios, list)
+        or len(ratios) != passes
+        or any(
+            (number := _signal_number(ratio)) is None or number <= 0 for ratio in ratios
+        )
+    ):
+        return (
+            "repeat evidence needs at least two matching finite positive pass ratios",
+        )
+    lo = _signal_number(cell.get("repeat_ci_lo"))
+    hi = _signal_number(cell.get("repeat_ci_hi"))
+    if lo is None or hi is None or lo > hi:
+        return ("repeat confidence interval is missing, nonfinite, or reversed",)
+    try:
+        _, _, expected_lo, expected_hi = _warm_speedup_ci(cast(list[float], ratios))
+    except (OverflowError, ValueError):
+        return (
+            "repeat confidence interval cannot be represented by the recorded ratios",
+        )
+    if lo != expected_lo or hi != expected_hi:
+        return ("repeat confidence interval disagrees with recorded pass ratios",)
+    return ()
+
+
+def _signal_cell_qualification(cell: Mapping[str, object]) -> tuple[str, ...]:
+    problems: list[str] = []
+    if cell.get("verdict") == VERDICT_FAIL_STALE:
+        problems.append("stale cell evidence requires remeasurement")
+    if any(
+        cell.get(field) is not True for field in ("build_ok", "molt_ok", "cpython_ok")
+    ):
+        problems.append("build and both runtimes must succeed")
+    parity = _signal_mapping(cell.get("output_parity"))
+    if parity.get("reference_runtime") != "cpython" or not output_parity_passes(parity):
+        problems.append("exact passed CPython parity is required")
+    if cell.get("stable") is not True or cell.get("measured_quiescent") is not True:
+        problems.append("stable quiescent observations are required")
+    ratio = _signal_number(cell.get("warm_speedup"))
+    if ratio is None or ratio <= 0:
+        problems.append("a finite positive CPython/Molt point ratio is required")
+    problems.extend(_signal_repeat_problems(cell))
+    return tuple(problems)
+
+
+def _signal_output_mismatch(parity: Mapping[str, object]) -> bool:
+    if not (
+        parity.get("checked") is True
+        and parity.get("reference_runtime") == "cpython"
+        and parity.get("reference_stable") is True
+        and parity.get("molt_stable") is True
+        and parity.get("reference_returncode") == 0
+        and parity.get("ok") is False
+    ):
+        return False
+    return any(
+        parity.get(f"{axis}_match") is False
+        and parity.get(f"reference_{axis}_sha256") != parity.get(f"molt_{axis}_sha256")
+        for axis in ("stdout", "stderr")
+    ) or (parity.get("exit_match") is False and parity.get("molt_returncode") != 0)
+
+
+def _signal_sort_key(signal: AgentSignal) -> tuple[int, float, PlannedCell, str]:
+    rank = tuple(SignalSeverity).index(signal.severity)
+    return (
+        rank,
+        signal.repeat_median_warm
+        if signal.repeat_median_warm is not None
+        else signal.warm_speedup
+        if signal.warm_speedup is not None
+        else math.inf,
+        signal.coordinate or PlannedCell("<board>", "native", "native", "<board>"),
+        signal.kind.value,
+    )
+
+
+def build_agent_signals(
+    doc: Mapping[str, object],
+    *,
+    evidence_path: str,
+    limit: int = 8,
+    expected_source_sha: str | None = None,
+) -> AgentSignalReport:
+    """Read retained evidence once; never probe Git or infer a temporal regression."""
+    from tools.perf_authority import (
+        DEFAULT_STALE_DAYS,
+        doc_age_days,
+        perf_methodology_problems,
+        scoreboard_revision_fields,
+    )
+    from tools.git_identity import is_git_object_id
+
+    if type(limit) is not int or limit <= 0:
+        raise ValueError("signal limit must be a positive integer")
+    problems = validate_board(doc)
+    if problems:
+        sampled = [
+            problem if len(problem) <= 240 else problem[:237] + "..."
+            for problem in problems[:3]
+        ]
+        if len(problems) > 3:
+            sampled.append(f"... {len(problems) - 3} more schema problems")
+        raise ScoreboardSchemaError(
+            "signals require a current-schema retained scoreboard", sampled
+        )
+    provenance = _signal_mapping(doc.get("provenance"))
+    revisions = scoreboard_revision_fields(doc)
+    recorded_sources = (doc.get("git_rev"), provenance.get("local_head_sha"))
+    if len({revision for _, revision in revisions}) > 1:
+        raise ValueError(
+            "signals source identities disagree: "
+            + ", ".join(field for field, _ in revisions)
+        )
+    if expected_source_sha is not None:
+        if not is_git_object_id(expected_source_sha):
+            raise ValueError("expected source must be a full lowercase Git SHA")
+        if any(revision != expected_source_sha for revision in recorded_sources):
+            raise ValueError(
+                "retained scoreboard source does not match expected source "
+                + expected_source_sha
+            )
+    board_problems = perf_methodology_problems(provenance)
+    if provenance.get("authoritative") is not True:
+        board_problems.append("snapshot is not authoritative")
+    if any(
+        not isinstance(revision, str) or not is_git_object_id(revision)
+        for revision in recorded_sources
+    ):
+        board_problems.append(
+            "both recorded source fields must name full Git object ids"
+        )
+    if provenance.get("dirty_tree") is not False:
+        board_problems.append("snapshot records a dirty or unknown source tree")
+    origin = provenance.get("origin_sha")
+    if not isinstance(origin, str) or not is_git_object_id(origin):
+        board_problems.append("snapshot lacks a full recorded origin revision")
+    if (
+        provenance.get("merge_base_sha") != provenance.get("local_head_sha")
+        or provenance.get("diverges_from_origin") is True
+    ):
+        board_problems.append(
+            "snapshot source lineage contradicts authoritative admission"
+        )
+    age = doc_age_days(_signal_text(doc.get("generated_at")))
+    if age is None or age < 0 or age > DEFAULT_STALE_DAYS:
+        board_problems.append("snapshot timestamp is missing, future, or stale")
+    quiescence = _signal_mapping(provenance.get("quiescence"))
+    if quiescence.get("quiet") is not True:
+        board_problems.append("snapshot does not record machine quiescence")
+    raw_coverage = _signal_mapping(doc.get("coverage"))
+    missing = tuple(
+        PlannedCell.from_payload(_signal_mapping(value))
+        for value in cast(list[object], raw_coverage["not_run"])
+    )
+    coverage = AgentSignalCoverage(
+        selected=cast(int, raw_coverage["selected"]),
+        attempted=cast(int, raw_coverage["attempted"]),
+        parity_qualified=cast(int, raw_coverage["parity_qualified"]),
+        measured=cast(int, raw_coverage["measured"]),
+        release_qualified=cast(int, raw_coverage["release_qualified"]),
+        not_run=missing,
+    )
+    signals: list[AgentSignal] = []
+    if board_problems:
+        signals.append(
+            AgentSignal(
+                SignalKind.QUALIFICATION,
+                SignalSeverity.QUALIFICATION,
+                SignalConfidence.UNQUALIFIED,
+                SignalAction.QUALIFY_MEASUREMENT,
+                "; ".join(board_problems),
+                "Remeasure this source with a locked methodology on a quiet host.",
+                None,
+                "/provenance",
+                None,
+            )
+        )
+    for cell in flatten_cells(doc):
+        coordinate = planned_cell_from_observation(cell)
+        pointer = _signal_pointer(doc, coordinate, cell)
+        log = _signal_text(cell.get("log_artifact"))
+        ratio = _signal_number(cell.get("warm_speedup"))
+        parity = _signal_mapping(cell.get("output_parity"))
+        failure = _signal_mapping(cell.get("molt_failure"))
+        status = failure.get("status")
+        # A single primary finding per coordinate prevents duplicate axis causes.
+        kind: SignalKind
+        severity = SignalSeverity.DIAGNOSTIC
+        confidence = SignalConfidence.OBSERVED
+        action_code: SignalAction
+        finding: str
+        action: str
+        if (
+            cell.get("molt_failure_timed_out") is True
+            or cell.get("molt_failure_guard_violation") is not None
+            or failure.get("infrastructure_failure") is not None
+            or status
+            in (
+                "timeout",
+                "infrastructure_error",
+                "rss_limit_exceeded",
+                "orphaned_processes_cleaned",
+            )
+        ):
+            kind, action_code = (
+                SignalKind.MEASUREMENT_FAILURE,
+                SignalAction.REPAIR_MEASUREMENT,
+            )
+            finding = "Guard, timeout, or measurement infrastructure failure; compiler cause unproven."
+            action = "Inspect the failure receipt and repair measurement admission before comparing performance."
+        elif cell.get("run_blocked") is True:
+            kind, action_code = SignalKind.UNSUPPORTED, SignalAction.REVIEW_SUPPORT
+            finding = "Execution was unsupported, blocked, or refused by policy."
+            action = "Check the declared support contract and recorded refusal."
+        elif cell.get("build_ok") is not True:
+            kind, action_code = SignalKind.BUILD_FAILURE, SignalAction.INSPECT_BUILD
+            finding = "Molt build failed; root cause is not established."
+            action = (
+                "Inspect the build failure receipt and log, then reproduce the build."
+            )
+        elif cell.get("verdict") == VERDICT_CPY_INCOMPAT:
+            kind, action_code = (
+                SignalKind.QUALIFICATION,
+                SignalAction.QUALIFY_MEASUREMENT,
+            )
+            severity, confidence = (
+                SignalSeverity.QUALIFICATION,
+                SignalConfidence.UNQUALIFIED,
+            )
+            finding = "Molt-only output contract has no CPython performance floor."
+            action = (
+                "Use the declared Molt contract; do not infer a CPython win or loss."
+            )
+        elif (
+            cell.get("cpython_ok") is False and cell.get("molt_ok") is True
+        ) or parity.get("reference_stable") is False:
+            kind, action_code = (
+                SignalKind.MEASUREMENT_FAILURE,
+                SignalAction.REPAIR_MEASUREMENT,
+            )
+            finding = "CPython reference failed or produced unstable output; no compiler correctness claim."
+            action = "Restore a successful stable CPython reference before comparison."
+        elif _signal_output_mismatch(parity):
+            kind, action_code = (
+                SignalKind.OUTPUT_MISMATCH,
+                SignalAction.REPRODUCE_OUTPUT,
+            )
+            severity = SignalSeverity.CORRECTNESS
+            finding = "Checked stable CPython output differs from compiled output."
+            action = "Reproduce the recorded output mismatch and minimize a differential case."
+            pointer += "/output_parity"
+        elif (
+            cell.get("molt_ok") is not True or cell.get("verdict") == VERDICT_RUN_ERROR
+        ):
+            kind, action_code = SignalKind.RUNTIME_FAILURE, SignalAction.INSPECT_RUNTIME
+            finding = (
+                "Molt run or output comparison failed; root cause is not established."
+            )
+            action = "Inspect the run receipt and observable output before diagnosing a compiler defect."
+        else:
+            local_problems = _signal_cell_qualification(cell)
+            hi = _signal_number(cell.get("repeat_ci_hi"))
+            lo = _signal_number(cell.get("repeat_ci_lo"))
+            loss = (ratio is not None and ratio < 1) or (hi is not None and hi < 1)
+            if (
+                not board_problems
+                and not local_problems
+                and cell.get("classification") == CLASS_RED_STABLE
+                and cell.get("repeat_stability") == "STABLE_BELOW"
+                and hi is not None
+                and hi < 1
+            ):
+                kind, action_code = (
+                    SignalKind.PERFORMANCE_LOSS,
+                    SignalAction.PROFILE_LOSS,
+                )
+                severity, confidence = (
+                    SignalSeverity.PERFORMANCE,
+                    SignalConfidence.QUALIFIED,
+                )
+                finding = f"Qualified snapshot fresh-process loss: CPython/Molt point={ratio:.3g}x; CI upper={hi:.3g}."
+                action = "Profile this workload and test an attributed optimization with an interleaved A/B."
+            elif (
+                not board_problems
+                and not local_problems
+                and cell.get("classification") == CLASS_GREEN
+                and cell.get("repeat_stability") == "STABLE_ABOVE"
+                and lo is not None
+                and lo > 1
+                and cell.get("verdict") == VERDICT_GREEN
+            ):
+                continue
+            else:
+                kind, action_code = (
+                    SignalKind.QUALIFICATION,
+                    SignalAction.QUALIFY_MEASUREMENT,
+                )
+                severity, confidence = (
+                    SignalSeverity.QUALIFICATION,
+                    SignalConfidence.UNQUALIFIED,
+                )
+                if loss:
+                    finding = f"Observed fresh-process loss CPython/Molt={_fmt(ratio)}x requires qualification."
+                else:
+                    finding = "Cell comparison requires qualification before optimization claims."
+                if local_problems:
+                    finding += " " + "; ".join(local_problems) + "."
+                action = "Collect successful parity-checked, quiet, stable repeat evidence with a decisive confidence interval."
+                # The board signal already explains shared qualification gaps.
+                if (
+                    board_problems
+                    and not local_problems
+                    and not loss
+                    and cell.get("verdict") == VERDICT_GREEN
+                ):
+                    continue
+        median = None
+        if confidence is SignalConfidence.QUALIFIED:
+            median, _, _, _ = _warm_speedup_ci(
+                cast(list[float], cell["repeat_warm_speedups"])
+            )
+        signals.append(
+            AgentSignal(
+                kind,
+                severity,
+                confidence,
+                action_code,
+                finding,
+                action,
+                coordinate,
+                pointer,
+                log,
+                ratio,
+                median,
+            )
+        )
+    for index, coordinate in enumerate(missing):
+        signals.append(
+            AgentSignal(
+                SignalKind.MISSING_COVERAGE,
+                SignalSeverity.COVERAGE,
+                SignalConfidence.OBSERVED,
+                SignalAction.RUN_MISSING,
+                "Declared coordinate was not run; no timing or correctness observation exists.",
+                "Run this selected coordinate under the recorded methodology.",
+                coordinate,
+                f"/coverage/not_run/{index}",
+                None,
+            )
+        )
+    signals.sort(key=_signal_sort_key)
+    return AgentSignalReport(
+        evidence_path=evidence_path,
+        generated_at=cast(str, doc["generated_at"]),
+        source_revisions=revisions,
+        methodology_schema=_signal_text(provenance.get("methodology_schema")),
+        methodology_version=cast(int, provenance["methodology_version"])
+        if type(provenance.get("methodology_version")) is int
+        else None,
+        methodology_sha256=_signal_text(provenance.get("methodology_sha256")),
+        methodology_locked=provenance.get("methodology_locked") is True,
+        qualification_problems=tuple(board_problems),
+        coverage=coverage,
+        signals=tuple(signals[:limit]),
+        total=len(signals),
+        omitted=max(0, len(signals) - limit),
+    )
+
+
+def print_agent_signals(
+    report: AgentSignalReport, *, json_output: bool = False
+) -> None:
+    if json_output:
+        print(json.dumps(report.as_record(), indent=2))
+        return
+    print("AGENT SIGNALS — retained snapshot; no current-main proof")
+    print(f"Evidence: {report.evidence_path}  generated_at={report.generated_at}")
+    print(
+        "Source: "
+        + (
+            ", ".join(
+                f"{field}={revision}" for field, revision in report.source_revisions
+            )
+            or "unknown"
+        )
+    )
+    print(
+        f"Methodology: {report.methodology_schema} v{report.methodology_version} {report.methodology_sha256} locked={report.methodology_locked}"
+    )
+    print(
+        f"Coverage: selected={report.coverage.selected} attempted={report.coverage.attempted} measured={report.coverage.measured} not_run={len(report.coverage.not_run)}"
+    )
+    print(
+        f"Signals: total={report.total} shown={len(report.signals)} omitted={report.omitted}"
+    )
+    for signal in report.signals:
+        coordinate = signal.coordinate
+        label = (
+            f"{coordinate.benchmark} [{coordinate.target}/{coordinate.backend}/{coordinate.profile}]"
+            if coordinate
+            else "board"
+        )
+        print(
+            f"[{signal.severity.value}/{signal.confidence.value}] {label}: {signal.finding}"
+        )
+        print(f"  {signal.action_code.value}: {signal.action}")
+        print(f"  #{signal.evidence_pointer} log={signal.log_artifact or '-'}")
 
 
 def _validate_board_for_emit(doc: dict, *, context: str) -> None:

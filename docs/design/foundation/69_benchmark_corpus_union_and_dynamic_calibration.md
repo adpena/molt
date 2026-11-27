@@ -81,6 +81,69 @@ parameterized inputs and setup outside the timed operation. Reuse those
 principles through Molt's existing producers; suite registration alone inherits
 none of their measurement guarantees.
 
+### Optimization and correctness signals
+
+Use the existing scoreboard as a compact evidence inbox before choosing a fix:
+
+```bash
+uv run --no-project python tools/venv_exec.py python tools/perf_scoreboard.py --signals /path/to/board.json
+uv run --no-project python tools/venv_exec.py python tools/perf_scoreboard.py --signals /path/to/board.json --signals-format json --signal-limit 20
+```
+
+This read-only projection validates retained evidence without provisioning or
+running a workload. It returns at most eight ranked items by default, with total
+and omitted counts. Each item carries a typed kind, severity, confidence and
+action, its coordinate, a concise finding and the retained JSON/log pointer.
+The header names the source and methodology; `--expected-source` requires an
+exact recorded source match. Snapshot evidence never proves live-main status.
+
+| Signal | Evidence boundary | Next useful work |
+|---|---|---|
+| Correctness mismatch | Checked, stable CPython comparison reports different observable output | Reproduce the admitted input and minimize a differential counterexample; preserve the oracle |
+| Build/runtime diagnostic | A retained failure exists; reference, guard and policy refusals keep their own scope | Inspect the linked failure before assigning a product defect; never widen the verified subset for a benchmark |
+| Qualified performance loss | Authoritative snapshot, coherent source/locked methodology, successful subjects and exact parity, quiet/stable observations, consistent repeated evidence and CI wholly below the CPython floor | Obtain an independent application profile, inspect generated work/runtime calls and compare interleaved changes before attributing a cause |
+| Qualification gap | Exploratory, noisy, stale or internally insufficient measurement | Repair admission or repeat the selected coordinate on a quiet host |
+| Coverage gap | A declared coordinate has no observation | Execute the missing selected cell; retain failure or parity evidence before timing |
+
+Priority expresses evidence and observed loss, never estimated engineering gain.
+Attribution metadata remains a hypothesis. A single board cannot establish a
+change over time; historical regression/bisection needs matching source-tool-
+workload-host/protocol comparison identities through the existing authorities.
+Time, allocation, memory, size and compile/edit costs remain distinct dimensions.
+Do not turn every quiet-host obligation into an inner development-loop gate.
+
+The action loop is evidence → smallest useful reproduction/profile → shared
+compiler/runtime correction → affected differential proof → compatible held-out
+application measurement → retained receipt and ledger update. An automated
+projection directs work; only observed proof closes a finding. The distinction
+between unstable data and significant differences also follows
+[pyperf's analysis interface](https://pyperf.readthedocs.io/en/stable/cli.html).
+
+### Result analysis and data workloads
+
+Keep retained scoreboard JSON and source-bound receipts as the evidence
+authority. Query views and analytical exports are derived, reproducible
+projections; they cannot qualify a stale, partial or incompatible observation.
+
+| Tool/format | Preferred role | Admission and cost boundary |
+|---|---|---|
+| SQLite | Incremental local lookup/index over admitted receipt identities and typed coordinates | Ingest only new closed identities transactionally; rebuild the index from retained evidence. No parallel authority or per-sample database write. |
+| Parquet | Typed columnar export for larger historical comparisons and sharing | Retain schema/methodology/source/tool/workload/target/profile identities and explicit null/missing states. Export sealed partitions incrementally, outside sample timing. |
+| DuckDB | SQL exploration directly over retained JSON or derived Parquet | Push filters/projections before materialization; compare compatible coordinates only. Return compact summaries with evidence pointers, not full repeated board dumps. |
+
+For application coverage, SQLite transactions/queries and DuckDB/Parquet
+pipelines are useful candidate workloads through the existing recipe and
+source-built extension authorities. Pin real inputs and full result/state
+oracles; report native engine work separately from compiled Python
+orchestration. Registration or a CPython-only run is not Molt qualification.
+
+Admit an index/export implementation only for a measured recurring query or
+retention cost; reuse existing producers and add no mandatory storage dependency
+to planning or measurement. The current tranche changes no result-store format.
+Primary references: [DuckDB JSON](https://duckdb.org/docs/data/json),
+[Parquet pushdown](https://duckdb.org/docs/stable/data/parquet/overview), and
+[SQLite JSON table functions](https://www.sqlite.org/json1.html).
+
 ## Executable portfolio and optimization order
 
 Correctness, deterministic behavior and CPython conformance precede performance.

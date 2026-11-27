@@ -42,6 +42,7 @@ from molt.process_environment import ProcessEnvironment  # noqa: E402
 from tools import perf_schema as schema  # noqa: E402
 from tools import perf_scoreboard as ps  # noqa: E402
 from tools import perf_scoreboard_measure as measure  # noqa: E402
+from tools import perf_scoreboard_report as signal_report  # noqa: E402
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 
 
@@ -3834,3 +3835,480 @@ def test_sealed_hot_profile_refuses_unsealed_source_transform(
     assert cells[0]["build"]["refused"] is True
     assert "sealed transformed-source protocol" in cells[0]["build"]["reason"]
     assert cells[0]["workload"] == workload.record
+
+
+# Retained signals exercise admitted scoreboard fixtures and the real validators.
+def _signal_cell(
+    ratio: float = 0.5, *, benchmark: str = "tests/benchmarks/bench_fib.py"
+) -> ps.Cell:
+    cell = _cell(
+        benchmark=benchmark,
+        warm_molt_s=1.0,
+        warm_cpython_s=ratio,
+        cold_molt_s=1.0,
+        cold_cpython_s=ratio,
+    )
+    cell.repeat_passes = 2
+    cell.repeat_warm_speedups = [ratio, ratio]
+    cell.repeat_median_warm = ratio
+    cell.repeat_variance = 0.0
+    cell.repeat_ci_lo = ratio
+    cell.repeat_ci_hi = ratio
+    cell.repeat_stability = "STABLE_BELOW" if ratio < 1 else "STABLE_ABOVE"
+    cell.measured_quiescent = True
+    cell.classification = ps.CLASS_RED_STABLE if ratio < 1 else ps.CLASS_GREEN
+    cell.finalize(budget_ms=1000, authoritative=True)
+    return cell
+
+
+def _signal_board(cells: list[ps.Cell]) -> dict[str, object]:
+    doc = _board(cells, provenance={"quiescence": {"quiet": True}})
+    doc["git_rev"] = "a" * 40
+    assert schema.validate_board(doc) == []
+    return doc
+
+
+def _signal_failure(
+    cell: ps.Cell,
+    *,
+    phase: Literal["build", "run"] = "run",
+    status: Literal[
+        "build_failed",
+        "runtime_crash",
+        "output_mismatch",
+        "timeout",
+        "infrastructure_error",
+        "rss_limit_exceeded",
+        "orphaned_processes_cleaned",
+    ] = "runtime_crash",
+) -> None:
+    cell.build_ok = phase != "build"
+    cell.molt_ok = False
+    cell.classification = ps.CLASS_INFRA
+    cell.repeat_stability = None
+    measure._record_molt_failure(
+        cell,
+        measure.bench.MoltFailure(
+            phase=phase,
+            status=status,
+            returncode=1,
+            timed_out=status == "timeout",
+            elapsed_s=1.0,
+        ),
+    )
+    cell.finalize(authoritative=True)
+
+
+def test_agent_signals_qualified_loss_is_snapshot_and_green_is_empty(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    doc = _signal_board([_signal_cell()])
+    report = signal_report.build_agent_signals(
+        doc,
+        evidence_path="retained.json",
+        expected_source_sha="a" * 40,
+    )
+    assert report.total == 1
+    signal = report.signals[0]
+    assert signal.kind is signal_report.SignalKind.PERFORMANCE_LOSS
+    assert signal.confidence is signal_report.SignalConfidence.QUALIFIED
+    assert signal.log_artifact == "bench/scoreboard/logs/bench_fib.log"
+    assert signal.action_code is signal_report.SignalAction.PROFILE_LOSS
+    # Resolve the actual escaped RFC6901 pointer in the original nested board.
+    node: object = doc
+    for token in signal.evidence_pointer.split("/")[1:]:
+        assert isinstance(node, dict)
+        node = node[token.replace("~1", "/").replace("~0", "~")]
+    assert isinstance(node, dict) and node["warm_speedup"] == 0.5
+    signal_report.print_agent_signals(report, json_output=True)
+    record = json.loads(capsys.readouterr().out)
+    assert record["snapshot"]["current_main_proof"] is False
+    assert record["snapshot"]["source_revisions"] == {
+        "git_rev": "a" * 40,
+        "provenance.local_head_sha": "a" * 40,
+    }
+    assert record["total"] == 1 and record["omitted"] == 0
+    signal_report.print_agent_signals(report)
+    summary = capsys.readouterr().out
+    assert "no current-main proof" in summary
+    assert summary.count("retained.json") == 1
+    assert "regression" not in summary and "steady state" not in summary
+    assert (
+        signal_report.build_agent_signals(
+            _signal_board([_signal_cell(2.0)]),
+            evidence_path="green.json",
+        ).total
+        == 0
+    )
+
+
+@pytest.mark.parametrize("axis", ["stdout", "stderr", "exit"])
+def test_agent_signals_correctness_requires_checked_stable_oracle(
+    axis: Literal["stdout", "stderr", "exit"],
+) -> None:
+    cell = _signal_cell()
+    cell.output_parity = schema.output_parity_evidence(
+        reference_observations=[("cpython:cold", "ok", "", 0)],
+        molt_observations=[
+            (
+                "molt:cold",
+                "bad" if axis == "stdout" else "ok",
+                "bad" if axis == "stderr" else "",
+                7 if axis == "exit" else 0,
+            )
+        ],
+    )
+    _signal_failure(cell, status="output_mismatch")
+    report = signal_report.build_agent_signals(
+        _signal_board([cell]), evidence_path="wrong.json"
+    )
+    assert [signal.kind for signal in report.signals] == [
+        signal_report.SignalKind.OUTPUT_MISMATCH
+    ]
+    assert report.signals[0].evidence_pointer.endswith("/output_parity")
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "missing",
+        "reference",
+        "reference_unstable",
+        "molt_unstable",
+        "build",
+        "runtime",
+        "timeout",
+        "capacity",
+        "rss",
+        "orphaned",
+        "blocked",
+    ],
+)
+def test_agent_signals_diagnostic_leads_do_not_claim_compiler_correctness(
+    mode: Literal[
+        "missing",
+        "reference",
+        "reference_unstable",
+        "molt_unstable",
+        "build",
+        "runtime",
+        "timeout",
+        "capacity",
+        "rss",
+        "orphaned",
+        "blocked",
+    ],
+) -> None:
+    cell = _signal_cell()
+    expected = signal_report.SignalKind.MEASUREMENT_FAILURE
+    if mode == "reference":
+        cell.cpython_ok = False
+        cell.classification = ps.CLASS_INFRA
+        cell.finalize(authoritative=True)
+    elif mode in ("reference_unstable", "molt_unstable"):
+        cell.output_parity = schema.output_parity_evidence(
+            reference_observations=[
+                ("cpython:cold", "ok", "", 0),
+                (
+                    "cpython:repeat",
+                    "bad" if mode == "reference_unstable" else "ok",
+                    "",
+                    0,
+                ),
+            ],
+            molt_observations=[
+                ("molt:cold", "ok", "", 0),
+                ("molt:repeat", "bad" if mode == "molt_unstable" else "ok", "", 0),
+            ],
+        )
+        _signal_failure(cell, status="output_mismatch")
+        if mode == "molt_unstable":
+            expected = signal_report.SignalKind.RUNTIME_FAILURE
+    elif mode == "blocked":
+        cell.run_blocked = True
+        cell.classification = ps.CLASS_INFRA
+        cell.finalize(authoritative=True)
+        expected = signal_report.SignalKind.UNSUPPORTED
+    else:
+        if mode == "missing":
+            cell.output_parity = None
+        _signal_failure(
+            cell,
+            phase="build" if mode == "build" else "run",
+            status={
+                "build": "build_failed",
+                "timeout": "timeout",
+                "capacity": "infrastructure_error",
+                "rss": "rss_limit_exceeded",
+                "orphaned": "orphaned_processes_cleaned",
+            }.get(mode, "runtime_crash"),
+        )
+        if mode == "build":
+            expected = signal_report.SignalKind.BUILD_FAILURE
+        elif mode in ("runtime", "missing"):
+            expected = signal_report.SignalKind.RUNTIME_FAILURE
+    report = signal_report.build_agent_signals(
+        _signal_board([cell]), evidence_path="failure.json"
+    )
+    assert [signal.kind for signal in report.signals] == [expected]
+    assert report.signals[0].severity is signal_report.SignalSeverity.DIAGNOSTIC
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "stale",
+        "authority",
+        "methodology",
+        "quiet",
+        "repeat_count",
+        "bool_count",
+        "pass_count",
+        "nonfinite_pass",
+        "zero_pass",
+        "reverse_ci",
+        "invented_ci",
+        "nan_ci",
+        "stability",
+        "unstable",
+        "noisy",
+        "short_source",
+    ],
+)
+def test_agent_signals_refuse_schema_valid_false_promotion(
+    defect: Literal[
+        "stale",
+        "authority",
+        "methodology",
+        "quiet",
+        "repeat_count",
+        "bool_count",
+        "pass_count",
+        "nonfinite_pass",
+        "zero_pass",
+        "reverse_ci",
+        "invented_ci",
+        "nan_ci",
+        "stability",
+        "unstable",
+        "noisy",
+        "short_source",
+    ],
+) -> None:
+    cell = _signal_cell()
+    if defect == "repeat_count":
+        cell.repeat_passes = 1
+    elif defect == "bool_count":
+        cell.repeat_passes = True
+    elif defect == "pass_count":
+        cell.repeat_warm_speedups = [0.5]
+    elif defect == "nonfinite_pass":
+        cell.repeat_warm_speedups = [float("inf"), 0.5]
+    elif defect == "zero_pass":
+        cell.repeat_warm_speedups = [0.0, 0.5]
+    elif defect == "reverse_ci":
+        cell.repeat_ci_lo, cell.repeat_ci_hi = 0.6, 0.4
+    elif defect == "invented_ci":
+        cell.repeat_warm_speedups = [2.0, 2.0]
+    elif defect == "nan_ci":
+        cell.repeat_ci_hi = float("nan")
+    elif defect == "stability":
+        cell.repeat_stability = "STABLE_ABOVE"
+    elif defect == "unstable":
+        cell.stable = False
+        cell.finalize(authoritative=True)
+    elif defect == "noisy":
+        cell.classification = ps.CLASS_RED_NOISY
+    doc = _signal_board([cell])
+    provenance = doc["provenance"]
+    assert isinstance(provenance, dict)
+    if defect == "stale":
+        doc["generated_at"] = "2000-01-01T00:00:00Z"
+    elif defect == "authority":
+        provenance["authoritative"] = False
+        doc["coverage"] = schema.scoreboard_coverage(
+            (schema.PlannedCell(cell.benchmark, "native", "native", cell.profile),),
+            [asdict(cell)],
+            authoritative=False,
+        )
+    elif defect == "methodology":
+        provenance["methodology_locked"] = False
+    elif defect == "quiet":
+        provenance["quiescence"] = {"quiet": False}
+    elif defect == "short_source":
+        doc["git_rev"] = provenance["local_head_sha"] = "a" * 12
+    assert schema.validate_board(doc) == []
+    report = signal_report.build_agent_signals(doc, evidence_path="unqualified.json")
+    assert report.total > 0
+    assert all(
+        signal.kind is not signal_report.SignalKind.PERFORMANCE_LOSS
+        for signal in report.signals
+    )
+
+
+def test_agent_signals_student_t_negative_lower_bound_and_ci_over_point() -> None:
+    cell = _signal_cell(2.0)
+    cell.repeat_warm_speedups = [0.001, 0.01]
+    cell.repeat_median_warm = 0.0055
+    cell.repeat_variance = 0.0000405
+    cell.repeat_ci_lo, cell.repeat_ci_hi = -0.0517, 0.0627
+    cell.repeat_stability = "STABLE_BELOW"
+    cell.classification = ps.CLASS_RED_STABLE
+    report = signal_report.build_agent_signals(
+        _signal_board([cell]), evidence_path="repeat.json"
+    )
+    assert report.total == 1
+    assert report.signals[0].kind is signal_report.SignalKind.PERFORMANCE_LOSS
+    assert report.signals[0].warm_speedup == 2.0
+    assert report.signals[0].repeat_median_warm == 0.0055
+
+
+def test_agent_signals_rank_limit_and_declared_partial_coverage() -> None:
+    slow = _signal_cell(0.2, benchmark="tests/benchmarks/bench_sum.py")
+    fast = _signal_cell(0.8)
+    wrong = _signal_cell(0.9, benchmark="tests/benchmarks/bench_loop.py")
+    wrong.output_parity = schema.output_parity_evidence(
+        reference_observations=[("cpython:cold", "yes", "", 0)],
+        molt_observations=[("molt:cold", "no", "", 0)],
+    )
+    _signal_failure(wrong, status="output_mismatch")
+    failed = _signal_cell(0.7, benchmark="tests/benchmarks/bench_math.py")
+    _signal_failure(failed, phase="build", status="build_failed")
+    report = signal_report.build_agent_signals(
+        _signal_board([fast, wrong, slow, failed]), evidence_path="rank.json", limit=3
+    )
+    assert [signal.kind for signal in report.signals] == [
+        signal_report.SignalKind.OUTPUT_MISMATCH,
+        signal_report.SignalKind.BUILD_FAILURE,
+        signal_report.SignalKind.PERFORMANCE_LOSS,
+    ]
+    assert report.signals[2].warm_speedup == 0.2
+    assert (report.total, report.omitted) == (4, 1)
+    partial = _board(
+        [],
+        provenance={"authoritative": False, "quiescence": {"quiet": True}},
+        planned_cells=(
+            schema.PlannedCell(fast.benchmark, "native", "native", fast.profile),
+        ),
+        run_state="partial",
+    )
+    partial["git_rev"] = "a" * 40
+    report = signal_report.build_agent_signals(partial, evidence_path="partial.json")
+    assert report.coverage.selected == 1 and report.coverage.attempted == 0
+    missing = report.signals[-1]
+    assert missing.kind is signal_report.SignalKind.MISSING_COVERAGE
+    assert missing.evidence_pointer == "/coverage/not_run/0"
+    assert missing.warm_speedup is None
+    assert report.as_record()["coverage"]["not_run"] == 1
+
+
+@pytest.mark.parametrize("limit", [True, 0, -1])
+def test_agent_signals_reject_nonpositive_or_bool_limit(limit: int) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        signal_report.build_agent_signals({}, evidence_path="invalid.json", limit=limit)
+
+
+def test_agent_signals_schema_and_source_rejection() -> None:
+    doc = _signal_board([_signal_cell()])
+    with pytest.raises(ValueError, match="expected source"):
+        signal_report.build_agent_signals(
+            doc, evidence_path="source.json", expected_source_sha="b" * 40
+        )
+    with pytest.raises(ValueError, match="full lowercase"):
+        signal_report.build_agent_signals(
+            doc, evidence_path="source.json", expected_source_sha="a" * 12
+        )
+    provenance = doc["provenance"]
+    assert isinstance(provenance, dict)
+    provenance["local_head_sha"] = "b" * 40
+    with pytest.raises(ValueError, match="source identities disagree"):
+        signal_report.build_agent_signals(doc, evidence_path="source.json")
+    doc["schema_version"] = 1
+    with pytest.raises(ps.ScoreboardSchemaError, match="current-schema"):
+        signal_report.build_agent_signals(doc, evidence_path="historical.json")
+
+
+@pytest.mark.parametrize("field", ["git_rev", "local_head_sha"])
+def test_agent_signals_expected_source_checks_unknown_recorded_fields(
+    field: Literal["git_rev", "local_head_sha"],
+) -> None:
+    doc = _signal_board([_signal_cell()])
+    source = doc if field == "git_rev" else doc["provenance"]
+    assert isinstance(source, dict)
+    source[field] = "unknown"
+    assert schema.validate_board(doc) == []
+    with pytest.raises(ValueError, match="does not match expected source"):
+        signal_report.build_agent_signals(
+            doc, evidence_path="unknown.json", expected_source_sha="a" * 40
+        )
+    report = signal_report.build_agent_signals(doc, evidence_path="unknown.json")
+    assert all(
+        s.kind is not signal_report.SignalKind.PERFORMANCE_LOSS for s in report.signals
+    )
+
+
+@pytest.mark.parametrize(
+    "defect", ["dirty", "merge_base", "origin", "diverged", "stale_cell"]
+)
+def test_agent_signals_refuse_contradictory_authority_or_stale_observation(
+    defect: Literal["dirty", "merge_base", "origin", "diverged", "stale_cell"],
+) -> None:
+    cell = _signal_cell()
+    if defect == "stale_cell":
+        cell.verdict = ps.VERDICT_FAIL_STALE
+    doc = _signal_board([cell])
+    provenance = doc["provenance"]
+    assert isinstance(provenance, dict)
+    if defect == "dirty":
+        provenance["dirty_tree"] = True
+    elif defect == "merge_base":
+        provenance["merge_base_sha"] = "b" * 40
+    elif defect == "origin":
+        provenance["origin_sha"] = None
+    elif defect == "diverged":
+        provenance["diverges_from_origin"] = True
+    assert schema.validate_board(doc) == []
+    report = signal_report.build_agent_signals(doc, evidence_path="contradictory.json")
+    assert report.total > 0
+    assert all(
+        s.kind is not signal_report.SignalKind.PERFORMANCE_LOSS for s in report.signals
+    )
+
+
+def test_agent_signals_allow_recorded_origin_newer_than_measured_source() -> None:
+    doc = _signal_board([_signal_cell()])
+    provenance = doc["provenance"]
+    assert isinstance(provenance, dict)
+    provenance["origin_sha"] = "b" * 40
+    report = signal_report.build_agent_signals(doc, evidence_path="ancestor.json")
+    assert report.signals[0].kind is signal_report.SignalKind.PERFORMANCE_LOSS
+
+
+def test_agent_signals_refuse_nonresolving_coordinate_pointer() -> None:
+    doc = _signal_board([_signal_cell()])
+    scoreboard = doc["scoreboard"]
+    assert isinstance(scoreboard, dict)
+    key = next(iter(scoreboard))
+    scoreboard["renamed-parent"] = scoreboard.pop(key)
+    assert schema.validate_board(doc) == []
+    with pytest.raises(
+        ps.ScoreboardSchemaError, match="coordinate-bound evidence pointers"
+    ):
+        signal_report.build_agent_signals(doc, evidence_path="misgrouped.json")
+
+
+@pytest.mark.parametrize("ratios", [[10**400, 1], [1e308, 1e-308]])
+def test_agent_signals_bound_unrepresentable_json_numeric_evidence(
+    ratios: list[int | float],
+) -> None:
+    doc = _signal_board([_signal_cell()])
+    cell = schema.flatten_cells(doc)[0]
+    assert isinstance(cell, dict)
+    cell["repeat_warm_speedups"] = ratios
+    decoded = json.loads(json.dumps(doc))
+    assert schema.validate_board(decoded) == []
+    report = signal_report.build_agent_signals(decoded, evidence_path="extreme.json")
+    assert report.total > 0
+    assert all(
+        s.kind is not signal_report.SignalKind.PERFORMANCE_LOSS for s in report.signals
+    )
