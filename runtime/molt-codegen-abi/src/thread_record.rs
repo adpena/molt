@@ -82,6 +82,44 @@ pub trait RecordWordBuilder: WordBuilder {
     fn load_shared_word(&mut self, address: Self::Word, offset: i32) -> Self::Word;
 }
 
+/// Whether the next lexical exception level can stay virtual. The stack
+/// publishes an aligned depth only while it has spare capacity and no tracing
+/// or writer can observe the missing level.
+pub fn generate_virtual_exception_level_admits<B: WordBuilder, Address: Copy>(
+    b: &mut B,
+    thread: Address,
+    mut load_word: impl FnMut(&mut B, Address, i32) -> B::Word,
+    frame_coordinates: bool,
+) -> B::Predicate {
+    let depth = load_word(
+        b,
+        thread,
+        crate::THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET,
+    );
+    let admitted = load_word(
+        b,
+        thread,
+        crate::THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET,
+    );
+    let baseline = load_word(
+        b,
+        thread,
+        crate::THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET,
+    );
+    let aligned = b.compare(WordComparison::Equal, depth, admitted);
+    // A wrapping depth also refuses NO_VIRTUAL_EXCEPTION_DEPTH.
+    let after_depth = b.add_immediate(depth, 1);
+    let covers_baseline = b.compare(WordComparison::UnsignedLessThan, baseline, after_depth);
+    let allowed = b.both(aligned, covers_baseline);
+    if frame_coordinates {
+        // The native and Wasm activation records use u32 snapshots.
+        let limit = b.constant(1_u64 << 32);
+        let fits = b.compare(WordComparison::UnsignedLessThan, depth, limit);
+        return b.both(allowed, fits);
+    }
+    allowed
+}
+
 // The recursion charge of one Python call, inline, as CPython checks its
 // thread state's recursion budget. The depth word is this thread's; the
 // limit is the runtime's one value, read through the pointer the runtime
@@ -247,6 +285,46 @@ mod tests {
         generate_recursion_release(&mut memory, RECORD);
         assert_eq!(memory.depth(), 2);
         assert!(memory.call());
+    }
+
+    #[test]
+    fn virtual_lexical_admission_respects_capacity_depth_and_snapshot_width() {
+        let mut memory = Memory::new(1);
+        for (depth, baseline, spare_at, local, snapshot) in [
+            (0, 0, 0, true, true),
+            (4, 2, 4, true, true),
+            (4, 5, 4, false, false),
+            (4, 2, 3, false, false),
+            (4, 2, crate::NO_VIRTUAL_EXCEPTION_DEPTH, false, false),
+            (1 << 32, 2, 1 << 32, true, false),
+            (u64::MAX, 0, crate::NO_VIRTUAL_EXCEPTION_DEPTH, false, false),
+        ] {
+            for (offset, value) in [
+                (crate::THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET, depth),
+                (
+                    crate::THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET,
+                    baseline,
+                ),
+                (
+                    crate::THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET,
+                    spare_at,
+                ),
+            ] {
+                memory.store_word(RECORD, offset, value);
+            }
+            for (frame_coordinates, expected) in [(false, local), (true, snapshot)] {
+                assert_eq!(
+                    generate_virtual_exception_level_admits(
+                        &mut memory,
+                        RECORD,
+                        Memory::load_word,
+                        frame_coordinates,
+                    ),
+                    expected,
+                    "depth={depth}, baseline={baseline}, spare_at={spare_at}"
+                );
+            }
+        }
     }
 
     #[test]

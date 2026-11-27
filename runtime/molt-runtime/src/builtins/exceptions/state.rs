@@ -34,6 +34,7 @@ impl ActiveExceptionStack {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn virtual_depth(&self) -> u64 {
         self.virtual_depth.get()
     }

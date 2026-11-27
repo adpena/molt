@@ -319,9 +319,22 @@ pub(super) fn slots<B: CodegenBuilder>(
 impl Event {
     pub(super) fn transition<B: CodegenBuilder>(self, b: &mut B, slot: B::Slot) {
         if matches!(self, Self::Enter) {
-            let installed = b
-                .call_runtime(RuntimeFn::ExceptionPushOrDefer, &[])
-                .expect("the runtime answers the level's physical status");
+            let thread = b.thread_record_word();
+            let address = b.word_to_address(thread);
+            let admitted = molt_codegen_abi::thread_record::generate_virtual_exception_level_admits(
+                b,
+                address,
+                |b, at, offset| b.load_word(at, offset),
+                false,
+            );
+            let installed = b.choose(
+                admitted,
+                |b| b.constant(0),
+                |b| {
+                    b.call_runtime(RuntimeFn::ExceptionPush, &[]);
+                    b.constant(1)
+                },
+            );
             b.store_slot(slot, installed);
             return;
         }

@@ -56,23 +56,16 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
         },
     );
 
-    let compile = |f: &TirFunction, available| {
+    let compile = |f: &TirFunction| {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
         for entry in [
+            RuntimeFn::ExceptionPush,
+            RuntimeFn::ExceptionPop,
             RuntimeFn::ExceptionStackDepth,
             RuntimeFn::ExceptionStackSetDepth,
         ] {
             backend.runtime_callable_symbols.insert(entry);
-        }
-        if available {
-            backend
-                .runtime_callable_symbols
-                .insert(RuntimeFn::ExceptionPushOrDefer);
-        } else {
-            backend
-                .runtime_callable_symbols
-                .remove(RuntimeFn::ExceptionPushOrDefer);
         }
         let machine = lower_tir_to_llvm(f, &backend);
         backend
@@ -81,16 +74,17 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
             .unwrap_or_else(|err| panic!("{err}\n{}", machine.print_to_string()));
         machine.print_to_string().to_string()
     };
-    let ir = compile(&f, true);
-    assert_eq!(
-        ir.matches_execution("@molt_exception_push_or_defer(")
-            .count(),
-        1,
-        "{ir}"
-    );
+    let ir = compile(&f);
+    let depth_offset = molt_codegen_abi::THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET;
+    let load_admission = format!("i64 {depth_offset}");
+    let reads_admission = |ir: &str| {
+        ir.lines()
+            .any(|line| line.contains("getelementptr") && line.ends_with(&load_admission))
+    };
+    assert!(reads_admission(&ir), "{ir}");
     assert_eq!(
         ir.matches_execution("@molt_exception_push(").count(),
-        3,
+        4,
         "{ir}"
     );
     assert_eq!(
@@ -111,7 +105,6 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
         "{ir}"
     );
     assert_eq!(ir.matches("xor i64").count(), 1, "{ir}");
-    assert!(!compile(&f, false).contains("@molt_exception_push_or_defer"));
     let mut block = "";
     let mut observers = 0;
     let mut guarded_restores = 0;
@@ -169,7 +162,7 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
             terminator: rest,
         },
     );
-    assert!(!compile(&bypass, true).contains("@molt_exception_push_or_defer"));
+    assert!(!reads_admission(&compile(&bypass)));
     let result = f.fresh_value();
     f.value_types.insert(result, TirType::DynBox);
     f.blocks.get_mut(&f.entry_block).unwrap().ops.insert(
@@ -177,7 +170,7 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
         TirOp::new(OpCode::Copy, vec![], vec![result]).with_origin(OpKind::ExceptionActive),
     );
     assert!(
-        !compile(&f, true).contains("@molt_exception_push_or_defer"),
+        !reads_admission(&compile(&f)),
         "an intervening context reader needs the actual level"
     );
 }
