@@ -1442,6 +1442,56 @@ def test_inherited_member_search_visits_shared_ancestors_once(
     assert set(reads) == engine.value_candidates.keys()
 
 
+def test_inherited_source_projection_wakes_only_for_new_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+        _SourceNamespace,
+    )
+
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    module = "provider"
+    engine.modules.add(module)
+    base = (1, 0, 1, 1, "arg")
+    receiver = SourceCandidate(module, (2, 0, 2, 1, "ClassDef"), "instance")
+    parent = SourceCandidate(module, (3, 0, 3, 1, "ClassDef"))
+    method = SourceCandidate(module, (4, 0, 4, 1, "FunctionDef"))
+    user = ("consumer", None)
+    engine.bases[receiver.value] = frozenset({base})
+    engine.namespaces[parent.value] = _SourceNamespace(
+        {"method": frozenset({method.source})}
+    )
+    engine.value_candidates[method.value] = {method}
+    engine.value_candidates[parent.value] = {parent}
+
+    assert not engine._select_class_members(receiver, "method", user, strict=False)
+    engine._queue_arguments((module, base), {parent})
+    engine.process_value((module, base))
+    assert engine._select_class_members(receiver, "method", user, strict=False) == {
+        method
+    }
+
+    # Binding and containment widen the operand without adding a base identity.
+    select = Mock(wraps=engine.select_member)
+    monkeypatch.setattr(engine, "select_member", select)
+    engine._queue_arguments(
+        (module, base), {parent._replace(contained=True, receiver=receiver.value)}
+    )
+    engine.process_value((module, base))
+    assert engine._select_class_members(receiver, "method", user, strict=False) == {
+        method
+    }
+    select.assert_not_called()
+
+
 def test_class_member_query_shares_selection_and_replays_property_origins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
