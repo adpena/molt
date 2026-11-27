@@ -1676,6 +1676,80 @@ def test_class_member_query_shares_selection_and_replays_property_origins(
     assert engine._property_results[second] == {member}
 
 
+def test_returned_cache_values_propagate_only_new_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    from molt.compiler_analysis.python_binding_facts import PythonFunctionResult
+    from molt.compiler_analysis.python_imports import (
+        _ImportScanRequests,
+        _SourceValueSummary,
+    )
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCacheItem,
+        SourceCallableOutcome,
+        SourceCandidate,
+    )
+
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    module = "provider"
+    argument = (1, 0, 1, 1, "arg")
+    function = (2, 0, 2, 1, "FunctionDef")
+    read = (3, 0, 3, 1, "Call")
+    first = SourceCandidate(module, (4, 0, 4, 1, "ClassDef"))
+    second = SourceCandidate(module, (5, 0, 5, 1, "ClassDef"))
+    new_route = (6, 0, 6, 1, "TypeAlias")
+    key = SourceCacheItem(None, True)
+    outcome = (module, SourceCallableOutcome(function, yielded=False))
+    engine.accept(
+        module,
+        _ImportScanRequests(
+            (),
+            (),
+            source_values=_SourceValueSummary(
+                functions=(
+                    PythonFunctionResult(
+                        function,
+                        frozenset({argument}),
+                        frozenset(),
+                        frozenset(),
+                        frozenset(),
+                    ),
+                ),
+                cache_reads=((read, ("selected",), frozenset(), frozenset(), False),),
+            ),
+        ),
+    )
+    engine.hold_cache_origins(key, {(outcome, False)})
+    engine._queue_arguments((module, argument), {first})
+    engine.queue_value((module, read))
+    engine.drain()
+    assert engine.value_candidates[(module, read)] == {first}
+
+    read_operands = Mock(wraps=engine._operand_candidates)
+    monkeypatch.setattr(engine, "_operand_candidates", read_operands)
+    engine._queue_arguments((module, argument), {first, second})
+    engine.drain()
+    assert engine.value_candidates[(module, read)] == {first, second}
+    assert {
+        row.args[1] for row in read_operands.call_args_list if row.args[2] is not None
+    } == {outcome, ("", key), (module, read)}
+
+    engine.hold_cache_origins(key, {((module, new_route), True)})
+    engine.drain()
+    assert engine.value_candidates[(module, read)] == {
+        first,
+        second,
+        SourceCandidate(module, new_route, contained=True),
+    }
+
+
 def test_attribute_receiver_delta_and_structural_wake(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
