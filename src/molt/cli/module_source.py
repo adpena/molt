@@ -23,6 +23,10 @@ from molt.file_hashing import _sha256_file as _unobserved_sha256_file
 
 if TYPE_CHECKING:
     from molt.cli.python_import_topology import PythonImportTopology
+    from molt.compiler_analysis.python_namespace_graph import (
+        PythonNamespacePremise,
+        SourceModuleNames,
+    )
 
 
 class PythonSourceChangedError(ValueError):
@@ -286,6 +290,18 @@ class _ModuleSourceLease:
 class _ModuleSourceCatalog:
     leases: Mapping[str, _ModuleSourceLease]
     import_topology: "PythonImportTopology | None" = None
+    namespace_declarations: Mapping[str, SourceModuleNames] = field(
+        default_factory=dict
+    )
+
+    def binding_namespace_view(
+        self, module_name: str, premise: PythonNamespacePremise | None
+    ) -> PythonNamespacePremise | None:
+        """Project binding analysis exactly as scanning did for these source bytes."""
+        names = self.namespace_declarations.get(module_name)
+        if premise is None or names is None:
+            return premise
+        return premise.scan_view(names.universe)
 
     def lease_for(self, module_name: str, module_path: Path) -> _ModuleSourceLease:
         lease = self.leases.get(module_name)

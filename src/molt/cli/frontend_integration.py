@@ -18,6 +18,7 @@ from molt.frontend.module_publication import (
 
 if TYPE_CHECKING:
     from molt.cli.function_records import FunctionDigestSeed
+    from molt.cli.module_cache import _ModuleLoweringContext
 
 
 def _register_global_code_id_with_state(
@@ -405,6 +406,7 @@ def _integrate_module_frontend_result_with_state(
     func_code_ids: dict[str, int],
     local_classes: dict[ClassId, ClassModel],
     function_digest_seeds: Sequence[FunctionDigestSeed] = (),
+    lowering_inputs: _ModuleLoweringContext | None = None,
 ) -> str | None:
     class_definitions = _module_class_definitions(local_classes)
     for symbol in sorted(class_definitions):
@@ -467,6 +469,8 @@ def _integrate_module_frontend_result_with_state(
     for symbol, owner in class_references.items():
         integration_state.class_definition_references.setdefault(symbol, owner)
     integration_state.function_digest_seeds.extend(function_digest_seeds)
+    if lowering_inputs is not None:
+        integration_state.module_lowering_inputs[module_name] = lowering_inputs
     integration_state.functions.extend(ir_functions)
     integration_state.module_functions[module_name] = ir_functions
     for symbol in sorted(metadata):

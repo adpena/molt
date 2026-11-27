@@ -409,6 +409,7 @@ def _prepare_frontend_analysis(
     module_source_catalog = _ModuleSourceCatalog(
         leases=module_source_leases,
         import_topology=module_resolution_cache.import_topology,
+        namespace_declarations=namespace_declarations,
     )
     return _PreparedFrontendAnalysis(
         module_graph_metadata=module_graph_metadata,

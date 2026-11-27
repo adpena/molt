@@ -43,6 +43,7 @@ from molt.cli.module_cache import (
     _known_classes_from_payload,
     _build_scoped_known_classes_snapshot,
     _load_cached_module_lowering_result,
+    _ModuleLoweringContext,
     _module_lowering_context_digest_for_module,
     _module_lowering_execution_view,
     _module_lowering_payload_issue,
@@ -175,6 +176,9 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
         namespace_premise=namespace_premise,
+        binding_namespace_view=_decode_namespace_premise_cache_identity(
+            payload.get("binding_namespace_view")
+        ),
         enable_phi=enable_phi,
         known_modules=known_modules,
         direct_call_modules=direct_call_modules,
@@ -303,6 +307,7 @@ def _module_frontend_generator(
     target_sys_platform: str | None,
     scoped_inputs: _ScopedLoweringInputView,
     scoped_known_classes: dict[ClassId, ClassModel],
+    binding_namespace_view: PythonNamespacePremise | None = None,
 ) -> SimpleTIRGenerator:
     return SimpleTIRGenerator(
         type_hint_policy=type_hint_policy,
@@ -312,6 +317,7 @@ def _module_frontend_generator(
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
         namespace_premise=namespace_premise,
+        binding_namespace_view=binding_namespace_view,
         enable_phi=enable_phi,
         known_modules=set(scoped_inputs.known_modules_set),
         direct_call_modules=set(scoped_inputs.direct_call_modules_set),
@@ -404,7 +410,12 @@ def _lower_module_serial_with_context(
     module_source_role = metadata_view.module_source_role
     namespace_premise = metadata_view.namespace_premise
     scoped_known_classes = execution_view.scoped_known_classes
-    context_digest: str | None = None
+    binding_namespace_view = (
+        lowering_context.module_source_catalog.binding_namespace_view(
+            module_name, namespace_premise
+        )
+    )
+    context_digest: _ModuleLoweringContext | None = None
     if lowering_context.project_root is not None:
         context_digest = _module_lowering_context_digest_for_module(
             module_name,
@@ -438,6 +449,7 @@ def _lower_module_serial_with_context(
             is_package=is_package,
             target_python=lowering_context.target_python,
             target_sys_platform=lowering_context.target_sys_platform,
+            binding_namespace_view=binding_namespace_view,
         )
         if context_digest is not None:
             cached_payload = _read_persisted_module_lowering(
@@ -468,6 +480,7 @@ def _lower_module_serial_with_context(
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
         namespace_premise=namespace_premise,
+        binding_namespace_view=binding_namespace_view,
         type_hint_policy=lowering_context.type_hint_policy,
         enable_phi=lowering_context.enable_phi,
         stdlib_allowlist=lowering_context.stdlib_allowlist,
@@ -547,6 +560,8 @@ def _lower_module_serial_with_context(
                 context_digest=context_digest,
                 result=payload,
             )
+    if context_digest is not None:
+        payload["lowering_context"] = context_digest
     return payload, visit_s, lower_s, total_s, False, 0.0
 
 
@@ -632,11 +647,11 @@ def _prepare_frontend_parallel_batch(
 ) -> tuple[
     dict[str, dict[str, Any]],
     list[tuple[str, dict[str, Any]]],
-    dict[str, str],
+    dict[str, _ModuleLoweringContext],
 ]:
     cached_results: dict[str, dict[str, Any]] = {}
     worker_payloads: list[tuple[str, dict[str, Any]]] = []
-    context_digest_by_module: dict[str, str] = {}
+    context_digest_by_module: dict[str, _ModuleLoweringContext] = {}
     stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
     if scoped_known_classes_by_module is None:
         scoped_known_classes_by_module = _build_scoped_known_classes_snapshot(
@@ -672,6 +687,9 @@ def _prepare_frontend_parallel_batch(
         module_execution_kind = metadata_view.module_execution_kind
         module_source_role = metadata_view.module_source_role
         namespace_premise = metadata_view.namespace_premise
+        binding_namespace_view = module_source_catalog.binding_namespace_view(
+            module_name, namespace_premise
+        )
         is_package = metadata_view.is_package
         scoped_known_classes = execution_view.scoped_known_classes
         if project_root is not None:
@@ -708,6 +726,7 @@ def _prepare_frontend_parallel_batch(
                 is_package=is_package,
                 target_python=target_python,
                 target_sys_platform=target_sys_platform,
+                binding_namespace_view=binding_namespace_view,
             )
             if context_digest is not None:
                 context_digest_by_module[module_name] = context_digest
@@ -746,6 +765,7 @@ def _prepare_frontend_parallel_batch(
             context_digest=context_digest_by_module.get(module_name),
             target_python=target_python,
             target_sys_platform=target_sys_platform,
+            binding_namespace_view=binding_namespace_view,
         )
         if cached_result is not None:
             cached_result["source_sha256"] = source_lease.source_sha256
@@ -763,6 +783,7 @@ def _prepare_frontend_parallel_batch(
                     module_execution_kind=module_execution_kind,
                     module_source_role=module_source_role,
                     namespace_premise=namespace_premise,
+                    binding_namespace_view=binding_namespace_view,
                     type_facts=type_facts,
                     enable_phi=enable_phi,
                     known_modules=known_modules_sorted,

@@ -109,6 +109,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
@@ -215,6 +216,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_execution_kind: ModuleExecutionKind | None = ...,
         module_source_role: ModuleSourceRole = ...,
         namespace_premise: PythonNamespacePremise | None = ...,
+        binding_namespace_view: PythonNamespacePremise | None = ...,
         enable_phi: bool = ...,
         known_modules: set[str] | None = ...,
         direct_call_modules: set[str] | None = ...,

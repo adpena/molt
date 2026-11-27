@@ -52,6 +52,7 @@ from molt.cli.module_source import (
 from molt.cli.module_cache import (
     _known_classes_from_payload,
     _build_scoped_known_classes_snapshot,
+    _ModuleLoweringContext,
     _write_persisted_module_lowering,
 )
 from molt.cli.output import CliFailure as _CliFailure
@@ -567,6 +568,9 @@ def _run_frontend_parallel_layer_batches(
                             result=result,
                         )
                     )
+                    context = layer_state.context_digests.get(module_name)
+                    if context is not None:
+                        result["lowering_context"] = context
                 _frontend_parallel._record_parallel_worker_result(
                     layer_state,
                     module_name=module_name,
@@ -622,7 +626,7 @@ def _write_parallel_persisted_module_lowering(
     module_path: Path,
     source_lease: _ModuleSourceLease,
     worker_mode: str,
-    context_digest: str | None,
+    context_digest: _ModuleLoweringContext | None,
     result: Mapping[str, Any],
 ) -> tuple[FunctionDigestSeed, ...]:
     _validate_frontend_module_source(source_lease, module_path, result)
@@ -673,6 +677,7 @@ def _consume_frontend_module_result(
         ir_functions=cast(list[dict[str, Any]], result["functions"]),
         function_metadata=result.get("function_metadata"),
         function_digest_seeds=result.get("function_digest_seeds", ()),
+        lowering_inputs=result.get("lowering_context"),
         func_code_ids=cast(dict[str, int], result["func_code_ids"]),
         local_classes=_known_classes_from_payload(result["local_classes"]),
     )
