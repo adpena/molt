@@ -1,7 +1,7 @@
 // Final-link execution of one generated native object (Cranelift or LLVM)
 // against a no_std Rust provider crate and a Rust harness. Include beside
 // `cargo_test_artifacts`; every input, archive and image stays in Cargo image
-// custody.
+// custody until successful execution retires the fixture's scratch.
 
 use super::cargo_test_artifacts::CargoTestArtifacts;
 use std::fs;
@@ -134,4 +134,7 @@ pub fn link_and_run_native_object(
         &mut Command::new(&executable),
         &format!("execute final-linked {purpose} binary"),
     );
+    // The executable and both compiler invocations have exited. No replay
+    // receipt refers to this fixture, so its owner is ready to retire.
+    fs::remove_dir_all(temp).unwrap_or_else(|error| panic!("retire {purpose} scratch: {error}"));
 }

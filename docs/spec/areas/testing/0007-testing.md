@@ -6,8 +6,10 @@ Minimum required gates are defined in
 
 Rust tests that compile helper objects or executables use
 `runtime/test_support/cargo_test_artifacts.rs`. The running Cargo test image
-owns their output root and retention; tests do not create a second temp-root or
-destructor cleanup policy. Exclusive owner directories have compact identities,
+owns their output root and retention. Fixtures that link and run a generated
+native object retire their own Cargo scratch directory after the child succeeds.
+Failed runs and explicitly published replay evidence keep Cargo custody.
+Exclusive owner directories have compact identities,
 with descriptive labels retained as metadata so linker intermediate filenames
 do not inherit unbounded path lengths. Commands use lossless owner-relative
 arguments through the same helper on Windows, macOS and Linux. Tests that
