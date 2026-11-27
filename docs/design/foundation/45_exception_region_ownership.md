@@ -180,8 +180,9 @@ service is rejected by the canonical kind-to-service admission relation.
 Placement identity and source provenance are deliberately separate. A
 placement preview temporarily numbers the exact post-rewrite SimpleIR stream,
 materializes against that same stream, and then restores the transported
-`source_op_idx`. That transported value remains the stable inline-cache/source
-identity across TIR round trips and is never used as a current array position.
+`source_op_idx`. That transported value carries the original source identity
+across TIR round trips. The shared code generator allocates inline-cache sites
+in executable emission order within each compiled function.
 Pre-SSA loop-index and cell rewrites inherit the existing source-site record,
 including its stable operation provenance. Numeric representation projection
 correlates TIR results to unique current SimpleIR producers through the existing

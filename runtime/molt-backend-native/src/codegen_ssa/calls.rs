@@ -929,7 +929,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         if owned_callable {
             view.surrender(b, &custody, &[callable], &[]);
         }
-        let site = self.next_call_site(b, lane);
+        let site = self.next_inline_cache_site(b, lane);
         let bound = call_word(
             b,
             function,
@@ -963,7 +963,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             .iter()
             .map(|&arg| view.operand(b, &mut custody, arg))
             .collect();
-        let site = self.next_call_site(b, "call_method");
+        let site = self.next_inline_cache_site(b, "call_method");
         let bind = b.runtime_callee(RuntimeFn::CallBindIc);
         let bound = with_callargs(b, &args, |b, builder| {
             let words = [
@@ -1070,7 +1070,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             b.expect_word(callable)
         } else {
             let callee = b.runtime_callee(RuntimeFn::LoadSuperMethod);
-            let site = self.next_call_site(b, lane);
+            let site = self.next_inline_cache_site(b, lane);
             let (name_pointer, name_len) = raw_name_pointer(b, name);
             let mut args = vec![b.word_value(site)];
             args.extend(operands.iter().map(|&operand| b.word_value(operand)));

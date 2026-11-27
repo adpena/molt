@@ -40,7 +40,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         } else {
             "invoke_ffi_deopt"
         };
-        let site = self.next_call_site(b, lane);
+        let site = self.next_inline_cache_site(b, lane);
         let result = self
             .operands()
             .with_words(b, &op.operands, lane, |b, words, name| {

@@ -78,15 +78,6 @@ fn int_attr(op: &TirOp) -> i64 {
     }
 }
 
-/// The boxed inline int a word of compile-time value `value` is.
-fn inline_int<B: CodegenBuilder>(b: &mut B, value: i64) -> B::Word {
-    assert!(
-        (nanbox::INT_MIN_INLINE..=nanbox::INT_MAX_INLINE).contains(&value),
-        "compile-time integer word {value} does not fit the inline payload"
-    );
-    b.constant(nanbox::box_int_bits(value) as u64)
-}
-
 /// The class statement's program slot a layout op names (HF-220).
 pub(crate) fn class_definition_slot<B: CodegenBuilder>(b: &mut B, op: &TirOp) -> B::Word {
     let owner = match op.attrs.get("class_definition") {
@@ -97,15 +88,6 @@ pub(crate) fn class_definition_slot<B: CodegenBuilder>(b: &mut B, op: &TirOp) ->
 }
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
-    /// The inline-int site id of an inline-cache lane at `op`'s source op.
-    fn site_bits(&self, b: &mut B, op: &TirOp, lane: &str) -> B::Word {
-        let source = op
-            .source_op_index()
-            .unwrap_or_else(|| panic!("{lane} requires source op index"));
-        let site = molt_codegen_abi::stable_ic_site_id(self.func.name.as_str(), source, lane);
-        inline_int(b, site)
-    }
-
     /// The exact builtins `container`'s refined TIR type lets an item read
     /// admit, or `None` for a dict, set or str, which keeps its runtime
     /// entry without the tests.
@@ -359,7 +341,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             let runtime = RuntimeFn::GetAttrObjectIc;
             let callee = b.runtime_callee(runtime);
             let (name_ptr, name_len) = raw_name_pointer(b, name);
-            let site = self.site_bits(b, op, site_kind.as_str());
+            let site = self.next_inline_cache_site(b, site_kind.as_str());
             let args = [
                 b.word_value(object),
                 name_ptr,
@@ -470,7 +452,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             let runtime = RuntimeFn::SetAttrObjectIc;
             let callee = b.runtime_callee(runtime);
             let (name_ptr, name_len) = raw_name_pointer(b, name);
-            let site = self.site_bits(b, op, site_kind.as_str());
+            let site = self.next_inline_cache_site(b, site_kind.as_str());
             let args = [
                 b.word_value(object),
                 name_ptr,
@@ -853,7 +835,7 @@ mod tests {
 
     #[test]
     fn a_cached_or_guarded_access_passes_its_name_bytes_and_site() {
-        let site = molt_codegen_abi::stable_ic_site_id("objects", 4, "get_attr_generic_obj");
+        let site = molt_codegen_abi::stable_ic_site_id("objects", 0, "get_attr_generic_obj");
         let load = named(
             op(OpCode::LoadAttr, Some(OpKind::GetAttrGenericObj), 1, true),
             "field",
