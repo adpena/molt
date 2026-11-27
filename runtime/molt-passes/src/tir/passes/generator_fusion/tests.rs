@@ -1029,9 +1029,9 @@ fn a_spliced_latch_requires_a_marked_poll_without_an_intervening_guest_operation
     check.mark_async_work_poll();
     let bracket = vec![
         frame_call(RuntimeFn::SplicedFrameLink),
-        frame_call(RuntimeFn::SplicedFrameBind),
+        frame_call(RuntimeFn::SplicedFrameBindHome),
         check,
-        frame_call(RuntimeFn::SplicedFrameUnlink),
+        frame_call(RuntimeFn::SplicedFramePop),
     ];
     assert!(starts_with_poll_bracket(&bracket) && ends_with_poll_bracket(&bracket));
     let mut credited = bracket.clone();
@@ -1597,7 +1597,7 @@ fn conditionally_stored_slot_joins_at_a_block_argument() {
     // presence. Neither None nor a falsey bound value decides whether to bind.
     let mut published = false;
     for op in caller.blocks.values().flat_map(|block| &block.ops) {
-        if op.runtime == Some(RuntimeFn::SplicedFrameBind)
+        if op.runtime == Some(RuntimeFn::SplicedFrameBindHome)
             && attr_value_int(definition(&caller, op.operands[1])) == Some(optional_offset)
             && caller.blocks.values().any(|block| {
                 block
@@ -1934,8 +1934,20 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
                 "{}",
                 crate::tir::printer::print_function(&caller)
             );
-            assert_eq!(calls.last(), Some(&RuntimeFn::SplicedFrameOrigin));
-            assert!(calls.contains(&RuntimeFn::SplicedFrameBind));
+            assert_eq!(calls.last(), Some(&RuntimeFn::SplicedFrameCaptureOrigin));
+            assert!(calls.contains(&RuntimeFn::SplicedFrameBindHome));
+            assert!(
+                cold.ops
+                    .iter()
+                    .filter(|op| matches!(
+                        op.runtime,
+                        Some(
+                            RuntimeFn::SplicedFrameBindHome | RuntimeFn::SplicedFrameCaptureOrigin
+                        )
+                    ))
+                    .all(|op| op.results.is_empty()),
+                "publishing frame homes and traceback has no Python result"
+            );
             let link = cold
                 .ops
                 .iter()
@@ -1944,7 +1956,7 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
             assert_eq!(link.operands[0], function);
             assert!(
                 cold.ops.iter().any(|op| {
-                    op.runtime == Some(RuntimeFn::SplicedFrameBind)
+                    op.runtime == Some(RuntimeFn::SplicedFrameBindHome)
                         && definition(&caller, op.operands[1]).attrs.get("value")
                             == Some(&AttrValue::Int(GEN_CONTROL_BYTES + 8))
                 }),
@@ -2002,13 +2014,13 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
                         .is_some_and(|prior| {
                             matches!(
                                 prior.runtime,
-                                Some(RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameBind)
+                                Some(RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameBindHome)
                             )
                         })
                     && block.ops[index + 1..]
                         .iter()
                         .find(|later| later.runtime.is_some())
-                        .is_some_and(|later| later.runtime == Some(RuntimeFn::SplicedFrameUnlink))
+                        .is_some_and(|later| later.runtime == Some(RuntimeFn::SplicedFramePop))
             })
         })
     };
@@ -2052,7 +2064,7 @@ fn proven_operations_lose_their_brackets_after_reoptimization() {
         .blocks
         .values()
         .flat_map(|block| &block.ops)
-        .filter(|op| op.runtime == Some(RuntimeFn::SplicedFrameUnlink))
+        .filter(|op| op.runtime == Some(RuntimeFn::SplicedFramePop))
         .count();
     let polls = caller
         .blocks

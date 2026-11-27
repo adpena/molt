@@ -14574,9 +14574,13 @@
       "context": "Attached",
       "physical_symbol": "molt_spawn__molt_context_66fa900595616b00"
     },
-    "molt_spliced_frame_bind": {
+    "molt_spliced_frame_bind_home": {
       "context": "Attached",
-      "physical_symbol": "molt_spliced_frame_bind__molt_context_66fa900595616b00"
+      "physical_symbol": "molt_spliced_frame_bind_home__molt_context_66fa900595616b00"
+    },
+    "molt_spliced_frame_capture_origin": {
+      "context": "Attached",
+      "physical_symbol": "molt_spliced_frame_capture_origin__molt_context_66fa900595616b00"
     },
     "molt_spliced_frame_finish": {
       "context": "Attached",
@@ -14586,13 +14590,9 @@
       "context": "Attached",
       "physical_symbol": "molt_spliced_frame_link__molt_context_66fa900595616b00"
     },
-    "molt_spliced_frame_origin": {
+    "molt_spliced_frame_pop": {
       "context": "Attached",
-      "physical_symbol": "molt_spliced_frame_origin__molt_context_66fa900595616b00"
-    },
-    "molt_spliced_frame_unlink": {
-      "context": "Attached",
-      "physical_symbol": "molt_spliced_frame_unlink__molt_context_66fa900595616b00"
+      "physical_symbol": "molt_spliced_frame_pop__molt_context_66fa900595616b00"
     },
     "molt_sqlite3_arraysize_set": {
       "context": "Attached",
@@ -23951,11 +23951,11 @@
     "molt_socketserver_unregister__molt_context_66fa900595616b00": "molt_socketserver_unregister__molt_context_66fa900595616b00",
     "molt_sorted_builtin__molt_context_66fa900595616b00": "molt_sorted_builtin__molt_context_66fa900595616b00",
     "molt_spawn__molt_context_66fa900595616b00": "molt_spawn__molt_context_66fa900595616b00",
-    "molt_spliced_frame_bind__molt_context_66fa900595616b00": "molt_spliced_frame_bind__molt_context_66fa900595616b00",
+    "molt_spliced_frame_bind_home__molt_context_66fa900595616b00": "molt_spliced_frame_bind_home__molt_context_66fa900595616b00",
+    "molt_spliced_frame_capture_origin__molt_context_66fa900595616b00": "molt_spliced_frame_capture_origin__molt_context_66fa900595616b00",
     "molt_spliced_frame_finish__molt_context_66fa900595616b00": "molt_spliced_frame_finish__molt_context_66fa900595616b00",
     "molt_spliced_frame_link__molt_context_66fa900595616b00": "molt_spliced_frame_link__molt_context_66fa900595616b00",
-    "molt_spliced_frame_origin__molt_context_66fa900595616b00": "molt_spliced_frame_origin__molt_context_66fa900595616b00",
-    "molt_spliced_frame_unlink__molt_context_66fa900595616b00": "molt_spliced_frame_unlink__molt_context_66fa900595616b00",
+    "molt_spliced_frame_pop__molt_context_66fa900595616b00": "molt_spliced_frame_pop__molt_context_66fa900595616b00",
     "molt_sqlite3_arraysize_set__molt_context_66fa900595616b00": "molt_sqlite3_arraysize_set__molt_context_66fa900595616b00",
     "molt_sqlite3_close__molt_context_66fa900595616b00": "molt_sqlite3_close__molt_context_66fa900595616b00",
     "molt_sqlite3_commit__molt_context_66fa900595616b00": "molt_sqlite3_commit__molt_context_66fa900595616b00",
@@ -25252,11 +25252,11 @@
     "socketserver_unregister": "molt_socketserver_unregister__molt_context_66fa900595616b00",
     "sorted_builtin": "molt_sorted_builtin__molt_context_66fa900595616b00",
     "spawn": "molt_spawn__molt_context_66fa900595616b00",
-    "spliced_frame_bind": "molt_spliced_frame_bind__molt_context_66fa900595616b00",
+    "spliced_frame_bind_home": "molt_spliced_frame_bind_home__molt_context_66fa900595616b00",
+    "spliced_frame_capture_origin": "molt_spliced_frame_capture_origin__molt_context_66fa900595616b00",
     "spliced_frame_finish": "molt_spliced_frame_finish__molt_context_66fa900595616b00",
     "spliced_frame_link": "molt_spliced_frame_link__molt_context_66fa900595616b00",
-    "spliced_frame_origin": "molt_spliced_frame_origin__molt_context_66fa900595616b00",
-    "spliced_frame_unlink": "molt_spliced_frame_unlink__molt_context_66fa900595616b00",
+    "spliced_frame_pop": "molt_spliced_frame_pop__molt_context_66fa900595616b00",
     "ssl_cert_none": "molt_ssl_cert_none__molt_context_66fa900595616b00",
     "ssl_cert_optional": "molt_ssl_cert_optional__molt_context_66fa900595616b00",
     "ssl_cert_required": "molt_ssl_cert_required__molt_context_66fa900595616b00",

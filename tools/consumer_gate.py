@@ -280,7 +280,11 @@ def _selected(root: Path, tree: str, base: str) -> tuple[SelectedGate, ...]:
 
 
 def run_static_gates(
-    root: Path, commands: list[str], *, label: str = "static gate"
+    root: Path,
+    commands: list[str],
+    *,
+    label: str = "static gate",
+    fail_fast: bool = False,
 ) -> list[str]:
     """Run each gate command in the checkout; return the commands that failed."""
     import shlex
@@ -293,6 +297,8 @@ def run_static_gates(
         print(f"consumer-gate: {label}: {command}", flush=True)
         if _COMMANDS.run(argv, cwd=root).returncode != 0:
             failed.append(command)
+            if fail_fast:
+                break
     return failed
 
 
@@ -413,7 +419,7 @@ def run(
         )
         return 1
     commits = commit_gates(root, tree, base=base)
-    failed = run_static_gates(root, commits, label="commit gate")
+    failed = run_static_gates(root, commits, label="commit gate", fail_fast=True)
     if failed:
         print(
             "consumer-gate: commit gates failed; no receipt:\n"

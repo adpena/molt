@@ -942,6 +942,11 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="print the cells; run nothing"
     )
     parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="run every selected cell even after a hard cell failure",
+    )
+    parser.add_argument(
         RERUN_OPTION,
         type=Path,
         metavar="LOG",
@@ -981,13 +986,22 @@ def main(argv: list[str] | None = None) -> int:
     declared: set[str] = set()
     results: dict[str, CellResult] = {}
     printing = threading.Lock()
+    hard_failure = threading.Event()
 
-    def run(cell: Cell) -> CellResult:
+    def run(cell: Cell) -> CellResult | None:
+        if hard_failure.is_set() and not args.keep_going:
+            return None
         echo: list[str] = []
         with printing:
             print(f"changed-crate-tests: running [{cell.label}]", flush=True)
         try:
-            return run_cell(cell, root=ROOT, plan=proof_plan, echo=echo)
+            result = run_cell(cell, root=ROOT, plan=proof_plan, echo=echo)
+            if result.problems and failed_tests((cell,), {cell.label: result}) is None:
+                hard_failure.set()
+            return result
+        except ToolchainNotProvisioned:
+            hard_failure.set()
+            raise
         finally:
             with printing:
                 print(f"changed-crate-tests: output [{cell.label}]")
@@ -1010,7 +1024,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         try:
             for future in as_completed(pending):
-                results[pending[future].label] = future.result()
+                if (result := future.result()) is not None:
+                    results[pending[future].label] = result
         except ToolchainNotProvisioned as exc:
             for future in pending:
                 future.cancel()
@@ -1018,8 +1033,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if runner is not None:
             runner_returncode = runner.result()
+    skipped = []
     for cell in selection.cells:
-        result = results[cell.label]
+        result = results.get(cell.label)
+        if result is None:
+            skipped.append(f"[{cell.label}]: stopped after an earlier cell failed")
+            continue
         declared.update(cell.declared)
         for name, counts in sorted(result.counts.items()):
             totals[name] = totals.get(name, 0) + counts["passed"] + counts["failed"]
@@ -1037,7 +1056,8 @@ def main(argv: list[str] | None = None) -> int:
                 "narrowed": sorted(cell.dropped),
             }
         )
-    test_failures_only = bool(failures)
+    # An incomplete matrix must never be eligible for a failed-test retry.
+    test_failures_only = bool(failures) and not skipped
     for name in sorted(declared):
         ran = totals.get(name, 0)
         if ran == 0 and name not in LIBS_WITHOUT_TESTS:
@@ -1071,13 +1091,15 @@ def main(argv: list[str] | None = None) -> int:
     reruns = failed_tests(selection.cells, results) if test_failures_only else None
     for failure in failures:
         print(f"changed-crate-tests: FAILED {failure}", file=sys.stderr)
+    for cell in skipped:
+        print(f"changed-crate-tests: unverified {cell}", file=sys.stderr)
     print(
         json.dumps(
             {
                 "schema": SCHEMA,
                 "status": "failed" if failures else "passed",
                 "cells": records,
-                "unverified": list(selection.unverified),
+                "unverified": [*selection.unverified, *skipped],
                 "failures": failures,
                 **({"failed_tests": reruns} if reruns else {}),
             },

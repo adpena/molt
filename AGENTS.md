@@ -6,18 +6,19 @@ repair in-scope guidance. `AGENTS.md` is standing policy; `CLAUDE.md` remains `@
 
 ## Operate like an early-stage AOT compiler project
 
-Before design, dispatch, review, landing or reporting, apply the standards of early Bun, Zig, Go
-and LLVM and leading AOT compilers. Keep trunk green and moving: short presubmit, revert within
-an hour, few lanes, differential tests over implementation pins, development load apart from gates.
-Add process only for a measured bottleneck; minimize wall clock to qualified outcomes.
+Start with the limiting user outcome and trace it across the pipeline. Correct the shared
+invariant or missing fact that removes the most work. Use a failing case or benchmark to expose
+the mechanism and a distinct case to check it. Keep trunk green and moving: short presubmit,
+revert within an hour, few lanes, differential tests over implementation pins, release gates apart
+from development load. Add process only for a measured bottleneck.
 
 ## Bind the work and finish the outcome
 
 - Bind startup to the assigned absolute checkout, branch, HEAD and dirty/owned paths: inspect
   `git -C <checkout> status --short --branch`, `git -C <checkout> rev-parse HEAD`, nested instructions
-  and retained proof state. From that checkout, use
-  `uv run --no-project python -B tools/venv_exec.py python tools/agent_coordination.py context`.
-  Read only task-relevant authorities; consult the published
+  and the relevant claim or proof receipt. For unassigned work or repository-wide reconciliation,
+  use `uv run --no-project python -B tools/venv_exec.py python tools/agent_coordination.py context`;
+  it inspects every registered worktree. Read only task-relevant authorities; consult the published
   `docs/agent/V1_HANDOFF_FINDINGS.md` before choosing work. It alone owns V1 burndown, priorities,
   blockers and qualification; update it when evidence changes them. Other roadmaps link to it.
 - Reconcile assignments, WIP/history/handoffs and donors before replacement. Messages/memory and
@@ -41,8 +42,10 @@ Add process only for a measured bottleneck; minimize wall clock to qualified out
 ## Preserve the Python AOT contract
 
 - Molt compiles standalone native/WASM programs, never depending on host Python or interpreter
-  fallback. Native/WASM are co-equal frontier targets; LLVM, MLIR, every IR layer, linker, memory
-  manager and shipped backend/profile are optimization surfaces. Portability includes all tooling,
+  fallback. Cranelift is the primary development and JIT backend; LLVM is the primary release
+  backend and emits WASM. Native and WASM name targets. Share optimization and ABI semantics
+  across backends; keep target-specific choices in lowering. GPU work is experimental. Every IR
+  layer, linker, memory manager and shipped backend/profile is an optimization surface. Portability includes all tooling,
   tests and developer apparatus; host assumptions cannot enter target semantics/shared infrastructure.
 - `docs/spec/areas/compat/contracts/verified_subset_contract.md` owns intended Python semantics;
   `docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md` (0216) owns exclusions.
@@ -111,9 +114,15 @@ Add process only for a measured bottleneck; minimize wall clock to qualified out
   re-lifted IR, shape re-derivation or second optimizer for one fact family. A refusing pass diagnoses
   lost facts; no silent generic-runtime degradation. Compiled code carries execution context and
   inlines fast paths, leaving runtime work cold where static proof is unavailable.
+- Prove storage, bounds and ownership at the widest valid region in shared IR. Identify edges
+  that invalidate facts; preserve the exact continuation, committed effects and observable frame
+  state. Measure the emitted hot path before moving a check into a backend.
 - User compile/edit/rebuild latency outweighs compiler self-build time; accept measured user gains
-  without losing correctness/conformance/generated speed. Cargo/Go/uv set the millisecond unchanged
-  rebuild bar. Measure affected before/after latency/throughput/startup, syscalls/flushes/locks/I/O/
+  without losing correctness/conformance/generated speed. Treat preparation as a dependency graph:
+  carry verified compiler/runtime/object/link identities, key reuse on actual dependencies and typed
+  bindings/effects/layouts/bodies across edits, and schedule independent misses under shared Cargo
+  slots and memory budgets. Measure waits, admission and execution separately. Cargo/Go/uv set the
+  millisecond unchanged rebuild bar. Measure affected before/after latency/throughput/startup, syscalls/flushes/locks/I/O/
   spawns/serialization, allocation, peak live/process-tree memory, caches/atomics/contention,
   code/artifact size, link time and failure atomicity.
 - Time exact uv-managed CPython in isolated mode (`-I`), not the guarded dev environment. Cost
@@ -140,9 +149,11 @@ Add process only for a measured bottleneck; minimize wall clock to qualified out
   sufficient development evidence; mandatory landing/release gates still run once, CI qualifies releases.
 - Before each commit, run `tools/consumer_gate.py run -- PATHS` in the selected environment
   (static gates, reached Rust lib tests and first-hop importers, presubmit `-n auto --skip-slow`).
-  Mark median >=60 s tests `@pytest.mark.slow` for postsubmit. Implementation handoff requires
-  `tools/molt_dev.py land --repo <checkout> --precheck-only` and changed tests passing in the
-  runner's plain environment, not lane `env.sh`; read-only findings have no per-turn proof quota.
+  Mark median >=60 s tests `@pytest.mark.slow` for postsubmit. Worker handoff uses
+  `tools/molt_dev.py land --repo <checkout> --precheck-only` and changed tests in the runner's plain
+  environment, not lane `env.sh`. The integrator reuses matching receipts where admitted and lets
+  the landing runner execute required gates on the actual merge candidate. Queue submission and
+  publication are separate states; CI arbitrates release candidates. Read-only findings have no per-turn proof quota.
 - Preflight prerequisites in the actual child environment; parsing is not readiness. Validate mutations
   at their canonical boundary. Reuse compatible compiled producers/affected selectors; avoid unrelated
   suites, cold targets and competing Cargo writers. Measure before changing concurrency/coverage.
@@ -153,10 +164,11 @@ Add process only for a measured bottleneck; minimize wall clock to qualified out
 
 ## Coordinate through existing owners
 
-- Only integrators dispatch; workers never delegate/open a second lane. Delegate substantial work/
-  review only when saved critical path exceeds startup/context costs; batch independent reads/checks,
-  avoid tiny agents/overlapping writers/duplicate proofs. Parent owns architecture/integration; one
-  owner per ledger family, no copied facts.
+- Only integrators dispatch; workers never delegate/open a second lane. Keep an owner on the
+  highest-impact compiler path. Delegate independent work or a load-bearing review when it shortens
+  that path after startup, build-slot and memory costs. Batch reads/proofs; avoid tiny agents,
+  overlapping writers and duplicate proofs. Parent owns architecture/integration; one owner per
+  ledger family, no copied facts.
 - Use validated `DispatchBounds` through `tools/dispatch_prompt.py` and existing coordination records.
   `docs/ops/MULTI_AGENT_COORDINATION.md` owns brief review, budgets, proof families, stop conditions,
   parent-controlled scope expansion, class-sweep reports and ownership closure. Task messages and
@@ -180,7 +192,8 @@ Add process only for a measured bottleneck; minimize wall clock to qualified out
   pushes or other external mutations require user authorization or an explicit requested workflow step.
 - Retiring WIP requires two source/history/current-owner passes, one independent when available:
   harvest useful changes, identify satisfied/superseded work and preserve unresolved signal with an
-  indexed recovery path and owner/question. Archives, age and cache-like names prove no reconciliation
+  indexed recovery path and owner/question. Keep the remaining claim, exact commit and proof receipt
+  discoverable in the existing coordination record. Archives, age and cache-like names prove no reconciliation
   and grant no source-deletion authority.
 - Stop only live-proved Molt-owned children/workers; test observers use `tests/process_guard_common.py`.
   Never stop Codex, Claude, app/renderer/server helpers, MCP/plugins, shell hosts, Git pollers,

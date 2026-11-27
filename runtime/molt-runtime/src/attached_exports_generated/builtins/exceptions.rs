@@ -44,19 +44,19 @@ pub unsafe extern "C" fn molt_exception_frame_origin(__context: u64, expected_ho
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_frame_origin_attached_body(_py, expected_homes)
 }
-#[unsafe(export_name = "molt_spliced_frame_origin__molt_context_66fa900595616b00")]
+#[unsafe(export_name = "molt_spliced_frame_capture_origin__molt_context_66fa900595616b00")]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_spliced_frame_origin(
+pub unsafe extern "C" fn molt_spliced_frame_capture_origin(
     __context: u64,
     exc_bits: u64,
     count_bits: u64,
-) -> u64 {
+) {
     molt_runtime_core::call_census::hit(
-        molt_runtime_core::call_census::id::molt_spliced_frame_origin,
+        molt_runtime_core::call_census::id::molt_spliced_frame_capture_origin,
     );
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_spliced_frame_origin_attached_body(_py, exc_bits, count_bits)
+    molt_spliced_frame_capture_origin_attached_body(_py, exc_bits, count_bits)
 }
 #[unsafe(export_name = "molt_exception_chain_context__molt_context_66fa900595616b00")]
 #[allow(clippy::missing_safety_doc)]

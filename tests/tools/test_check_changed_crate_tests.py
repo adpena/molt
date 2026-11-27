@@ -484,6 +484,40 @@ def test_a_failure_that_is_not_a_named_test_reruns_the_whole_gate(
     assert gate.failed_tests([cell], {cell.label: result}) is None
 
 
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_build_failure_stops_queued_cells_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    keep_going: bool,
+) -> None:
+    first, second = _cell(), _cell()
+    second.sources = ["rule:llvm"]
+    selection = gate.Selection(
+        _reach("molt-tir"), (first, second), None, frozenset(), ()
+    )
+    ran = []
+
+    def run(cell: gate.Cell, **_kwargs: object) -> gate.CellResult:
+        ran.append(cell.label)
+        if cell is first:
+            return gate.CellResult((), 101, {}, ["cell exited 101"])
+        return gate.CellResult((), 0, {}, [])
+
+    monkeypatch.setattr(gate, "selection_for", lambda _base: selection)
+    monkeypatch.setattr(gate, "cell_workers", lambda _count: 1)
+    monkeypatch.setattr(gate, "run_cell", run)
+
+    assert gate.main(["--keep-going"] if keep_going else []) == 1
+
+    expected = [first.label, second.label] if keep_going else [first.label]
+    assert ran == expected
+    result = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert result["status"] == "failed"
+    assert len(result["cells"]) == len(expected)
+    assert len(result["unverified"]) == int(not keep_going)
+    assert "failed_tests" not in result
+
+
 @pytest.mark.parametrize("passes", [True, False])
 def test_rerun_failed_passes_only_when_each_named_test_passes_alone(
     tmp_path: Path,

@@ -91,8 +91,8 @@ becomes a fresh cold block:
 ```
 check_exception (Origin) -> X                        // backend: caller entry at the call site
 X:  call molt_spliced_frame_link(function, location, identity_slot)   // per level, outermost first
-    call molt_spliced_frame_bind(key_space, key, value, present)           // per binding of the level
-    call molt_spliced_frame_origin(None, levels)
+    call molt_spliced_frame_bind_home(key_space, key, value, present)           // per binding of the level
+    call molt_spliced_frame_capture_origin(None, levels)
     br <the caller's handler of the call site>(<what the call site's check passes>)
 ```
 
@@ -127,7 +127,7 @@ verifier and both backends unchanged.
 
 The body's explicit-raise Origin (`call molt_exception_trace_prepend(exc)`) prepends the executing
 record's entry, which is the caller's at the call site. The splice places the links and
-`molt_spliced_frame_origin(exc, levels)` right after it, which insert the spliced levels beneath
+`molt_spliced_frame_capture_origin(exc, levels)` right after it, which insert the spliced levels beneath
 that entry. The raise and its Unwind check follow unchanged.
 
 ### 4.4 Operations that may run Python
@@ -137,9 +137,9 @@ The splice brackets each operation that may run Python code or reads the frame
 `may_call_python`; frame bookkeeping is already dropped):
 
 ```
-call molt_spliced_frame_link(...) ; call molt_spliced_frame_bind(...) ...
+call molt_spliced_frame_link(...) ; call molt_spliced_frame_bind_home(...) ...
 <operation>
-call molt_spliced_frame_unlink(levels)
+call molt_spliced_frame_pop(levels)
 ```
 
 The links put the chain's records over the caller's, so Python code the operation runs sees the
@@ -195,9 +195,9 @@ The five runtime entries are declared in `runtime/runtime_abi.toml`.
 | entry | arguments | effect |
 |---|---|---|
 | `molt_spliced_frame_link` | `(function, location, identity_slot)` | link one record for the level and reattach its observed bindings |
-| `molt_spliced_frame_bind` | `(key_space, key, value, present)` | bind one local in the newest record |
-| `molt_spliced_frame_origin` | `(exception or None, levels)` | insert the newest `levels` records' entries beneath the caller's head entry, then pop them |
-| `molt_spliced_frame_unlink` | `(levels)` | pop the newest `levels` records |
+| `molt_spliced_frame_bind_home` | `(key_space, key, value, present)` | bind one local in the newest record |
+| `molt_spliced_frame_capture_origin` | `(exception or None, levels)` | insert the newest `levels` records' entries beneath the caller's head entry, then pop them |
+| `molt_spliced_frame_pop` | `(levels)` | pop the newest `levels` records |
 | `molt_spliced_frame_finish` | `(bindings)` | retire the observed activation and release its ownership |
 
 `link` always links exactly one record (one without code for a malformed function, which
@@ -272,7 +272,7 @@ breaker (a backward jump or a call), in whichever frame runs there.
   `generator_fused_frame_observers.py` on a 3.12 target). The handler receives the generator's
   frame with the consumer as `f_back`. The poll's exceptional edge leaves with the record still
   linked; the backend's Origin capture then sees a record that is not the caller's and records
-  nothing, so the cold block's `molt_spliced_frame_origin` captures the consumer and the
+  nothing, so the cold block's `molt_spliced_frame_capture_origin` captures the consumer and the
   generator together and pops the record. A target without the pending-work test brackets every
   poll in line.
 - The check that observed the locals prologue (`molt_frame_locals_begin`) goes with that call.

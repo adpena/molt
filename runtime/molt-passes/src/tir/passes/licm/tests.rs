@@ -523,7 +523,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
 }
 
 #[test]
-fn same_round_hoists_preserve_source_order() {
+fn independent_hoists_preserve_source_order() {
     let mut func = TirFunction::new(
         "stable_hoist_order".into(),
         vec![],
@@ -552,8 +552,37 @@ fn same_round_hoists_preserve_source_order() {
         .expect("second invariant must hoist");
     assert!(
         first_pos < second_pos,
-        "back-to-front removal must not reverse destination order"
+        "independent operations keep their order in the preheader"
     );
+}
+
+#[test]
+fn invariant_dependency_chain_moves_in_definition_order() {
+    let mut func = TirFunction::new(
+        "invariant_chain".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let loop_shape = build_single_loop(&mut func);
+    let values: Vec<_> = (0..24).map(|_| func.fresh_value()).collect();
+    let body = &mut func.blocks.get_mut(&loop_shape.body).unwrap().ops;
+    body.push(make_const_int(11, values[0]));
+    body.extend(
+        values
+            .windows(2)
+            .map(|pair| TirOp::new(OpCode::Copy, vec![pair[0]], vec![pair[1]])),
+    );
+
+    run(&mut func, &mut AnalysisManager::new());
+
+    let hoisted: Vec<_> = func.blocks[&loop_shape.preheader]
+        .ops
+        .iter()
+        .flat_map(|op| op.results.iter().copied())
+        .filter(|value| values.contains(value))
+        .collect();
+    assert_eq!(hoisted, values);
 }
 
 #[test]

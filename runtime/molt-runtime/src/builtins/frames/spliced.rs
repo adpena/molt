@@ -8,11 +8,11 @@
 //! around an operation that may run Python code. It links one owned record
 //! per spliced level (outermost first) over the executing frame
 //! ([`molt_spliced_frame_link_attached_body`]), binds the level's locals in
-//! its homes ([`molt_spliced_frame_bind_attached_body`]), and then either
+//! its homes ([`molt_spliced_frame_bind_home_attached_body`]), and then either
 //! captures the linked records into the pending traceback and pops them
-//! ([`molt_spliced_frame_origin_attached_body`], in `exceptions.rs`) or pops
+//! ([`molt_spliced_frame_capture_origin_attached_body`], in `exceptions.rs`) or pops
 //! them after the bracketed operation
-//! ([`molt_spliced_frame_unlink_attached_body`]). None of these allocates a
+//! ([`molt_spliced_frame_pop_attached_body`]). None of these allocates a
 //! Python object or refuses a pending exception: they run on exception edges.
 //!
 //! A binding's key is a code slot (`CODE_SLOT`: a synchronous callee's home
@@ -22,7 +22,6 @@
 //! site. A `missing` value leaves its binding unbound.
 
 use molt_codegen_abi::{FRAME_HOME_PLAIN, FRAME_HOME_WORDS};
-use molt_obj_model::MoltObject;
 
 use super::bindings::FramePlan;
 use super::locations::LocationId;
@@ -117,21 +116,20 @@ fn code_slot(py: &PyToken<'_>, key_space: i64, key: i64, code_bits: u64) -> Opti
     }
 }
 
-/// `molt_spliced_frame_bind(key_space, key, value, present)`: bind `value` in the home
+/// `molt_spliced_frame_bind_home(key_space, key, value, present)`: bind `value` in the home
 /// `key` names of the record the last link made. A key the code does not name
 /// and an absent or `missing` value bind nothing.
-pub(crate) fn molt_spliced_frame_bind_attached_body(
+pub(crate) fn molt_spliced_frame_bind_home_attached_body(
     _py: &PyToken<'_>,
     key_space_bits: u64,
     key_bits: u64,
     value: u64,
     present: u64,
-) -> u64 {
+) {
     crate::with_attached_entry_nopanic!(_py, py, {
         if obj_from_bits(present).as_bool() == Some(true) {
             bind(py, key_space_bits, key_bits, value);
         }
-        MoltObject::none().bits()
     })
 }
 
@@ -179,15 +177,14 @@ fn unlink(py: &PyToken<'_>, count: usize) {
     }
 }
 
-/// `molt_spliced_frame_unlink(count)`: pop the records the links of a
+/// `molt_spliced_frame_pop(count)`: pop the records the links of a
 /// bracket linked.
-pub(crate) fn molt_spliced_frame_unlink_attached_body(_py: &PyToken<'_>, count_bits: u64) -> u64 {
+pub(crate) fn molt_spliced_frame_pop_attached_body(_py: &PyToken<'_>, count_bits: u64) {
     crate::with_attached_entry_nopanic!(_py, py, {
         let count = int(count_bits)
             .and_then(|count| usize::try_from(count).ok())
             .unwrap_or(0);
         unlink(py, count);
-        MoltObject::none().bits()
     })
 }
 

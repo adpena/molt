@@ -32,6 +32,32 @@ fn block_pending_transfer(
         .unwrap_or(PendingTransfer::Preserve)
 }
 
+/// A work-only gate may skip the exception check on its fast edge only when
+/// there is no incoming exception to transfer and the check has no SSA result.
+pub(crate) fn polls_without_pending_exception(
+    func: &TirFunction,
+    labels: &HashMap<i64, BlockId>,
+) -> HashSet<(BlockId, usize)> {
+    let facts = RaiseFacts::of(func);
+    let entry = compute_block_entry_pending(func, &facts, labels);
+    let mut clean = HashSet::default();
+    for (&id, block) in &func.blocks {
+        let mut pending = entry[&id];
+        for (index, op) in block.ops.iter().enumerate() {
+            let transfer = if op.opcode == OpCode::CheckException {
+                if !pending && op.is_async_work_poll() && op.results.is_empty() {
+                    clean.insert((id, index));
+                }
+                check_pending_transfer(check_has_exception_edge(op, labels), op)
+            } else {
+                operation_pending_transfer(&facts, op)
+            };
+            pending = transfer.apply(pending);
+        }
+    }
+    clean
+}
+
 pub(super) fn compute_block_entry_pending(
     func: &TirFunction,
     raise: &RaiseFacts,
