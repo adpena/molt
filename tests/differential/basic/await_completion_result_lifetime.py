@@ -20,11 +20,12 @@ async def generator():
 class Tick:
     def __await__(self):
         yield "suspended in cleanup"
+        yield "still suspended in cleanup"
 
 
-async def direct_cleanup():
+async def direct_cleanup(label):
     try:
-        return Result("direct coroutine")
+        return Result(label)
     finally:
         await Tick()
         print("direct cleanup resumed")
@@ -56,10 +57,11 @@ async def main():
     await consume_once(source.__anext__())
     await source.aclose()
     await consume_once(Worker().ready())
-    result = await direct_cleanup()
-    print("returned", result.label)
-    del result
-    print("after direct release")
+    for label in ("first direct coroutine", "second direct coroutine"):
+        result = await direct_cleanup(label)
+        print("returned", result.label)
+        del result
+        print("after direct release")
 
 
 task = main()

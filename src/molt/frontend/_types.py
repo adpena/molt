@@ -117,6 +117,7 @@ class SimpleIROp(TypedDict):
     source_module_publication_boundary: NotRequired[Any]
     arena_eligible: NotRequired[Any]
     state_targets: NotRequired[Any]
+    await_slot: NotRequired[int]
     task_closure_size: NotRequired[Any]
     task_vararg_slot: NotRequired[int]
     task_kind: NotRequired[Any]

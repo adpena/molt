@@ -192,7 +192,13 @@ fn activation_wait_pending_and_ready_paths_both_release_invocation_future() {
             9,
         ),
         set_state(
-            op(OpCode::StateTransition, vec![future, pending], vec![result]),
+            TirOp {
+                attrs: AttrDict::from_iter([(
+                    molt_ir::ir_schema::AWAIT_SLOT_ATTR.into(),
+                    molt_ir::tir::ops::AttrValue::Int(24),
+                )]),
+                ..op(OpCode::StateTransition, vec![future, pending], vec![result])
+            },
             10,
         ),
     ];
@@ -219,13 +225,26 @@ fn activation_wait_pending_and_ready_paths_both_release_invocation_future() {
             .filter(|(_, op)| op.opcode == OpCode::DecRef && op.operands == [future])
             .collect();
         assert_eq!(releases.len(), 1, "one invocation owner on each path");
-        if waiting {
+        let persistent = block.ops.iter().position(|op| {
+            op.opcode == OpCode::ClosureStore
+                && op.operands == [frame, future]
+                && op.attrs.get("value") == Some(&molt_ir::tir::ops::AttrValue::Int(24))
+        });
+        assert_eq!(
+            persistent.is_some(),
+            waiting,
+            "only Pending persists an owner"
+        );
+        if let Some(persistent) = persistent {
             let wait = block
                 .ops
                 .iter()
                 .position(|op| op.opcode == OpCode::TaskWait)
                 .unwrap();
-            assert!(wait < releases[0].0, "registration borrows a live future");
+            assert!(
+                persistent < wait && wait < releases[0].0,
+                "suspension borrows a live future"
+            );
         }
         assert!(
             !block

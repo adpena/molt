@@ -1340,7 +1340,7 @@ mod tests {
                 {"kind": "loop_end"},
                 {"kind": "state_label", "value": 80},
                 {"kind": "const", "value": 80, "out": "pending"},
-                {"kind": "state_transition", "value": 81,
+                {"kind": "state_transition", "value": 81, "await_slot": 0,
                  "args": ["awaitable", "pending"], "out": "ready"},
                 {"kind": "const_none", "out": "frame_none"},
                 {"kind": "const", "value": 0, "out": "argument_kind"},

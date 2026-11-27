@@ -978,60 +978,63 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             raise FrontendRejection(
                 Diagnostic.CONTROL_FLOW, "await outside async function"
             )
-        awaitable_slot = self._new_async_internal_slot()
-        # The first entry acquires the awaitable. A pending dispatch enters
-        # at the state label below, where the frame already owns it.
+        slot = self._new_async_internal_slot()
+        pending_state = self.next_label()
+        poll_entry = self.next_label()
+        ready_state = self.next_label()
+        cursor = self.next_var()
         transformed = self._emit_awaitable_transform(awaitable)
         self.emit(
             MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", awaitable_slot, transformed],
+                kind="STORE_VAR",
+                args=[transformed],
                 result=MoltValue("none"),
+                metadata={"var": cursor},
             )
         )
-        self.state_count += 1
-        pending_state_id = self.state_count
-        self.emit(
-            MoltOp(
-                kind="STATE_LABEL", args=[pending_state_id], result=MoltValue("none")
-            )
-        )
-        pending_state_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(kind="CONST", args=[pending_state_id], result=pending_state_val)
-        )
-        coro = MoltValue(self.next_var(), type_hint="Future")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", awaitable_slot],
-                result=coro,
-            )
-        )
-        self.state_count += 1
-        next_state_id = self.state_count
-        result = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="JUMP", args=[poll_entry], result=MoltValue("none")))
         with self._suppress_check_exception():
+            self.emit(
+                MoltOp(
+                    kind="STATE_LABEL", args=[pending_state], result=MoltValue("none")
+                )
+            )
+            resumed = self._reload_async_value(slot, "Future")
+            empty = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=empty))
+            # Resume takes an invocation owner before clearing the persistent
+            # owner. The slot stays empty unless this invocation suspends.
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", slot, empty],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[resumed],
+                    result=MoltValue("none"),
+                    metadata={"var": cursor},
+                )
+            )
+            self.emit(MoltOp(kind="LABEL", args=[poll_entry], result=MoltValue("none")))
+            awaiter = MoltValue(self.next_var(), type_hint="Future")
+            self.emit(
+                MoltOp(
+                    kind="LOAD_VAR", args=[], result=awaiter, metadata={"var": cursor}
+                )
+            )
+            pending = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[pending_state], result=pending))
+            result = MoltValue(self.next_var(), type_hint="Any")
             self.emit(
                 MoltOp(
                     kind="STATE_TRANSITION",
                     exception_source=ExceptionEdgeKind.ORIGIN,
-                    args=[coro, pending_state_val, next_state_id],
+                    args=[awaiter, pending, ready_state, slot],
                     result=result,
-                )
-            )
-            # Acquire a fresh owner after resumption. Clearing the hidden slot
-            # cannot finalize the awaited task while this owner remains live
-            # through Origin capture; pre-suspension SSA values are unavailable
-            # on an implicit resume.
-            completed = self._reload_async_value(awaitable_slot, "Future")
-            cleared_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", awaitable_slot, cleared_val],
-                    result=MoltValue("none"),
                 )
             )
             handler = (
@@ -1053,7 +1056,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
             # Canonical exception-edge drops release this owner after Origin
             # capture when the handler wins; this is its normal-path boundary.
-            self._emit_drop_owned_value(completed)
+            self._emit_drop_owned_value(awaiter)
             self._emit_raise_if_pending()
         return result
 

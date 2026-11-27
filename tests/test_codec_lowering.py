@@ -450,22 +450,34 @@ async def main():
         and op["args"] == [call["out"]]
     ]
     assert len(acquisitions) == 1
-    stores = [
+    transition = next(op for op in function_ops if op["kind"] == "state_transition")
+    slot = transition["await_slot"]
+    acquired = acquisitions[0]["out"]
+    assert not any(
+        op["kind"] == "closure_store" and acquired in op["args"] for op in function_ops
+    )
+    # The first edge carries the acquired value directly. Only the saved
+    # state reloads the private slot, and both edges enter one poll.
+    initial = next(
         op
         for op in function_ops
-        if op["kind"] == "closure_store" and op["args"][-1] == acquisitions[0]["out"]
-    ]
-    assert len(stores) == 1
-    store = stores[0]
-    resumes = {
-        op["out"]
+        if op["kind"] == "store_var" and op["args"] == [acquired]
+    )
+    join = next(
+        op
         for op in function_ops
-        if op["kind"] == "closure_load"
-        and op["args"] == store["args"][:1]
-        and op["value"] == store["value"]
-    }
+        if op["kind"] == "load_var" and op["out"] == transition["args"][0]
+    )
+    assert initial["var"] == join["var"]
+    resume = next(
+        op
+        for op in function_ops
+        if op["kind"] == "closure_load" and op["value"] == slot
+    )
     assert any(
-        op["kind"] == "state_transition" and op["args"][0] in resumes
+        op["kind"] == "store_var"
+        and op["var"] == join["var"]
+        and op["args"] == [resume["out"]]
         for op in function_ops
     )
 

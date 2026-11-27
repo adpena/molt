@@ -684,6 +684,9 @@ pub struct OpIR {
     /// value at its last use. No reload reads what it stores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_slot_release: Option<bool>,
+    /// The private frame offset where a pending await persists its operand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub await_slot: Option<u32>,
     pub task_kind: Option<String>,
     /// Immutable task-frame payload size, in bytes, authored together with
     /// `task_kind` by `func_new` / `func_new_closure`.
@@ -893,6 +896,7 @@ impl OpIR {
             defines_del: Default::default(),
             bound_local: Default::default(),
             frame_slot_release: Default::default(),
+            await_slot: None,
             task_kind: Default::default(),
             task_closure_size: Default::default(),
             task_vararg_slot: None,
@@ -2455,6 +2459,7 @@ mod json_parse_tests {
             defines_del: Some(true),
             bound_local: Some(false),
             frame_slot_release: Some(true),
+            await_slot: Some(16),
             task_kind: Some("coroutine".to_string()),
             task_closure_size: Some(48),
             task_vararg_slot: Some(0),

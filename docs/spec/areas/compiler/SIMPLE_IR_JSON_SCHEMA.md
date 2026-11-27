@@ -32,9 +32,13 @@ every other semantic IR field.
 Terminal ownership lowers `state_yield` and `state_transition` to ordinary
 returns and branches plus `state_set` (raw integer saved state), `is_pending`
 (exact pending-sentinel predicate), and `task_wait` (existing scheduler wait
-registration). These primitives do not terminate the activation or manage
-invocation references. Shared DropInsertion owns those references; frame
-`closure_store`/`closure_load` own persistence across invocations.
+registration). A `state_transition` also carries `await_slot`, its private
+aligned byte offset in the layout declared by `state_switch`. The first poll
+receives the acquired awaitable directly. Only the Pending branch stores it
+to that slot. The resume path takes an invocation owner and clears the slot
+before polling again. The Ready branch keeps the invocation owner through
+its Origin check so releasing the awaitable cannot run cleanup before the
+exception is captured. Shared DropInsertion owns all invocation references.
 
 `molt build --emit-ir` writes the exact prepared backend input, including module
 registry and all control-flow references. It does not renumber labels or saved

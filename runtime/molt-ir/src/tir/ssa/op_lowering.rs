@@ -263,6 +263,12 @@ impl<'a> SsaContext<'a> {
         if op.bound_local == Some(true) {
             attrs.insert("bound_local".into(), AttrValue::Bool(true));
         }
+        if let Some(offset) = op.await_slot {
+            attrs.insert(
+                crate::ir_schema::AWAIT_SLOT_ATTR.into(),
+                AttrValue::Int(i64::from(offset)),
+            );
+        }
         if op.frame_slot_release == Some(true) {
             attrs.insert("frame_slot_release".into(), AttrValue::Bool(true));
         }

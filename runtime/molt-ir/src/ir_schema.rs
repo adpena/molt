@@ -446,11 +446,17 @@ pub fn validate_function_admission_op_shapes(
 /// Source IR without a map is lifted before terminal activation lowering.
 /// Explicit maps must cover the saved state of each executable suspension;
 /// an omitted state is invalid, never permission to infer another dispatch map.
+pub const AWAIT_SLOT_ATTR: &str = "await_slot";
+
 pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
     use std::collections::BTreeSet;
     let mut labels = BTreeSet::new();
     let mut duplicate_labels = BTreeSet::new();
+    let mut layout = None;
     for op in ops {
+        if op.kind == crate::OpKind::StateSwitch {
+            layout = op.value;
+        }
         if matches!(op.kind, crate::OpKind::Label | crate::OpKind::StateLabel)
             && let Some(label) = op.value
             && !labels.insert(label)
@@ -464,6 +470,14 @@ pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
             switches += 1;
             if switches > 1 {
                 return Err(format!("op#{index}: multiple state_switch dispatch sites"));
+            }
+        }
+        if let Some(slot) = op.await_slot {
+            let end = i64::from(slot) + 8;
+            if !layout.is_some_and(|size| end <= size) {
+                return Err(format!(
+                    "op#{index}: await slot {slot} lies outside the frontend frame layout"
+                ));
             }
         }
         let Some(targets) = &op.state_targets else {
@@ -519,6 +533,14 @@ pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
         }
     }
     validate_simple_op_shape(op).map_err(|error| error.to_string())?;
+    match (op.kind, op.await_slot) {
+        (crate::OpKind::StateTransition, Some(slot)) if slot % 8 == 0 => {}
+        (crate::OpKind::StateTransition, _) => {
+            return Err("state_transition requires an aligned await slot".into());
+        }
+        (_, Some(_)) => return Err("await_slot requires state_transition".into()),
+        _ => {}
+    }
     crate::literal_payload::validate_simple_literal(op)?;
     validate_value_transport(op)?;
     validate_representation_fields(op)
@@ -1018,6 +1040,7 @@ mod op_shape_tests {
             args: Some(vec!["future".into(), "pending".into()]),
             value: Some(1),
             out: Some("ready".into()),
+            await_slot: Some(0),
             ..OpIR::new(crate::OpKind::StateTransition)
         };
         validate_simple_op_shape(&op).unwrap();

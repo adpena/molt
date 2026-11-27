@@ -1693,6 +1693,7 @@ mod tests {
                     ..op(crate::OpKind::Const)
                 },
                 OpIR {
+                    value: Some(8),
                     state_targets: Some(targets.clone()),
                     ..op(crate::OpKind::StateSwitch)
                 },
@@ -1704,6 +1705,7 @@ mod tests {
                     value: Some(8),
                     args: Some(vec!["future".into(), "pending".into()]),
                     out: Some("polled".into()),
+                    await_slot: Some(0),
                     ..op(crate::OpKind::StateTransition)
                 },
                 OpIR {
@@ -1835,11 +1837,13 @@ mod tests {
                 value: Some(8),
                 args: Some(vec!["future".into(), "unknown_pending".into()]),
                 out: Some("polled".into()),
+                await_slot: Some(0),
                 ..op(crate::OpKind::StateTransition)
             },
         ] {
             for reachable in [false, true] {
                 let mut ops = vec![OpIR {
+                    value: Some(8),
                     state_targets: Some(vec![]),
                     ..op(crate::OpKind::StateSwitch)
                 }];

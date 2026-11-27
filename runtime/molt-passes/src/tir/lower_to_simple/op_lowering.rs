@@ -551,6 +551,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             args: Some(operand_args(op)),
             out: out_var,
             value: attr_int(&op.attrs, "value"),
+            await_slot: attr_int(&op.attrs, molt_ir::ir_schema::AWAIT_SLOT_ATTR)
+                .map(|offset| u32::try_from(offset).expect("validated await slot")),
             ..OpIR::new(molt_ir::OpKind::StateTransition)
         }),
         OpCode::StateYield => Some(OpIR {

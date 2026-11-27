@@ -442,6 +442,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         defines_del: _,
         bound_local: _,
         frame_slot_release: _,
+        await_slot: _,
         task_kind,
         task_closure_size: _,
         container_type,

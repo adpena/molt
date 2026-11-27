@@ -67,6 +67,16 @@ fn operation_shape_fixture(
     } else if function.ops[0].uses_execution_frame() {
         function.execution_context = molt_ir::ExecutionContextPolicy::Inherited;
     }
+    if shape.kind == molt_ir::OpKind::StateTransition {
+        function.ops[0].await_slot = Some(0);
+        function.ops.insert(
+            0,
+            OpIR {
+                value: Some(8),
+                ..op(molt_ir::OpKind::StateSwitch)
+            },
+        );
+    }
     function.ops.push(op(molt_ir::OpKind::RetVoid));
     SimpleIR {
         functions: vec![function],
@@ -117,7 +127,8 @@ fn generated_operation_shapes_agree_across_all_transport_boundaries() {
                             && error.contains(invalid_field.expect("malformed fixture")),
                         "{error}"
                     );
-                    assert!(error.contains("op#0"), "{error}");
+                    let index = usize::from(shape.kind == molt_ir::OpKind::StateTransition);
+                    assert!(error.contains(&format!("op#{index}")), "{error}");
                 }
             }
             let fragment = molt_ir::ir_schema::validate_function_op_shapes(&ir.functions[0]);

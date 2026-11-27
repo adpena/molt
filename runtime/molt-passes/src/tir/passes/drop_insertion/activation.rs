@@ -96,6 +96,14 @@ pub(super) fn expose_activation_exits(func: &mut TirFunction) -> usize {
             [result] => *result,
             _ => panic!("{}: wait must define its polled result", func.name),
         };
+        let offset = match op.attrs.get(molt_ir::ir_schema::AWAIT_SLOT_ATTR) {
+            Some(AttrValue::Int(offset)) if *offset >= 0 && offset % 8 == 0 => *offset,
+            _ => panic!("{}: wait must carry its frame slot", func.name),
+        };
+        let frame = func.blocks[&func.entry_block].args[0].id;
+        let mut persist = make_op(OpCode::ClosureStore, vec![frame, future]);
+        persist.attrs.insert("value".into(), AttrValue::Int(offset));
+        persist.source_span = op.source_span;
         // Poll returns an owned boxed result, including an immediate pending
         // sentinel. It is transferred on the pending exit and released/used on
         // the ready path by ordinary Return/SSA ownership rules.
@@ -139,7 +147,7 @@ pub(super) fn expose_activation_exits(func: &mut TirFunction) -> usize {
             TirBlock {
                 id: pending_block,
                 args: vec![],
-                ops: vec![make_op(OpCode::TaskWait, vec![future])],
+                ops: vec![persist, make_op(OpCode::TaskWait, vec![future])],
                 terminator: Terminator::Return {
                     values: vec![result],
                 },

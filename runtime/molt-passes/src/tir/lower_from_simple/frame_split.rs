@@ -24,9 +24,9 @@
 //!    the slot then holds its value at every suspension the definition
 //!    reaches, and a loop that suspends stores nothing for it per iteration.
 //!    A name defined more than once is stored at each suspension instead: a
-//!    pure suspension stores it just before it returns, and a resume entry
-//!    also reached by fall-through (an `await` re-polls from its entry) stores
-//!    it on that edge.
+//!    suspension stores it before the poll or yield. If first entry reaches
+//!    the resume label by fall-through, it stores on that edge so the label's
+//!    reload also sees the current definition.
 //! 4. After the resume entry (its re-entered `try` regions and its frame
 //!    publication) each name is reloaded into the same name. SSA construction
 //!    then joins the reloaded and the original definitions; the state dispatch
@@ -290,16 +290,19 @@ pub(super) fn split_stateful_frame(
             }
             out
         };
-        // Every predecessor of the resume entry other than the dispatch.
+        let normal_entry_reloads = resume > 0 && falls_through(&ops[resume - 1]);
         for member in members {
-            if !ops[member.suspend].kind.is_repoll() {
+            // A repoll whose first entry bypasses the resume path must save
+            // the definitions at the common poll site. The resume label then
+            // sees the latest loop-carried values, not the default slots.
+            if !normal_entry_reloads || !ops[member.suspend].kind.is_repoll() {
                 before
                     .entry(member.suspend)
                     .or_default()
                     .extend(store_ops(&mut names));
             }
         }
-        if resume > 0 && falls_through(&ops[resume - 1]) {
+        if normal_entry_reloads {
             before
                 .entry(resume)
                 .or_default()
