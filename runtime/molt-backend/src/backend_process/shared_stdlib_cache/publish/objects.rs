@@ -241,6 +241,25 @@ impl NativeObjectCache {
         Ok(digest.finalize().into())
     }
 
+    /// The preterminal application action can outlive a change to the stdlib
+    /// archive. Its record names existing objects and never owns object bytes.
+    pub(crate) fn application_plan_key(&self, input: &impl Serialize) -> io::Result<String> {
+        let mut digest = Sha256::new();
+        digest.update(b"native-application-archive-plan-v1\0");
+        let mut serializer =
+            rmp_serde::Serializer::new(DigestWriter(&mut digest)).with_struct_map();
+        (&self.authority, input)
+            .serialize(&mut serializer)
+            .map_err(io::Error::other)?;
+        Ok(bytes_to_lower_hex(&digest.finalize()))
+    }
+
+    pub(crate) fn application_plan_store(&self) -> molt_backend::tir::cache::CompilationCache {
+        molt_backend::tir::cache::CompilationCache::open_backend_namespace_under(
+            self.cache_root.clone(),
+        )
+    }
+
     fn path(&self, key: &[u8; 32]) -> PathBuf {
         let hex = bytes_to_lower_hex(key);
         self.cache_root

@@ -2,6 +2,7 @@ use std::io;
 use std::path::Path;
 
 use molt_backend::NativeBackendModuleContext;
+use molt_ir::backend_environment::NativeCodegenEnvironment;
 
 use super::super::super::{
     NativeApplicationArtifactOptions, NativeBatchInput, NativeBatchJobSpec, NativeBatchObjectJob,
@@ -13,10 +14,10 @@ pub(super) fn materialize_native_application_batch_jobs(
     tmp_dir: &Path,
     mut plan: NativeApplicationBatchPlan,
     options: &mut NativeApplicationArtifactOptions<'_>,
+    codegen_environment: &NativeCodegenEnvironment,
     batch_ops_budget: usize,
 ) -> io::Result<Vec<NativeBatchJobSpec>> {
     let total_batches = plan.batches.len();
-    let codegen_environment = molt_ir::backend_environment::NativeCodegenEnvironment::capture()?;
     let mut batch_specs: Vec<NativeBatchJobSpec> = Vec::new();
     for (batch_idx, batch_funcs) in plan.batches.into_iter().enumerate() {
         log_native_application_batch(

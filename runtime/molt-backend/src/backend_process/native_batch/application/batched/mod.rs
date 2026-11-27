@@ -1,11 +1,13 @@
 mod jobs;
 mod plan;
+mod reuse;
 mod run;
 
 use std::io;
 use std::path::Path;
 
 use molt_backend::SimpleIR;
+use molt_ir::backend_environment::NativeCodegenEnvironment;
 
 use super::super::{NativeApplicationArtifactOptions, NativeApplicationArtifactResult};
 use plan::NativeApplicationBatchPlan;
@@ -18,6 +20,25 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
     batch_size: usize,
     batch_ops_budget: usize,
 ) -> io::Result<NativeApplicationArtifactResult> {
+    let environment = NativeCodegenEnvironment::capture()?;
+    let mut plan_record = if let Some(cache) = options.object_cache.as_ref() {
+        let mut record = reuse::ApplicationPlanRecord::new(
+            cache,
+            &ir,
+            options,
+            &environment,
+            batch_size,
+            batch_ops_budget,
+        )?;
+        if let Some(artifact) =
+            record.reuse(cache, output_path, function_count, options.log_prefix)?
+        {
+            return Ok(artifact);
+        }
+        Some(record)
+    } else {
+        None
+    };
     let mut backend = molt_backend::SimpleBackend::new_with_target(options.target_triple);
     backend.code_slots = Some(std::mem::take(&mut options.code_slots));
     backend.module_registry = options.module_registry.take();
@@ -44,9 +65,20 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
             &tmp_dir,
             plan,
             options,
+            &environment,
             batch_ops_budget,
         )?;
-        run::run_native_application_batches(output_path, batch_specs, options.log_prefix, options.object_cache.as_ref())
+        let cache = options.object_cache.as_ref();
+        let keys = plan_record.as_ref().map(|_| {
+            batch_specs.iter().map(|spec| spec.input_key.expect("keyed application plan")).collect::<Vec<_>>()
+        });
+        let output = run::run_native_application_batches(output_path, batch_specs, options.log_prefix, cache)?;
+        if let (Some(record), Some(keys), Some(cache)) = (plan_record.as_mut(), keys, cache)
+            && cache.executable_unchanged()?
+        {
+            record.publish(&keys)?;
+        }
+        Ok(output)
     })();
 
     let (output, workers) = super::super::finish_native_batch_temp_dir(

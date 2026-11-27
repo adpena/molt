@@ -6,17 +6,17 @@ fn application_body_edit_reuses_independent_objects_and_matches_fresh_archive() 
     let _env = TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE", "MOLT_BACKEND_BATCH_OP_BUDGET"]);
     let directory = native_artifact_test_directory("object-edit-reuse");
     let _scope = calling_program_scope(&directory, serde_json::json!({}));
-    let manifest = serde_json::json!({
-        "schema":"stdlib-manifest-v2-archive", "artifact_kind":"archive",
-        "cache_key":"program", "cache_variant":"profile=test", "compiler_fingerprint":"test",
-        "target_triple":null
-    })
-    .to_string();
-    let options = |root: &std::path::Path| {
+    let options = |root: &std::path::Path, program| {
+        let manifest = serde_json::json!({
+            "schema":"stdlib-manifest-v2-archive", "artifact_kind":"archive",
+            "cache_key":program, "cache_variant":"profile=test", "compiler_fingerprint":"test",
+            "target_triple":null
+        })
+        .to_string();
         let mut options = native_artifact_test_options(NativeArtifactKind::Archive);
         options.object_cache = NativeObjectCache::for_archive(
             &root.join("stdlib.a"),
-            Some("program"),
+            Some(program),
             Some(&manifest),
             None,
         )
@@ -39,24 +39,26 @@ fn application_body_edit_reuses_independent_objects_and_matches_fresh_archive() 
         },
     ];
     source.functions[0].ops[0].out = Some("result".into());
-    let run = |ir: SimpleIR, name: &str, root: &std::path::Path| {
+    let run = |ir: SimpleIR, name: &str, root: &std::path::Path, program| {
         let output = directory.join(name);
         let result =
-            compile_native_application_artifact_to_path(ir, &output, options(root)).unwrap();
+            compile_native_application_artifact_to_path(ir, &output, options(root, program))
+                .unwrap();
         (result, std::fs::read(output).unwrap())
     };
-    let (cold, _) = run(source.clone(), "cold.a", &directory);
+    let (cold, cold_bytes) = run(source.clone(), "cold.a", &directory, "program");
     assert_eq!(
         cold.batch_count, 2,
         "source units apply even below the old single-batch limit"
     );
-    let (warm, _) = run(source.clone(), "warm.a", &directory);
+    let (warm, warm_bytes) = run(source.clone(), "warm.a", &directory, "changed-stdlib");
+    assert_eq!(cold_bytes, warm_bytes);
     assert_eq!(
         cold.workers, warm.workers,
         "a hit retains the actual original worker emission"
     );
     source.functions[1].ops[0].value = Some(42);
-    let (edited, edited_bytes) = run(source.clone(), "edited.a", &directory);
+    let (edited, edited_bytes) = run(source.clone(), "edited.a", &directory, "changed-stdlib");
     let old = cold.workers.as_ref().unwrap();
     let new = edited.workers.as_ref().unwrap();
     assert_eq!(
@@ -67,7 +69,7 @@ fn application_body_edit_reuses_independent_objects_and_matches_fresh_archive() 
         old[1].input, new[1].input,
         "edited source must compile a new input"
     );
-    let (_, fresh_bytes) = run(source, "fresh.a", &directory.join("fresh"));
+    let (_, fresh_bytes) = run(source, "fresh.a", &directory.join("fresh"), "program");
     assert_eq!(
         edited_bytes, fresh_bytes,
         "cached edit must equal fresh compilation"
@@ -79,6 +81,7 @@ fn application_body_edit_reuses_independent_objects_and_matches_fresh_archive() 
         },
         "metadata.a",
         &directory,
+        "program",
     );
     assert_eq!(
         metadata.batch_count, 1,
