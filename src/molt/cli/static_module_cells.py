@@ -63,6 +63,8 @@ proof never extends to foreign imports.
 
 from __future__ import annotations
 
+from molt.frontend.sema.funcmeta import CALLABLE_TASK_KINDS
+
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -926,6 +928,8 @@ def _proven_call_reason(
     target = call.get("s_value")
     if producer is None or producer.get("kind") != "func_new":
         return "the cell's store is not a func_new without a closure"
+    if producer.get("task_kind") is not None:
+        return "the cell holds a stateful task factory"
     if producer.get("s_value") != target:
         return f"the cell holds {producer.get('s_value')}, not {target}"
     if producer.get(DIRECT_SHAPE_FIELD) is not True:
@@ -1017,30 +1021,21 @@ def _task_constructor(
     following: Mapping[str, Any],
     tuple_name: Callable[[], str],
 ) -> list[dict[str, Any]] | str | None:
-    """The ``alloc_task`` that a generic call of a generator function is.
+    """Allocate an admitted state's frame at an exact positional call.
 
-    The callee is a dominated read of an ``InitOnce(function)`` cell whose one
-    ``func_new`` created a generator function. Calling that object allocates
-    the generator's frame and stores the arguments in its parameter slots;
-    the body runs at the first ``next``. An exact positional call of a def with
-    positional parameters only binds nothing, so the call is that allocation:
-    the frame's poll function, its byte size, the function and the arguments,
-    with no callable to find or bind. ``alloc_task`` borrows the function (its
-    globals, builtins and code become the frame context) and retains each
-    argument into its slot, so the call's argument custody goes.
+    An InitOnce function read names the same constructor the binder would
+    call. The argument slots, poll body and Python context all come from the
+    function's defining operation. Allocate its task without binding again.
+    A final vararg slot takes one tuple of the surplus arguments. Omitted
+    fixed parameters still use the ordinary defaults binder.
 
-    A generator with only fixed positional parameters and a final vararg slot
-    needs one tuple of the surplus arguments. Pack it at the original call
-    after argument evaluation and branch on allocation failure before making
-    the frame. Omitted fixed arguments still need the ordinary defaults binder.
-
-    Returns the replacement ops; the reason a generator call stays generic; or
-    None when the cell's function is not a generator function."""
-    if (
-        producer is None
-        or producer.get("kind") != "func_new"
-        or producer.get("task_kind") != "generator"
-    ):
+    Return the replacement ops, a binder diagnostic, or None for a regular
+    function.
+    """
+    if producer is None or producer.get("kind") != "func_new":
+        return None
+    task_kind = producer.get("task_kind")
+    if not isinstance(task_kind, str) or task_kind not in CALLABLE_TASK_KINDS:
         return None
     poll = producer.get("s_value")
     if not isinstance(poll, str) or not has_record(poll):
@@ -1093,7 +1088,7 @@ def _task_constructor(
         kind="alloc_task",
         s_value=poll,
         value=frame_bytes,
-        task_kind="generator",
+        task_kind=task_kind,
         # alloc_task_operands: the function, then the payload words.
         args=args,
     )
@@ -1242,7 +1237,7 @@ def prove_init_once_calls(
     """Mark each ``call_guarded`` whose callee is an ``init_once`` read of an
     ``InitOnce(function)`` cell holding its target's object ``proven_target``
     (copy-on-write, as the global slot stamps are). A generic ``call_func``
-    whose callee is such a read of a generator function becomes the frame's
+    whose callee is such a read of a stateful function becomes the frame's
     ``alloc_task`` (``_task_constructor``), and one whose callee is a read of
     an ``InitOnce(intrinsic)`` cell with a proven call ABI becomes a direct
     intrinsic call. Return a diagnostic for each such call that keeps
@@ -1360,7 +1355,7 @@ def prove_init_once_calls(
                     if isinstance(task, str):
                         diagnostics.append(
                             f"{module}:{op.get('source_line')} {global_name}(): "
-                            f"generic generator call: {task}"
+                            f"generic task call: {task}"
                         )
                     elif task is not None:
                         changed[index] = task

@@ -93,8 +93,8 @@ class SimpleIROp(TypedDict):
     global_slot: NotRequired[Any]
     method_site: NotRequired[Any]
     module_attribute: NotRequired[str]
-    # A def with positional parameters only on ``func_new``: synchronous, or a
-    # generator without a closure (OpIR::direct_shape, HF-846).
+    # A closure-free function factory with fixed positional parameters
+    # (OpIR::direct_shape, HF-846).
     direct_shape: NotRequired[bool]
     # A ``call_guarded`` whose callee the program proves (HF-846 slice 2;
     # a resolved method of an exact receiver, design 78 3.8).

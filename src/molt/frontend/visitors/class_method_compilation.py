@@ -443,7 +443,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         # Publish the final spilled-frame extent on the defining op.
         function_def.metadata = {
             **(function_def.metadata or {}),
-            **frame_plan.callable_task_metadata(closure_size),
+            **frame_plan.callable_task_metadata(closure_size, item.args),
         }
         func_val.type_hint = frame_plan.function_type_hint(closure_size)
         self._emit_stateful_locals_register(locals_layout, poll_symbol)
@@ -815,7 +815,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                     else [poll_symbol, len(params)]
                 ),
                 result=func_val,
-                metadata=frame_plan.callable_task_metadata(closure_size),
+                metadata=frame_plan.callable_task_metadata(closure_size, item.args),
             )
             self.emit(function_def)
             name_layout = self._collect_callable_name_layout(
@@ -965,7 +965,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 else [poll_symbol, len(params)]
             ),
             result=func_val,
-            metadata=frame_plan.callable_task_metadata(closure_size),
+            metadata=frame_plan.callable_task_metadata(closure_size, item.args),
         )
         self.emit(function_def)
         name_layout = self._collect_callable_name_layout(

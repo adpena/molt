@@ -688,7 +688,7 @@ pub struct OpIR {
     /// Immutable task-frame payload size, in bytes, authored together with
     /// `task_kind` by `func_new` / `func_new_closure`.
     pub task_closure_size: Option<i64>,
-    /// A closure-free generator with only positional parameters and a final
+    /// A closure-free task factory with only positional parameters and a final
     /// vararg slot. Integration packs excess positional arguments into it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_vararg_slot: Option<u32>,
@@ -800,10 +800,9 @@ pub struct OpIR {
     /// cannot fail, so a load nothing reads is dead.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub proven_target: bool,
-    /// A `func_new` of a def with positional parameters only (synchronous, or
-    /// a generator): an exact positional call of its object binds nothing.
-    /// Integration reads it to prove `proven_target` (HF-846 slice 2) and a
-    /// generator call's `alloc_task`; backends ignore it.
+    /// A closure-free `func_new` with fixed positional parameters.
+    /// Integration uses it to prove exact synchronous calls and stateful
+    /// task allocations. An exact positional call binds nothing.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub direct_shape: bool,
     /// An `object_new_bound` whose class layout proves the instance plan
@@ -2563,11 +2562,12 @@ mod json_parse_tests {
     }
 
     #[test]
-    fn generator_vararg_slot_is_the_last_parameter_of_an_unbound_generator() {
+    fn task_vararg_slot_is_the_last_parameter_of_an_unbound_task() {
         for (kind, arity, extra, valid) in [
             ("generator", 2, "", true),
             ("generator", 1, "", false),
-            ("coroutine", 2, "", false),
+            ("coroutine", 2, "", true),
+            ("async_generator", 2, "", true),
             ("generator", 2, r#","direct_shape":true"#, false),
         ] {
             let source = format!(
@@ -2580,11 +2580,7 @@ mod json_parse_tests {
                     Some(1)
                 );
             } else {
-                assert!(
-                    result
-                        .unwrap_err()
-                        .contains("invalid generator vararg slot")
-                );
+                assert!(result.unwrap_err().contains("invalid task vararg slot"));
             }
         }
     }

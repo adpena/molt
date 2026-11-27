@@ -878,8 +878,17 @@ def test_a_caller_that_may_run_before_the_store_is_not_proven() -> None:
     assert diagnostics == []
 
 
-def _generator_call_program(
-    *, generator: bool = True, **changes: Unpack[_CallProgramChanges]
+def test_a_stateful_factory_cannot_prove_a_synchronous_poll_call() -> None:
+    funcs, _call = _call_program()
+    producer = next(op for op in funcs[0]["ops"] if op.get("out") == "f_helper")
+    producer.update(task_kind="coroutine", task_closure_size=8)
+    functions, diagnostics = _prove(funcs)
+    assert "proven_target" not in _guarded(functions)
+    assert len(diagnostics) == 1 and "stateful task factory" in diagnostics[0]
+
+
+def _task_call_program(
+    *, task_kind: str | None = "generator", **changes: Unpack[_CallProgramChanges]
 ) -> list[dict[str, Any]]:
     """``_call_program`` with ``helper`` a generator function (its ``func_new``
     names the poll function and carries the frame size) and the caller's call
@@ -887,8 +896,8 @@ def _generator_call_program(
     funcs, call = _call_program(**changes)
     for func in funcs:
         for op in func["ops"]:
-            if generator and op.get("out") == "f_helper":
-                op.update(task_kind="generator", task_closure_size=64)
+            if task_kind is not None and op.get("out") == "f_helper":
+                op.update(task_kind=task_kind, task_closure_size=64)
     call["kind"] = "call_func"
     del call["s_value"]
     return funcs
@@ -898,8 +907,9 @@ def _generic_call(functions: list[dict[str, Any]]) -> dict[str, Any]:
     return next(op for func in functions for op in func["ops"] if op.get("out") == "r")
 
 
-def test_a_proven_call_of_a_generator_function_is_its_frame_allocation() -> None:
-    funcs = _generator_call_program()
+@pytest.mark.parametrize("task_kind", ["generator", "coroutine", "async_generator"])
+def test_a_proven_task_call_allocates_its_frame(task_kind: str) -> None:
+    funcs = _task_call_program(task_kind=task_kind)
     snapshot = [dict(func, ops=[dict(op) for op in func["ops"]]) for func in funcs]
     functions, diagnostics = _prove(funcs)
     assert diagnostics == []
@@ -909,7 +919,7 @@ def test_a_proven_call_of_a_generator_function_is_its_frame_allocation() -> None
         "kind": "alloc_task",
         "s_value": "mod__helper",
         "value": 64,
-        "task_kind": "generator",
+        "task_kind": task_kind,
         "args": ["callee", "a0"],
         "out": "r",
         "source_line": 20,
@@ -927,7 +937,7 @@ def test_a_proven_call_of_a_generator_function_is_its_frame_allocation() -> None
 def test_a_generator_call_stays_generic_when_a_fact_fails(
     change: dict[str, Any], reason: str
 ) -> None:
-    functions, diagnostics = _prove(_generator_call_program(**change))
+    functions, diagnostics = _prove(_task_call_program(**change))
     assert _generic_call(functions)["kind"] == "call_func"
     assert len(diagnostics) == 1 and reason in diagnostics[0], diagnostics
 
@@ -936,7 +946,7 @@ def test_a_generator_call_stays_generic_when_a_fact_fails(
     "change",
     [
         # Not a generator function: a generic call of a plain def stays.
-        {"generator": False},
+        {"task_kind": None},
         # A closure's cells are part of the frame; this proof does not cover it.
         {"kind": "func_new_closure"},
         # The caller may run before the store: the cell may be empty.
@@ -946,16 +956,19 @@ def test_a_generator_call_stays_generic_when_a_fact_fails(
 def test_a_generic_call_without_a_generator_fact_is_untouched(
     change: dict[str, Any],
 ) -> None:
-    functions, diagnostics = _prove(_generator_call_program(**change))
+    functions, diagnostics = _prove(_task_call_program(**change))
     assert _generic_call(functions)["kind"] == "call_func"
     assert diagnostics == []
 
 
+@pytest.mark.parametrize("task_kind", ["generator", "coroutine", "async_generator"])
 @pytest.mark.parametrize("fixed,supplied", [(0, 0), (0, 2), (1, 1), (1, 3)])
-def test_proven_variadic_generator_packs_only_surplus_positionals(
-    fixed: int, supplied: int
+def test_proven_variadic_task_packs_only_surplus_positionals(
+    fixed: int, supplied: int, task_kind: str
 ) -> None:
-    funcs = _generator_call_program(shape=False, arity=fixed + 1, supplied=supplied)
+    funcs = _task_call_program(
+        shape=False, arity=fixed + 1, supplied=supplied, task_kind=task_kind
+    )
     producer = next(op for op in funcs[0]["ops"] if op.get("out") == "f_helper")
     producer["task_vararg_slot"] = fixed
     check = {"kind": "check_exception", "exception_edge": "origin", "value": 7}
@@ -967,6 +980,7 @@ def test_proven_variadic_generator_packs_only_surplus_positionals(
     assert pack["args"] == [f"a{i}" for i in range(fixed, supplied)]
     assert pack_check == allocation_check == check
     assert allocation["kind"] == "alloc_task"
+    assert allocation["task_kind"] == task_kind
     assert allocation["args"] == [
         "callee",
         *(f"a{i}" for i in range(fixed)),
@@ -979,7 +993,7 @@ def test_proven_variadic_generator_packs_only_surplus_positionals(
 def test_variadic_generator_keeps_binder_for_missing_fixed_arg_or_unchecked_pack(
     supplied: int, checked: bool
 ) -> None:
-    funcs = _generator_call_program(shape=False, arity=2, supplied=supplied)
+    funcs = _task_call_program(shape=False, arity=2, supplied=supplied)
     producer = next(op for op in funcs[0]["ops"] if op.get("out") == "f_helper")
     producer["task_vararg_slot"] = 1
     if checked:

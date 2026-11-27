@@ -30,6 +30,14 @@ from molt.compiler_analysis.python_function_kind import (
 )
 
 
+_CALLABLE_TASK_KINDS = {
+    FunctionKind.GENERATOR: "generator",
+    FunctionKind.ASYNC: "coroutine",
+    FunctionKind.ASYNC_GENERATOR: "async_generator",
+}
+CALLABLE_TASK_KINDS = frozenset(_CALLABLE_TASK_KINDS.values())
+
+
 def _require_stateful_function_kind(kind: FunctionKind) -> FunctionKind:
     if kind not in STATEFUL_FUNCTION_KINDS:
         raise ValueError(f"{kind!r} is not a stateful function kind")
@@ -161,14 +169,27 @@ class StatefulFunctionFramePlan:
     def task_kind(self) -> str:
         return stateful_function_task_kind(self.kind)
 
-    def callable_task_metadata(self, closure_size: int) -> dict[str, str | int]:
-        """Publish callable trampoline kind and the finalized frame byte size."""
-        callable_kind = {
-            FunctionKind.GENERATOR: "generator",
-            FunctionKind.ASYNC: "coroutine",
-            FunctionKind.ASYNC_GENERATOR: "async_generator",
-        }[self.kind]
-        return {"task_kind": callable_kind, "task_closure_size": closure_size}
+    def callable_task_metadata(
+        self, closure_size: int, parameters: ast.arguments | None = None
+    ) -> dict[str, str | int | bool]:
+        """Publish the finalized task layout and the source positional ABI."""
+        metadata: dict[str, str | int | bool] = {
+            "task_kind": _CALLABLE_TASK_KINDS[self.kind],
+            "task_closure_size": closure_size,
+        }
+        if (
+            parameters is not None
+            and not self.has_closure
+            and not parameters.kwonlyargs
+            and parameters.kwarg is None
+        ):
+            if parameters.vararg is None:
+                metadata["direct_shape"] = True
+            else:
+                metadata["task_vararg_slot"] = len(parameters.posonlyargs) + len(
+                    parameters.args
+                )
+        return metadata
 
     @property
     def result_type_hint(self) -> str:

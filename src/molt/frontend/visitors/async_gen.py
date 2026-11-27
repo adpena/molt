@@ -194,7 +194,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     else [poll_func_name, len(params)]
                 ),
                 result=func_val,
-                metadata=frame_plan.callable_task_metadata(closure_size),
+                metadata=frame_plan.callable_task_metadata(closure_size, node.args),
             )
             self.emit(function_def)
             name_layout = self._collect_callable_name_layout(
@@ -343,7 +343,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 else [poll_func_name, len(params)]
             ),
             result=func_val,
-            metadata=frame_plan.callable_task_metadata(closure_size),
+            metadata=frame_plan.callable_task_metadata(closure_size, node.args),
         )
         self.emit(function_def)
         name_layout = self._collect_callable_name_layout(

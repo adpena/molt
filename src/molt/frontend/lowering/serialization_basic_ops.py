@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.frontend.sema.funcmeta import CALLABLE_TASK_KINDS
+
 from molt.frontend.class_model import GuardedInitializerCandidate
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
@@ -761,11 +763,10 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             if "task_kind" in metadata or "task_closure_size" in metadata:
                 task_kind = metadata.get("task_kind")
                 task_closure_size = metadata.get("task_closure_size")
-                if not isinstance(task_kind, str) or task_kind not in {
-                    "generator",
-                    "coroutine",
-                    "async_generator",
-                }:
+                if (
+                    not isinstance(task_kind, str)
+                    or task_kind not in CALLABLE_TASK_KINDS
+                ):
                     raise ValueError(
                         "function task definition requires a valid task_kind"
                     )
