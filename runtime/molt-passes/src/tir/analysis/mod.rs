@@ -61,9 +61,25 @@ use super::dominators::{self, CfgEdgePolicy};
 use super::function::TirFunction;
 use super::values::ValueId;
 
-/// Stable identifier for each analysis the manager can cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AnalysisId {
+macro_rules! analysis_ids {
+    ($( $(#[$meta:meta])* $variant:ident ),+ $(,)?) => {
+        /// Stable identifier and dense slot for each cached analysis.
+        #[repr(u8)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum AnalysisId {
+            $($(#[$meta])* $variant),+
+        }
+
+        impl AnalysisId {
+            const COUNT: usize = [$(Self::$variant),+].len();
+
+            /// All analyses, for iteration in the debug self-check.
+            pub const ALL: [Self; Self::COUNT] = [$(Self::$variant),+];
+        }
+    };
+}
+
+analysis_ids! {
     PredMap,
     ImmediateDoms,
     DomChildren,
@@ -95,26 +111,6 @@ pub enum AnalysisId {
     /// reachable path-depth `exception_pop` release boundaries, and diagnostics
     /// for missing/ambiguous/too-early release (foundation design 45).
     ExceptionRegions,
-}
-
-impl AnalysisId {
-    /// All analyses, for iteration in the debug self-check.
-    pub const ALL: [AnalysisId; 14] = [
-        AnalysisId::PredMap,
-        AnalysisId::ImmediateDoms,
-        AnalysisId::DomChildren,
-        AnalysisId::ExecReachable,
-        AnalysisId::StrictReachable,
-        AnalysisId::LoopForest,
-        AnalysisId::DefMap,
-        AnalysisId::ScalarEvolution,
-        AnalysisId::ValueRange,
-        AnalysisId::AliasAnalysis,
-        AnalysisId::MemorySSA,
-        AnalysisId::Liveness,
-        AnalysisId::CallFacts,
-        AnalysisId::ExceptionRegions,
-    ];
 }
 
 /// An analysis is a pure function of a [`TirFunction`] whose result the manager
@@ -332,14 +328,12 @@ impl Analysis for DefMap {
 pub struct AnalysisManager {
     /// Cached results, type-erased behind `Any`. The concrete type stored under
     /// `AnalysisId::X` is always `X::Result`, as stored by `get` or `prepopulate`.
-    cache: HashMap<AnalysisId, Box<dyn Any + Send + Sync>>,
+    cache: [Option<Box<dyn Any + Send + Sync>>; AnalysisId::COUNT],
 }
 
 impl AnalysisManager {
     pub fn new() -> Self {
-        Self {
-            cache: HashMap::default(),
-        }
+        Self::default()
     }
 
     /// Get the cached result of analysis `A`, computing and caching it on a
@@ -357,9 +351,9 @@ impl AnalysisManager {
 
     /// Read an analysis already computed for the current function.
     pub fn cached<A: Analysis>(&self) -> Option<&A::Result> {
-        self.cache
-            .get(&A::ID)
-            .and_then(|boxed| boxed.downcast_ref::<A::Result>())
+        self.cache[A::ID as usize]
+            .as_ref()?
+            .downcast_ref::<A::Result>()
     }
 
     /// Prepopulate the cache with an already-computed result for analysis `A`.
@@ -368,7 +362,7 @@ impl AnalysisManager {
     /// needs it gets a cache hit. The caller asserts the value is valid for the
     /// function's *current* CFG shape.
     pub fn prepopulate<A: Analysis>(&mut self, result: A::Result) {
-        self.cache.insert(A::ID, Box::new(result));
+        self.cache[A::ID as usize] = Some(Box::new(result));
     }
 
     /// Drop every CFG-sensitive analysis (which, by the dependency model,
@@ -377,27 +371,34 @@ impl AnalysisManager {
     /// FAIL-CLOSED: clears all affected entries atomically so no derived
     /// analysis can outlive its dependency.
     pub fn invalidate_cfg(&mut self) {
-        self.cache
-            .retain(|&id, _| !cfg_sensitive(id) && !ops_sensitive(id));
+        self.invalidate_matching(|id| cfg_sensitive(id) || ops_sensitive(id));
     }
 
     /// Drop every ops-sensitive analysis (but keep CFG-structure analyses,
     /// which op rewrites do not affect). Called by the PassManager after any
     /// `Mutates::OpsOnly` pass.
     pub fn invalidate_ops(&mut self) {
-        self.cache.retain(|&id, _| !ops_sensitive(id));
+        self.invalidate_matching(ops_sensitive);
+    }
+
+    fn invalidate_matching(&mut self, changed: impl Fn(AnalysisId) -> bool) {
+        for (id, slot) in AnalysisId::ALL.into_iter().zip(&mut self.cache) {
+            if slot.is_some() && changed(id) {
+                *slot = None;
+            }
+        }
     }
 
     /// Drop a single analysis (and nothing else). Use sparingly — prefer
     /// [`invalidate_cfg`](Self::invalidate_cfg) which is fail-closed across the
     /// whole affected set.
     pub fn invalidate(&mut self, id: AnalysisId) {
-        self.cache.remove(&id);
+        self.cache[id as usize] = None;
     }
 
     /// True if analysis `id` is currently cached. Test/debug aid.
     pub fn is_cached(&self, id: AnalysisId) -> bool {
-        self.cache.contains_key(&id)
+        self.cache[id as usize].is_some()
     }
 }
 
