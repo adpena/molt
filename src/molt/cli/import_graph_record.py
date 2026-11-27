@@ -42,7 +42,10 @@ from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import PythonSourceSnapshot, PythonSourceChangedError
 from molt.cli.python_import_topology import PythonImportTopology
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
-from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+from molt.compiler_analysis.python_import_scan import (
+    SourceImportPurpose,
+    _source_may_use_static_source_execution,
+)
 from molt.compiler_analysis.python_imports import ImportScanMode, _ImportScanRequests
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
@@ -51,6 +54,7 @@ from molt.compiler_analysis.python_namespace_graph import (
 from molt.compiler_analysis.python_source_keys import (
     PythonAstLineIdentity,
     PythonSourceKey,
+    PythonSourceLocations,
     decode_python_source_key,
     python_ast_line_identity,
 )
@@ -65,7 +69,7 @@ from molt.compiler_analysis.python_string_facts import (
 from molt.target_python import TargetPythonVersion, _parse_source_for_target
 
 _MAX_BYTES = 16 * 1024 * 1024
-_SCHEMA = 7
+_SCHEMA = 8
 _KIND = "import-graph"
 _T = TypeVar("_T")
 
@@ -124,7 +128,14 @@ def _source_line_identity(
         tree = _parse_source_for_target(
             snapshot.text, filename=str(snapshot.path), target_python=target_python
         )
-        return python_ast_line_identity(tree)
+        lines = python_ast_line_identity(tree)
+        # Path execution has a text prefilter independent of AST equivalence.
+        digest = hashlib.sha256(
+            _bytes(
+                (lines.digest, _source_may_use_static_source_execution(snapshot.text))
+            )
+        ).hexdigest()
+        return PythonAstLineIdentity(digest, lines.lines)
     except (SyntaxError, ValueError, RecursionError):
         return None
 
@@ -146,21 +157,15 @@ class _ReplayLocations:
     """Reattach recorded source positions through equal AST line slots."""
 
     def __init__(self) -> None:
-        self.by_module: dict[str, dict[int, int]] = {}
+        self.by_module: dict[str, PythonSourceLocations] = {}
 
     def line(self, module: str, old: int) -> int:
-        mapping = self.by_module.get(module)
-        return old if old == 0 or mapping is None else mapping[old]
+        locations = self.by_module.get(module)
+        return old if locations is None else locations.line(old)
 
     def key(self, module: str, key: PythonSourceKey) -> PythonSourceKey:
-        line, column, end_line, end_column, kind = key
-        return (
-            self.line(module, line),
-            column,
-            self.line(module, end_line),
-            end_column,
-            kind,
-        )
+        locations = self.by_module.get(module)
+        return key if locations is None else locations.key(key)
 
     def site(self, site: str) -> str:
         module, _, line = site.rpartition(":")
@@ -416,10 +421,16 @@ class ImportResultDigests:
     def __init__(self) -> None:
         # Retain each request object for the lifetime of its identity key.
         self._sources: dict[
-            tuple[int, _SourceRequestCoordinate], tuple[_ImportScanRequests, str]
+            tuple[int, _SourceRequestCoordinate, PythonSourceLocations],
+            tuple[_ImportScanRequests, str],
         ] = {}
 
-    def digest(self, query: ImportScanQuery, result: _CompleteImportScan) -> str:
+    def digest(
+        self,
+        query: ImportScanQuery,
+        result: _CompleteImportScan,
+        locations: PythonSourceLocations = PythonSourceLocations(),
+    ) -> str:
         """Digest every graph-facing output independently of the input generation."""
         lease = query.source_lease
         assert lease is not None
@@ -435,7 +446,18 @@ class ImportResultDigests:
             query.purpose,
         )
         requests = result.source_requests
-        key = (id(requests), coordinate)
+        if (
+            locations.slots is not None
+            and (catalog := requests.runtime_catalog) is not None
+        ):
+            # The query holds absolute owner identity separately from the
+            # location-independent result and its catalog deferrals.
+            custody = query.runtime_custody
+            if custody is None or not custody.admits_scan(
+                query.module_name, query.source_path, catalog.source_ast_digest
+            ):
+                raise ValueError("import result lost runtime catalog custody")
+        key = (id(requests), coordinate, locations)
         source = self._sources.get(key)
         if source is None:
             payload = codec._import_scan_payload(
@@ -452,6 +474,7 @@ class ImportResultDigests:
                 target_sys_platform=coordinate.target_sys_platform,
                 runtime_catalog_owner=requests.runtime_catalog is not None,
                 purpose=coordinate.purpose,
+                locations=locations,
             )
             payload.pop("source_sha256")
             payload.pop("size")
@@ -465,7 +488,10 @@ class ImportResultDigests:
             ],
             "candidates": result.dynamic_relative_import_candidates,
             "anchor": result.requires_runtime_package_anchor,
-            "sites": [codec._encode_source_site(site) for site in result.source_sites],
+            "sites": [
+                codec._encode_source_site(site, locations)
+                for site in result.source_sites
+            ],
             "exports": [
                 [name, asdict(exports)] for name, exports in result.star_exports
             ],
@@ -526,6 +552,7 @@ def _publish_import_graph(
     if source_lines is None:
         source_lines = {}
     recorded_lines: dict[str, object] = {}
+    result_locations: dict[str, PythonSourceLocations] = {}
     contexts: list[object] = []
     context_ids: dict[_QueryContextKey, int] = {}
     # Observations keep each immutable custody object alive for this publication.
@@ -597,6 +624,9 @@ def _publish_import_graph(
             recorded_lines[source.sha256] = (
                 None if lines is None else (lines.digest, lines.lines)
             )
+            result_locations[source.sha256] = (
+                PythonSourceLocations() if lines is None else lines.locations()
+            )
         source_index = sources.index(source)
         rows.append(
             (
@@ -610,7 +640,9 @@ def _publish_import_graph(
                 result_digests.index(
                     observation.result_digest
                     if isinstance(observation, PersistedImportScanObservation)
-                    else digests.digest(query, observation.result)
+                    else digests.digest(
+                        query, observation.result, result_locations[source.sha256]
+                    )
                 ),
             )
         )
@@ -789,7 +821,11 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         new = source_lines[snapshot.sha256]
         if old is not None and new is not None and old.digest == new.digest:
             mapping = dict(zip(old.lines, new.lines, strict=True))
-            if locations.by_module.setdefault(source.module, mapping) != mapping:
+            translation = PythonSourceLocations(mapping)
+            if (
+                locations.by_module.setdefault(source.module, translation).slots
+                != mapping
+            ):
                 return None
             relocated.add((source.module, source.path))
     if any(
@@ -798,6 +834,10 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         for source in query_sources
     ):
         return None
+    result_locations = {
+        sha: PythonSourceLocations() if lines is None else lines.locations()
+        for sha, lines in source_lines.items()
+    }
     relocated_roots: dict[tuple[str, Path], set[tuple[str, ...]]] = {}
     for source in query_sources:
         owner = (source.module, source.path)
@@ -931,7 +971,7 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
             context.entry.module_root_aliases,
             common.custody,
         )
-        if changed:
+        if changed and (source.module, path) not in relocated:
             loaded = _load_module_import_scan(
                 path,
                 module_name=query.module_name,
@@ -955,12 +995,18 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
                 else replace(premise, foreign_universe=None),
                 native_support_function_roots=source.selection.roots,
             )
-            if (source.module, path) not in relocated and digests.digest(
-                query, loaded.scan
-            ) != result_digest:
+            # Compare in the stored layout. New source positions must match
+            # previous positions on a semantic edit; only AST equivalence can
+            # authorize a relocation of the settled graph.
+            if (
+                digests.digest(query, loaded.scan, result_locations[source.sha256])
+                != result_digest
+            ):
                 return None
         else:
-            resolver.observe_persisted_import_scan(query, result_digest)
+            resolver.observe_persisted_import_scan(
+                query, result_digest, result_locations[snapshot.sha256]
+            )
     sources: list[_ModuleSourceScanAuthority] = []
     for raw in _list(value["authority"]):
         row = _map(raw)

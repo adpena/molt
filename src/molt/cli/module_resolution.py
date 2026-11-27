@@ -38,6 +38,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
 )
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
+    PythonSourceLocations,
     _PythonAstDigestAdmission,
 )
 from molt.python_canonical_ast import canonical_module_digest
@@ -435,30 +436,26 @@ class _ModuleResolutionCache:
     def _same_import_result(
         left: ImportScanEvidence, right: ImportScanEvidence
     ) -> bool:
-        if isinstance(left, ImportScanObservation) and isinstance(
-            right, ImportScanObservation
-        ):
+        if isinstance(left, PersistedImportScanObservation):
+            if isinstance(right, PersistedImportScanObservation):
+                return left.result_digest == right.result_digest
+        elif isinstance(right, PersistedImportScanObservation):
+            left, right = right, left
+        else:
             return left.result == right.result
         from molt.cli.import_graph_record import ImportResultDigests
 
-        digests = ImportResultDigests()
-
-        left_digest = (
-            left.result_digest
-            if isinstance(left, PersistedImportScanObservation)
-            else digests.digest(left.query, left.result)
+        return left.result_digest == ImportResultDigests().digest(
+            right.query, right.result, left.result_locations
         )
-        right_digest = (
-            right.result_digest
-            if isinstance(right, PersistedImportScanObservation)
-            else digests.digest(right.query, right.result)
-        )
-        return left_digest == right_digest
 
     def observe_persisted_import_scan(
-        self, query: ImportScanQuery, result_digest: str
+        self,
+        query: ImportScanQuery,
+        result_digest: str,
+        result_locations: PythonSourceLocations,
     ) -> None:
-        current = PersistedImportScanObservation(query, result_digest)
+        current = PersistedImportScanObservation(query, result_digest, result_locations)
         previous = self.import_scan_queries.get(query)
         if previous is not None and not self._same_import_result(previous, current):
             raise ValueError("persisted import query changed its semantic result")

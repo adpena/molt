@@ -183,7 +183,11 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
 ) -> None:
     import json
 
-    from molt.cli import import_graph_record, module_stdlib_policy
+    from molt.cli import (
+        import_graph_record,
+        module_graph_discovery,
+        module_stdlib_policy,
+    )
     from molt.cli.frontend_record_files import FrontendRecordFiles, record_digest
     from molt.exact_json import encode_frontend_payload
     from molt.cli.models import _ImportAdmissionPolicy, RuntimeImportMachinery
@@ -296,11 +300,9 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
     assert replayed.scan_authority == fresh.scan_authority
 
     def unexpected_rebuild(*args: object, **kwargs: object) -> None:
-        pytest.fail("unchanged replay must not rescan a body or republish the graph")
+        pytest.fail("equivalent replay rescanned a body or unexpectedly republished")
 
     with monkeypatch.context() as patch:
-        from molt.cli import module_graph_discovery
-
         patch.setattr(FrontendRecordFiles, "put", unexpected_rebuild)
         patch.setattr(
             module_graph_discovery, "_load_module_import_scan", unexpected_rebuild
@@ -310,11 +312,13 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         assert again.closure_payload() == fresh.closure_payload()
 
     # Move a demanded body and its end position without changing syntax.
-    peer.write_text(
-        "\n" + peer_source.format(7).replace("compute():\n", "compute():\n\n"),
-        encoding="utf-8",
-    )
-    moved = import_graph_record.replay_import_graph(context)
+    moved_source = "\n" + peer_source.replace("compute():\n", "compute():\n\n")
+    peer.write_text(moved_source.format(7), encoding="utf-8")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            module_graph_discovery, "_load_module_import_scan", unexpected_rebuild
+        )
+        moved = import_graph_record.replay_import_graph(context)
     assert moved is not None
     fresh_moved = _materialize_plan(
         tmp_path, entry, "app", image_scope=resolved.image_scope
@@ -330,6 +334,31 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
     )
     assert any(writer.site == "peer:3" for writer in original_writers)
     assert any(writer.site == "peer:5" for writer in moved_writers)
+
+    # A second relocation uses the republished record and its current lease.
+    moved_source = "\n" + moved_source
+    peer.write_text(moved_source.format(7), encoding="utf-8")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            module_graph_discovery, "_load_module_import_scan", unexpected_rebuild
+        )
+        moved_again = import_graph_record.replay_import_graph(context)
+    assert moved_again is not None
+    moved_again.import_query_closure.validate(moved_again.scan_authority)
+    assert any(
+        writer.site == "peer:6"
+        for writer in moved_again.settled_graph.namespace_import_redirects.redirect(
+            "relocated_victim"
+        )
+    )
+    # A value edit can still compare freshly scanned results in that layout.
+    peer.write_text(moved_source.format(9), encoding="utf-8")
+    edited_after_move = import_graph_record.replay_import_graph(context)
+    assert edited_after_move is not None
+    fresh_edited = _materialize_plan(
+        tmp_path, entry, "app", image_scope=resolved.image_scope
+    )
+    assert edited_after_move.scan_authority == fresh_edited.scan_authority
 
     peer.write_text(
         "\ndef compute():\n    import new_demand\n    return 7\n", encoding="utf-8"

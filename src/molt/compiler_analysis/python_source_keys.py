@@ -28,6 +28,36 @@ if TYPE_CHECKING:
 PythonSourceKey: TypeAlias = tuple[int, int, int, int, str]
 
 
+@dataclass(frozen=True, eq=False, slots=True)
+class PythonSourceLocations:
+    """Project source positions to their ordered AST line slots."""
+
+    slots: Mapping[int, int] | None = None
+
+    def line(self, line: int) -> int:
+        if self.slots is None or line == 0:
+            return line
+        try:
+            return self.slots[line]
+        except KeyError as error:
+            raise ValueError(f"source line outside the recorded AST: {line}") from error
+
+    def key(self, source: PythonSourceKey) -> PythonSourceKey:
+        if self.slots is None:
+            return source
+        line, column, end_line, end_column, kind = source
+        return self.line(line), column, self.line(end_line), end_column, kind
+
+    def optional(self, source: PythonSourceKey | None) -> PythonSourceKey | None:
+        return None if source is None else self.key(source)
+
+    def ordered(self, sources: frozenset[PythonSourceKey]) -> list[PythonSourceKey]:
+        ordered = sorted(sources)
+        return (
+            ordered if self.slots is None else [self.key(source) for source in ordered]
+        )
+
+
 def python_source_contains(outer: PythonSourceKey, inner: PythonSourceKey) -> bool:
     return outer[:2] <= inner[:2] and inner[2:4] <= outer[2:4]
 
@@ -229,6 +259,11 @@ class PythonAstLineIdentity:
 
     digest: str
     lines: tuple[int, ...]
+
+    def locations(self) -> PythonSourceLocations:
+        return PythonSourceLocations(
+            {line: slot for slot, line in enumerate(self.lines, start=1)}
+        )
 
 
 def python_ast_line_identity(tree: ast.AST) -> PythonAstLineIdentity:
