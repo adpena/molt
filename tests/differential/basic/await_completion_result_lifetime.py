@@ -13,6 +13,10 @@ async def ready():
     return Result("coroutine")
 
 
+async def ready_error():
+    raise StopIteration("raised in ready coroutine")
+
+
 async def generator():
     yield Result("async generator operation")
 
@@ -58,6 +62,13 @@ async def main():
     await source.aclose()
     await consume_once(Worker().ready())
     for label in ("first direct coroutine", "second direct coroutine"):
+        result = await ready()
+        print("returned directly", result.label)
+        del result
+        try:
+            await ready_error()
+        except RuntimeError as error:
+            print(str(error), type(error.__cause__).__name__, str(error.__cause__))
         result = await direct_cleanup(label)
         print("returned", result.label)
         del result

@@ -646,21 +646,22 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     ) {
         match (op.task_kind.as_deref(), op.task_closure_size) {
             (None, None) => {}
-            (Some("generator" | "coroutine" | "async_generator"), Some(size)) if size >= 0 => {}
             (Some(kind), Some(_))
-                if !matches!(kind, "generator" | "coroutine" | "async_generator") =>
+                if !crate::task_kind::TaskKind::parse(kind)
+                    .is_some_and(crate::task_kind::TaskKind::callable) =>
             {
                 return Err(format!(
                     "op `{}` has unsupported callable task_kind `{kind}`",
                     op.kind
                 ));
             }
-            (Some(_), Some(size)) => {
+            (Some(_), Some(size)) if size < 0 => {
                 return Err(format!(
                     "op `{}` has negative task_closure_size `{size}`",
                     op.kind
                 ));
             }
+            (Some(_), Some(_)) => {}
             _ => {
                 return Err(format!(
                     "op `{}` must carry task_kind and task_closure_size together",

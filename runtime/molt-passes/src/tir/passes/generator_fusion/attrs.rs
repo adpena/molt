@@ -15,14 +15,6 @@ pub(in crate::tir::passes::generator_fusion) fn poll_callee(
     op.callee
 }
 
-/// Read an op's `task_kind` string attr.
-pub(in crate::tir::passes::generator_fusion) fn attr_task_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("task_kind") {
-        Some(AttrValue::Str(s)) => Some(s.as_str()),
-        _ => None,
-    }
-}
-
 /// Read an op's typed `origin` field (the SimpleIR op-name annotation
 /// preserved on `Copy`-lowered ops such as `iter`).
 pub(in crate::tir::passes::generator_fusion) fn attr_original_kind(

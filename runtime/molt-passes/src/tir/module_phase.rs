@@ -337,6 +337,9 @@ pub fn run_module_pipeline(
         Some(changed_functions.len()),
         audit_start.elapsed().as_millis(),
     );
+    if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
+        changed_functions.extend(super::passes::ready_await::run(module, non_inlinable));
+    }
     let drop_changed =
         super::drop_phase::finalize_module_drops(module, tti, linkage, finalization_cache);
     emit_module_stage_audit(

@@ -19,7 +19,7 @@ use super::{control, scalar};
 use crate::ir::ParameterCustody;
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::types::TirType;
-use molt_tir::trampolines::TrampolineTaskKind;
+use molt_tir::trampolines::TrampolineKind;
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// A preserved callable op that is a runtime call: `function_closure_bits`,
@@ -287,7 +287,7 @@ struct TaskTrampoline<'a> {
     /// The poll: a compiled function of one frame parameter.
     symbol: &'a str,
     abi: &'a NativeFunctionLinkageAbi,
-    kind: TrampolineTaskKind,
+    trampoline: TrampolineKind,
     layout: TaskConstructorLayout,
     closure_size: i64,
     arity: usize,
@@ -308,19 +308,15 @@ impl<'a> TaskTrampoline<'a> {
         if !op.attrs.contains_key("task_kind") && !op.attrs.contains_key("task_closure_size") {
             return None;
         }
-        let (kind, closure_size) =
-            match (op.attrs.get("task_kind"), op.attrs.get("task_closure_size")) {
-                (Some(AttrValue::Str(kind)), Some(AttrValue::Int(size))) => (
-                    TrampolineTaskKind::from_constructor_kind(kind).unwrap_or_else(|| {
-                        panic!("unknown callable task_kind `{kind}` for {symbol}")
-                    }),
-                    *size,
-                ),
-                _ => panic!(
-                    "{symbol} requires complete callable task_kind and task_closure_size metadata"
-                ),
-            };
-        let layout = crate::trampoline_task_layout(kind);
+        let (kind, closure_size) = match (op.task_kind(), op.attrs.get("task_closure_size")) {
+            (Some(kind), Some(AttrValue::Int(size))) => (kind, *size),
+            _ => panic!(
+                "{symbol} requires complete callable task_kind and task_closure_size metadata"
+            ),
+        };
+        let trampoline = TrampolineKind::for_task(kind)
+            .unwrap_or_else(|| panic!("callable task_kind cannot be future: {symbol}"));
+        let layout = crate::task_layout(kind);
         layout.validate_closure_size(
             closure_size,
             arity,
@@ -330,7 +326,7 @@ impl<'a> TaskTrampoline<'a> {
         Some(Self {
             symbol,
             abi,
-            kind,
+            trampoline,
             layout,
             closure_size,
             arity,
@@ -346,7 +342,7 @@ impl<'a> TaskTrampoline<'a> {
             self.symbol,
             self.arity,
             usize::from(self.has_closure),
-            self.kind.trampoline_kind().symbol_suffix(),
+            self.trampoline.symbol_suffix(),
             self.closure_size,
         )
     }

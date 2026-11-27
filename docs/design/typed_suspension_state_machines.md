@@ -191,6 +191,17 @@ and owns release of the result, including the exception path. One frame slot
 still holds the awaitable itself across polls. Its reloaded owner stays live
 through the lexical exception-origin test even after that slot is cleared.
 
+A locally defined coroutine poll with no suspension has no pending exit.
+At an await of that coroutine, shared module TIR tests provenance after
+excluding only the resume edge owned by the await. Every remaining executable
+incoming value must come from a typed constructor of a proven body, through
+SSA copies and block arguments. An exceptional incoming edge or a reachable
+frame reload keeps the general transition. A successful proof removes the
+resume case and its unreachable block. The poll and its lexical exception
+continuation stay in the current invocation. The saved state updates keep
+their order around the poll. Shared codegen emits a direct branch if the
+dispatch's remaining edges all pass the same operands to the same block.
+This exposes the first-poll path to later allocation elision.
 
 1. **One TIR transform for every backend**, after the main optimizer, so live sets are small and
    facts are final. A suspension becomes: store the live slots, set the state, return. A resume

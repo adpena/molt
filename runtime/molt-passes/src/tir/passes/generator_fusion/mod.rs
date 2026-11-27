@@ -100,10 +100,10 @@ mod tests;
 pub use self::driver::run_generator_fusion;
 pub use self::types::FusionStats;
 
+pub(in crate::tir::passes::generator_fusion) use self::attrs::poll_callee;
 pub(in crate::tir::passes::generator_fusion) use self::attrs::{
     attr_original_kind, attr_value_int,
 };
-pub(in crate::tir::passes::generator_fusion) use self::attrs::{attr_task_kind, poll_callee};
 pub use self::recognize::PollRefusal;
 pub(in crate::tir::passes::generator_fusion) use self::recognize::{
     next_fusion_candidate, poll_fusion_refusal,

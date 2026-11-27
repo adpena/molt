@@ -7,7 +7,7 @@
 
 use molt_ir::deterministic_hash::HashMap;
 
-use crate::tir::blocks::{Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -20,6 +20,45 @@ fn state_set(state: i64, origin: &TirOp) -> TirOp {
     op.attrs.insert("value".into(), AttrValue::Int(state));
     op.source_span = origin.source_span;
     op
+}
+
+fn future_poll(future: ValueId, result: ValueId, origin: &TirOp) -> TirOp {
+    let runtime = molt_ir::runtime_fn_generated::RuntimeFn::FuturePoll;
+    let mut poll = make_op(OpCode::Call, vec![future]);
+    poll.results.push(result);
+    poll.attrs
+        .insert("s_value".into(), AttrValue::Str(runtime.symbol().into()));
+    poll.runtime = Some(runtime);
+    poll.source_span = origin.source_span;
+    poll
+}
+
+/// A proven ready wait still executes its poll for values, effects and
+/// exceptions, but cannot return from this activation into the scheduler.
+pub(crate) fn expose_ready_await(
+    func: &mut TirFunction,
+    block: BlockId,
+    index: usize,
+    pending: i64,
+) {
+    let block = func.blocks.get_mut(&block).expect("ready await block");
+    let op = &block.ops[index];
+    let [future, _] = op.operands[..] else {
+        unreachable!("validated await operands")
+    };
+    let [result] = op.results[..] else {
+        unreachable!("validated await result")
+    };
+    let Some(AttrValue::Int(ready)) = op.attrs.get("value") else {
+        unreachable!("validated await continuation");
+    };
+    let replacement = [
+        state_set(pending, op),
+        future_poll(future, result, op),
+        state_set(*ready, op),
+    ];
+    func.value_types.insert(result, TirType::DynBox);
+    block.ops.splice(index..=index, replacement);
 }
 
 /// Called at the terminal ownership boundary, after generator fusion and all
@@ -112,18 +151,7 @@ pub(super) fn expose_activation_exits(func: &mut TirFunction) -> usize {
         func.value_types.insert(condition, TirType::Bool);
         let pending_block = func.fresh_block();
         let ready_block = func.fresh_block();
-        let mut poll = make_op(OpCode::Call, vec![future]);
-        poll.results.push(result);
-        poll.attrs.insert(
-            "s_value".into(),
-            AttrValue::Str(
-                molt_ir::runtime_fn_generated::RuntimeFn::FuturePoll
-                    .symbol()
-                    .into(),
-            ),
-        );
-        poll.runtime = Some(molt_ir::runtime_fn_generated::RuntimeFn::FuturePoll);
-        poll.source_span = op.source_span;
+        let poll = future_poll(future, result, &op);
         let mut test = make_op(OpCode::IsPending, vec![result]);
         test.results.push(condition);
         let block = func.blocks.get_mut(&bid).unwrap();

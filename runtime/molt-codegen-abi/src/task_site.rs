@@ -113,17 +113,6 @@ impl TaskConstructorLayout {
         }
     }
 
-    /// The layout an `alloc_task`'s `task_kind` names (a future when absent).
-    pub fn for_alloc_kind(kind: Option<&str>) -> Self {
-        match kind.unwrap_or("future") {
-            "generator" => Self::generator(),
-            "async_generator" => Self::async_generator(),
-            "future" => Self::future(),
-            "coroutine" => Self::coroutine(),
-            other => panic!("unknown task kind: {other}"),
-        }
-    }
-
     pub const fn runtime_kind(self) -> TaskRuntimeKind {
         self.runtime_kind
     }

@@ -47,6 +47,7 @@ pub mod poll_strip_mining;
 pub mod polyhedral;
 pub mod range_devirt;
 mod reachability;
+pub(crate) mod ready_await;
 pub mod refcount_elim;
 pub mod sccp;
 pub mod scev;

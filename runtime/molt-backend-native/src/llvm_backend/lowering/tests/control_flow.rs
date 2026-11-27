@@ -471,12 +471,12 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
 fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
     use molt_codegen_abi::task_site::{TaskCompletion, TaskConstructorLayout};
 
-    for (call_async, task_kind) in [
-        (false, None),
-        (false, Some("future")),
-        (false, Some("generator")),
-        (false, Some("coroutine")),
-        (true, None),
+    for (call_async, task_kind, layout) in [
+        (false, None, TaskConstructorLayout::future()),
+        (false, Some("future"), TaskConstructorLayout::future()),
+        (false, Some("generator"), TaskConstructorLayout::generator()),
+        (false, Some("coroutine"), TaskConstructorLayout::coroutine()),
+        (true, None, TaskConstructorLayout::for_call_async()),
     ] {
         for payload_count in [0, 2] {
             let ctx = Context::create();
@@ -490,11 +490,6 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "opaque_task_body".into(),
                 test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
             );
-            let layout = if call_async {
-                TaskConstructorLayout::for_call_async()
-            } else {
-                TaskConstructorLayout::for_alloc_kind(task_kind)
-            };
             let payload_base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES);
             let mut func = TirFunction::new(
                 "task_failure_cleanup".into(),

@@ -299,9 +299,7 @@ fn raw_ints_box_once_the_task_exists_and_repeats_share_one_identity() {
 #[test]
 fn task_payload_extents_share_checked_sizing_for_every_constructor() {
     let layouts = [
-        TaskConstructorLayout::for_alloc_kind(None),
-        TaskConstructorLayout::for_alloc_kind(Some("generator")),
-        TaskConstructorLayout::for_alloc_kind(Some("coroutine")),
+        TaskConstructorLayout::future(),
         TaskConstructorLayout::for_call_async(),
         TaskConstructorLayout::generator(),
         TaskConstructorLayout::coroutine(),
@@ -356,7 +354,7 @@ fn each_layout_names_its_runtime_kind_and_completion() {
     assert_eq!(asyncgen.payload_base_offset(32), 32);
     assert_eq!(asyncgen.completion(), TaskCompletion::WrapAsyncGen);
     assert_eq!(
-        TaskConstructorLayout::for_alloc_kind(Some("coroutine")).completion(),
+        TaskConstructorLayout::coroutine().completion(),
         TaskCompletion::RegisterCancelToken
     );
     assert_eq!(

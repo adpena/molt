@@ -21,7 +21,7 @@ use crate::tir::values::ValueId;
 
 use super::clone::{const_bool_op, const_int_op, const_none_op};
 use super::recognize::terminator_uses;
-use super::{attr_original_kind, attr_task_kind, attr_value_int, is_get_iter_op};
+use super::{attr_original_kind, attr_value_int, is_get_iter_op};
 
 fn is_reduction_kernel(op: &TirOp) -> bool {
     op.opcode == OpCode::Copy
@@ -70,7 +70,10 @@ pub(super) fn decline_reduction_kernels(func: &mut TirFunction) -> bool {
         .blocks
         .values()
         .flat_map(|block| &block.ops)
-        .filter(|op| op.opcode == OpCode::AllocTask && attr_task_kind(op) == Some("generator"))
+        .filter(|op| {
+            op.opcode == OpCode::AllocTask
+                && op.task_kind() == Some(molt_ir::task_kind::TaskKind::Generator)
+        })
         .filter_map(|op| op.results.first().copied())
         .collect();
     if frames.is_empty() {
