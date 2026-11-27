@@ -42,12 +42,16 @@ fn const_bool(value: bool, result: ValueId) -> TirOp {
 }
 
 fn poll() -> TirOp {
+    let mut op = check();
+    op.mark_async_work_poll();
+    assert!(op.is_async_work_poll());
+    op
+}
+
+fn check() -> TirOp {
     let mut op = op(OpCode::CheckException, vec![], vec![]);
     op.attrs
         .insert("value".into(), AttrValue::Int(HANDLER_LABEL));
-    op.attrs
-        .insert("async_work_poll".into(), AttrValue::Bool(true));
-    assert!(op.is_async_work_poll());
     op
 }
 
@@ -88,7 +92,7 @@ fn exit_block(id: u32) -> TirBlock {
 /// handler block 9 that exits the frame:
 ///
 /// ```text
-/// bb0:  trace_enter_slot; %1 = 0; home[0] = %1 (first)
+/// bb0:  trace_enter_slot; check_exception; %1 = 0; home[0] = %1 (first)
 ///       br bb1(%1)
 /// bb1(%2): %3 = true; cond_br %3, bb2, bb4
 /// bb2:  body; br bb1(%n)
@@ -109,6 +113,7 @@ fn loop_function(first: ValueId, body: Vec<TirOp>, next: ValueId) -> TirFunction
     let entry = func.blocks.get_mut(&BlockId(0)).unwrap();
     entry.ops = vec![
         copy(OpKind::TraceEnterSlot, vec![], vec![]),
+        check(),
         const_int(0, ValueId(1)),
         store(first, None, 0),
     ];
@@ -178,6 +183,27 @@ fn poll_blocks(func: &TirFunction) -> Vec<BlockId> {
         .collect();
     found.sort_unstable();
     found
+}
+
+#[test]
+fn call_return_poll_checks_exceptions_even_without_async_work() {
+    let mut func = loop_function(ValueId(1), vec![call(ValueId(5)), poll()], ValueId(1));
+    let mut location = op(OpCode::FrameSetLocation, vec![], vec![]);
+    location.attrs.insert("value".into(), AttrValue::Int(8));
+    func.blocks
+        .get_mut(&BlockId(2))
+        .unwrap()
+        .ops
+        .insert(1, location);
+    place(&mut func);
+    let body = &func.blocks[&BlockId(2)];
+    assert!(body.ops.iter().any(TirOp::is_async_work_poll));
+    assert!(
+        !body
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::AsyncWorkPending)
+    );
 }
 
 /// The loop body rebinds the local to an int each iteration. Its normal path
@@ -313,7 +339,7 @@ fn a_call_on_an_arm_reads_the_home() {
     let five = ValueId(5);
     let mut func = loop_function_with_arm(
         ValueId(1),
-        vec![call(ValueId(7))],
+        vec![call(ValueId(7)), check()],
         vec![const_int(5, five), store(five, None, 0), poll()],
         five,
     );
@@ -444,7 +470,7 @@ fn a_home_load_reads_the_home() {
     let five = ValueId(5);
     let mut func = loop_function_with_arm(
         ValueId(1),
-        vec![home_load(0, ValueId(8))],
+        vec![home_load(0, ValueId(8)), check()],
         vec![const_int(5, five), store(five, None, 0), poll()],
         five,
     );
@@ -522,7 +548,7 @@ fn a_loop_publishes_its_location_only_where_a_reader_can_run() {
     let five = ValueId(5);
     let mut func = loop_function_with_arm(
         ValueId(1),
-        vec![call(ValueId(7))],
+        vec![call(ValueId(7)), check()],
         vec![
             publication(14),
             const_int(5, five),
@@ -560,7 +586,7 @@ fn a_reader_on_an_arm_writes_a_carried_binding_under_the_flag() {
     let five = ValueId(5);
     let mut func = loop_function_with_arm(
         ValueId(1),
-        vec![call(ValueId(7))],
+        vec![call(ValueId(7)), check()],
         vec![const_int(5, five), store(five, Some(ValueId(6)), 0), poll()],
         ValueId(6),
     );
