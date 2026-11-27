@@ -3132,6 +3132,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
     plan_root, simd, freestanding, flag_origin, readonly_wasi_sdk, strip_debug
 ):
     from molt.cli import runtime_wasm_build_spec as specs
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 
     _config(
         plan_root,
@@ -3172,13 +3173,34 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         staticlib_fingerprint=None,
     )
     reloc = shared._replace(artifact_selection=specs.RUNTIME_STATICLIB_ARTIFACTS)
-    shared, reloc = specs._resolve_runtime_wasm_cargo_specs(
-        plan_root,
-        shared,
-        reloc,
-        simd_enabled=simd,
-        freestanding=freestanding,
-    )
+    with _source_tree_fingerprint_transaction():
+        planned_shared, planned_reloc = specs._resolve_runtime_wasm_cargo_specs(
+            plan_root,
+            shared,
+            reloc,
+            simd_enabled=simd,
+            freestanding=freestanding,
+        )
+        repeated_shared, repeated_reloc = specs._resolve_runtime_wasm_cargo_specs(
+            plan_root,
+            shared,
+            reloc,
+            simd_enabled=simd,
+            freestanding=freestanding,
+        )
+        assert repeated_reloc == planned_reloc
+        assert repeated_shared == planned_shared
+        assert repeated_reloc.cargo_plan is planned_reloc.cargo_plan
+        # A different target policy cannot consume the retained selectors.
+        _, alternate = specs._resolve_runtime_wasm_cargo_specs(
+            plan_root,
+            shared,
+            reloc,
+            simd_enabled=not simd,
+            freestanding=freestanding,
+        )
+        assert alternate.cargo_plan is not planned_reloc.cargo_plan
+    shared, reloc = planned_shared, planned_reloc
     assert shared.cargo_plan is reloc.cargo_plan
     plan = shared.cargo_plan
     assert plan is not None

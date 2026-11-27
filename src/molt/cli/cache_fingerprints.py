@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from molt.cli.frontend_record_files import FrontendRecordFiles
     from molt.cli.module_graph_cache import _ImportScanDecoder
     from molt.cli.module_source import PythonSourceSnapshot
+    from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.source_record_store import SourceRecordStore
     from molt.process_environment import ProcessEnvironment
@@ -420,6 +421,11 @@ class _SourceTreeFingerprintTransaction:
     compiler_plans: dict[tuple[str, str, str, str, str, ProcessEnvironment], object] = (
         field(default_factory=dict)
     )
+    # The backend and link stages of one Wasm build resolve the same producer.
+    wasm_runtime_cargo_plans: dict[
+        tuple[Path, ProcessEnvironment, tuple[str, ...], bool, bool],
+        tuple[RuntimeCargoPlan, tuple[str, ...]],
+    ] = field(default_factory=dict)
     installed_executables: dict[
         tuple[str, str, HostToolProduct], StableRegularFileObservation
     ] = field(default_factory=dict)

@@ -224,42 +224,59 @@ def _resolve_runtime_wasm_cargo_specs(
         command.extend(
             ["-C", "link-arg=" + _runtime_wasm_app_import_link_argument(root)]
         )
-    plan = resolve_runtime_cargo_plan(
-        root,
-        env=env,
-        cargo_command=_cargo_cmd_with_json_artifact_messages(command),
-        requested_target="wasm32-wasip1",
-        rustflags_transform=lambda flags: _wasm_runtime_codegen_flags(
-            flags,
-            simd_enabled=simd_enabled,
-            freestanding=freestanding,
-        ),
+    from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
+
+    cargo_command = tuple(_cargo_cmd_with_json_artifact_messages(command))
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    key = (root, env, cargo_command, simd_enabled, freestanding)
+    retained = (
+        transaction.wasm_runtime_cargo_plans.get(key)
+        if transaction is not None
+        else None
     )
-    if shared is None:
-        return None, reloc.with_cargo_plan(plan)
-    if plan.strips_debug_for_profile(
-        shared.cargo_profile,
-        package_name="molt-runtime",
-        workspace_package=True,
-    ):
+    if retained is None:
+        plan = resolve_runtime_cargo_plan(
+            root,
+            env=env,
+            cargo_command=cargo_command,
+            requested_target="wasm32-wasip1",
+            rustflags_transform=lambda flags: _wasm_runtime_codegen_flags(
+                flags,
+                simd_enabled=simd_enabled,
+                freestanding=freestanding,
+            ),
+        )
+        shared_flags = () if shared is None else shared.link_flags
         # wasm-ld leaves padded call/offset LEBs unless explicitly compressed.
-        # Compression changes encoding, not instructions or table slots. It is
-        # incompatible with retained DWARF, so use the actual final-link strip
-        # policy, including package/config/environment overrides.
-        if "link-arg=--compress-relocations" not in shared.link_flags:
-            shared = shared._replace(
-                link_flags=(*shared.link_flags, "-C", "link-arg=--compress-relocations")
-            )
+        # Compression changes encoding, not instructions or table slots and
+        # is incompatible with retained DWARF. Use the resolved strip policy.
+        if shared is not None and plan.strips_debug_for_profile(
+            shared.cargo_profile,
+            package_name="molt-runtime",
+            workspace_package=True,
+        ):
+            shared_flags = (*shared_flags, "-C", "link-arg=--compress-relocations")
             compressed_response = write_wasm_link_args_response_file(
                 _build_state_root(root) / "wasm_link_args",
                 label=f"runtime.{shared.cargo_profile}.combined",
-                link_args=wasm_link_args_from_rust_flag_tokens(shared.link_flags),
+                link_args=wasm_link_args_from_rust_flag_tokens(shared_flags),
             )
             plan = plan.with_final_link_response(
                 compressed_response,
                 previous=response if link_args else None,
             )
-    return shared.with_cargo_plan(plan), reloc.with_cargo_plan(plan)
+        if transaction is not None:
+            transaction.wasm_runtime_cargo_plans[key] = plan, shared_flags
+    else:
+        # The link boundary still verifies the captured configuration and
+        # resources when it re-admits the bound runtime generation.
+        plan, shared_flags = retained
+    if shared is None:
+        return None, reloc.with_cargo_plan(plan)
+    return (
+        shared._replace(link_flags=shared_flags).with_cargo_plan(plan),
+        reloc.with_cargo_plan(plan),
+    )
 
 
 def _resolved_runtime_wasm_family_identities(
