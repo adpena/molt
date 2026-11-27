@@ -9,15 +9,17 @@
 //! numbers it, so a query compares two intervals instead of walking the tree:
 //! a segment dominates exactly the segments whose intervals its own contains.
 
+use std::ops::Range;
+
 use crate::deterministic_hash::HashMap;
 
 use super::{
     IndexedDominance, exception_edge_binds_handler_arguments, exception_labels_to_blocks,
-    is_exception_transfer_edge,
+    exception_transfer_target, is_exception_transfer_edge,
 };
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::ops::TirOp;
 use crate::tir::values::ValueId;
 
 /// Borrow the SSA topology shared by TIR and backend-facing LIR. Operations,
@@ -55,8 +57,10 @@ impl ProgramPointGraph for TirFunction {
 }
 
 pub struct ProgramPointDominance {
-    // (first operation position in segment, dense graph node)
-    segments: HashMap<BlockId, Vec<(usize, usize)>>,
+    block_segments: HashMap<BlockId, Range<usize>>,
+    // A segment's dense graph node is its index. Each block owns a contiguous
+    // range, so blocks without exceptional transfers need no separate allocation.
+    segment_starts: Vec<usize>,
     dominance: IndexedDominance,
 }
 
@@ -86,58 +90,75 @@ impl ProgramPointDominance {
         let labels = exception_labels_to_blocks(func.label_id_map());
         let mut blocks: Vec<_> = func.block_ids().collect();
         blocks.sort_unstable();
-        let mut segments = HashMap::with_capacity_and_hasher(blocks.len(), Default::default());
-        let mut successors = Vec::<Vec<usize>>::new();
+        let mut block_segments =
+            HashMap::with_capacity_and_hasher(blocks.len(), Default::default());
+        let mut segment_starts = Vec::with_capacity(blocks.len());
+        let mut successors = Vec::<Vec<usize>>::with_capacity(blocks.len());
         let mut exceptional = Vec::new();
         for &bid in &blocks {
-            let mut points = vec![(0, successors.len())];
+            let start = segment_starts.len();
+            segment_starts.push(0);
             successors.push(Vec::new());
             for (index, op) in func.operations(bid).enumerate() {
                 if transfers(op.opcode)
-                    && let Some(AttrValue::Int(label)) = op.attrs.get("value")
-                    && let Some(&target) = labels.get(label)
+                    && let Some(target) = exception_transfer_target(op, &labels)
                 {
-                    let from = points.last().unwrap().1;
-                    exceptional.push((from, target));
                     let next = successors.len();
+                    let from = next - 1;
+                    exceptional.push((from, target));
                     successors[from].push(next);
                     successors.push(Vec::new());
-                    points.push((index + 1, next));
+                    segment_starts.push(index + 1);
                 }
             }
-            segments.insert(bid, points);
+            block_segments.insert(bid, start..segment_starts.len());
         }
         for (from, target) in exceptional {
-            if let Some(points) = segments.get(&target) {
-                successors[from].push(points[0].1);
+            if let Some(points) = block_segments.get(&target) {
+                successors[from].push(points.start);
             }
         }
         for &bid in &blocks {
-            let from = segments[&bid].last().unwrap().1;
+            let from = block_segments[&bid].end - 1;
             func.for_each_successor(bid, |target| {
-                if let Some(points) = segments.get(&target) {
-                    successors[from].push(points[0].1);
+                if let Some(points) = block_segments.get(&target) {
+                    successors[from].push(points.start);
                 }
             });
         }
-        let entry = segments
+        let entry = block_segments
             .get(&func.entry_block())
-            .map_or(successors.len(), |points| points[0].1);
+            .map_or(successors.len(), |points| points.start);
         Self {
-            segments,
+            block_segments,
+            segment_starts,
             dominance: IndexedDominance::compute(&successors, entry),
         }
     }
 
     fn node_before(&self, block: BlockId, position: usize) -> Option<usize> {
-        let points = self.segments.get(&block)?;
-        let index = points.partition_point(|&(start, _)| start <= position) - 1;
-        Some(points[index].1).filter(|&node| self.dominance.is_reachable(node))
+        let span = self.block_segments.get(&block)?;
+        let offset = self.segment_starts[span.clone()].partition_point(|&start| start <= position);
+        Some(span.start + offset - 1)
     }
 
     /// Whether execution can enter this block under the graph's edge policy.
     pub fn is_reachable(&self, block: BlockId) -> bool {
-        self.node_before(block, 0).is_some()
+        self.block_segments
+            .get(&block)
+            .is_some_and(|span| self.dominance.is_reachable(span.start))
+    }
+
+    /// Resolve the ordinal of a transfer under this graph's edge policy back
+    /// to its original instruction index. Inserting operations without
+    /// control edges leaves the reverse ordinal unchanged.
+    pub fn transfer_position_from_end(&self, block: BlockId, ordinal: usize) -> Option<usize> {
+        let span = self.block_segments.get(&block)?;
+        let &start = self.segment_starts[span.clone()]
+            .iter()
+            .rev()
+            .nth(ordinal)?;
+        start.checked_sub(1)
     }
 
     /// Whether an SSA definition is available immediately before an operation.
@@ -151,8 +172,10 @@ impl ProgramPointDominance {
         use_op: usize,
     ) -> bool {
         let definition_position = definition_op.map_or(0, |index| index + 1);
-        if definition_block == use_block && definition_position > use_op {
-            return false;
+        if definition_block == use_block {
+            // Every entry to a block starts at its first segment. A transfer
+            // can leave the block early but cannot enter before a later op.
+            return definition_position <= use_op && self.is_reachable(use_block);
         }
         let Some(definition) = self.node_before(definition_block, definition_position) else {
             return false;
@@ -169,7 +192,7 @@ mod tests {
     use super::*;
     use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::dominators::exception_label_to_block;
-    use crate::tir::ops::{Dialect, OpCode, TirOp};
+    use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
 
     #[test]
@@ -404,6 +427,27 @@ mod tests {
                 let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
                 blocks.sort_unstable();
                 for &definition_block in &blocks {
+                    let transfers: Vec<_> = func.blocks[&definition_block]
+                        .ops
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .filter(|(_, op)| {
+                            op.opcode == OpCode::CheckException
+                                || (!executable && op.opcode == OpCode::TryStart)
+                        })
+                        .map(|(index, _)| index)
+                        .collect();
+                    for (ordinal, expected_position) in transfers.iter().copied().enumerate() {
+                        assert_eq!(
+                            dominance.transfer_position_from_end(definition_block, ordinal),
+                            Some(expected_position)
+                        );
+                    }
+                    assert_eq!(
+                        dominance.transfer_position_from_end(definition_block, transfers.len()),
+                        None
+                    );
                     let operations = func.blocks[&definition_block].ops.len();
                     for definition_op in std::iter::once(None).chain((0..operations).map(Some)) {
                         let defined =
