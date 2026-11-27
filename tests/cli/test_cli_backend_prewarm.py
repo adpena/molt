@@ -408,6 +408,55 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
     assert asked == ["wasm-tools"]
 
 
+@pytest.mark.parametrize("overlap", [False, True])
+def test_native_runtime_miss_shares_compiler_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overlap: bool
+) -> None:
+    from types import SimpleNamespace
+
+    _isolated_molt_root(tmp_path, monkeypatch)
+    plan = SimpleNamespace()
+    operations: list[str] = []
+
+    def materialize() -> bool:
+        operations.append("runtime")
+        return False
+
+    def compiler(
+        *_args: object, cargo_preparation: _CargoPreparation | None, **_kwargs: object
+    ) -> cli_backend_binary._BackendBinaryEnsureResult:
+        assert cargo_preparation is not None and cargo_preparation.plan is plan
+        operations.append("compiler-start")
+        if overlap:
+            cargo_preparation.materialize()
+        operations.append("compiler-end")
+        return cli_backend_binary._BackendBinaryEnsureResult(
+            ok=True, binary=tmp_path / "backend"
+        )
+
+    def stage_runtime(_state, *, prepare_runtime_build, **_kwargs):
+        assert not prepare_runtime_build(plan, materialize)
+        return "", cli_backend_compile._fail(
+            "native runtime failed to materialize", True, command="build"
+        )
+
+    monkeypatch.setattr(
+        cli_backend_compile, "_ensure_selected_backend_binary", compiler
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_stage_runtime_callable_symbols_for_native_codegen",
+        stage_runtime,
+    )
+    prepared, error = _build_backend_setup(TargetKind.NATIVE, tmp_path, "cranelift")
+    assert prepared is None and error == 2
+    assert operations == (
+        ["compiler-start", "runtime", "compiler-end"]
+        if overlap
+        else ["compiler-start", "compiler-end", "runtime"]
+    )
+
+
 def _fake_backend_toolchain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[list[list[str]], list[list[str]]]:

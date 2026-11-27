@@ -26,7 +26,10 @@ from molt.cli.installed_runtime import (
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
-from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_for_codegen
+from molt.cli.runtime_native_build import (
+    PrepareNativeRuntimeBuild,
+    _ensure_native_runtime_lib_ready_for_codegen,
+)
 from molt.cli.runtime_native_codegen import (
     NativeRuntimeCodegenBinding,
     WasmRuntimeCallableBinding,
@@ -386,6 +389,7 @@ def _stage_runtime_callable_symbols_for_native_codegen(
     resolved_modules: set[str] | frozenset[str] | None = None,
     is_wasm_freestanding: bool = False,
     stage_timings_ms: dict[str, float] | None = None,
+    prepare_runtime_build: PrepareNativeRuntimeBuild | None = None,
 ) -> tuple[str, _CliFailure | None]:
     runtime_lib = runtime_state.runtime_lib
     # Readiness may be an in-flight producer that already owns the build
@@ -439,6 +443,7 @@ def _stage_runtime_callable_symbols_for_native_codegen(
         resolved_modules=resolved_modules,
         stage_timings_ms=stage_timings_ms,
         consume=consume_source_generation,
+        prepare_runtime_build=prepare_runtime_build,
     )
     _record_runtime_callable_stage_ms(
         stage_timings_ms,
