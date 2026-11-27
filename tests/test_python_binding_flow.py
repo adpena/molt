@@ -7730,6 +7730,78 @@ def test_local_literal_call_coverage_revisions_match_fresh_transfer(
             )
 
 
+def test_selected_bodies_share_completed_initializer_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    tree = ast.parse(
+        "import importlib\n"
+        "callback()\n"
+        "value = importlib.import_module('.child', __package__)\n"
+        "def first(): return value\n"
+        "def second(): return value\n"
+    )
+    first, second = map(python_node_source_key, tree.body[-2:])
+    admission = _PythonAstDigestAdmission.for_tree(tree)
+    initial = PythonBindingFlowPolicy(
+        target_python=(3, 15),
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=frozenset({"__package__", "callback"}),
+        opaque_activation_sources=(),
+        callback_member_writes=0,
+        frame_locals_writer=None,
+        deferred_binding_path=frozenset({first}),
+    )
+    revised = replace(
+        initial,
+        frame_locals_writer="frame writer",
+        foreign_namespace_writes=("__package__",),
+    )
+    policies = (
+        initial,
+        revised,
+        replace(revised, deferred_binding_path=frozenset({second})),
+    )
+
+    def analyze(
+        policy: PythonBindingFlowPolicy,
+    ) -> python_binding_flow.PythonBindingFacts:
+        return flow.analyze_python_binding_facts(
+            tree,
+            source_digest=admission.digest,
+            ast_digest_admission=admission,
+            policy=policy,
+        )
+
+    fresh = [analyze(policy) for policy in policies]
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    suffixes: list[PythonBindingFlowPolicy] = []
+    execute = flow._Analyzer._execute_initializer
+
+    def observe(
+        analyzer: python_binding_flow._Analyzer,
+        entry: int,
+        continuation: python_binding_flow._InitializerContinuation | None = None,
+    ) -> None:
+        if continuation is not None:
+            suffixes.append(analyzer.policy)
+        execute(analyzer, entry, continuation)
+
+    monkeypatch.setattr(flow._Analyzer, "_execute_initializer", observe)
+    with flow.python_binding_revision_scope():
+        for policy, expected in zip(policies, fresh, strict=True):
+            actual = analyze(policy)
+            assert (
+                replace(
+                    actual,
+                    state_count=expected.state_count,
+                    telemetry=expected.telemetry,
+                )
+                == expected
+            )
+    assert suffixes == [revised]
+
+
 def test_selected_bodies_reuse_initializer_with_open_namespace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
