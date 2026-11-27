@@ -19,8 +19,9 @@ from molt.python_runtime_identity import (
 )
 from tools import harness_memory_guard
 from tools.bench_suites import BenchmarkInventoryRecord, BenchmarkSet
+from tools.git_identity import is_git_object_id
 from tools.perf_scoreboard_measure import _cpython_run_env
-from tools.perf_scoreboard_model import Cell
+from tools.perf_scoreboard_model import Cell, ScoreboardSchemaError
 from tools.perf_schema import PlannedCell, PlannedCellRecord
 from tools.shard_partition import lpt_shards
 
@@ -44,15 +45,35 @@ class _CanonicalBenchmarkKeys(Protocol):
     def canonical_benchmark_key(self, script: str | Path) -> str: ...
 
 
-PlanFormat = Literal["summary", "json"]
+OutputFormat = Literal["summary", "json"]
 
 
-def _plan_format(value: str) -> PlanFormat:
+def _output_format(value: str) -> OutputFormat:
     if value == "summary":
         return "summary"
     if value == "json":
         return "json"
-    raise argparse.ArgumentTypeError("plan format must be summary or json")
+    raise argparse.ArgumentTypeError("output format must be summary or json")
+
+
+def _positive_signal_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "signal limit must be a positive integer"
+        ) from exc
+    if limit <= 0:
+        raise argparse.ArgumentTypeError("signal limit must be a positive integer")
+    return limit
+
+
+def _expected_source(value: str) -> str:
+    if not is_git_object_id(value):
+        raise argparse.ArgumentTypeError(
+            "expected source must be a lowercase 40- or 64-hex Git object ID"
+        )
+    return value
 
 
 def print_plan_summary(
@@ -169,7 +190,8 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
 
 def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) -> int:
     parser = argparse.ArgumentParser(
-        description="CPython floor-scoreboard — the release-blocking perf gate."
+        description="CPython floor-scoreboard — the release-blocking perf gate.",
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--set",
@@ -190,10 +212,36 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
     )
     parser.add_argument(
         "--plan-format",
-        type=_plan_format,
+        type=_output_format,
         default=None,
         metavar="{summary,json}",
         help="--plan output format (default: summary; json for automation)",
+    )
+    parser.add_argument(
+        "--signals",
+        metavar="PATH",
+        help="read compact evidence signals from a retained scoreboard; no measurement",
+    )
+    parser.add_argument(
+        "--signals-format",
+        type=_output_format,
+        default=None,
+        metavar="{summary,json}",
+        help="--signals output format (default: summary)",
+    )
+    parser.add_argument(
+        "--signal-limit",
+        type=_positive_signal_limit,
+        default=None,
+        metavar="N",
+        help="maximum retained-evidence signals to print (default: 8)",
+    )
+    parser.add_argument(
+        "--expected-source",
+        type=_expected_source,
+        default=None,
+        metavar="SHA",
+        help="require retained source identities to match this exact Git object ID",
     )
     parser.add_argument(
         "--backend",
@@ -411,6 +459,43 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         ),
     )
     ns = parser.parse_args(argv)
+
+    # Presence matters: even an explicitly supplied measurement default would
+    # otherwise be silently ignored by this read-only route. Exact option names
+    # make this boundary independent of argparse's abbreviation heuristics.
+    signals_options = frozenset(
+        {"--signals", "--signals-format", "--signal-limit", "--expected-source"}
+    )
+    supplied_options = frozenset(
+        token.partition("=")[0] for token in argv if token.startswith("--")
+    )
+    if ns.signals is None:
+        orphan_options = sorted((supplied_options & signals_options) - {"--signals"})
+        if orphan_options:
+            parser.error(f"{', '.join(orphan_options)} requires --signals")
+    else:
+        incompatible = sorted(supplied_options - signals_options)
+        if incompatible:
+            parser.error(f"--signals cannot be combined with {', '.join(incompatible)}")
+        from tools.perf_scoreboard_report import (
+            build_agent_signals,
+            print_agent_signals,
+        )
+
+        try:
+            document: object = json.loads(Path(ns.signals).read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                parser.error("--signals input must be a JSON object")
+            report = build_agent_signals(
+                cast(Mapping[str, object], document),
+                evidence_path=ns.signals,
+                limit=ns.signal_limit if ns.signal_limit is not None else 8,
+                expected_source_sha=ns.expected_source,
+            )
+        except (OSError, UnicodeError, ValueError, ScoreboardSchemaError) as exc:
+            parser.error(f"--signals: {exc}")
+        print_agent_signals(report, json_output=ns.signals_format == "json")
+        return 0
 
     if ns.plan_format is not None and not ns.plan:
         parser.error("--plan-format requires --plan")

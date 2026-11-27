@@ -130,6 +130,10 @@ _CANONICAL_PERF_FORBIDDEN_FLAGS = frozenset(
         "--benchmark",
         "--plan",
         "--plan-format",
+        "--signals",
+        "--signals-format",
+        "--signal-limit",
+        "--expected-source",
     }
 )
 

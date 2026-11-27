@@ -19,6 +19,7 @@ from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 import math
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -260,6 +261,29 @@ def test_metadata_plan_command_cannot_claim_release_measurement(planning: str) -
         f"{pa.CANONICAL_GATE} {planning}"
     )
     assert any("uses non-release perf flags: --plan" in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--signals", "retained.json"),
+        ("--signals-format", "summary"),
+        ("--signal-limit", "8"),
+        ("--expected-source", "a" * 40),
+    ],
+)
+@pytest.mark.parametrize("separator", [" ", "="])
+def test_retained_signal_options_cannot_claim_release_measurement(
+    option: Literal[
+        "--signals", "--signals-format", "--signal-limit", "--expected-source"
+    ],
+    value: str,
+    separator: Literal[" ", "="],
+) -> None:
+    problems = pa.canonical_scoreboard_command_problems(
+        f"{pa.CANONICAL_GATE} {option}{separator}{value}"
+    )
+    assert problems == [f"perf receipt uses non-release perf flags: {option}"]
 
 
 def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> None:

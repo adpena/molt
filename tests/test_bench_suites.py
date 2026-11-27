@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from copy import deepcopy
 from functools import cache
 from pathlib import Path
@@ -323,6 +324,210 @@ def test_scoreboard_plan_format_requires_plan() -> None:
 
     with pytest.raises(SystemExit, match="2"):
         perf_scoreboard.main(["--plan-format", "json"])
+
+
+@pytest.fixture
+def retained_signals_board(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from tools import perf_schema, perf_scoreboard
+    from tests.tools.test_perf_scoreboard import _board, _cell, _signal_failure
+
+    cells = [
+        _cell(benchmark=benchmark, build_ok=False)
+        for benchmark in bench_suites.BENCHMARKS[:10]
+    ]
+    for cell in cells:
+        _signal_failure(cell, phase="build", status="build_failed")
+
+    def fixture_revision() -> str:
+        return "a" * 40
+
+    with monkeypatch.context() as fixture_identity:
+        fixture_identity.setattr(perf_scoreboard, "_git_rev", fixture_revision)
+        document = _board(cells)
+    assert perf_schema.validate_board(document) == []
+    evidence = tmp_path / "retained.json"
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+    return evidence
+
+
+@pytest.mark.parametrize(
+    "output_format,signal_limit", [("summary", None), ("json", None), ("json", 1)]
+)
+def test_scoreboard_signals_reads_real_evidence_before_all_workload_side_effects(
+    retained_signals_board: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output_format: Literal["summary", "json"],
+    signal_limit: int | None,
+) -> None:
+    from tools import bench_evidence, perf_scoreboard, perf_scoreboard_cli
+
+    def unexpected_work(*args: object, **kwargs: object) -> None:
+        pytest.fail("read-only signals crossed the measurement or publication boundary")
+
+    original = retained_signals_board.read_bytes()
+    output_directory = tmp_path / "must-not-exist"
+    argv = ["--signals", str(retained_signals_board), "--expected-source", "a" * 40]
+    if output_format == "json":
+        argv += ["--signals-format=json"]
+    if signal_limit is not None:
+        argv += [f"--signal-limit={signal_limit}"]
+    with monkeypatch.context() as boundary:
+        for module, name in (
+            (bench_suites, "benchmark_inventory"),
+            (perf_scoreboard, "_resolve_benchmark_set"),
+            (perf_scoreboard, "_resolve_system_cpython"),
+            (perf_scoreboard, "_git_rev"),
+            (perf_scoreboard, "wait_for_quiescence"),
+            (perf_scoreboard, "gather_provenance"),
+            (perf_scoreboard, "measure_cell"),
+            (perf_scoreboard, "_write_scoreboard_doc"),
+            (perf_scoreboard_cli, "_observe_cpython_runtime"),
+            (bench_evidence, "admit_benchmark_workload"),
+            (bench, "admit_wasm_execution"),
+            (bench, "_BenchBatchBuildServer"),
+            (benchmark_applications, "prepare_application"),
+            (benchmark_applications, "_archive"),
+            (Path, "mkdir"),
+        ):
+            boundary.setattr(module, name, unexpected_work)
+        boundary.setattr(perf_scoreboard, "SCOREBOARD_DIR", output_directory)
+        assert perf_scoreboard.main(argv) == 0
+    output = capsys.readouterr().out
+    if output_format == "json":
+        payload = cast(Mapping[str, object], json.loads(output))
+        snapshot = cast(Mapping[str, object], payload["snapshot"])
+        assert snapshot["evidence_path"] == str(retained_signals_board)
+        assert snapshot["scope"] == "retained_snapshot"
+        assert snapshot["current_main_proof"] is False
+        assert snapshot["methodology_sha256"] == "d" * 64
+        signals = cast(list[object], payload["signals"])
+        assert len(signals) == (signal_limit if signal_limit is not None else 8)
+        assert cast(int, payload["total"]) >= 10
+        assert payload["omitted"] == cast(int, payload["total"]) - len(signals)
+    else:
+        assert str(retained_signals_board) in output
+        assert "a" * 40 in output
+        assert "d" * 64 in output
+    assert retained_signals_board.read_bytes() == original
+    assert not output_directory.exists()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--plan"],
+        ["--plan-format", "summary"],
+        ["--merge", "other.json"],
+        ["--rebuild-summary", "other.json"],
+        ["--self-test"],
+        ["--sample-hot-only"],
+        ["--set=core"],
+        ["--benchmark", "bench_fib.py"],
+        ["--backend", "native"],
+        ["--profile", "release-fast"],
+        ["--cpython", "python"],
+        ["--samples", "5"],
+        ["--warmup", "2"],
+        ["--rss-mb", "1024"],
+        ["--timeout", "30"],
+        ["--require-quiescent"],
+        ["--quiescence-wait-s", "0"],
+        ["--quiescence-poll-s", "15"],
+        ["--print-provenance"],
+        ["--repeat", "1"],
+        ["--classify"],
+        ["--emit-cycle-profile"],
+        ["--inner-repeat", "10"],
+        ["--profile-build"],
+        ["--shard", "0/1"],
+        ["--out", "must-not-exist/board.json"],
+        ["--baseline"],
+        ["--no-gate"],
+        ["--emit-wasm-phases"],
+        ["--strict-cold"],
+        ["--allow-nonauthoritative"],
+        ["--pypy"],
+        ["--codon"],
+    ],
+)
+def test_scoreboard_signals_rejects_every_ignored_mode_or_measurement_option(
+    args: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tools import perf_scoreboard
+
+    # The absent path also proves conflict validation precedes evidence loading.
+    with pytest.raises(SystemExit, match="2"):
+        perf_scoreboard.main(["--signals", "absent.json", *args])
+    assert "--signals cannot be combined with" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--signals-format", "summary"],
+        ["--signal-limit=8"],
+        ["--expected-source", "a" * 40],
+    ],
+)
+def test_scoreboard_signal_options_require_signals(
+    args: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tools import perf_scoreboard
+
+    with pytest.raises(SystemExit, match="2"):
+        perf_scoreboard.main(args)
+    assert "requires --signals" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--signals-format", "yaml"],
+        ["--signal-limit", "0"],
+        ["--signal-limit", "-1"],
+        ["--signal-limit", "1.5"],
+        ["--expected-source", "main"],
+        ["--expected-source", "a" * 39],
+        ["--expected-source", "A" * 40],
+    ],
+)
+def test_scoreboard_signals_refuses_invalid_options(args: list[str]) -> None:
+    from tools import perf_scoreboard
+
+    with pytest.raises(SystemExit, match="2"):
+        perf_scoreboard.main(["--signals", "absent.json", *args])
+
+
+@pytest.mark.parametrize("contents", [None, b"{", b"[]", b"null", b"{}", b"\xff"])
+def test_scoreboard_signals_reports_input_errors_as_argparse_diagnostics(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    contents: bytes | None,
+) -> None:
+    from tools import perf_scoreboard
+
+    evidence = tmp_path / "invalid.json"
+    if contents is not None:
+        evidence.write_bytes(contents)
+    with pytest.raises(SystemExit, match="2"):
+        perf_scoreboard.main(["--signals", str(evidence)])
+    error = capsys.readouterr().err
+    assert "error: --signals" in error
+    assert "Traceback" not in error
+
+
+def test_scoreboard_signals_refuses_exact_source_mismatch(
+    retained_signals_board: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tools import perf_scoreboard
+
+    with pytest.raises(SystemExit, match="2"):
+        perf_scoreboard.main(
+            ["--signals", str(retained_signals_board), "--expected-source", "b" * 40]
+        )
+    assert "error: --signals:" in capsys.readouterr().err
 
 
 def test_molt_benchmark_args_are_canonicalized_for_all_call_shapes() -> None:
