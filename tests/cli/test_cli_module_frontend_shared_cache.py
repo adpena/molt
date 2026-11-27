@@ -799,7 +799,9 @@ def test_lowering_context_digest_is_independent_of_mtime(tmp_path: Path) -> None
     assert digest_before is not None and digest_before == digest_after
 
 
-def test_lowering_reuse_survives_relocation_of_an_escaped_writer(tmp_path: Path) -> None:
+def test_lowering_reuse_survives_relocation_of_an_escaped_writer(
+    tmp_path: Path,
+) -> None:
     path = _write_module(tmp_path, "m", "def g():\n    return value\n")
     lease = _ModuleSourceLease.path_backed(path)
 
