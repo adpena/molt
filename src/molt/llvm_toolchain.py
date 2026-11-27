@@ -1392,6 +1392,32 @@ def _llvm_config_candidates(
     return _dedupe_paths(candidates)
 
 
+def declared_llvm_prefixes(
+    pin: LlvmBackendPin,
+    environ: Mapping[str, str],
+    *,
+    cwd: Path | None,
+) -> tuple[tuple[Path, ...], Path | None]:
+    """Read the SDK and executable-search prefixes without running the SDK."""
+    sdk_authority_names = (
+        "MOLT_LLVM_PREFIX",
+        mlir_sys_prefix_env_var(pin.major),
+        tablegen_prefix_env_var(pin.major),
+    )
+
+    explicit = {
+        _normalized_prefix(value, environ=environ, cwd=cwd)
+        for name in sdk_authority_names
+        if (value := environ.get(name, "").strip())
+    }
+    llvm_sys_search_prefix = (
+        _normalized_prefix(value, environ=environ, cwd=cwd)
+        if (value := environ.get(pin.env_var, "").strip())
+        else None
+    )
+    return tuple(sorted(explicit, key=str)), llvm_sys_search_prefix
+
+
 def discover_llvm_toolchain(
     root: Path,
     *,
@@ -1414,17 +1440,7 @@ def discover_llvm_toolchain(
     if pin is None:
         return None
     env = ProcessEnvironment(os.environ if environ is None else environ)
-    sdk_authority_names = (
-        "MOLT_LLVM_PREFIX",
-        mlir_sys_prefix_env_var(pin.major),
-        tablegen_prefix_env_var(pin.major),
-    )
-
-    explicit = {
-        _normalized_prefix(value, environ=env, cwd=cwd)
-        for name in sdk_authority_names
-        if (value := env.get(name, "").strip())
-    }
+    explicit, llvm_sys_search_prefix = declared_llvm_prefixes(pin, env, cwd=cwd)
     if len(explicit) > 1:
         rendered = ", ".join(str(path) for path in sorted(explicit, key=str))
         raise LlvmToolchainConfigError(
@@ -1432,11 +1448,6 @@ def discover_llvm_toolchain(
             f"{rendered}"
         )
     explicit_prefix = next(iter(explicit), None)
-    llvm_sys_search_prefix = (
-        _normalized_prefix(value, environ=env, cwd=cwd)
-        if (value := env.get(pin.env_var, "").strip())
-        else None
-    )
     rejected: list[str] = []
     for candidate, source in _llvm_config_candidates(
         root, pin, env, explicit_prefix, llvm_sys_search_prefix, cwd=cwd

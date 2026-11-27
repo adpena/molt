@@ -776,6 +776,18 @@ def checkout_state_environment_roots(
             and (toolchain_root := _toolchain_owner_root(sdk)) is not None
         ):
             roots.setdefault(sdk, CheckoutOwner(toolchain_root, "toolchains"))
+    if environment.get("MOLT_LLVM_PREFIX") or any(
+        name.startswith(("LLVM_SYS_", "MLIR_SYS_", "TABLEGEN_")) for name in environment
+    ):
+        from .llvm_toolchain import declared_llvm_prefixes, required_llvm_backend_pin
+
+        if (pin := required_llvm_backend_pin(source_root)) is not None:
+            prefixes, search_prefix = declared_llvm_prefixes(
+                pin, environment, cwd=working
+            )
+            for prefix in (*prefixes, search_prefix):
+                if prefix is not None and (owner := _toolchain_owner_root(prefix)):
+                    roots.setdefault(prefix, CheckoutOwner(owner, "toolchains"))
     import sys
 
     if include_current_process:

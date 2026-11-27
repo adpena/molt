@@ -5733,6 +5733,33 @@ def test_scratch_rules_have_independent_mutation_oracles(tmp_path, monkeypatch, 
             test_scratch_live_custody_keeps_an_old_root(tmp_path, protection)
 
 
+@pytest.mark.parametrize("selector", ["MOLT_LLVM_PREFIX", "MLIR", "LLVM_SYS"])
+def test_external_llvm_use_writes_only_admitted_control_files(
+    tmp_path: Path, selector: str
+) -> None:
+    from molt.checkout_state import checkout_state_control_files, toolchain_state_use
+    from molt.llvm_toolchain import mlir_sys_prefix_env_var, required_llvm_backend_pin
+
+    owner = tmp_path / "sdk-owner"
+    prefix = owner / "toolchains/llvm-sdk"
+    prefix.mkdir(parents=True)
+    pin = required_llvm_backend_pin(ROOT)
+    assert pin is not None
+    name = {
+        "MOLT_LLVM_PREFIX": "MOLT_LLVM_PREFIX",
+        "MLIR": mlir_sys_prefix_env_var(pin.major),
+        "LLVM_SYS": pin.env_var,
+    }[selector]
+    environment = {name: str(prefix)}
+    with toolchain_state_use((prefix,), create=True):
+        pass
+    written = {path for path in (owner / "target").rglob("*") if path.is_file()}
+    assert written
+    admitted = set(checkout_state_control_files(ROOT, environment))
+    assert written <= admitted
+    assert all(prefix not in path.parents for path in admitted)
+
+
 def test_an_explicit_wasi_sdk_use_writes_only_admitted_control_files(
     tmp_path: Path,
 ) -> None:
