@@ -334,7 +334,6 @@ impl<'a> ExactScalarPlan<'a> {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn forwarded_return_parameter(&self) -> Option<usize> {
         self.return_parameter_search()?
             .advance(self, |_| Ok::<_, ()>(None))

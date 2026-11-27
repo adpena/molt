@@ -6,6 +6,7 @@
 
 mod activation;
 mod call_sites;
+mod checked_scalar;
 mod clone_body;
 mod driver;
 mod eligibility;
