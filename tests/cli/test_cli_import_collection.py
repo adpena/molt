@@ -3370,7 +3370,7 @@ def test_builtins_mapping_write_controls_runtime_import_support(
         "modify(key=input())\n"
         "import math\n"
     )
-    _assert_graph_import_finder(tmp_path, source, needs_finder)
+    _assert_graph_import_finder(tmp_path, source, needs_finder, load_finders=False)
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
@@ -3399,7 +3399,20 @@ def test_native_iterator_payload_reaches_namespace_writer(
         "modify(input())\n"
         "import math\n"
     )
-    _assert_graph_import_finder(tmp_path, source, needs_finder)
+    _assert_graph_import_finder(tmp_path, source, needs_finder, load_finders=False)
+
+
+@pytest.mark.usefixtures("isolated_frontend_state")
+def test_reached_import_writer_admits_native_finder_closure(tmp_path: Path) -> None:
+    # The demand cases above cover the writer shapes. This case exercises the
+    # native planner's subsequent admission of the real Python finder.
+    source = (
+        "import builtins\n"
+        "def redirect(*args): pass\n"
+        "builtins.__import__ = redirect\n"
+        "import math\n"
+    )
+    _assert_graph_import_finder(tmp_path, source, True)
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
