@@ -17,7 +17,7 @@ from molt.compiler_analysis.python_binding_facts import (
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import IntFlag, StrEnum
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from typing import Literal, NamedTuple, assert_never, cast
 
 from molt.compiler_analysis.python_builtin_shapes import (
@@ -96,6 +96,9 @@ _OBJECT_METHODS_WITHOUT_CALLBACKS = frozenset(
 )
 
 
+type _SourceOrigin = tuple[str, PythonSourceKey | None]
+
+
 class SourceCandidate(NamedTuple):
     module: str
     source: PythonSourceKey | None
@@ -136,7 +139,7 @@ class SourceCandidate(NamedTuple):
     iterator_producer: PythonIdentity | None = None
 
     @property
-    def value(self) -> tuple[str, PythonSourceKey | None]:
+    def value(self) -> _SourceOrigin:
         return self.module, self.source
 
 
@@ -177,6 +180,27 @@ class _ClassMemberLookup:
 
 
 @dataclass(frozen=True, slots=True)
+class _ClassMemberProviders:
+    source: PythonSourceKey | None
+    name: str
+
+
+@dataclass(slots=True)
+class _ProviderSearchFrame:
+    node: SourceValue
+    children: Iterator[_SourceOrigin]
+    index: int
+    component_start: int
+    providers: frozenset[_SourceOrigin]
+
+    def join(self, providers: frozenset[_SourceOrigin]) -> None:
+        if not self.providers:
+            self.providers = providers
+        elif providers and self.providers is not providers:
+            self.providers = self.providers | providers
+
+
+@dataclass(frozen=True, slots=True)
 class _ClassMemberResult:
     members: frozenset[SourceCandidate]
     property_results: frozenset[SourceCandidate]
@@ -184,7 +208,7 @@ class _ClassMemberResult:
 
 @dataclass(slots=True)
 class _InheritedSources:
-    owners: set[tuple[str, PythonSourceKey | None]]
+    owners: set[_SourceOrigin]
     users: set[SourceValue] = field(default_factory=set)
 
 
@@ -247,6 +271,7 @@ SourceValue = tuple[
     PythonSourceKey
     | SourceMember
     | _ClassMemberLookup
+    | _ClassMemberProviders
     | SourceCacheItem
     | SourceReturn
     | SourceCallArguments
@@ -409,6 +434,7 @@ class PythonSourceDemands:
         # call of one passes the call's own arguments, never the instance.
         self._property_results: dict[SourceValue, set[SourceCandidate]] = {}
         self._class_members: dict[_ClassMemberLookup, _ClassMemberResult] = {}
+        self._member_providers: dict[SourceValue, frozenset[_SourceOrigin]] = {}
         self._inherited_sources: dict[SourceValue, _InheritedSources] = {}
         # Attribute values whose receiver-binding proof read a candidate set
         # still queued; `drain` decides them once the queue empties.
@@ -454,6 +480,9 @@ class PythonSourceDemands:
         self.exports: dict[str, SourceAllExports] = {}
 
     def queue_value(self, value: SourceValue, *, refresh: bool = True) -> None:
+        if isinstance(value[1], _ClassMemberProviders):
+            self._invalidate_member_providers(value)
+            return
         pending = self.value_jobs.get(value)
         if pending is None:
             self.queue.append(value)
@@ -500,7 +529,7 @@ class PythonSourceDemands:
 
     def _watch_inherited_sources(
         self, origin: SourceValue, user: SourceValue
-    ) -> set[tuple[str, PythonSourceKey | None]]:
+    ) -> set[_SourceOrigin]:
         # An inherited selection takes only the source identity from the base
         # operand. The original class access supplies the receiver.
         sources = self._inherited_sources.get(origin)
@@ -1164,9 +1193,27 @@ class PythonSourceDemands:
                     )
                 )
         else:
-            members = self.select_member(
-                owner, name, value, property_results=property_results
+            members = set()
+            providers = (
+                self._class_member_providers(owner.value, name, value)
+                if self.bases.get(owner.value)
+                and name not in {"__class__", "__dict__", "__init__"}
+                else None
             )
+            # Special metadata and native initialization retain their full
+            # selection rules.
+            for source in (owner.value,) if providers is None else providers:
+                members.update(
+                    self.select_member(
+                        owner
+                        if source == owner.value
+                        else SourceCandidate(*source, owner.kind),
+                        name,
+                        value,
+                        binding_owner=owner,
+                        property_results=property_results,
+                    )
+                )
         result = _ClassMemberResult(frozenset(members), frozenset(property_results))
         previous = self._class_members.get(lookup)
         if result != previous:
@@ -1183,6 +1230,95 @@ class PythonSourceDemands:
                 for user in self.operand_users.get(value, ()):
                     self.queue_value(user)
         return result
+
+    def _invalidate_member_providers(self, value: SourceValue) -> None:
+        pending = [value]
+        while pending:
+            current = pending.pop()
+            if self._member_providers.pop(current, None) is None:
+                continue
+            for user in self.value_users.get(current, ()):
+                if isinstance(user[1], _ClassMemberProviders):
+                    pending.append(user)
+                else:
+                    self.queue_value(user)
+
+    def _class_member_providers(
+        self, owner: _SourceOrigin, name: str, user: SourceValue
+    ) -> frozenset[_SourceOrigin]:
+        """Share the source frontier before any descriptor binds a receiver.
+
+        Tarjan's walk closes each mutually recursive group once. An abstract
+        base graph can cycle even though actual Python inheritance cannot.
+        Every node in the component sees the same terminal providers.
+        """
+
+        def key(origin: _SourceOrigin) -> SourceValue:
+            return origin[0], _ClassMemberProviders(origin[1], name)
+
+        root = key(owner)
+        self.value_users[root].add(user)
+        if root in self._member_providers:
+            return self._member_providers[root]
+
+        unresolved: dict[SourceValue, _ProviderSearchFrame] = {}
+        components: list[_ProviderSearchFrame] = []
+        stack: list[_ProviderSearchFrame] = []
+
+        def push(origin: _SourceOrigin, node: SourceValue) -> None:
+            module, source = origin
+            self.watch(origin, node)
+            if (
+                source is None
+                or source[-1] != "ClassDef"
+                or self.namespaces.get(origin, _EMPTY_NAMESPACE).members.get(name)
+            ):
+                children = iter(())
+                providers = frozenset({origin})
+            else:
+                children = (
+                    parent
+                    for base in self.bases.get(origin, ())
+                    for parent in self._watch_inherited_sources((module, base), node)
+                )
+                providers = frozenset()
+            index = len(components)
+            frame = _ProviderSearchFrame(node, children, index, index, providers)
+            unresolved[node] = frame
+            components.append(frame)
+            stack.append(frame)
+
+        push(owner, root)
+        while stack:
+            frame = stack[-1]
+            if (origin := next(frame.children, None)) is not None:
+                child = key(origin)
+                self.value_users[child].add(frame.node)
+                if child in self._member_providers:
+                    frame.join(self._member_providers[child])
+                elif (unfinished := unresolved.get(child)) is not None:
+                    frame.component_start = min(frame.component_start, unfinished.index)
+                else:
+                    push(origin, child)
+                continue
+
+            stack.pop()
+            if frame.component_start == frame.index:
+                component = components[frame.index :]
+                del components[frame.index :]
+                for member in component[1:]:
+                    frame.join(member.providers)
+                for member in component:
+                    self._member_providers[member.node] = frame.providers
+                    del unresolved[member.node]
+                if stack:
+                    stack[-1].join(frame.providers)
+            else:
+                parent = stack[-1]
+                parent.component_start = min(
+                    parent.component_start, frame.component_start
+                )
+        return self._member_providers[root]
 
     def _select_class_members(
         self,
@@ -2229,6 +2365,9 @@ class PythonSourceDemands:
         if refresh:
             deltas = None
         module_name, source = value
+        assert not isinstance(source, _ClassMemberProviders), (
+            "provider invalidation never enters the value queue"
+        )
         if isinstance(source, _ClassMemberLookup):
             if refresh:
                 self._refresh_class_members(source, value)
