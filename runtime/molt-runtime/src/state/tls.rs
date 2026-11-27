@@ -67,6 +67,8 @@ pub(crate) struct ExecutionTls {
     /// The address of the bound runtime's missing-singleton slot
     /// (`THREAD_RECORD_MISSING_SLOT_OFFSET`), or zero.
     pub(crate) missing_slot: Cell<u64>,
+    pub(crate) exception_handler_depth: ExceptionDepthWord,
+    pub(crate) exception_stack_baseline: ExceptionDepthWord,
     /// GIL custody depth held by this thread.
     pub(crate) gil_depth: AdmissionInput<usize>,
     /// Runtime execution lease depth, with the service-role bit.
@@ -103,8 +105,6 @@ pub(crate) struct ExecutionTls {
     /// a runtime path that holds the execution context reaches it with no
     /// thread-local access. No field has a destructor.
     pub(crate) thread_last_exception: crate::builtins::exceptions::state::ThreadExceptionState,
-    pub(crate) exception_handler_depth: Cell<usize>,
-    pub(crate) exception_stack_baseline: Cell<usize>,
     pub(crate) active_exception_stack: std::mem::ManuallyDrop<RefCell<Vec<u64>>>,
     pub(crate) active_exception_fallback: std::mem::ManuallyDrop<
         RefCell<Vec<crate::builtins::exceptions::state::ExceptionContextFallback>>,
@@ -117,6 +117,21 @@ pub(crate) struct ExecutionTls {
     pub(crate) native_gil: crate::concurrency::gil::GilMutexCustody,
 }
 
+/// A stack coordinate held in the fixed-width codegen record. Runtime stack
+/// indexing still uses the target's usize.
+#[repr(transparent)]
+pub(crate) struct ExceptionDepthWord(Cell<u64>);
+
+impl ExceptionDepthWord {
+    pub(crate) fn get(&self) -> usize {
+        self.0.get() as usize
+    }
+
+    pub(crate) fn set(&self, depth: usize) {
+        self.0.set(depth as u64);
+    }
+}
+
 const _: () = {
     use molt_codegen_abi::{
         THREAD_RECORD_ARENA_LIMIT_OFFSET, THREAD_RECORD_ARENA_TOP_OFFSET,
@@ -126,7 +141,11 @@ const _: () = {
         THREAD_RECORD_RECURSION_DEPTH_OFFSET, THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
         THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET, THREAD_RECORD_TERMINAL_RELEASE_OFFSET,
     };
-    use molt_codegen_abi::{THREAD_RECORD_GC_RECORD_OFFSET, THREAD_RECORD_MISSING_SLOT_OFFSET};
+    use molt_codegen_abi::{
+        THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET,
+        THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET, THREAD_RECORD_GC_RECORD_OFFSET,
+        THREAD_RECORD_MISSING_SLOT_OFFSET,
+    };
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
     assert!(!std::mem::needs_drop::<ExecutionTls>());
@@ -164,6 +183,14 @@ const _: () = {
     assert!(offset_of!(ExecutionTls, object_class) as i32 == THREAD_RECORD_OBJECT_CLASS_OFFSET);
     assert!(offset_of!(ExecutionTls, gc_record) as i32 == THREAD_RECORD_GC_RECORD_OFFSET);
     assert!(offset_of!(ExecutionTls, missing_slot) as i32 == THREAD_RECORD_MISSING_SLOT_OFFSET);
+    assert!(
+        offset_of!(ExecutionTls, exception_handler_depth) as i32
+            == THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET
+    );
+    assert!(
+        offset_of!(ExecutionTls, exception_stack_baseline) as i32
+            == THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET
+    );
 };
 
 /// An input of the refcount admission word. Any code reads it; only the
@@ -277,8 +304,8 @@ thread_local! {
             public_gil_owns_persistent: Cell::new(false),
             thread_last_exception:
                 crate::builtins::exceptions::state::ThreadExceptionState::new(),
-            exception_handler_depth: Cell::new(0),
-            exception_stack_baseline: Cell::new(0),
+            exception_handler_depth: ExceptionDepthWord(Cell::new(0)),
+            exception_stack_baseline: ExceptionDepthWord(Cell::new(0)),
             active_exception_stack: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
             active_exception_fallback: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
             generator_raise: Cell::new(false),

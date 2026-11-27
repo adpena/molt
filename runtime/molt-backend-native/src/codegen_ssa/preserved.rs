@@ -16,13 +16,10 @@ use super::value_table::HeldCarrier;
 use crate::tir::ops::{AttrValue, TirOp};
 
 /// The runtime entry of a kind that calls it with no operand and binds its
-/// word, unowned, as a boxed result. The exception-stack reads and writes
-/// return a value the frame does not own; the singletons are immortal.
+/// word, unowned, as a boxed result. The singletons are immortal.
 const fn nullary_runtime(kind: OpKind) -> Option<RuntimeFn> {
     Some(match kind {
         OpKind::ExceptionPush => RuntimeFn::ExceptionPush,
-        OpKind::ExceptionStackEnter => RuntimeFn::ExceptionStackEnter,
-        OpKind::ExceptionStackDepth => RuntimeFn::ExceptionStackDepth,
         OpKind::ExceptionPop => RuntimeFn::ExceptionPop,
         OpKind::ExceptionStackClear => RuntimeFn::ExceptionStackClear,
         OpKind::ExceptionLast => RuntimeFn::ExceptionLast,
