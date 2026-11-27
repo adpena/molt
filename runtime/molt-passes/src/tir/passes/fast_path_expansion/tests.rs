@@ -2065,8 +2065,8 @@ fn a_static_call_only_enters_or_adopts_arguments_on_the_admitted_path() {
         call.callee = Some(target);
         let mut leaf = molt_ir::FunctionSet::default();
         leaf.insert(target);
-        assert!(!super::charge_static_calls(&mut func, &leaf));
-        assert!(super::charge_static_calls(&mut func, &Default::default()));
+        assert!(!super::charge_static_calls(&mut func, |id| leaf.contains(id)));
+        assert!(super::charge_static_calls(&mut func, |_| false));
         assert_valid(&func);
         let Terminator::CondBranch {
             cond,
@@ -2408,7 +2408,7 @@ fn recursion_refusal_defines_the_physical_word_for_a_direct_handler_read() {
         if dispatch.is_some() {
             assert_eq!(super::run(&mut func, &targets(1, false)).values_changed, 1);
         } else {
-            assert!(super::charge_static_calls(&mut func, &Default::default()));
+            assert!(super::charge_static_calls(&mut func, |_| false));
         }
         assert_valid(&func);
         let observers = ops(&func, OpCode::CheckException);
@@ -2449,7 +2449,7 @@ fn checked_static_recursion_refusal_leaves_an_independent_poll_on_the_admitted_p
     poll.set_exception_edge_kind(ExceptionEdgeKind::Origin);
     entry.ops.push(poll);
     assert_valid(&func);
-    assert!(super::charge_static_calls(&mut func, &Default::default()));
+    assert!(super::charge_static_calls(&mut func, |_| false));
     assert_valid(&func);
     assert_eq!(ops(&func, OpCode::CheckException).len(), 1);
     let refusal = ops(&func, OpCode::CallRuntime)
