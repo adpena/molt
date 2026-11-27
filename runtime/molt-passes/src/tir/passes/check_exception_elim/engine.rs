@@ -4,7 +4,8 @@ use crate::tir::types::TirType;
 
 use super::super::PassStats;
 use super::classify::{
-    RaiseFacts, check_has_exception_edge, op_clears_pending_exception, pending_after_check,
+    PendingTransfer, RaiseFacts, check_has_exception_edge, check_pending_transfer,
+    operation_pending_transfer,
 };
 use super::flow::compute_block_entry_pending;
 
@@ -74,7 +75,7 @@ fn run_with_pending(func: &mut TirFunction, before_drop: bool) -> PassStats {
                         || !op.results.is_empty()
                         || !has_edge;
                     pending_exception_possible =
-                        pending_after_check(has_edge, &op, pending_exception_possible);
+                        check_pending_transfer(has_edge, &op).apply(pending_exception_possible);
                     if keep {
                         new_ops.push(op);
                     } else {
@@ -82,11 +83,11 @@ fn run_with_pending(func: &mut TirFunction, before_drop: bool) -> PassStats {
                     }
                 }
                 _ => {
-                    if op_clears_pending_exception(&op) {
-                        pending_exception_possible = false;
-                    } else if raise.op_may_raise(&op) {
-                        pending_exception_possible = true;
-                    } else if raise.exact_types_disprove_raise(&op) {
+                    let transfer = operation_pending_transfer(&raise, &op);
+                    pending_exception_possible = transfer.apply(pending_exception_possible);
+                    if transfer == PendingTransfer::Preserve
+                        && raise.exact_types_disprove_raise(&op)
+                    {
                         op.mark_nothrow_proof();
                         stats.facts_changed += 1;
                     }
