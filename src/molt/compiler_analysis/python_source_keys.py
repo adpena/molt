@@ -16,6 +16,7 @@ from types import MappingProxyType
 from collections.abc import Mapping
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_binding_facts import PythonOpaqueActivationReads
     from molt.compiler_analysis.python_call_arguments import CallArgumentPlan
     from molt.compiler_analysis.python_lexical_scope import PythonModuleLexicalPlan
     from molt.compiler_analysis.python_imports import SourceAllExports
@@ -338,7 +339,7 @@ class _PythonAstDigestAdmission:
 
     module_all_exports: dict[
         tuple[TargetPythonVersion, str | None, PythonNamespacePremise | None],
-        SourceAllExports,
+        tuple[SourceAllExports, PythonOpaqueActivationReads | None],
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     namespace_summaries: dict[

@@ -1047,6 +1047,19 @@ def _source_publication_at[
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class PythonOpaqueActivationReads:
+    """Observed intersections with the closed graph's opaque activation set."""
+
+    present: tuple[frozenset[PythonSourceKey], ...]
+    absent: frozenset[PythonSourceKey]
+
+    def unchanged_under(self, opaque: frozenset[PythonSourceKey]) -> bool:
+        return self.absent.isdisjoint(opaque) and all(
+            not group.isdisjoint(opaque) for group in self.present
+        )
+
+
 @dataclass(frozen=True, slots=True, weakref_slot=True)
 class PythonBindingFacts:
     """Context-independent immutable facts and their shared query mappings."""
@@ -1062,6 +1075,9 @@ class PythonBindingFacts:
     class_annotation_namespaces: frozenset[PythonSourceKey]
     state_count: int
     telemetry: PythonBindingTelemetry
+    opaque_activation_reads: PythonOpaqueActivationReads | None = field(
+        compare=False, repr=False
+    )
     slot_names: tuple[str, ...]
     # Module rows publish source origins. Class rows also retain names of
     # opaque attributes because a store can invoke their descriptors.
@@ -1117,6 +1133,7 @@ class PythonBindingFacts:
         state_count: int,
         telemetry: PythonBindingTelemetry,
         slot_names: tuple[str, ...],
+        opaque_activation_reads: PythonOpaqueActivationReads | None = None,
         source_namespaces: tuple[
             tuple[
                 PythonSourceKey,
@@ -1160,6 +1177,7 @@ class PythonBindingFacts:
             class_annotation_namespaces=class_annotation_namespaces,
             state_count=state_count,
             telemetry=telemetry,
+            opaque_activation_reads=opaque_activation_reads,
             slot_names=slot_names,
             source_namespaces=source_namespaces,
             module_getattr_may_be_bound=module_getattr_may_be_bound,
