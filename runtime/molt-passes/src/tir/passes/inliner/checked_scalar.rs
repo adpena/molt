@@ -37,6 +37,53 @@ enum Scope {
     Exited,
 }
 
+impl Scope {
+    /// Advance the lexical resource protocol. Operand identity links every
+    /// physical restoration to the snapshot that its entry would have made.
+    fn advance(self, op: &TirOp) -> Option<Self> {
+        let operands = op.operands.as_slice();
+        let results = op.results.as_slice();
+        if op.opcode == OpCode::TryStart && operands.is_empty() && results.is_empty() {
+            let Self::Pushed { baseline, depth } = self else {
+                return None;
+            };
+            return Some(Self::Open { baseline, depth });
+        }
+        if op.opcode != OpCode::Copy {
+            return None;
+        }
+        match (self, op.origin, operands, results) {
+            (Self::Entry, Some(OpKind::ExceptionStackEnter), [], [baseline]) => {
+                Some(Self::Baseline(*baseline))
+            }
+            (Self::Baseline(baseline), Some(OpKind::ExceptionStackDepth), [], [depth]) => {
+                Some(Self::Saved {
+                    baseline,
+                    depth: *depth,
+                })
+            }
+            (Self::Saved { baseline, depth }, Some(OpKind::ExceptionPush), [], []) => {
+                Some(Self::Pushed { baseline, depth })
+            }
+            (Self::Open { baseline, depth }, Some(OpKind::ExceptionPop), [], []) => {
+                Some(Self::Retired { baseline, depth })
+            }
+            (Self::Retired { depth, .. }, Some(OpKind::ExceptionStackSetDepth), [target], [])
+                if depth == *target =>
+            {
+                Some(self)
+            }
+            (Self::Retired { baseline, .. }, Some(OpKind::ExceptionStackExit), [target], [])
+                if baseline == *target =>
+            {
+                Some(Self::Restored)
+            }
+            (Self::Restored, Some(OpKind::TraceExit), [], []) => Some(Self::Exited),
+            _ => None,
+        }
+    }
+}
+
 impl CheckedScalar {
     pub(super) fn summarize(body: &TirFunction) -> Option<Self> {
         if body.execution_context != ExecutionContextPolicy::Local
@@ -90,84 +137,50 @@ impl CheckedScalar {
         while visited.insert(id) {
             let block = &body.blocks[&id];
             for op in block.ops.iter().skip(usize::from(id == body.entry_block)) {
-                if op.runtime.is_some() || op.callee.is_some() || !op.has_valid_shape() {
+                if matches!(scope, Scope::Exited)
+                    || op.runtime.is_some()
+                    || op.callee.is_some()
+                    || !op.has_valid_shape()
+                {
                     return None;
                 }
-                match (
-                    &op.opcode,
-                    op.origin,
-                    op.operands.as_slice(),
-                    op.results.as_slice(),
-                ) {
-                    (OpCode::Copy, Some(OpKind::ExceptionStackEnter), [], [baseline])
-                        if matches!(scope, Scope::Entry) =>
-                    {
-                        scope = Scope::Baseline(*baseline);
-                    }
-                    (OpCode::Copy, Some(OpKind::ExceptionStackDepth), [], [depth])
-                        if let Scope::Baseline(baseline) = scope =>
-                    {
-                        scope = Scope::Saved {
-                            baseline,
-                            depth: *depth,
-                        };
-                    }
-                    (OpCode::Copy, Some(OpKind::FrameHomeStore), [source], [view])
-                        if matches!(scope, Scope::Saved { .. }) && inputs.contains(source) =>
-                    {
-                        let slot = frame_location_placement::home_slot(op)?;
-                        if slot >= shape.homes as usize || !homes.insert(slot) {
+                if op.opcode == OpCode::CheckException && op.results.is_empty() {
+                    if op.is_async_work_poll() {
+                        if serviced || !matches!(scope, Scope::Open { .. }) {
                             return None;
                         }
-                        inputs.insert(*view);
+                        serviced = true;
                     }
-                    (OpCode::Copy, Some(OpKind::ExceptionPush), [], [])
-                        if let Scope::Saved { baseline, depth } = scope =>
-                    {
-                        scope = Scope::Pushed { baseline, depth };
-                    }
-                    (OpCode::TryStart, _, [], [])
-                        if let Scope::Pushed { baseline, depth } = scope =>
-                    {
-                        scope = Scope::Open { baseline, depth };
-                    }
-                    (OpCode::Copy, Some(OpKind::ExceptionPop), [], [])
-                        if let Scope::Open { baseline, depth } = scope =>
-                    {
-                        scope = Scope::Retired { baseline, depth };
-                    }
-                    (OpCode::Copy, Some(OpKind::ExceptionStackSetDepth), [target], []) if matches!(scope, Scope::Retired { depth, .. } if depth == *target) =>
-                        {}
-                    (OpCode::Copy, Some(OpKind::ExceptionStackExit), [target], []) if matches!(scope, Scope::Retired { baseline, .. } if baseline == *target) =>
-                    {
-                        scope = Scope::Restored;
-                    }
-                    (OpCode::Copy, Some(OpKind::TraceExit), [], [])
-                        if matches!(scope, Scope::Restored) =>
-                    {
-                        scope = Scope::Exited;
-                    }
-                    (OpCode::CheckException, _, _, []) if !matches!(scope, Scope::Exited) => {
-                        if op.is_async_work_poll() {
-                            if serviced || !matches!(scope, Scope::Open { .. }) {
-                                return None;
-                            }
-                            serviced = true;
-                        }
-                    }
-                    (OpCode::FrameSetLocation, _, [], [])
-                    | (OpCode::Copy, Some(OpKind::Line), [], [])
-                        if !matches!(scope, Scope::Exited) => {}
-                    (OpCode::Copy, kind, [from], [to])
-                        if !matches!(scope, Scope::Exited)
-                            && inputs.contains(from)
-                            && (kind == Some(OpKind::BindingAlias)
-                                || value_identity::copy_value_source(op) == Some(*from)) =>
-                    {
-                        inputs.insert(*to);
-                    }
-                    _ => return None,
+                    continue;
                 }
+                if op.operands.is_empty()
+                    && op.results.is_empty()
+                    && (op.opcode == OpCode::FrameSetLocation
+                        || (op.opcode == OpCode::Copy && op.origin == Some(OpKind::Line)))
+                {
+                    continue;
+                }
+                if op.opcode == OpCode::Copy
+                    && let ([from], [to]) = (op.operands.as_slice(), op.results.as_slice())
+                    && inputs.contains(from)
+                {
+                    if op.origin == Some(OpKind::FrameHomeStore) {
+                        let slot = frame_location_placement::home_slot(op)?;
+                        if !matches!(scope, Scope::Saved { .. })
+                            || slot >= shape.homes as usize
+                            || !homes.insert(slot)
+                        {
+                            return None;
+                        }
+                    } else if op.origin != Some(OpKind::BindingAlias)
+                        && value_identity::copy_value_source(op) != Some(*from)
+                    {
+                        return None;
+                    }
+                    inputs.insert(*to);
+                    continue;
+                }
+                scope = scope.advance(op)?;
             }
             match &block.terminator {
                 Terminator::Branch { target, args } if args.is_empty() => id = *target,
