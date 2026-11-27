@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final, Literal, NamedTuple, TypeAlias, cast, get_args
 
 from molt.python_canonical_ast import canonical_python_module
@@ -239,6 +239,10 @@ class PythonNamespaceWrite:
     # All these uses must borrow for the module value to stay local.
     borrowed_if: tuple[ModuleBorrowRequirement, ...] = ()
 
+    @property
+    def needs_binding_refinement(self) -> bool:
+        return bool(self.borrowed_if) or self.key_source is not None
+
 
 def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
     return [
@@ -408,6 +412,25 @@ class PythonNamespaceSummary:
     foreign_writes: tuple[PythonNamespaceWrite, ...]
     own_reflection_line: int = 0
     own_namespace_line: int = 0
+    _refinements: dict[PythonSourceKey, tuple[PythonNamespaceWrite, ...]] = field(
+        init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        rows: dict[PythonSourceKey, list[PythonNamespaceWrite]] = {}
+        for write in self.foreign_writes:
+            if write.source_owner is not None and write.needs_binding_refinement:
+                rows.setdefault(write.source_owner, []).append(write)
+        object.__setattr__(
+            self,
+            "_refinements",
+            {owner: tuple(writes) for owner, writes in rows.items()},
+        )
+
+    def refinement_writes(
+        self, owner: PythonSourceKey
+    ) -> tuple[PythonNamespaceWrite, ...]:
+        return self._refinements.get(owner, ())
 
 
 def python_namespace_summary(
@@ -2495,6 +2518,8 @@ def refine_namespace_writes(
     summary: PythonNamespaceSummary,
     cache_writes: Iterable[_SourceImportCacheWrite],
     bindings: PythonBindingFacts | None = None,
+    *,
+    initializer_only: bool = False,
 ) -> PythonNamespaceSummary:
     """Apply typed cache keys and borrowed operands at their captured sites.
 
@@ -2523,6 +2548,13 @@ def refine_namespace_writes(
         tuple[PythonSourceKey | None, PythonStringBound | None], PythonNamespaceWrite
     ] = {}
     for write in summary.foreign_writes:
+        if (
+            initializer_only
+            and write.source_owner is not None
+            and write.needs_binding_refinement
+        ):
+            rows.append(write)
+            continue
         if (
             bindings is not None
             and write.borrowed_if
@@ -2560,6 +2592,8 @@ def refine_namespace_writes(
                     else write.construct,
                     key_source=None,
                 )
+            else:
+                write = replace(write, key_source=None)
         if write.construct == "computed_member_store":
             # The evaluated spelling is the graph input. Discard the
             # source-scoped query coordinate once its answer is consumed.

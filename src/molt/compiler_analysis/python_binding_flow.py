@@ -437,6 +437,7 @@ class PythonBindingFlowPolicy:
     # rebinder. Standalone callers have no closed graph ruling one out.
     code_rebinding: bool = True
     analyze_deferred_bodies: bool = True
+    deferred_binding_path: frozenset[PythonSourceKey] | None = None
     # One source-owned activation may carry proven string arguments, including
     # a joined finite domain. The binding fixpoint owns their lifetime and flow;
     # consumers must not reconstruct those facts after flow analysis.
@@ -518,6 +519,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             opaque_activation_sources=self.opaque_activation_sources,
             code_rebinding=self.code_rebinding,
             analyze_deferred_bodies=self.analyze_deferred_bodies,
+            deferred_binding_path=self.deferred_binding_path,
             activation_argument_values=self.activation_argument_values,
             foreign_namespace_writes=self.foreign_namespace_writes,
             foreign_namespace_universe=self.foreign_namespace_universe,
@@ -581,6 +583,7 @@ class _BindingAnalysis:
     module_import_flow_required: bool
     opaque_activation_reads: _OpaqueActivationReads | None
     foreign_namespace_reads: _ForeignNamespaceReads | None
+    deferred_binding_path: frozenset[PythonSourceKey] | None
     projections: _BindingCache[PythonBindingIndex] = field(
         default_factory=lambda: _BindingCache(max_entries=8), compare=False, repr=False
     )
@@ -10422,12 +10425,19 @@ class _Analyzer:
         capture: Callable[[_Analyzer, int], None] | None = None,
         recorder: _DeferredJobRecorder | None = None,
     ) -> _BindingAnalysis:
+        selected = self.policy.deferred_binding_path
         while cursor < len(self.function_jobs):
             # Exponential spacing bounds checkpoints in each deferred suffix.
             # The retention policy admits early boundaries on small sources.
             if capture is not None and cursor >= 2 and not cursor & (cursor - 1):
                 capture(self, cursor)
-            self._run_deferred_job(self.function_jobs[cursor], recorder)
+            job = self.function_jobs[cursor]
+            if (
+                selected is None
+                or job.annotation_scope
+                or self._node_key(job.node) in selected
+            ):
+                self._run_deferred_job(job, recorder)
             cursor += 1
         return self._project_analysis()
 
@@ -10642,6 +10652,7 @@ class _Analyzer:
                     self._has_empty_module_expiry,
                 )
             ),
+            self.policy.deferred_binding_path,
         )
 
     def _fork_at_deferred_boundary(
@@ -10976,6 +10987,9 @@ class _RecordedBindingTransfer:
         )
 
 
+_BINDING_INITIALIZER_BUDGET: Final = 65536
+
+
 @dataclass(frozen=True, slots=True)
 class _RebasableInitializer:
     prefix: _Analyzer
@@ -10993,7 +11007,14 @@ class _RebasableInitializer:
         if owner._foreign_reads is None and completion is not None:
             return None
         size = _binding_checkpoint_size(owner) + len(reads.metadata)
-        if size > 8192:
+        # A completed initializer serves every subsequently demanded body.
+        # Charge it to the same total budget as speculative replay prefixes.
+        limit = (
+            _BINDING_INITIALIZER_BUDGET
+            if completion is None and owner.policy.deferred_binding_path is not None
+            else 8192
+        )
+        if size > limit:
             return None
         prefix = owner._fork_at_deferred_boundary(
             initializer_prefix=completion is not None
@@ -11234,7 +11255,12 @@ class _BindingRevisions:
         )
         initializer_key = (
             key[0],
-            replace(key[1], foreign_namespace_writes=(), frame_locals_writer=None),
+            replace(
+                key[1],
+                foreign_namespace_writes=(),
+                frame_locals_writer=None,
+                deferred_binding_path=None,
+            ),
         )
         with self._lock:
             prior = self._recent.get(key, ())
@@ -11366,6 +11392,7 @@ class _BindingRevisions:
         if (
             cursor == 0
             and recorded is None
+            and policy.deferred_binding_path is None
             and analyzer._foreign_universe is not None
             and 1 < len(analyzer.function_jobs) <= 256
             and _binding_checkpoint_size(analyzer) <= 8192
@@ -11429,7 +11456,10 @@ class _BindingRevisions:
             self._initializer_extent -= sum(item.size for item in replaced)
             self._initializers[key] = snapshots
             self._initializer_extent += sum(item.size for item in snapshots)
-            while self._initializer_extent > 65536 or len(self._initializers) > 128:
+            while (
+                self._initializer_extent > _BINDING_INITIALIZER_BUDGET
+                or len(self._initializers) > 128
+            ):
                 _, evicted = self._initializers.popitem(last=False)
                 self._initializer_extent -= sum(item.size for item in evicted)
 
@@ -11504,6 +11534,7 @@ def _project_binding_index(
             source_key=source_key,
             ast_digest_admission=ast_digest_admission,
             callback_metadata_writes=facts.callback_metadata_writes,
+            deferred_binding_path=analysis.deferred_binding_path,
         )
     else:
         state = context_import_state(context)
@@ -11527,6 +11558,7 @@ def _project_binding_index(
             ast_digest_admission=ast_digest_admission,
             source_discovery=True,
             callback_metadata_writes=facts.callback_metadata_writes,
+            deferred_binding_path=analysis.deferred_binding_path,
         )
         flow = replace(
             flow,
