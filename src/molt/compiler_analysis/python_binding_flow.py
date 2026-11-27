@@ -95,6 +95,8 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 from molt.compiler_analysis.python_binding_facts import (
+    EscapingException,
+    PythonOpaqueActivationReads,
     MODULE_IMPORT_METADATA_NAMES,
     PythonBindingFacts,
     PythonSourceArgument,
@@ -437,6 +439,7 @@ class PythonBindingFlowPolicy:
     # rebinder. Standalone callers have no closed graph ruling one out.
     code_rebinding: bool = True
     analyze_deferred_bodies: bool = True
+    deferred_binding_path: frozenset[PythonSourceKey] | None = None
     # One source-owned activation may carry proven string arguments, including
     # a joined finite domain. The binding fixpoint owns their lifetime and flow;
     # consumers must not reconstruct those facts after flow analysis.
@@ -518,6 +521,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             opaque_activation_sources=self.opaque_activation_sources,
             code_rebinding=self.code_rebinding,
             analyze_deferred_bodies=self.analyze_deferred_bodies,
+            deferred_binding_path=self.deferred_binding_path,
             activation_argument_values=self.activation_argument_values,
             foreign_namespace_writes=self.foreign_namespace_writes,
             foreign_namespace_universe=self.foreign_namespace_universe,
@@ -528,17 +532,6 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             declaration_only=self.declaration_only,
             normal_none_intrinsics=self.normal_none_intrinsics,
             molt_runtime_linked=self.molt_runtime_linked,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class _OpaqueActivationReads:
-    present: tuple[frozenset[PythonSourceKey], ...]
-    absent: frozenset[PythonSourceKey]
-
-    def unchanged_under(self, opaque: frozenset[PythonSourceKey]) -> bool:
-        return self.absent.isdisjoint(opaque) and all(
-            not group.isdisjoint(opaque) for group in self.present
         )
 
 
@@ -579,8 +572,8 @@ class _BindingAnalysis:
     facts: PythonBindingFacts
     assignment_effects: Mapping[PythonSourceKey, EffectMask]
     module_import_flow_required: bool
-    opaque_activation_reads: _OpaqueActivationReads | None
     foreign_namespace_reads: _ForeignNamespaceReads | None
+    deferred_binding_path: frozenset[PythonSourceKey] | None
     projections: _BindingCache[PythonBindingIndex] = field(
         default_factory=lambda: _BindingCache(max_entries=8), compare=False, repr=False
     )
@@ -2625,7 +2618,7 @@ class _HistorySummary:
     taint_epoch_suffix: tuple[int, ...]
     namespace_unknown_suffix: tuple[bool, ...]
     taint_indices: tuple[int, ...]
-    slot_events: dict[int, list[int]]
+    slot_events: Mapping[int, tuple[int, ...]]
     slot_suffixes: dict[
         int,
         tuple[
@@ -2684,7 +2677,9 @@ class _HistorySummary:
             tuple(taint_epoch_suffix),
             tuple(namespace_unknown_suffix),
             tuple(taint_indices),
-            events,
+            MappingProxyType(
+                {slot: tuple(indices) for slot, indices in events.items()}
+            ),
             {},
             pool.taint_domain_generation,
             count,
@@ -2767,12 +2762,11 @@ class _HistorySummary:
                 )
                 suffix_results[index] = future_result
             suffix = (
-                tuple(events),
+                events,
                 tuple(suffix_values),
                 tuple(suffix_results),
             )
             self.slot_suffixes[slot] = suffix
-            del self.slot_events[slot]
         if suffix is not None:
             indices, suffix_values, suffix_results = suffix
             event_index = bisect_left(indices, start)
@@ -2789,6 +2783,33 @@ class _HistorySummary:
             if pool._callback_deletion_mask & (1 << slot):
                 value |= UNBOUND_IDENTITY
         return value, result
+
+
+@dataclass(slots=True)
+class _CompletedModuleHistory:
+    """One initializer's immutable observations shared across body queries."""
+
+    states: tuple[int, ...]
+    summary: _HistorySummary | None = field(default=None, init=False)
+    lock: RLock = field(default_factory=RLock, init=False)
+
+    def open(self, pool: _StatePool) -> _HistorySummary:
+        with self.lock:
+            if self.summary is None:
+                self.summary = _HistorySummary.build(pool, self.states)
+            summary = self.summary
+            if (
+                summary.domain_mask == pool._taint_domain_mask
+                and summary.callback_deletion_mask == pool._callback_deletion_mask
+            ):
+                # Different forks may have the same generation counter and
+                # different admitted slots. Match the masks before borrowing.
+                return replace(
+                    summary,
+                    domain_generation=pool.taint_domain_generation,
+                    slot_suffixes={},
+                )
+        return _HistorySummary.build(pool, self.states)
 
 
 @dataclass(slots=True)
@@ -3252,7 +3273,9 @@ class _Analyzer:
         self.callback_module_slot_mask = 0
         self.callback_slot_mask = 0
         self._observed_stack: list[_ObservedStateFrame] = []
-        self._module_history: list[int] = [0]
+        self._observes_exception_state = False
+        self._module_history: list[int] | tuple[int, ...] = [0]
+        self._completed_module_history: _CompletedModuleHistory | None = None
         self._active_module_states: tuple[int, ...] | None = None
         self._module_import_flow_required = False
         self._scope_slot_cache: dict[tuple[int, str], int | None] = {}
@@ -4145,6 +4168,7 @@ class _Analyzer:
         for observed in self._observed_stack:
             observed.states.append(state_id)
         if self._active_module_states is None:
+            assert isinstance(self._module_history, list)
             self._module_history.append(state_id)
 
     def _record_operation_execution(
@@ -7553,21 +7577,22 @@ class _Analyzer:
                 )
                 return self._normal_flow(self._apply_effects(current, effects), effects)
 
-            loop = PythonCompletionFlow.loop(
-                entry,
-                advance,
-                lambda exhausted: PythonCompletionFlow(normal=exhausted),
-                join_states=self.states.join,
-                equivalent_states=lambda left, right: (
-                    self.states.equivalent(left, right)
-                    and self.states.owner_tokens_equal(left, right)
-                ),
-                widen_state=lambda header: self.states.invalidate_members(
-                    self._widen_exposed_bindings(header),
-                    self.policy.callback_member_writes,
-                ),
-                finalize=finalize,
-            )
+            with self._observe_exception_state():
+                loop = PythonCompletionFlow.loop(
+                    entry,
+                    advance,
+                    lambda exhausted: PythonCompletionFlow(normal=exhausted),
+                    join_states=self.states.join,
+                    equivalent_states=lambda left, right: (
+                        self.states.equivalent(left, right)
+                        and self.states.owner_tokens_equal(left, right)
+                    ),
+                    widen_state=lambda header: self.states.invalidate_members(
+                        self._widen_exposed_bindings(header),
+                        self.policy.callback_member_writes,
+                    ),
+                    finalize=finalize,
+                )
             iteration = replace(
                 iteration,
                 release_effects=release_effects(),
@@ -8221,11 +8246,29 @@ class _Analyzer:
             scope.module_metadata_effects |= WRITES_MODULE_METADATA
         return state_id, effects
 
+    @contextmanager
+    def _observe_exception_state(self) -> Generator[None]:
+        # Consumers process any raising input before restoring the outer
+        # region's demand. Terminal raises only need their completion bit.
+        outer = self._observes_exception_state
+        self._observes_exception_state = True
+        try:
+            yield
+        finally:
+            self._observes_exception_state = outer
+
+    def _exception_exit(self) -> int | EscapingException:
+        if self._observes_exception_state:
+            return self._observed_stack[-1].exceptional_state(self.states)
+        return EscapingException.PRESENT
+
     def _merge_flows(
         self, *flows: PythonCompletionFlow[int]
     ) -> PythonCompletionFlow[int]:
         result: PythonCompletionFlow[int] = PythonCompletionFlow()
         for flow in flows:
+            if not self._observes_exception_state:
+                flow = flow.discard_exception_state()
             result = result.merge(flow, join_states=self.states.join)
         return result
 
@@ -8237,19 +8280,17 @@ class _Analyzer:
         # intermediate expression states, not only its successful exit state.
         if effects & ALLOCATES:
             effects |= RAISES
-        exceptional = (
-            self._observed_stack[-1].exceptional_state(self.states)
-            if effects & RAISES
-            else None
-        )
+        exceptional = self._exception_exit() if effects & RAISES else None
         failed_store = self._take_failed_store()
         if failed_store is not None:
             effects |= RAISES
-            exceptional = (
-                failed_store
-                if exceptional is None
-                else self.states.join(exceptional, failed_store)
-            )
+            if not self._observes_exception_state:
+                exceptional = EscapingException.PRESENT
+            elif exceptional is None:
+                exceptional = failed_store
+            else:
+                assert exceptional is not EscapingException.PRESENT
+                exceptional = self.states.join(exceptional, failed_store)
         return PythonCompletionFlow(
             normal=state_id, raised=exceptional, effects=effects
         )
@@ -8745,12 +8786,17 @@ class _Analyzer:
                     ),
                 )
                 effects |= bind_effects
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+        elif isinstance(node, ast.While):
             return self._exec_loop(node, state_id, scope)
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            return self._exec_with(node, state_id, scope)
-        elif isinstance(node, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-            return self._exec_try(node, state_id, scope)
+        elif isinstance(
+            node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.Try, ast.TryStar)
+        ):
+            with self._observe_exception_state():
+                if isinstance(node, (ast.For, ast.AsyncFor)):
+                    return self._exec_loop(node, state_id, scope)
+                if isinstance(node, (ast.With, ast.AsyncWith)):
+                    return self._exec_with(node, state_id, scope)
+                return self._exec_try(node, state_id, scope)
         elif isinstance(node, ast.Match):
             subject = self.eval_expr(node.subject, state_id, scope)
             flow = self._normal_flow(subject.state_id, subject.effects).without_normal()
@@ -9374,7 +9420,7 @@ class _Analyzer:
                 )
             self._record_state(state_id)
             return PythonCompletionFlow(
-                raised=self._observed_stack[-1].exceptional_state(self.states),
+                raised=self._exception_exit(),
                 effects=effects,
             )
         elif isinstance(node, ast.Assert):
@@ -9707,14 +9753,15 @@ class _Analyzer:
             flow = self._merge_flows(
                 flow, self.exec_statements(node.orelse, body.normal, scope)
             )
-        if body.raised is not None:
+        raised_state = body.exception_state()
+        if raised_state is not None:
             if isinstance(node, ast.TryStar):
                 handled = self._exec_try_star_handlers(
-                    node.handlers, body.raised, scope
+                    node.handlers, raised_state, scope
                 )
                 flow = self._merge_flows(flow, handled)
             else:
-                unmatched: int | None = body.raised
+                unmatched: int | None = raised_state
                 for handler in node.handlers:
                     if unmatched is None:
                         break
@@ -10174,7 +10221,12 @@ class _Analyzer:
         history_key = id(summary_states)
         summary = self._history_summaries.get(history_key)
         if summary is None or summary.states is not summary_states:
-            summary = _HistorySummary.build(self.states, summary_states)
+            completed = self._completed_module_history
+            summary = (
+                completed.open(self.states)
+                if completed is not None and completed.states is summary_states
+                else _HistorySummary.build(self.states, summary_states)
+            )
             self._history_summaries[history_key] = summary
         summary.refresh(self.states)
         maybe, definitely, taint_epoch, namespace_unknown = summary.properties(
@@ -10311,6 +10363,7 @@ class _Analyzer:
             0, self.policy.entry_invalid_members
         )
         self._module_history = [entry_state]
+        self._completed_module_history = None
         self._execute_initializer(entry_state)
 
     def _execute_initializer(
@@ -10422,12 +10475,19 @@ class _Analyzer:
         capture: Callable[[_Analyzer, int], None] | None = None,
         recorder: _DeferredJobRecorder | None = None,
     ) -> _BindingAnalysis:
+        selected = self.policy.deferred_binding_path
         while cursor < len(self.function_jobs):
             # Exponential spacing bounds checkpoints in each deferred suffix.
             # The retention policy admits early boundaries on small sources.
             if capture is not None and cursor >= 2 and not cursor & (cursor - 1):
                 capture(self, cursor)
-            self._run_deferred_job(self.function_jobs[cursor], recorder)
+            job = self.function_jobs[cursor]
+            if (
+                selected is None
+                or job.annotation_scope
+                or self._node_key(job.node) in selected
+            ):
+                self._run_deferred_job(job, recorder)
             cursor += 1
         return self._project_analysis()
 
@@ -10547,6 +10607,23 @@ class _Analyzer:
                 for (source_key, _parent_id, kind), scope in self._source_scopes.items()
                 if kind == "class" and scope.needs_annotation_namespace
             ),
+            opaque_activation_reads=(
+                None
+                if self._opaque_activation_sources is None
+                else PythonOpaqueActivationReads(
+                    tuple(
+                        group
+                        for group, answer in self._opaque_activation_reads.items()
+                        if answer
+                    ),
+                    frozenset(
+                        source
+                        for group, answer in self._opaque_activation_reads.items()
+                        if not answer
+                        for source in group
+                    ),
+                )
+            ),
             state_count=len(self.states),
             telemetry=PythonBindingTelemetry(
                 binding_lookups=self.states.binding_lookups,
@@ -10611,23 +10688,6 @@ class _Analyzer:
             flow_required or import_relevant_assignment_effects,
             (
                 None
-                if self._opaque_activation_sources is None
-                else _OpaqueActivationReads(
-                    tuple(
-                        group
-                        for group, answer in self._opaque_activation_reads.items()
-                        if answer
-                    ),
-                    frozenset(
-                        source
-                        for group, answer in self._opaque_activation_reads.items()
-                        if not answer
-                        for source in group
-                    ),
-                )
-            ),
-            (
-                None
                 if self._foreign_reads is None
                 else _ForeignNamespaceReads(
                     frozenset(self._foreign_reads),
@@ -10642,6 +10702,7 @@ class _Analyzer:
                     self._has_empty_module_expiry,
                 )
             ),
+            self.policy.deferred_binding_path,
         )
 
     def _fork_at_deferred_boundary(
@@ -10976,10 +11037,15 @@ class _RecordedBindingTransfer:
         )
 
 
+_BINDING_INITIALIZER_BUDGET: Final = 65536
+
+
 @dataclass(frozen=True, slots=True)
 class _RebasableInitializer:
     prefix: _Analyzer
-    reads: _InitializerPremiseReads
+    # Without a namespace read log only an identical writer premise can reuse
+    # the completed initializer. Body selection is independent of that premise.
+    reads: _InitializerPremiseReads | None
     size: int
     continuation: _InitializerContinuation | None = None
 
@@ -10987,20 +11053,35 @@ class _RebasableInitializer:
     def capture(
         cls,
         owner: _Analyzer,
-        reads: _InitializerPremiseReads,
+        reads: _InitializerPremiseReads | None,
         completion: PythonCompletionFlow[int] | None = None,
     ) -> _RebasableInitializer | None:
-        if owner._foreign_reads is None and completion is not None:
+        if completion is not None and (reads is None or owner._foreign_reads is None):
             return None
-        size = _binding_checkpoint_size(owner) + len(reads.metadata)
-        if size > 8192:
+        size = _binding_checkpoint_size(owner)
+        if reads is not None:
+            size += len(reads.metadata)
+        # A completed initializer serves every subsequently demanded body.
+        # Charge it to the same total budget as speculative replay prefixes.
+        limit = (
+            _BINDING_INITIALIZER_BUDGET
+            if completion is None and owner.policy.deferred_binding_path is not None
+            else 8192
+        )
+        if size > limit:
             return None
+        if completion is None and owner.policy.deferred_binding_path is not None:
+            # All retained branches fork the same completed state arena.
+            # The module initializer was the only producer of this history.
+            history = tuple(owner._module_history)
+            owner._module_history = history
+            owner._completed_module_history = _CompletedModuleHistory(history)
         prefix = owner._fork_at_deferred_boundary(
             initializer_prefix=completion is not None
         )
         if completion is None:
             return cls(prefix, reads, size)
-        assert owner._foreign_reads is not None
+        assert reads is not None and owner._foreign_reads is not None
         current = owner._observed_stack[0]
         history_job = next(
             (
@@ -11037,7 +11118,7 @@ class _RebasableInitializer:
             return None
         if self.continuation is not None:
             entry = self.continuation.completion.normal
-            assert entry is not None
+            assert entry is not None and self.reads is not None
             work._initializer_premise_reads = replace(
                 self.reads,
                 metadata=self.reads.metadata.copy(),
@@ -11060,7 +11141,7 @@ def _binding_activation_reads_agree(
 
 
 def _rebase_binding_namespace(
-    prefix: _Analyzer, requested: _Analyzer, reads: _InitializerPremiseReads
+    prefix: _Analyzer, requested: _Analyzer, reads: _InitializerPremiseReads | None
 ) -> _Analyzer | None:
     """Keep valid physical coordinates when a source gains foreign writers."""
     before, policy = prefix.policy, requested.policy
@@ -11069,47 +11150,47 @@ def _rebase_binding_namespace(
         before.foreign_namespace_writes,
         policy.foreign_namespace_writes,
     )
-    if active is None or former is None or current is None:
-        return None
-    if not _binding_activation_reads_agree(prefix, active):
+    if active is None or not _binding_activation_reads_agree(prefix, active):
         return None
     exposed = frame_locals_exposed(policy.target_python, policy.frame_locals_writer)
     formerly_exposed = frame_locals_exposed(
         before.target_python, before.frame_locals_writer
     )
     if exposed != formerly_exposed and (
-        reads.frame_borrows
+        reads is None
+        or reads.frame_borrows
         or any(
             scope.kind not in ("module", "class") and scope.slots
             for scope in prefix.scopes
         )
     ):
         return None
-    additions = frozenset(current).difference(former)
-    if prefix._callback_module_names is None:
-        # Both premises supply concrete foreign writes, so source-owned
-        # reflection kept the callback domain open. The explicit
-        # __builtins__ writer still participates in pristine lookup.
-        if ("__builtins__" in former) != ("__builtins__" in current):
+    additions: frozenset[str] = frozenset()
+    if former != current:
+        if reads is None or former is None or current is None:
             return None
-    else:
-        if not frozenset(former).issubset(current):
-            return None
-        if not additions.isdisjoint(reads.names) or (
-            additions and prefix._has_empty_module_expiry
-        ):
-            return None
-        assert prefix.module_scope is not None
-        existing = additions.intersection(prefix.module_scope.slots)
-        if existing and any(state.taint_epoch for state in prefix.states._states):
-            return None
+        additions = frozenset(current).difference(former)
+        if prefix._callback_module_names is None:
+            # Source reflection already left the callback domain open. The
+            # explicit __builtins__ writer still affects pristine lookup.
+            if ("__builtins__" in former) != ("__builtins__" in current):
+                return None
+        else:
+            if not frozenset(former).issubset(current):
+                return None
+            if not additions.isdisjoint(reads.names) or prefix._has_empty_module_expiry:
+                return None
+            assert prefix.module_scope is not None
+            existing = additions.intersection(prefix.module_scope.slots)
+            if existing and any(state.taint_epoch for state in prefix.states._states):
+                return None
     work = prefix._fork_at_deferred_boundary()
     work.policy = policy
     work._opaque_activation_sources = active
     work._activation_argument_values = requested._activation_argument_values.copy()
-    if work._callback_module_names is None:
+    if not additions or work._callback_module_names is None:
         return work
-    assert work._foreign_reads is not None
+    assert reads is not None and work._foreign_reads is not None
     work._callback_module_names |= additions
     appended_start = len(work.slot_names)
     for name in sorted(additions):
@@ -11234,7 +11315,16 @@ class _BindingRevisions:
         )
         initializer_key = (
             key[0],
-            replace(key[1], foreign_namespace_writes=(), frame_locals_writer=None),
+            replace(
+                key[1],
+                foreign_namespace_writes=(
+                    policy.foreign_namespace_writes
+                    if analyzer._foreign_universe is None
+                    else ()
+                ),
+                frame_locals_writer=None,
+                deferred_binding_path=None,
+            ),
         )
         with self._lock:
             prior = self._recent.get(key, ())
@@ -11331,7 +11421,7 @@ class _BindingRevisions:
                 finally:
                     analyzer._initializer_premise_reads = None
                     analyzer._capture_initializer = None
-                if reads is not None:
+                if reads is not None or policy.deferred_binding_path is not None:
                     completed = _RebasableInitializer.capture(analyzer, reads)
                     if completed is not None:
                         self._retain_initializers(
@@ -11366,6 +11456,7 @@ class _BindingRevisions:
         if (
             cursor == 0
             and recorded is None
+            and policy.deferred_binding_path is None
             and analyzer._foreign_universe is not None
             and 1 < len(analyzer.function_jobs) <= 256
             and _binding_checkpoint_size(analyzer) <= 8192
@@ -11429,7 +11520,10 @@ class _BindingRevisions:
             self._initializer_extent -= sum(item.size for item in replaced)
             self._initializers[key] = snapshots
             self._initializer_extent += sum(item.size for item in snapshots)
-            while self._initializer_extent > 65536 or len(self._initializers) > 128:
+            while (
+                self._initializer_extent > _BINDING_INITIALIZER_BUDGET
+                or len(self._initializers) > 128
+            ):
                 _, evicted = self._initializers.popitem(last=False)
                 self._initializer_extent -= sum(item.size for item in evicted)
 
@@ -11504,6 +11598,7 @@ def _project_binding_index(
             source_key=source_key,
             ast_digest_admission=ast_digest_admission,
             callback_metadata_writes=facts.callback_metadata_writes,
+            deferred_binding_path=analysis.deferred_binding_path,
         )
     else:
         state = context_import_state(context)
@@ -11527,6 +11622,7 @@ def _project_binding_index(
             ast_digest_admission=ast_digest_admission,
             source_discovery=True,
             callback_metadata_writes=facts.callback_metadata_writes,
+            deferred_binding_path=analysis.deferred_binding_path,
         )
         flow = replace(
             flow,
@@ -11726,7 +11822,7 @@ def _binding_analysis(
     def reuse(
         prior_key: tuple[object, ...], result: _BindingAnalysis
     ) -> _BindingAnalysis | None:
-        if prior_key[:2] != key[:2] or result.opaque_activation_reads is None:
+        if prior_key[:2] != key[:2] or result.facts.opaque_activation_reads is None:
             return None
         prior = cast(PythonBindingFlowPolicy, prior_key[2])
         opaque = policy.opaque_activation_sources
@@ -11735,7 +11831,7 @@ def _binding_analysis(
         # consumed activation query agrees. Named changes may alter unused
         # namespace slots. All other input families keep their exact identity.
         prior = replace(prior, opaque_activation_sources=opaque)
-        if not result.opaque_activation_reads.unchanged_under(frozenset(opaque)):
+        if not result.facts.opaque_activation_reads.unchanged_under(frozenset(opaque)):
             return None
         if prior == policy:
             return result

@@ -6,6 +6,7 @@ import ast
 from molt.python_private_names import python_source_fields
 import hashlib
 import struct
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -15,6 +16,7 @@ from types import MappingProxyType
 from collections.abc import Mapping
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_binding_facts import PythonOpaqueActivationReads
     from molt.compiler_analysis.python_call_arguments import CallArgumentPlan
     from molt.compiler_analysis.python_lexical_scope import PythonModuleLexicalPlan
     from molt.compiler_analysis.python_imports import SourceAllExports
@@ -24,6 +26,10 @@ if TYPE_CHECKING:
 
 
 PythonSourceKey: TypeAlias = tuple[int, int, int, int, str]
+
+
+def python_source_contains(outer: PythonSourceKey, inner: PythonSourceKey) -> bool:
+    return outer[:2] <= inner[:2] and inner[2:4] <= outer[2:4]
 
 
 def decode_python_source_key(value: object) -> PythonSourceKey:
@@ -323,6 +329,9 @@ class _PythonAstDigestAdmission:
     deferred_nodes: Mapping[PythonSourceKey, ast.AST] = field(
         init=False, repr=False, compare=False
     )
+    _deferred_binding_parents: Mapping[PythonSourceKey, PythonSourceKey | None] = field(
+        init=False, repr=False, compare=False
+    )
 
     module_setup_nodes: tuple[ast.stmt, ...] = field(
         init=False, repr=False, compare=False
@@ -330,7 +339,7 @@ class _PythonAstDigestAdmission:
 
     module_all_exports: dict[
         tuple[TargetPythonVersion, str | None, PythonNamespacePremise | None],
-        SourceAllExports,
+        tuple[SourceAllExports, PythonOpaqueActivationReads | None],
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     namespace_summaries: dict[
@@ -415,14 +424,44 @@ class _PythonAstDigestAdmission:
         )
         coordinates: dict[ast.AST, PythonSourceKey] = {}
         deferred: dict[PythonSourceKey, ast.AST] = {}
-        for node in ast.walk(self.tree):
+        deferred_binding_parents: dict[PythonSourceKey, PythonSourceKey | None] = {}
+        pending: deque[tuple[ast.AST, PythonSourceKey | None]] = deque(
+            [(self.tree, None)]
+        )
+        while pending:
+            node, parent = pending.popleft()
             if node in coordinates:
                 continue
             key = coordinates[node] = python_node_source_key(node)
             if isinstance(node, deferred_kinds):
                 deferred[key] = node
+                deferred_binding_parents[key] = parent
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+                ):
+                    parent = key
+            pending.extend((child, parent) for child in ast.iter_child_nodes(node))
         object.__setattr__(self, "_source_keys", MappingProxyType(coordinates))
         object.__setattr__(self, "deferred_nodes", MappingProxyType(deferred))
+        object.__setattr__(
+            self,
+            "_deferred_binding_parents",
+            MappingProxyType(deferred_binding_parents),
+        )
+
+    def deferred_binding_path(
+        self, owner: PythonSourceKey
+    ) -> frozenset[PythonSourceKey]:
+        """The function jobs that can establish the selected body's entry."""
+        parents = self._deferred_binding_parents
+        if owner not in parents:
+            raise ValueError(f"deferred demand lost source owner: {owner!r}")
+        path = {owner}
+        parent = parents[owner]
+        while parent is not None:
+            path.add(parent)
+            parent = parents[parent]
+        return frozenset(path)
 
     def source_key(self, node: ast.AST) -> PythonSourceKey:
         """Read admitted coordinates, or compute them for an analysis-local node."""

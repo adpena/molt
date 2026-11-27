@@ -1040,6 +1040,7 @@ def _analyze_module_import_flow_uncached(
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
     source_discovery: bool = False,
     callback_metadata_writes: frozenset[str] = MODULE_IMPORT_METADATA_NAMES,
+    deferred_binding_path: frozenset[PythonSourceKey] | None = None,
 ) -> ModuleImportFlow:
     """Project one requested metadata view through canonical completion facts.
 
@@ -1851,9 +1852,13 @@ def _analyze_module_import_flow_uncached(
                     for expression in annotations:
                         current = evaluate(expression, current)
                 deferred_key = source_key(statement)
-                if deferred_key not in deferred_definitions:
-                    pending_bodies.append(deferred_key)
-                deferred_definitions[deferred_key] = statement
+                if (
+                    deferred_binding_path is None
+                    or deferred_key in deferred_binding_path
+                ):
+                    if deferred_key not in deferred_definitions:
+                        pending_bodies.append(deferred_key)
+                    deferred_definitions[deferred_key] = statement
             elif isinstance(statement, ast.ClassDef):
                 for expression in (
                     *statement.decorator_list,
@@ -1963,7 +1968,8 @@ def _analyze_module_import_flow_uncached(
                 )
                 if body.normal is None:
                     unreachable_block(statement.orelse)
-                if body.raised is not None and statement.handlers:
+                raised_state = body.exception_state()
+                if raised_state is not None and statement.handlers:
 
                     def evaluate_handler_type(
                         handler: ast.ExceptHandler,
@@ -2025,7 +2031,7 @@ def _analyze_module_import_flow_uncached(
                             )
 
                         handled = PythonCompletionFlow.exception_group_handlers(
-                            body.raised,
+                            raised_state,
                             statement.handlers,
                             evaluate_type=evaluate_handler_type,
                             execute_handler=execute_handler,
@@ -2037,7 +2043,7 @@ def _analyze_module_import_flow_uncached(
                             handled, join_states=_join_import_states
                         )
                     else:
-                        unmatched: _ImportStates | None = body.raised
+                        unmatched: _ImportStates | None = raised_state
                         for handler in statement.handlers:
                             if unmatched is None:
                                 record_unreachable(handler)
@@ -2060,9 +2066,9 @@ def _analyze_module_import_flow_uncached(
                                 PythonCompletionFlow(raised=unmatched),
                                 join_states=_join_import_states,
                             )
-                elif body.raised is not None:
+                elif raised_state is not None:
                     outcome = outcome.merge(
-                        PythonCompletionFlow(raised=body.raised),
+                        PythonCompletionFlow(raised=raised_state),
                         join_states=_join_import_states,
                     )
                 else:

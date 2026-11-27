@@ -766,6 +766,71 @@ def test_scan_view_yields_the_same_scan_as_the_whole_premise(
     assert scan(view) == scan(premise)
 
 
+def test_opaque_activation_cutoff_survives_binding_cache_eviction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ast
+    from molt.compiler_analysis import python_binding_flow as binding
+    from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
+    from molt.compiler_analysis.python_import_scan import (
+        SCAN_PREMISE_READS,
+        ScanPremiseReads,
+        _collect_imports_for_graph,
+    )
+    from molt.compiler_analysis.python_source_keys import (
+        _PythonAstDigestAdmission,
+        python_node_source_key,
+    )
+
+    tree = ast.parse(
+        "from builtins import __import__ as load_module\n"
+        "__all__ = ('selected',)\n"
+        "def selected():\n    return load_module('fixture')\n"
+        "def sibling():\n    return None\n"
+    )
+    selected, sibling = map(python_node_source_key, tree.body[-2:])
+    admission = _PythonAstDigestAdmission(tree)
+    base = PythonNamespacePremise(
+        (),
+        NO_INVALID_MEMBERS,
+        NO_INVALID_MEMBERS,
+        (),
+        opaque_activation_sources=(),
+        code_rebinding=True,
+    )
+    reads = ScanPremiseReads()
+
+    def scan(premise: PythonNamespacePremise) -> _ImportDiscoveryProjection:
+        return _collect_imports_for_graph(
+            tree,
+            "example",
+            import_scan_mode="module_init",
+            source_owner=selected,
+            namespace_premise=premise,
+            ast_digest_admission=admission,
+        )
+
+    token = SCAN_PREMISE_READS.set(reads)
+    try:
+        original = scan(base)
+    finally:
+        SCAN_PREMISE_READS.reset(token)
+    assert original.imports == ("fixture",)
+    monkeypatch.setattr(binding, "_CORE_CACHE", binding._BindingCache(max_entries=1))
+
+    unrelated = replace(base, opaque_activation_sources=(sibling,))
+    assert reads.unchanged_under(unrelated)
+    assert binding._CORE_CACHE.computation_count() == 0
+    assert scan(unrelated) == original
+
+    affected = replace(base, opaque_activation_sources=(selected,))
+    before = binding._CORE_CACHE.computation_count()
+    unchanged = reads.unchanged_under(affected)
+    assert binding._CORE_CACHE.computation_count() > before
+    if unchanged:
+        assert scan(affected) == original
+
+
 @pytest.mark.parametrize(
     ("module", "relative"),
     (
