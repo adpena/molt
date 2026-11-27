@@ -8,8 +8,9 @@ use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
 use super::activation::{Activations, Binding};
-use super::call_sites::{CallSite, call_site_has_arg_incref};
+use super::call_sites::call_site_has_arg_incref;
 use super::clone_body::clone_function_body_with_fresh_ids;
+use crate::tir::call_graph::StaticCallSite;
 
 /// Splice the call site `(block, op_index)` in `caller`: replace the `Call` to
 /// `callee` (an owned snapshot) with the callee's inlined body.
@@ -50,7 +51,7 @@ use super::clone_body::clone_function_body_with_fresh_ids;
 pub(super) fn splice_call_site(
     caller: &mut TirFunction,
     callee: &TirFunction,
-    site: &CallSite,
+    site: &StaticCallSite,
     activations: &mut Activations,
 ) -> Option<BlockId> {
     let block_id = site.block;

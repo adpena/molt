@@ -72,8 +72,10 @@ use std::sync::OnceLock;
 
 use molt_ir::{FunctionId, FunctionSet};
 
+use super::blocks::BlockId;
 use super::call_sites::{CallEvent, CallSite, CallSiteTarget, visit_sites};
 use super::function::TirModule;
+use super::ops::OpCode;
 
 /// A resolved or unresolved call target referenced by one call-bearing op.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +103,14 @@ fn classify_call_site(site: &CallSite, has_body: &FunctionSet) -> Option<CallEdg
     }
 }
 
+/// A direct call with an in-module body, indexed in the caller snapshot.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StaticCallSite {
+    pub(crate) block: BlockId,
+    pub(crate) op_index: usize,
+    pub(crate) callee: FunctionId,
+}
+
 /// The whole-program call graph of a [`TirModule`].
 ///
 /// An immutable snapshot of the module's call edges. Rebuild it to query
@@ -114,6 +124,7 @@ pub struct CallGraph {
     /// id → the sorted, de-duplicated static-direct callees (bodies only).
     /// Opaque calls are recorded in [`Self::has_opaque_call`], not here.
     edges: Vec<Vec<FunctionId>>,
+    static_call_sites: Vec<Vec<StaticCallSite>>,
     /// id → the functions that statically reference it.
     callers: Vec<Vec<FunctionId>>,
     /// Functions whose body contains at least one *call* op (static or
@@ -154,22 +165,37 @@ impl CallGraph {
         }
 
         let mut edges: Vec<Vec<FunctionId>> = vec![Vec::new(); rows];
+        let mut static_call_sites = vec![Vec::new(); rows];
         let mut callers: Vec<Vec<FunctionId>> = vec![Vec::new(); rows];
         let mut makes_any_call = FunctionSet::with_capacity(rows);
         let mut has_opaque_call = FunctionSet::with_capacity(rows);
 
         for (func, &caller) in module.functions.iter().zip(&module.ids) {
             let mut static_callees: Vec<FunctionId> = Vec::new();
+            let sites = &mut static_call_sites[caller.index()];
             let mut any_call = false;
             let mut opaque = false;
 
             visit_sites(func, |event| {
                 match event {
-                    CallEvent::Operation { site, .. } => {
+                    CallEvent::Operation {
+                        position: (block, op_index),
+                        op,
+                        site,
+                    } => {
                         if let Some(edge) = classify_call_site(&site, &has_body) {
                             any_call = true;
                             match edge {
-                                CallEdge::StaticDirect(callee) => static_callees.push(callee),
+                                CallEdge::StaticDirect(callee) => {
+                                    static_callees.push(callee);
+                                    if op.opcode == OpCode::Call {
+                                        sites.push(StaticCallSite {
+                                            block,
+                                            op_index,
+                                            callee,
+                                        });
+                                    }
+                                }
                                 CallEdge::Opaque => opaque = true,
                             }
                         }
@@ -187,6 +213,7 @@ impl CallGraph {
                 false
             });
 
+            sites.sort_unstable_by_key(|site| (site.block, site.op_index));
             static_callees.sort_unstable();
             static_callees.dedup();
             for &callee in &static_callees {
@@ -209,6 +236,7 @@ impl CallGraph {
             functions,
             has_body,
             edges,
+            static_call_sites,
             callers,
             makes_any_call,
             has_opaque_call,
@@ -234,6 +262,14 @@ impl CallGraph {
     /// sorted and de-duplicated. Empty for a function without a body.
     pub fn callees(&self, id: FunctionId) -> &[FunctionId] {
         self.edges.get(id.index()).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// First-class direct calls in ascending block and operation order.
+    /// Coordinates belong to the caller body used to build this graph.
+    pub(crate) fn static_call_sites(&self, caller: FunctionId) -> &[StaticCallSite] {
+        self.static_call_sites
+            .get(caller.index())
+            .map_or(&[], Vec::as_slice)
     }
 
     /// The functions that statically call `id`, sorted and de-duplicated.
