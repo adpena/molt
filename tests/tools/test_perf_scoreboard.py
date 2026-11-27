@@ -91,7 +91,7 @@ def test_wasm_phase_diagnostic_measures_guarded_node_separately(
         log_lines=log_lines,
     )
     assert result["diagnostic_only"] is True
-    assert result["valid_samples"] == 2
+    assert result["valid_samples"] == 2, (result["records"], log_lines)
     assert all(record["output_matches"] for record in result["records"])
     for name in (
         f"runner:{mode}_runtime_entry_and_admission",

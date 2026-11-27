@@ -208,20 +208,14 @@ survives exec, so a small child can carry a loaded parent's pre-exec image
 peak. It is neither current RSS nor an allocation measurement of the new
 executable. See [getrusage](https://man7.org/linux/man-pages/man2/getrusage.2.html)
 and [Linux exec accounting](https://github.com/torvalds/linux/blob/master/fs/exec.c).
-The guard retains this conservative short-lived-spike enforcement and labels
-it `process_rusage`; it does not subtract a parent's peak or raise a cap after
-failure. Sampled tree peaks and lifetime process peaks remain distinct.
-
-Small-cap protocol and metadata tests run their exact pytest node, with its
-real fixtures, in a fresh observer through the existing guarded subprocess
-authority. This costs one development-only interpreter and narrow collection
-per affected case; it removes dependence on unrelated tests' retained heaps
-without changing the subject's limits. The observer must execute exactly one
-passing call; a skip cannot stand in for its proof. An inflated-parent control
-requires both the raw lifetime trip and the isolated subject's successful exit.
-Benchmark executable-image attribution and scheduler cost qualification remain
-HF-334/V1-07 obligations; lifetime RSS alone cannot satisfy those claims. The
-guest binary pays none of this test-observer cost.
+On Linux the guard uses an exit peak only when it exceeds the launcher's
+address-space high-water mark. An ambiguous or unavailable peak leaves the
+live samples and elapsed CPU accounting intact. The guard labels an attributable
+exit peak `process_rusage` and keeps it distinct from a sampled tree peak.
+The regression control runs a small and a larger child from the same loaded
+parent with sampling disabled. It verifies that the borrowed peak leaves the
+small child's success intact and that the larger child's own spike still trips
+the cap. HF-334 and V1-07 own the remaining attribution and qualification work.
 
 ## Cross-job admission (2026-11-12, HF-623)
 

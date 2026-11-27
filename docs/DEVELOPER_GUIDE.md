@@ -426,7 +426,7 @@ window applies to every file inside the resolver, not in a wrapper around it.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `MOLT_DIFF_FAILURES` or `--failures-output`).
 - **First failure is terminal**: each selected backend attempt keeps its first outcome and diagnostics. OOM, dyld, daemon/cache and batch failures never trigger an implicit rerun, configuration mutation, cold target or batch-to-CLI fallback. Operator re-execution is a separate run with its own recorded selection. Preserve earlier evidence and record the new results through the same failure queue and raw `MOLT_DIFF_RESULTS_JSONL` authorities.
 - **Memory caps**: default adaptive per-process, per-tree, and global RSS budgets
-  with a matching child `RLIMIT_RSS` backstop; override with
+  with a matching child `RLIMIT_RSS` backstop where supported. Override with
   `MOLT_DIFF_CHILD_RLIMIT_GB`, or disable that kernel backstop with
   `MOLT_DIFF_CHILD_RLIMIT_GB=0` only for an
   explicit local investigation. Sparse virtual-address reservations are never

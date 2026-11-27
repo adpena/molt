@@ -179,8 +179,8 @@ def test_split_worker_popen_kwargs_apply_child_rlimit(
     applied: list[int] = []
     monkeypatch.setattr(
         harness_memory_guard.memory_guard,
-        "_apply_child_resource_limit",
-        lambda limit_kb: applied.append(limit_kb),
+        "child_rss_limit_preexec",
+        lambda limit_kb: lambda: applied.append(limit_kb),
     )
 
     kwargs = _split_worker_popen_kwargs({"MOLT_WASM_TEST_MAX_PROCESS_RSS_GB": "2"})

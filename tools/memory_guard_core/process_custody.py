@@ -643,12 +643,18 @@ def find_rss_violation(
     )
 
 
-def _rusage_maxrss_kb(rusage: object) -> int:
+def _rusage_maxrss_kb(rusage: object) -> int | None:
     raw = int(getattr(rusage, "ru_maxrss", 0) or 0)
     if raw <= 0:
-        return 0
+        return None
     if sys.platform == "darwin":
         return max(1, raw // 1024)
+    if sys.platform == "linux":
+        # exec retains the old mm's peak in wait4 rusage, including a shared
+        # vfork mm. A parent VmHWM at reap bounds that inherited contribution.
+        parent_peak = _process_model.linux_self_rss_high_water_kb()
+        if parent_peak is None or raw <= parent_peak:
+            return None
     return raw
 
 

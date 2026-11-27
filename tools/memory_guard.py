@@ -713,41 +713,47 @@ def _update_active_guard_marker(
         return False
 
 
-def _apply_child_resource_limit(limit_kb: int) -> None:
-    if limit_kb <= 0 or sys.platform == "win32":
-        return
+def child_rss_limit_preexec(limit_kb: int | None) -> Callable[[], None] | None:
+    """Select a kernel RSS backstop before starting the child."""
+    # Modern Linux ignores RLIMIT_RSS. A Python preexec hook would still force
+    # subprocess to fork, making the guard sample a second copy of the parent's
+    # RSS before exec. The sampled process and tree limits remain the authority.
+    if (
+        limit_kb is None
+        or limit_kb <= 0
+        or os.name != "posix"
+        or sys.platform == "linux"
+    ):
+        return None
     try:
         import resource
-    except Exception:
-        return
-    limit_bytes = int(limit_kb * 1024)
-    # The guard budget is a committed-memory/RSS policy, not a virtual-address
-    # policy.  Treating the same number as RLIMIT_AS breaks healthy children
-    # that reserve sparse address space: V8's trap-based WebAssembly bounds
-    # checks, sanitizers, and compiler allocators all reserve substantially more
-    # virtual space than they commit. RLIMIT_DATA also constrains mmap on modern
-    # Linux, so it has the same false-OOM failure mode for sparse reservations.
-    # The parent guard already measures every owned descendant's RSS; apply only
-    # the matching kernel RSS resource where the host implements it.
-    for name in ("RLIMIT_RSS",):
-        res = getattr(resource, name, None)
-        if res is None:
-            continue
+    except ImportError:
+        return None
+    rss = getattr(resource, "RLIMIT_RSS", None)
+    if rss is None:
+        return None
+    limit_bytes = limit_kb * 1024
+
+    def apply_limit() -> None:
+        # Address-space and data limits would also bound sparse Wasm and
+        # sanitizer reservations. Select only the matching resident resource.
         try:
-            soft, hard = resource.getrlimit(res)
+            soft, hard = resource.getrlimit(rss)
             bounded_hard = (
                 limit_bytes
                 if hard == resource.RLIM_INFINITY
-                else min(int(hard), limit_bytes)
+                else min(hard, limit_bytes)
             )
             bounded_soft = (
                 limit_bytes
                 if soft == resource.RLIM_INFINITY
-                else min(int(soft), limit_bytes)
+                else min(soft, limit_bytes)
             )
-            resource.setrlimit(res, (min(bounded_soft, bounded_hard), bounded_hard))
-        except Exception:
-            continue
+            resource.setrlimit(rss, (min(bounded_soft, bounded_hard), bounded_hard))
+        except (OSError, ValueError):
+            pass  # The sampled guard still observes this child's memory.
+
+    return apply_limit
 
 
 def _write_child_started_fd(fd: int | None) -> None:
@@ -810,38 +816,23 @@ def _guarded_launch(
     # direct spawn path (POSIX rlimit, POSIX no-rlimit, or Windows Job custody)
     # so none of them mis-resolve it against the child's `cwd=`.
     command = _resolve_relative_executable(command)
-    if child_rlimit_kb is None or child_rlimit_kb <= 0:
+    apply_limit = child_rss_limit_preexec(child_rlimit_kb)
+    if apply_limit is None:
         return GuardedLaunch(command=list(command), env=env)
-    base_env = os.environ if env is None else env
-    started_read_fd: int | None = None
-    started_write_fd: int | None = None
-    pass_fds: tuple[int, ...] = ()
-    close_fds: tuple[int, ...] = ()
-    if os.name == "posix":
-        started_read_fd, started_write_fd = os.pipe()
-        pass_fds = (started_write_fd,)
-        close_fds = (started_write_fd,)
-        limit_kb = child_rlimit_kb
+    started_read_fd, started_write_fd = os.pipe()
 
-        def apply_posix_limits() -> None:
-            _apply_child_resource_limit(limit_kb)
-            _write_child_started_fd(started_write_fd)
+    def apply_posix_limits() -> None:
+        apply_limit()
+        _write_child_started_fd(started_write_fd)
 
-        return GuardedLaunch(
-            command=list(command),
-            env=env,
-            pass_fds=pass_fds,
-            close_fds=close_fds,
-            started_read_fd=started_read_fd,
-            preexec_fn=apply_posix_limits,
-        )
-    # Windows has no POSIX rlimit implementation. The outer guard assigns the
-    # real command to a suspended KILL_ON_JOB_CLOSE Job before it can execute,
-    # then enforces the process/tree memory contract from that same kernel
-    # object. The former Python child-runner added startup and a second process
-    # without enforcing an additional limit, so direct launch is the sole
-    # Windows authority.
-    return GuardedLaunch(command=list(command), env=base_env)
+    return GuardedLaunch(
+        command=list(command),
+        env=env,
+        pass_fds=(started_write_fd,),
+        close_fds=(started_write_fd,),
+        started_read_fd=started_read_fd,
+        preexec_fn=apply_posix_limits,
+    )
 
 
 def _close_fds(fds: Sequence[int | None]) -> None:
@@ -2469,7 +2460,7 @@ def run_guarded(
         assert enforcer is not None
         if child_exited and violation is None:
             child_exit_usage = _take_child_exit_usage(proc)
-        if violation is None and child_exit_usage is not None:
+        if child_exit_usage is not None and child_exit_usage.max_rss_kb is not None:
             current_limits = last_limits or resolve_memory_limits(
                 max_process_rss_kb=max_rss_kb,
                 max_total_rss_kb=max_total_rss_kb,
@@ -2484,13 +2475,9 @@ def run_guarded(
                 command=" ".join(command),
                 scope="process_rusage",
             )
-            if rusage_peak.rss_kb > 0 and (
-                peak is None or rusage_peak.rss_kb > peak.rss_kb
-            ):
+            if peak is None or rusage_peak.rss_kb > peak.rss_kb:
                 peak = rusage_peak
-            if rusage_peak.rss_kb > 0 and (
-                peak_total is None or rusage_peak.rss_kb > peak_total.rss_kb
-            ):
+            if peak_total is None or rusage_peak.rss_kb > peak_total.rss_kb:
                 peak_total = RssViolation(
                     pid=proc.pid,
                     rss_kb=rusage_peak.rss_kb,

@@ -646,7 +646,7 @@ class RssViolation:
 
 @dataclass(frozen=True, slots=True)
 class ChildExitResourceUsage:
-    max_rss_kb: int
+    max_rss_kb: int | None
     cpu_seconds: float | None = None
 
 
@@ -898,6 +898,19 @@ def unreaped_child_started_at_ns(pid: int) -> int | None:
 def _linux_proc_started_at_ns(pid: int) -> int | None:
     identity = _linux_proc_stat_identity(pid)
     return None if identity is None else identity[2]
+
+
+def linux_self_rss_high_water_kb() -> int | None:
+    """Return the current Linux address space's peak, excluding earlier exec images."""
+    try:
+        with Path("/proc/self/status").open("rb") as status:
+            for line in status:
+                if line.startswith(b"VmHWM:"):
+                    value, unit = line.removeprefix(b"VmHWM:").split()
+                    return int(value) if unit == b"kB" else None
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def _linux_proc_argv(

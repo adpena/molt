@@ -21,7 +21,6 @@ from tests.process_guard_common import (
     install_module_view,
     run_custody_subject_process,
     run_guarded_test_process,
-    run_in_fresh_guard_observer,
 )
 
 # A wait's bound detects a hang; it never asserts speed. Presubmit runs these
@@ -939,8 +938,8 @@ _PROTOCOL_ENDINGS = {
     ],
 )
 def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
-    tmp_path, ending, lock_mode, request, monkeypatch
-):
+    tmp_path: Path, ending: str, lock_mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Exercise actual guard/guardian protocol; this is not a compiler benchmark.
 
     With ``lock_mode`` ``held``, another party holds the adoption lock from before
@@ -955,8 +954,6 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
     waits in its export, so only the enforcer can have signalled the root's
     group, and the daemon still survives once the export returns.
     """
-    if run_in_fresh_guard_observer(request):
-        return
     import textwrap
     import threading
 

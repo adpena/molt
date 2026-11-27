@@ -1027,7 +1027,7 @@ uv run python3 tools/throughput_matrix.py \
   examples are local fallback/user-default examples, not heavy proof-lane
   guidance on constrained internal disks.
 - Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and inherit the adaptive
-  child `RLIMIT_RSS` backstop from `tests/molt_diff.py`; pass
+  child `RLIMIT_RSS` backstop on supported hosts. Pass
   `--diff-child-rlimit-gb <n>` only for a deliberate narrower-RSS investigation.
 - Prefer the DX-selected shared target root, `C:\Molt` on this workstation. If
   an explicitly selected non-custodial output volume reports hard-link or cache
