@@ -6,6 +6,14 @@ use crate::tir::passes::typed_slot_access;
 /// DSE consumes the same pristine-field facts as backend store lowering.
 pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let plan = typed_slot_access::for_function(func, am);
+    let stats = PassStats {
+        name: "dead_store_elim",
+        ops_removed: plan.dead_stores.len(),
+        ..Default::default()
+    };
+    if plan.dead_stores.is_empty() {
+        return stats;
+    }
     // Ordered site cursors preserve linear stable compaction. HashMap iteration
     // in the analysis cannot affect the emitted instruction order.
     for block in func.blocks.values_mut() {
@@ -24,9 +32,5 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
             !remove
         });
     }
-    PassStats {
-        name: "dead_store_elim",
-        ops_removed: plan.dead_stores.len(),
-        ..Default::default()
-    }
+    stats
 }
