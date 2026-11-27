@@ -515,19 +515,30 @@ pub(crate) fn molt_exception_push_attached_body(_py: &crate::PyToken<'_>) -> u64
 /// allocate. Otherwise the compiled region installs it before its first reader.
 pub(crate) fn molt_exception_push_or_defer_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let tls = _py.execution_tls();
-        let depth = tls.exception_handler_depth.get();
-        let can_defer =
-            !trace_exception_stack() && depth >= tls.exception_stack_baseline.get() && {
-                let active = tls.active_exception_stack.borrow();
-                active.len() == depth && active.capacity() > depth
-            };
-        if can_defer {
+        if virtual_level_ready(_py) {
             0
         } else {
             exception_stack_push_in(_py);
             1
         }
+    })
+}
+
+fn virtual_level_ready(py: &crate::PyToken<'_>) -> bool {
+    let tls = py.execution_tls();
+    let depth = tls.exception_handler_depth.get();
+    !trace_exception_stack() && depth >= tls.exception_stack_baseline.get() && {
+        let active = tls.active_exception_stack.borrow();
+        active.len() == depth && active.capacity() > depth
+    }
+}
+
+pub(crate) fn molt_exception_virtual_level_ready_attached_body(py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(py, py, {
+        // Eliding an entire activation also skips encoding its two saved
+        // coordinates. Keep wide snapshots in the ordinary invocation.
+        let depth = py.execution_tls().exception_handler_depth.get();
+        u64::from(u32::try_from(depth).is_ok() && virtual_level_ready(py))
     })
 }
 
@@ -618,6 +629,8 @@ mod diagnostic_tests {
             tls.exception_stack_baseline.set(0);
             let old_active = tls.active_exception_stack.replace(Vec::new());
 
+            assert_eq!(molt_exception_virtual_level_ready_attached_body(py), 0);
+            assert_eq!(tls.exception_handler_depth.get(), 0);
             assert_eq!(
                 molt_exception_push_or_defer_attached_body(py),
                 1,
@@ -625,6 +638,11 @@ mod diagnostic_tests {
             );
             assert_eq!(tls.exception_handler_depth.get(), 1);
             exception_stack_pop(py);
+            assert_eq!(
+                molt_exception_virtual_level_ready_attached_body(py),
+                u64::from(!trace_exception_stack())
+            );
+            assert_eq!(tls.exception_handler_depth.get(), 0);
             let materialized = molt_exception_push_or_defer_attached_body(py);
             assert_eq!(materialized, u64::from(trace_exception_stack()));
             assert_eq!(tls.exception_handler_depth.get(), materialized as usize);

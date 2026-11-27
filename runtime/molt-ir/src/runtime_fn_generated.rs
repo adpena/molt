@@ -1043,6 +1043,7 @@ pub enum RuntimeFn {
     ExceptionStackExit,
     ExceptionStackSetDepth,
     ExceptionTracePrepend,
+    ExceptionVirtualLevelReady,
     ExceptiongroupCombine,
     ExceptiongroupInit,
     ExceptiongroupMatch,
@@ -3901,6 +3902,7 @@ impl RuntimeFn {
         Self::ExceptionStackExit,
         Self::ExceptionStackSetDepth,
         Self::ExceptionTracePrepend,
+        Self::ExceptionVirtualLevelReady,
         Self::ExceptiongroupCombine,
         Self::ExceptiongroupInit,
         Self::ExceptiongroupMatch,
@@ -5833,7 +5835,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2854;
+    pub const COUNT: usize = 2855;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -19386,6 +19388,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
         effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_exception_virtual_level_ready",
+        linker_symbol: "molt_exception_virtual_level_ready__molt_context_66fa900595616b00",
+        context: RuntimeExecutionContext::Attached,
+        params: 0,
+        param_types: PARAMS_NONE,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::RawBits,
+        form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::NothrowRead,
     },
     RuntimeFnAbi {
         symbol: "molt_exceptiongroup_combine",

@@ -7650,6 +7650,10 @@
       "context": "Attached",
       "physical_symbol": "molt_exception_trace_prepend__molt_context_66fa900595616b00"
     },
+    "molt_exception_virtual_level_ready": {
+      "context": "Attached",
+      "physical_symbol": "molt_exception_virtual_level_ready__molt_context_66fa900595616b00"
+    },
     "molt_exception_with_traceback": {
       "context": "Attached",
       "physical_symbol": "molt_exception_with_traceback__molt_context_66fa900595616b00"
@@ -19393,6 +19397,7 @@
     "exception_stack_exit": "molt_exception_stack_exit__molt_context_66fa900595616b00",
     "exception_stack_set_depth": "molt_exception_stack_set_depth__molt_context_66fa900595616b00",
     "exception_trace_prepend": "molt_exception_trace_prepend__molt_context_66fa900595616b00",
+    "exception_virtual_level_ready": "molt_exception_virtual_level_ready__molt_context_66fa900595616b00",
     "exceptiongroup_combine": "molt_exceptiongroup_combine__molt_context_66fa900595616b00",
     "exceptiongroup_init": "molt_exceptiongroup_init__molt_context_66fa900595616b00",
     "exceptiongroup_match": "molt_exceptiongroup_match__molt_context_66fa900595616b00",
@@ -22141,6 +22146,7 @@
     "molt_exception_stack_exit__molt_context_66fa900595616b00": "molt_exception_stack_exit__molt_context_66fa900595616b00",
     "molt_exception_stack_set_depth__molt_context_66fa900595616b00": "molt_exception_stack_set_depth__molt_context_66fa900595616b00",
     "molt_exception_trace_prepend__molt_context_66fa900595616b00": "molt_exception_trace_prepend__molt_context_66fa900595616b00",
+    "molt_exception_virtual_level_ready__molt_context_66fa900595616b00": "molt_exception_virtual_level_ready__molt_context_66fa900595616b00",
     "molt_exception_with_traceback__molt_context_66fa900595616b00": "molt_exception_with_traceback__molt_context_66fa900595616b00",
     "molt_exceptiongroup_combine__molt_context_66fa900595616b00": "molt_exceptiongroup_combine__molt_context_66fa900595616b00",
     "molt_exceptiongroup_derive__molt_context_66fa900595616b00": "molt_exceptiongroup_derive__molt_context_66fa900595616b00",
