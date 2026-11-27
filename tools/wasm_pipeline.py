@@ -48,6 +48,7 @@ TOOLS_DIR = MOLT_ROOT / "tools"
 SRC_DIR = MOLT_ROOT / "src"
 
 
+from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.wasm_optimize import optimize as optimize_wasm  # noqa: E402
 
@@ -513,8 +514,8 @@ def main() -> None:
     parser.add_argument(
         "--opt-level",
         default="O2",
-        choices=["O1", "O2", "O3", "O4", "Os", "Oz"],
-        help="wasm-opt optimization level (default: O2)",
+        choices=WASM_OPT_LEVELS,
+        help="wasm-opt optimization policy (default: O2)",
     )
     parser.add_argument(
         "--run",

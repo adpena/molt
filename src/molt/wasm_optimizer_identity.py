@@ -386,15 +386,18 @@ def wasm_optimizer_pipeline_authority_sha256(
         )
     )
     normalized_pipeline = _string_list(pipeline, field="pipeline", nonempty=True)
-    expected_pipeline = list(
-        wasm_opt_pipeline(
-            level,
-            extra_passes=normalized_extra_passes,
-            converge=converge,
-            apply_level=apply_level,
-            preserve_debug=preserve_debug,
+    try:
+        expected_pipeline = list(
+            wasm_opt_pipeline(
+                level,
+                extra_passes=normalized_extra_passes,
+                converge=converge,
+                apply_level=apply_level,
+                preserve_debug=preserve_debug,
+            )
         )
-    )
+    except ValueError as exc:
+        raise WasmOptimizerIdentityError(str(exc)) from exc
     if normalized_pipeline != expected_pipeline:
         raise WasmOptimizerIdentityError(
             "wasm optimizer pipeline differs from its canonical configuration"
