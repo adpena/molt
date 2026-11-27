@@ -3,7 +3,7 @@
 //! explicit retain funds the repeated preboxed transfer; raw boxes belong to
 //! the operation transaction under test.
 use super::*;
-use crate::test_support::{cargo_test_artifacts, native_object_execution};
+use crate::test_support::native_object_execution;
 use molt_ir::OpKind;
 use molt_ir::ParameterCustody::{Borrowed, Transferred};
 
