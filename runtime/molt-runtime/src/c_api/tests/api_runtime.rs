@@ -1437,10 +1437,9 @@ fn err_pending_peek_restore_roundtrip() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
         let runtime_error = runtime_error_type_bits(_py);
-        let task = Box::into_raw(Box::new(0_u8));
-        assert!(crate::builtins::exceptions::task_raised_slot_admit(
-            _py, task
-        ));
+        let task_owner = crate::task_new_for_pending_invocation(_py, 0, 0, crate::TASK_KIND_FUTURE);
+        let task = obj_from_bits(task_owner).as_ptr().expect("test task");
+
         for current in [std::ptr::null_mut(), task] {
             let previous = crate::replace_current_task(_py, current);
             let outer = crate::alloc_exception(_py, BuiltinExc::ValueError, "handled owner");
@@ -1478,10 +1477,8 @@ fn err_pending_peek_restore_roundtrip() {
             dec_ref_bits(_py, outer_bits);
             crate::replace_current_task(_py, previous);
         }
-        crate::builtins::exceptions::task_raised_slot_forget(_py, task);
-        unsafe {
-            drop(Box::from_raw(task));
-        }
+
+        dec_ref_bits(_py, task_owner);
     });
 }
 

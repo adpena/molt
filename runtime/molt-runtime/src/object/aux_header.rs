@@ -1,5 +1,5 @@
 use crate::BuiltinExc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use super::MoltAuxWord;
 use crate::{
@@ -52,6 +52,9 @@ pub(crate) struct MoltAuxSidecar {
     /// zero for a task without Python code. It owns nothing.
     frame_record: [MoltAuxWord; FRAME_RECORD_HEADER_WORDS],
     pub(crate) extended_size: usize,
+    /// Owned raised exception of a task. Its storage exists before the task
+    /// can execute, so publishing an emergency exception cannot allocate.
+    raised_exception: AtomicPtr<u8>,
 }
 
 const FRAME_RECORD_HEADER_WORDS: usize =
@@ -81,6 +84,7 @@ impl MoltAuxSidecar {
             frame_exceptions: MoltAuxWord::new(0),
             frame_record: std::array::from_fn(|_| MoltAuxWord::new(0)),
             extended_size,
+            raised_exception: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -242,6 +246,43 @@ pub(crate) unsafe fn object_take_frame_bindings_bits(ptr: *mut u8) -> u64 {
     unsafe { super::sidecar_from_snapshot(snapshot) }
         .frame_bindings
         .swap(0, Ordering::AcqRel)
+}
+
+/// Borrow the task's raised exception while the holder has task and GIL custody.
+#[inline]
+pub(crate) fn task_raised_exception(task: crate::PtrSlot) -> Option<crate::PtrSlot> {
+    let snapshot = unsafe { super::object_aux_snapshot(task.0) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return None;
+    }
+    let sidecar = unsafe { super::sidecar_from_snapshot(snapshot) };
+    let ptr = sidecar.raised_exception.load(Ordering::Acquire);
+    (!ptr.is_null()).then_some(crate::PtrSlot(ptr))
+}
+
+/// Transfer a raised owner to the task, returning its previous owner. The
+/// task stays alive and execution/edge publication holds the GIL throughout.
+#[inline]
+pub(crate) fn replace_task_raised_exception(
+    task: crate::PtrSlot,
+    raised: Option<crate::PtrSlot>,
+) -> Option<crate::PtrSlot> {
+    let snapshot = unsafe { super::object_aux_snapshot(task.0) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        assert!(
+            raised.is_none(),
+            "executing task lacks its constructor-selected sidecar"
+        );
+        return None;
+    }
+    let sidecar = unsafe { super::sidecar_from_snapshot(snapshot) };
+    let ptr = raised.map_or(std::ptr::null_mut(), |p| p.0);
+    let previous = if ptr.is_null() && sidecar.raised_exception.load(Ordering::Acquire).is_null() {
+        return None;
+    } else {
+        sidecar.raised_exception.swap(ptr, Ordering::AcqRel)
+    };
+    (!previous.is_null()).then_some(crate::PtrSlot(previous))
 }
 
 /// The activation's saved exception-state word (see `frame_exceptions`).
@@ -447,7 +488,18 @@ pub(crate) fn alloc_aux_sidecar(sidecar: MoltAuxSidecar) -> Option<u64> {
         profile_hit_unchecked(&AUX_SIDECAR_ALLOC_FAILURE_COUNT);
         return None;
     }
-    let ptr = unsafe { std::alloc::alloc(layout) as *mut MoltAuxSidecar };
+    let ptr = {
+        #[cfg(all(
+            test,
+            feature = "l7-attestation-probe",
+            not(target_arch = "wasm32"),
+            not(miri)
+        ))]
+        let _scope = crate::attestation_probe::AllocationScopeGuard::enter(
+            crate::attestation_probe::AllocationScope::AuxSidecarAllocate,
+        );
+        unsafe { std::alloc::alloc(layout) as *mut MoltAuxSidecar }
+    };
     if ptr.is_null() {
         crate::resource::release_allocation(layout.size());
         profile_hit_unchecked(&AUX_SIDECAR_ALLOC_FAILURE_COUNT);
@@ -487,6 +539,10 @@ pub(crate) unsafe fn free_aux_sidecar(word: u64) {
             .expect("runtime-owned sidecar address must fit the active address space");
         let ptr = std::ptr::with_exposed_provenance_mut::<MoltAuxSidecar>(address);
         unsafe {
+            debug_assert!(
+                (*ptr).raised_exception.load(Ordering::Acquire).is_null(),
+                "a task died holding its raised exception",
+            );
             // Death detaches a boxed exception state (`task_detach_owned_edges`);
             // only zero or inline scalars may remain.
             debug_assert!(

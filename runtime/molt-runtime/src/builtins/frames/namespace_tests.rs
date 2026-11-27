@@ -1130,7 +1130,7 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
     not(target_arch = "wasm32"),
     not(miri)
 ))]
-mod task_growth_refusal {
+mod task_sidecar_refusal {
     use super::*;
     use crate::attestation_probe::{
         self as probe, AllocationOutcome, AllocationRequest, AllocationScope, AllocationTrace,
@@ -1191,38 +1191,21 @@ mod task_growth_refusal {
         );
         assert!(
             !trace.selector_mismatch,
-            "scoped allocation layout changed; map refusal is unproven"
+            "the scoped sidecar allocation was not exercised"
         );
     }
 
-    fn reserve_request(trace: &AllocationTrace) -> Option<AllocationRequest> {
+    fn sidecar_request(trace: &AllocationTrace) -> Option<AllocationRequest> {
         let mut requests = trace
             .requests()
             .iter()
-            .filter(|request| request.scope == AllocationScope::TaskRaisedSlotReserve);
+            .filter(|request| request.scope == AllocationScope::AuxSidecarAllocate);
         let first = requests.next().copied();
         assert!(
             requests.next().is_none(),
-            "actual task map reservation did not isolate one allocator request"
+            "construction must allocate only its one task sidecar"
         );
         first
-    }
-
-    fn assert_same_reservation_layout(actual: AllocationRequest, expected: AllocationRequest) {
-        // Compare the measured allocator boundary, not the observer's matcher
-        // or the request's incidental position among unrelated GC requests.
-        assert_eq!(actual.scope, AllocationScope::TaskRaisedSlotReserve);
-        assert_eq!(actual.operation, expected.operation);
-        assert_eq!(actual.size, expected.size);
-        assert_eq!(actual.alignment, expected.alignment);
-    }
-
-    fn map_shape(py: &PyToken<'_>) -> (usize, usize) {
-        let slots = crate::runtime_state(py)
-            .task_last_exceptions
-            .lock()
-            .unwrap();
-        (slots.len(), slots.capacity())
     }
 
     fn input_refs(inputs: &[u64; 5]) -> [u32; 5] {
@@ -1247,7 +1230,7 @@ mod task_growth_refusal {
     /// Run this exact test alone with --test-threads=1. The observer owns the
     /// process allocator and the runtime transaction owns shared runtime state.
     #[test]
-    fn both_task_producers_refuse_actual_late_map_growth_and_restore_owners() {
+    fn both_task_producers_rollback_if_sidecar_allocation_fails() {
         let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(py, {
             let (code_ptr, code_bits) = crate::builtins::frames::tests::alloc_test_code(py);
@@ -1302,17 +1285,13 @@ mod task_growth_refusal {
                 iterator.bits(),
                 default.bits(),
             ];
-            let mut held = Vec::with_capacity(128);
-            for _ in 0..2 {
-                let owner = ExceptionValue::adopt(
-                    py,
-                    crate::task_new_for_pending_invocation(py, 0, 0, crate::TASK_KIND_FUTURE),
-                );
-                assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
-                held.push(owner);
-            }
-            let active = obj_from_bits(held[0].bits()).as_ptr().unwrap();
-            let suspended = obj_from_bits(held[1].bits()).as_ptr().unwrap();
+            let suspended = ExceptionValue::adopt(
+                py,
+                crate::task_new_for_pending_invocation(py, 0, 0, crate::TASK_KIND_FUTURE),
+            );
+            let suspended_task = obj_from_bits(suspended.bits())
+                .as_ptr()
+                .expect("suspended task");
             super::set_builtins(py, globals.bits(), builtins.bits());
             let function = ExceptionValue::adopt(
                 py,
@@ -1344,235 +1323,69 @@ mod task_growth_refusal {
                     }
                 };
                 let suspended_error = {
-                    let _scope = crate::CurrentTaskScope::enter(py, suspended);
+                    let _scope = crate::CurrentTaskScope::enter(py, suspended_task);
                     unsafe { molt_cpython_abi::api::errors::PyErr_NoMemory() };
                     crate::exception_last_bits_noinc(py).unwrap()
                 };
-                let _active = crate::CurrentTaskScope::enter(py, active);
-                assert!(!crate::exception_pending(py));
-                // One real admission and release establishes spare target-map
-                // capacity. GC shard allocations remain real and unconstrained.
-                let spare = ExceptionValue::adopt(py, construct());
-                assert!(obj_from_bits(spare.bits()).as_ptr().is_some());
-                drop(spare);
-                assert!(map_shape(py).0 < map_shape(py).1);
-                let observation = probe::trace_allocations(None);
-                let plain_bits = construct();
-                let plain_trace = observation.finish();
-                println!(
-                    "TASK_GROWTH_REFUSAL anext={anext} phase=spare shape={:?} trace={:?}",
-                    map_shape(py),
-                    plain_trace.requests()
-                );
-                let plain = ExceptionValue::adopt(py, plain_bits);
-                assert!(obj_from_bits(plain.bits()).as_ptr().is_some());
-                assert_trace(&plain_trace);
-                assert_eq!(reserve_request(&plain_trace), None);
-                assert!(
-                    plain_trace
-                        .requests()
-                        .iter()
-                        .all(|request| request.outcome == AllocationOutcome::Granted)
-                );
-                drop(plain);
-                assert_eq!(input_refs(&inputs), baseline_refs);
 
-                // Populate only through real task constructors. Table len and
-                // capacity are observations, never a bucket-count formula.
-                loop {
-                    let (len, capacity) = map_shape(py);
-                    if len == capacity {
-                        break;
-                    }
-                    assert!(
-                        held.len() < held.capacity(),
-                        "task fixture exceeded its owner bound"
-                    );
-                    let owner = ExceptionValue::adopt(
-                        py,
-                        crate::task_new_for_pending_invocation(py, 0, 0, crate::TASK_KIND_FUTURE),
-                    );
-                    assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
-                    held.push(owner);
-                }
-                let full = map_shape(py);
-                assert!(full.0 > 0);
+                let budget = ResourceBudget::enter();
+                let observation = probe::trace_allocations(None);
+                let ready = ExceptionValue::adopt(py, construct());
+                let granted = observation.finish();
+                assert!(obj_from_bits(ready.bits()).as_ptr().is_some());
+                assert_trace(&granted);
+                let sidecar =
+                    sidecar_request(&granted).expect("constructor allocated task sidecar");
+                assert_eq!(sidecar.outcome, AllocationOutcome::Granted);
                 let expected_live_refs: [u32; 5] = std::array::from_fn(|index| {
                     baseline_refs[index] + u32::from(if anext { index >= 3 } else { index < 3 })
                 });
-                let budget = ResourceBudget::enter();
-                let observation = probe::trace_allocations(None);
-                let grown_bits = construct();
-                let growing = observation.finish();
-                println!(
-                    "TASK_GROWTH_REFUSAL anext={anext} phase=growing full={full:?} shape={:?} trace={:?}",
-                    map_shape(py),
-                    growing.requests()
-                );
-                let grown = ExceptionValue::adopt(py, grown_bits);
-                assert!(obj_from_bits(grown.bits()).as_ptr().is_some());
-                assert_trace(&growing);
-                assert!(
-                    growing
-                        .requests()
-                        .iter()
-                        .all(|request| request.outcome == AllocationOutcome::Granted)
-                );
-                let selected = reserve_request(&growing)
-                    .expect("full task map reservation must request actual allocator storage");
-                assert_eq!(selected.outcome, AllocationOutcome::Granted);
-                assert_eq!(map_shape(py).0, full.0 + 1);
-                assert!(map_shape(py).1 > full.1);
                 assert_eq!(input_refs(&inputs), expected_live_refs);
-                with_tracker(|tracker| {
-                    assert!(
-                        tracker.on_allocate(RESOURCE_BYTES).is_err(),
-                        "successful object/sidecar allocation must consume the resource budget"
-                    )
-                });
-                drop(grown);
-                assert_budget_empty();
-                drop(budget);
 
-                // Sensitivity control: the same selector must NOT deny an
-                // allocation when the real map already has spare capacity.
-                let observation = probe::trace_allocations(Some(selected));
-                let control_bits = construct();
-                let control_trace = observation.finish();
-                println!(
-                    "TASK_GROWTH_REFUSAL anext={anext} phase=non-growing-selector shape={:?} trace={:?}",
-                    map_shape(py),
-                    control_trace.requests()
-                );
-                let control = ExceptionValue::adopt(py, control_bits);
-                assert!(obj_from_bits(control.bits()).as_ptr().is_some());
-                assert_trace(&control_trace);
-                assert_eq!(reserve_request(&control_trace), None);
-                assert!(
-                    control_trace
-                        .requests()
-                        .iter()
-                        .all(|request| request.outcome == AllocationOutcome::Granted)
-                );
-                assert_eq!(probe::denied_allocations(), 0);
-                drop(control);
-                {
-                    let mut slots = crate::runtime_state(py)
-                        .task_last_exceptions
-                        .lock()
-                        .unwrap();
-                    slots.shrink_to_fit();
-                }
-                assert_eq!(
-                    map_shape(py),
-                    full,
-                    "cannot reproduce the observed growth boundary without changing map policy"
-                );
-                let rows: Vec<_> = crate::runtime_state(py)
-                    .task_last_exceptions
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .map(|(&key, &value)| (key, value))
-                    .collect();
-                assert_eq!(input_refs(&inputs), baseline_refs);
-
-                let budget = ResourceBudget::enter();
-                let observation = probe::trace_allocations(Some(selected));
-                let refused_bits = construct();
-                let refused_trace = observation.finish();
-                println!(
-                    "TASK_GROWTH_REFUSAL anext={anext} phase=refused full={full:?} shape={:?} trace={:?}",
-                    map_shape(py),
-                    refused_trace.requests()
-                );
-                let refused = ExceptionValue::adopt(py, refused_bits);
-                assert_trace(&refused_trace);
-                assert!(
-                    obj_from_bits(refused.bits()).is_none(),
-                    "late map growth was not refused"
-                );
-                assert_eq!(probe::denied_allocations(), 1);
-                let refused_request = reserve_request(&refused_trace)
-                    .expect("refusal must occur inside the actual task map reservation");
-                assert_same_reservation_layout(refused_request, selected);
-                assert_eq!(refused_request.outcome, AllocationOutcome::Denied);
-                assert_eq!(
-                    refused_trace
-                        .requests()
-                        .iter()
-                        .filter(|request| request.outcome == AllocationOutcome::Denied)
-                        .count(),
-                    1
-                );
-                assert!(
-                    refused_trace
-                        .requests()
-                        .iter()
-                        .filter(|request| request.scope != AllocationScope::TaskRaisedSlotReserve)
-                        .all(|request| request.outcome == AllocationOutcome::Granted)
-                );
-                assert_eq!(map_shape(py), full);
-                assert_eq!(input_refs(&inputs), baseline_refs);
-                assert_budget_empty();
-                assert_ne!(crate::exception_last_bits_noinc(py), Some(suspended_error));
-                // The selected error belongs to the executing, pre-admitted
-                // task. Prepared public Get/Set/Fetch must survive all denial.
+                let task = obj_from_bits(ready.bits()).as_ptr().unwrap();
+                let _task = crate::CurrentTaskScope::enter(py, task);
                 let denial = probe::deny_allocations();
+                unsafe { molt_cpython_abi::api::errors::PyErr_NoMemory() };
+                assert!(crate::exception_pending(py));
+                assert_ne!(crate::exception_last_bits_noinc(py), Some(suspended_error));
                 crate::test_support::assert_and_clear_emergency_memory_error(py);
                 drop(denial);
                 assert_eq!(probe::denied_allocations(), 0);
                 assert_eq!(probe::denied_c_allocations(), 0);
-                {
-                    let slots = crate::runtime_state(py)
-                        .task_last_exceptions
-                        .lock()
-                        .unwrap();
-                    assert_eq!(slots.len(), rows.len());
-                    assert!(
-                        rows.iter()
-                            .all(|(key, value)| slots.get(key) == Some(value)),
-                        "failure changed previous task rows or published a new row"
-                    );
-                }
+                drop(_task);
+                drop(ready);
+                assert_eq!(input_refs(&inputs), baseline_refs);
+                assert_budget_empty();
+
+                let observation = probe::trace_allocations(Some(sidecar));
+                let refused = ExceptionValue::adopt(py, construct());
+                let refused_trace = observation.finish();
+                assert_trace(&refused_trace);
+                assert!(obj_from_bits(refused.bits()).is_none());
+                assert_eq!(probe::denied_allocations(), 1);
+                assert_eq!(
+                    sidecar_request(&refused_trace).map(|request| request.outcome),
+                    Some(AllocationOutcome::Denied),
+                );
+                assert_eq!(input_refs(&inputs), baseline_refs);
+                assert_budget_empty();
+                assert!(crate::exception_pending(py));
+                crate::molt_exception_clear_attached_body(py);
+
                 let pending = acquire_pending_invocation_context(py, TARGET).unwrap();
                 assert_eq!(pending, [globals.bits(), builtins.bits(), code.bits()]);
                 for bits in pending {
                     dec_ref_bits(py, bits);
                 }
-                assert_eq!(input_refs(&inputs), baseline_refs);
                 {
-                    let _scope = crate::CurrentTaskScope::enter(py, suspended);
+                    let _scope = crate::CurrentTaskScope::enter(py, suspended_task);
                     assert_eq!(crate::exception_last_bits_noinc(py), Some(suspended_error));
-                    let denial = probe::deny_allocations();
                     crate::test_support::assert_and_clear_emergency_memory_error(py);
-                    drop(denial);
-                    assert_eq!(probe::denied_allocations(), 0);
-                    assert_eq!(probe::denied_c_allocations(), 0);
                 }
                 assert!(!crate::exception_pending(py));
-                let observation = probe::trace_allocations(None);
-                let retry_bits = construct();
-                let retry_trace = observation.finish();
-                println!(
-                    "TASK_GROWTH_REFUSAL anext={anext} phase=retry full={full:?} shape={:?} trace={:?}",
-                    map_shape(py),
-                    retry_trace.requests()
-                );
-                let retry = ExceptionValue::adopt(py, retry_bits);
+
+                let retry = ExceptionValue::adopt(py, construct());
                 assert!(obj_from_bits(retry.bits()).as_ptr().is_some());
-                assert_trace(&retry_trace);
-                let retried_request = reserve_request(&retry_trace)
-                    .expect("successful retry must grow the actual task map");
-                assert_same_reservation_layout(retried_request, selected);
-                assert!(
-                    retry_trace
-                        .requests()
-                        .iter()
-                        .all(|request| request.outcome == AllocationOutcome::Granted)
-                );
-                assert_eq!(map_shape(py).0, full.0 + 1);
-                assert!(map_shape(py).1 > full.1);
                 assert_eq!(input_refs(&inputs), expected_live_refs);
                 drop(retry);
                 assert_eq!(input_refs(&inputs), baseline_refs);

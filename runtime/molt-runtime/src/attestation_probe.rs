@@ -53,7 +53,7 @@ pub enum AllocationOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AllocationScope {
     Unscoped,
-    TaskRaisedSlotReserve,
+    AuxSidecarAllocate,
 }
 
 // This module itself is native, non-Miri and l7-attestation-probe-only. Scope

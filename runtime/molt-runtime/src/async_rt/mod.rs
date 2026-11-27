@@ -85,9 +85,9 @@ pub(crate) use scheduler::{
     molt_asyncio_task_registry_values_attached_body, molt_asyncio_unregister_task,
     molt_asyncio_unregister_task_attached_body, molt_block_on, molt_block_on_attached_body,
     molt_spawn, molt_spawn_attached_body, monotonic_now_nanos, monotonic_now_secs,
-    record_async_poll, replace_current_task, task_detach_owned_edges, task_last_exceptions,
-    task_mark_done, task_result_drop, task_result_get, task_result_store, task_waiting_on,
-    task_waiting_on_future, wake_await_waiters, wake_task_ptr,
+    record_async_poll, replace_current_task, task_detach_owned_edges, task_mark_done,
+    task_result_drop, task_result_get, task_result_store, task_waiting_on, task_waiting_on_future,
+    wake_await_waiters, wake_task_ptr,
 };
 
 pub(crate) use scheduler::process_task_state;

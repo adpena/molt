@@ -16,8 +16,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
     let debug_flow = debug_exception_flow();
     if let Some(task_key) = current_task_key() {
         let ptr = {
-            let guard = task_last_exceptions(_py).lock().unwrap();
-            match guard.get(&task_key).copied().flatten() {
+            match task_raised_exception(task_key) {
                 Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
                 Some(_) => panic!("owned task exception slot must reference a live exception"),
                 None => None,
@@ -92,8 +91,7 @@ fn pending_exception_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
         return None;
     }
     if let Some(task_key) = current_task_key() {
-        let guard = task_last_exceptions(_py).lock().unwrap();
-        match guard.get(&task_key).copied().flatten() {
+        match task_raised_exception(task_key) {
             Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
             Some(_) => panic!("owned task exception slot must reference a live exception"),
             None => None,

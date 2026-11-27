@@ -55,9 +55,8 @@ mod task_state;
 pub(crate) use task_state::thread_task_state;
 pub(crate) use task_state::{
     AwaitWaiterIndex, await_chain_terminal, await_waiter_clear, await_waiter_register,
-    await_waiters, process_task_state, task_detach_owned_edges, task_last_exceptions,
-    task_visit_owned_edges, task_waiting_on, task_waiting_on_event, task_waiting_on_future,
-    wake_await_waiters,
+    await_waiters, process_task_state, task_detach_owned_edges, task_visit_owned_edges,
+    task_waiting_on, task_waiting_on_event, task_waiting_on_future, wake_await_waiters,
 };
 
 mod asyncio_runtime;
@@ -1334,11 +1333,8 @@ pub(crate) unsafe fn molt_block_on_attached_body(_py: &crate::PyToken<'_>, task_
             exceptions.exit(_py);
             trace_step("exception_state_restored");
             // Move any pending exception off the block_on task and onto the caller/global slot.
-            let task_exc_slot = task_last_exceptions(_py)
-                .lock()
-                .unwrap()
-                .get_mut(&PtrSlot(task_ptr))
-                .and_then(Option::take);
+            let task_exc_slot =
+                crate::object::aux_header::replace_task_raised_exception(PtrSlot(task_ptr), None);
             crate::builtins::exceptions::exception_pending_flag().set(false);
             trace_step("task_exc_slot_taken");
             let pending_bits = if let Some(exc_slot) = task_exc_slot {

@@ -969,49 +969,29 @@ mod tests {
     }
 
     #[test]
-    fn begin_and_drop_recover_a_poisoned_task_exception_map_without_losing_ownership() {
+    fn begin_and_drop_restore_the_original_task_owned_exception() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let bits = pending_exception(_py, "task-owned");
-            inc_ref_bits(_py, bits);
-            let baseline = ref_count(bits);
-            let detached = take_raised(_py);
-            assert!(matches!(detached, RaisedSnapshot::Thread(value) if value == bits));
-            let task_ptr = obj_from_bits(bits).as_ptr().expect("task identity pointer");
-            let key = PtrSlot(task_ptr);
-            let map = task_last_exceptions(_py);
+            let owner = crate::task_new_for_pending_invocation(_py, 0, 0, crate::TASK_KIND_FUTURE);
+            let task = obj_from_bits(owner).as_ptr().expect("test task");
+            {
+                let _scope = crate::CurrentTaskScope::enter(_py, task);
+                let bits = pending_exception(_py, "task-owned");
+                inc_ref_bits(_py, bits);
+                let before = ref_count(bits);
 
-            let poisoned = crate::test_support::catch_expected_unwind(|| {
-                let _lock = map.lock().unwrap();
-                panic!("poison task exception map");
-            });
-            assert!(poisoned.is_err() && map.is_poisoned());
-            map.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(key, Some(PtrSlot(task_ptr)));
-            crate::CURRENT_TASK.with(|slot| slot.set(task_ptr));
-            exception_pending_flag().set(true);
+                let transaction = UnraisableTransaction::begin(_py);
+                assert!(!exception_pending(_py));
+                assert_eq!(exception_last_bits_noinc(_py), None);
+                drop(transaction);
 
-            let transaction = UnraisableTransaction::begin(_py);
-            assert!(!exception_pending_flag().get());
-            drop(transaction);
-            assert_eq!(ref_count(bits), baseline);
-
-            let restored = {
-                let mut guard = map
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                assert_eq!(guard.get(&key).copied().flatten(), Some(PtrSlot(task_ptr)));
-                guard
-                    .remove(&key)
-                    .flatten()
-                    .expect("restored task exception edge")
-            };
-            crate::CURRENT_TASK.with(|slot| slot.set(std::ptr::null_mut()));
-            exception_pending_flag().set(false);
-            map.clear_poison();
-            dec_ref_bits(_py, MoltObject::from_ptr(restored.0).bits());
-            dec_ref_bits(_py, bits);
+                assert_eq!(exception_last_bits_noinc(_py), Some(bits));
+                assert_eq!(ref_count(bits), before);
+                clear_exception(_py);
+                assert_eq!(ref_count(bits), before - 1);
+                dec_ref_bits(_py, bits);
+            }
+            dec_ref_bits(_py, owner);
         });
     }
 

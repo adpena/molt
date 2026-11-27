@@ -11,21 +11,14 @@ pub(crate) enum RaisedSnapshot {
 
 pub(crate) fn take_raised(_py: &PyToken<'_>) -> RaisedSnapshot {
     let raised = if let Some(key) = current_task_key() {
-        let mut guard = task_last_exceptions(_py)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match guard.get(&key).copied().flatten() {
+        match replace_task_raised_exception(key, None) {
             None => RaisedSnapshot::None,
             Some(slot) => {
                 assert!(
                     exception_slot_is_valid(slot),
                     "owned task exception slot must reference a live exception"
                 );
-                let removed = guard
-                    .get_mut(&key)
-                    .and_then(Option::take)
-                    .expect("validated task exception slot must remain present");
-                RaisedSnapshot::Task(key, MoltObject::from_ptr(removed.0).bits())
+                RaisedSnapshot::Task(key, MoltObject::from_ptr(slot.0).bits())
             }
         }
     } else {
@@ -81,15 +74,8 @@ pub(crate) fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
         }
         RaisedSnapshot::Task(key, bits) => {
             if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                let mut guard = task_last_exceptions(_py)
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let slot = guard
-                    .get_mut(&key)
-                    .expect("executing task owns an admitted raised slot");
-                let old = slot.replace(PtrSlot(ptr));
-                drop(guard);
-                // Map publication transfers the saved strong edge.
+                let old = replace_task_raised_exception(key, Some(PtrSlot(ptr)));
+                // Publication transfers the saved strong edge to the task.
                 *saved = None;
                 if current_task_key() == Some(key) {
                     exception_pending_flag().set(true);
@@ -107,9 +93,6 @@ pub(crate) fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
 }
 
 pub(super) fn discard_current_raised(_py: &PyToken<'_>) {
-    // Use the transaction's poison-tolerant detach path rather than the public
-    // clear helper: unraisable cleanup must remain available after a task-map
-    // panic poisoned its mutex.
     let mut raised = Some(take_raised(_py));
     molt_cpython_abi::api::errors::with_preserved_error(|| release_raised(_py, &mut raised));
 }

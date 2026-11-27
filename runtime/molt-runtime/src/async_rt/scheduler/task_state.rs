@@ -84,12 +84,6 @@ fn indexed_unique_vec_swap_remove<T: Copy + Eq + Hash>(
     true
 }
 
-pub(crate) fn task_last_exceptions(
-    _py: &PyToken<'_>,
-) -> &'static Mutex<HashMap<PtrSlot, Option<PtrSlot>>> {
-    &runtime_state(_py).task_last_exceptions
-}
-
 /// Side-effect-free projection of every Python edge owned on behalf of a task
 /// outside its inline closure payload.
 pub(crate) fn task_visit_owned_edges(
@@ -106,7 +100,7 @@ pub(crate) fn task_visit_owned_edges(
     // SPAWN_RETAIN and queue/work-item references are external roots. Visiting
     // either as an internal self-edge would erase scheduler reachability.
     crate::builtins::exceptions::activation_exception_state_visit(task_ptr, &mut visit);
-    if let Some(Some(exception)) = task_last_exceptions(_py).lock().unwrap().get(&slot) {
+    if let Some(exception) = crate::object::aux_header::task_raised_exception(slot) {
         visit(MoltObject::from_ptr(exception.0).bits());
     }
     if let Some(&bits) = runtime_state(_py).task_results.lock().unwrap().get(&slot) {

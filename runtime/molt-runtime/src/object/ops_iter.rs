@@ -774,10 +774,6 @@ pub(crate) fn molt_anext_builtin_attached_body(
             inc_ref_bits(_py, default_bits);
             *payload_ptr.add(2) = MoltObject::none().bits();
         }
-        if !crate::builtins::exceptions::task_raised_slot_admit(_py, obj_ptr) {
-            dec_ref_bits(_py, obj_bits);
-            return MoltObject::none().bits();
-        }
         obj_bits
     })
 }

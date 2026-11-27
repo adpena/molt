@@ -185,10 +185,8 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
                     if let Some(result_bits) = task_result_get(_py, ptr) {
                         return result_bits as i64;
                     }
-                    let cached_exception = {
-                        let guard = task_last_exceptions(_py).lock().unwrap();
-                        guard.get(&PtrSlot(ptr)).copied().flatten()
-                    };
+                    let cached_exception =
+                        crate::object::aux_header::task_raised_exception(PtrSlot(ptr));
                     if let Some(exc_ptr) = cached_exception {
                         let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
                         inc_ref_bits(_py, exc_bits);
@@ -238,15 +236,11 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
             }
         }
         let awaited_exception = if res != pending_bits_i64() && ptr != current_task {
-            let guard = task_last_exceptions(_py).lock().unwrap();
-            guard
-                .get(&PtrSlot(ptr))
-                .and_then(Option::as_ref)
-                .map(|exc_ptr| {
-                    let bits = MoltObject::from_ptr(exc_ptr.0).bits();
-                    inc_ref_bits(_py, bits);
-                    bits
-                })
+            crate::object::aux_header::task_raised_exception(PtrSlot(ptr)).map(|exc_ptr| {
+                let bits = MoltObject::from_ptr(exc_ptr.0).bits();
+                inc_ref_bits(_py, bits);
+                bits
+            })
         } else {
             None
         };

@@ -1131,17 +1131,8 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     // Detach the complete task/exception authority before any callback-bearing
     // reference is released. A finalizer can only publish into fresh state and
     // will therefore be observed by the next fixed-point pass.
-    // A task's saved exception state lives in its sidecar and retires with
-    // the task (`activation_exception_state_detach`).
-    let pointers = {
-        let mut guard = state.task_last_exceptions.lock().unwrap();
-        guard
-            .values_mut()
-            .filter_map(Option::take)
-            .map(|ptr| ptr.0)
-            .collect::<Vec<_>>()
-    };
-    changed |= !pointers.is_empty();
+    // Raised and suspended handler exceptions are object edges. The task
+    // retires them through its GC and terminal detach paths.
     let result_bits = {
         let mut guard = state.task_results.lock().unwrap();
         std::mem::take(&mut *guard)
@@ -1273,9 +1264,6 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     changed |= state.pipe_transport_registry.clear();
     changed |= state.event_loop_registry.clear(_py);
 
-    for ptr in pointers {
-        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-    }
     for attachment in execution_attachments.into_values() {
         if let crate::async_rt::cancellation::TaskContextBinding::Owned(bits) = attachment.context {
             dec_ref_bits(_py, bits);

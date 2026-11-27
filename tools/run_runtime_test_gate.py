@@ -120,7 +120,7 @@ PROBE_PLATFORMS: dict[str, frozenset[str]] = {
 # Cargo owns image paths/features; libtest owns the discovered test identities.
 OBSERVER_CASES = {
     "molt_runtime": (
-        "builtins::frames::namespace_tests::task_growth_refusal::both_task_producers_refuse_actual_late_map_growth_and_restore_owners",
+        "builtins::frames::namespace_tests::task_sidecar_refusal::both_task_producers_rollback_if_sidecar_allocation_fails",
         "call::bind::inline_cache::binding_tests::direct_call_ic_hot_path_is_allocation_free_with_slow_path_control",
         "cpython_abi_hooks::pending_cleanup_tests::writable_buffer_lease_preparation_failure_precedes_exporter_dispatch",
         "cpython_abi_hooks::tests::cpython_abi_gil_custody_is_allocation_free_after_warmup",
