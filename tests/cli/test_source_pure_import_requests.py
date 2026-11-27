@@ -1392,6 +1392,56 @@ def test_actual_class_bases_supply_inherited_protocols(tmp_path, monkeypatch, ba
     )
 
 
+def test_inherited_member_search_visits_shared_ancestors_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+        SourceValue,
+        _SourceNamespace,
+    )
+
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    root = SourceCandidate("provider", (1, 0, 1, 1, "ClassDef"))
+    implementation = SourceCandidate("provider", (2, 0, 2, 1, "FunctionDef"))
+    engine.namespaces[root.value] = _SourceNamespace(
+        {"method": frozenset({implementation.source})}
+    )
+    engine.value_candidates[implementation.value] = {implementation}
+    engine.value_candidates[root.value] = {root}
+    leaf = root
+    for line in range(3, 27, 3):
+        left, right, child = (
+            SourceCandidate("provider", (index, 0, index, 1, "ClassDef"))
+            for index in range(line, line + 3)
+        )
+        for node, parents in (
+            (left, (leaf,)),
+            (right, (leaf,)),
+            (child, (left, right)),
+        ):
+            engine.bases[node.value] = frozenset(parent.source for parent in parents)
+            engine.value_candidates[node.value] = {node}
+        leaf = child
+
+    watch = engine.watch
+    reads: list[SourceValue] = []
+
+    def record(origin: SourceValue, user: SourceValue) -> set[SourceCandidate]:
+        reads.append(origin)
+        return watch(origin, user)
+
+    monkeypatch.setattr(engine, "watch", record)
+    assert engine.select_member(leaf, "method", leaf.value) == {implementation}
+    assert reads.count(implementation.value) == 1
+    assert set(reads) == engine.value_candidates.keys()
+
+
 @pytest.mark.parametrize("escape", [False, True])
 def test_unrelated_member_class_is_exposure_not_an_inherited_base(
     tmp_path, monkeypatch, escape

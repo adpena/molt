@@ -731,7 +731,7 @@ class ComprehensionMixin(GeneratorMixinBase):
             key_val, item_val = values
             self.emit(
                 MoltOp(
-                    kind="STORE_INDEX",
+                    kind="DICT_SET",
                     args=[res, key_val, item_val],
                     result=MoltValue("none"),
                 )

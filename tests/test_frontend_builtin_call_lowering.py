@@ -5488,7 +5488,7 @@ def test_shadowed_dictionary_constructor_does_not_bypass_method_dispatch(
     assert not any(op["kind"].startswith("callargs_") for op in ops)
 
 
-def test_dict_comprehension_result_methods_use_exact_dict_ops() -> None:
+def test_dict_comprehension_uses_exact_dict_ops() -> None:
     ir = compile_to_tir(
         "def f():\n"
         "    data = {i: i for i in (0, 1, 2, 3, 4)}\n"
@@ -5500,6 +5500,8 @@ def test_dict_comprehension_result_methods_use_exact_dict_ops() -> None:
         func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
 
+    assert sum(op.get("kind") == "dict_set" for op in func_ops) == 2
+    assert all(op.get("kind") != "store_index" for op in func_ops)
     assert any(op.get("kind") == "dict_values" for op in func_ops)
     assert any(op.get("kind") == "dict_items" for op in func_ops)
     assert not any(
