@@ -12,6 +12,7 @@ import weakref
 from types import ModuleType
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import fields, replace
 from pathlib import Path
 from threading import Event
@@ -7773,6 +7774,8 @@ def test_selected_bodies_reuse_initializer_with_open_namespace(
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
     calls: list[PythonBindingFlowPolicy] = []
     original = flow._Analyzer._execute_initializer
+    indexed_histories: list[tuple[int, ...]] = []
+    build_history = flow._HistorySummary.build
 
     def record(
         analyzer: python_binding_flow._Analyzer,
@@ -7782,7 +7785,17 @@ def test_selected_bodies_reuse_initializer_with_open_namespace(
         calls.append(analyzer.policy)
         original(analyzer, entry, continuation)
 
+    def record_history(
+        cls: type[python_binding_flow._HistorySummary],
+        pool: python_binding_flow._StatePool,
+        states: Sequence[int],
+    ) -> python_binding_flow._HistorySummary:
+        if isinstance(states, tuple):
+            indexed_histories.append(states)
+        return build_history(pool, states)
+
     monkeypatch.setattr(flow._Analyzer, "_execute_initializer", record)
+    monkeypatch.setattr(flow._HistorySummary, "build", classmethod(record_history))
     with flow.python_binding_revision_scope():
         for policy, expected in zip(policies, fresh, strict=True):
             actual = analyze(policy)
@@ -7795,3 +7808,4 @@ def test_selected_bodies_reuse_initializer_with_open_namespace(
                 == expected
             )
     assert calls == [policies[0], policies[3], policies[4]]
+    assert len(indexed_histories) == 1

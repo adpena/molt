@@ -2618,7 +2618,7 @@ class _HistorySummary:
     taint_epoch_suffix: tuple[int, ...]
     namespace_unknown_suffix: tuple[bool, ...]
     taint_indices: tuple[int, ...]
-    slot_events: dict[int, list[int]]
+    slot_events: Mapping[int, tuple[int, ...]]
     slot_suffixes: dict[
         int,
         tuple[
@@ -2677,7 +2677,9 @@ class _HistorySummary:
             tuple(taint_epoch_suffix),
             tuple(namespace_unknown_suffix),
             tuple(taint_indices),
-            events,
+            MappingProxyType(
+                {slot: tuple(indices) for slot, indices in events.items()}
+            ),
             {},
             pool.taint_domain_generation,
             count,
@@ -2760,12 +2762,11 @@ class _HistorySummary:
                 )
                 suffix_results[index] = future_result
             suffix = (
-                tuple(events),
+                events,
                 tuple(suffix_values),
                 tuple(suffix_results),
             )
             self.slot_suffixes[slot] = suffix
-            del self.slot_events[slot]
         if suffix is not None:
             indices, suffix_values, suffix_results = suffix
             event_index = bisect_left(indices, start)
@@ -2782,6 +2783,33 @@ class _HistorySummary:
             if pool._callback_deletion_mask & (1 << slot):
                 value |= UNBOUND_IDENTITY
         return value, result
+
+
+@dataclass(slots=True)
+class _CompletedModuleHistory:
+    """One initializer's immutable observations shared across body queries."""
+
+    states: tuple[int, ...]
+    summary: _HistorySummary | None = field(default=None, init=False)
+    lock: RLock = field(default_factory=RLock, init=False)
+
+    def open(self, pool: _StatePool) -> _HistorySummary:
+        with self.lock:
+            if self.summary is None:
+                self.summary = _HistorySummary.build(pool, self.states)
+            summary = self.summary
+            if (
+                summary.domain_mask == pool._taint_domain_mask
+                and summary.callback_deletion_mask == pool._callback_deletion_mask
+            ):
+                # Different forks may have the same generation counter and
+                # different admitted slots. Match the masks before borrowing.
+                return replace(
+                    summary,
+                    domain_generation=pool.taint_domain_generation,
+                    slot_suffixes={},
+                )
+        return _HistorySummary.build(pool, self.states)
 
 
 @dataclass(slots=True)
@@ -3246,7 +3274,8 @@ class _Analyzer:
         self.callback_slot_mask = 0
         self._observed_stack: list[_ObservedStateFrame] = []
         self._observes_exception_state = False
-        self._module_history: list[int] = [0]
+        self._module_history: list[int] | tuple[int, ...] = [0]
+        self._completed_module_history: _CompletedModuleHistory | None = None
         self._active_module_states: tuple[int, ...] | None = None
         self._module_import_flow_required = False
         self._scope_slot_cache: dict[tuple[int, str], int | None] = {}
@@ -4139,6 +4168,7 @@ class _Analyzer:
         for observed in self._observed_stack:
             observed.states.append(state_id)
         if self._active_module_states is None:
+            assert isinstance(self._module_history, list)
             self._module_history.append(state_id)
 
     def _record_operation_execution(
@@ -10191,7 +10221,12 @@ class _Analyzer:
         history_key = id(summary_states)
         summary = self._history_summaries.get(history_key)
         if summary is None or summary.states is not summary_states:
-            summary = _HistorySummary.build(self.states, summary_states)
+            completed = self._completed_module_history
+            summary = (
+                completed.open(self.states)
+                if completed is not None and completed.states is summary_states
+                else _HistorySummary.build(self.states, summary_states)
+            )
             self._history_summaries[history_key] = summary
         summary.refresh(self.states)
         maybe, definitely, taint_epoch, namespace_unknown = summary.properties(
@@ -10328,6 +10363,7 @@ class _Analyzer:
             0, self.policy.entry_invalid_members
         )
         self._module_history = [entry_state]
+        self._completed_module_history = None
         self._execute_initializer(entry_state)
 
     def _execute_initializer(
@@ -11034,6 +11070,12 @@ class _RebasableInitializer:
         )
         if size > limit:
             return None
+        if completion is None and owner.policy.deferred_binding_path is not None:
+            # All retained branches fork the same completed state arena.
+            # The module initializer was the only producer of this history.
+            history = tuple(owner._module_history)
+            owner._module_history = history
+            owner._completed_module_history = _CompletedModuleHistory(history)
         prefix = owner._fork_at_deferred_boundary(
             initializer_prefix=completion is not None
         )
