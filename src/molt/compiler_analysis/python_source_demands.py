@@ -1059,12 +1059,14 @@ class PythonSourceDemands:
             if strict:
                 members: set[SourceCandidate] = set()
                 if source_class:
+                    member_seen: set[SourceCandidate] = set()
                     for ancestor in self._strict_ancestors(candidate.value, user):
                         members.update(
                             self.select_member(
                                 ancestor._replace(kind=candidate.kind),
                                 name,
                                 user,
+                                member_seen=member_seen,
                                 binding_owner=candidate,
                             )
                         )
@@ -1164,7 +1166,7 @@ class PythonSourceDemands:
         from_import=False,
         from_star=False,
         visiting=frozenset(),
-        member_visiting=frozenset(),
+        member_seen: set[SourceCandidate] | None = None,
         binding_owner=None,
     ):
         if owner.kind == "reflective_result" and not owner.contained:
@@ -1269,8 +1271,12 @@ class PythonSourceDemands:
                 return set(self.watch(owner.receiver, user))
             self.demand(owner.value, "expose")
             return result
-        if owner.contained or owner in member_visiting:
+        if owner.contained:
             return result
+        if member_seen is not None:
+            if owner in member_seen:
+                return result
+            member_seen.add(owner)
         if (
             owner.kind == "instance"
             and owner_source is not None
@@ -1303,7 +1309,6 @@ class PythonSourceDemands:
                     namespace_ownership=PythonNamespaceOwnership.BORROWED,
                 )
             }
-        member_visiting = member_visiting | {owner}
         # An excluded star member still depends on the export policy. A later
         # writer can widen __all__ without changing the module candidate itself.
         self.watch(owner.value, user)
@@ -1394,7 +1399,12 @@ class PythonSourceDemands:
                 result.update(self.watch((child, None), user))
         elif owner_source[-1] == "ClassDef":
             # Unknown instance/descriptor use is bounded by this class family.
-            for base in self.bases.get(owner.value, ()):
+            bases = self.bases.get(owner.value, ())
+            if bases and member_seen is None:
+                # All paths in this query have the same bound receiver and
+                # contribute a union. A shared ancestor contributes once.
+                member_seen = {owner}
+            for base in bases:
                 for candidate in tuple(self.watch((owner_module, base), user)):
                     inherited = SourceCandidate(*candidate.value, owner.kind)
                     result.update(
@@ -1402,7 +1412,7 @@ class PythonSourceDemands:
                             inherited,
                             name,
                             user,
-                            member_visiting=member_visiting,
+                            member_seen=member_seen,
                             binding_owner=binding_owner,
                         )
                     )
@@ -2964,6 +2974,7 @@ class PythonSourceDemands:
         # Type selection starts above the new class. Namespace construction
         # has already run __set_name__, so reached writes can change this edge.
         self.watch(owner.value, user)
+        member_seen: set[SourceCandidate] = set()
         for origin in self.bases.get(owner.value, ()):
             for base in self.watch((owner.module, origin), user):
                 if not self._source_class_candidate(base) or base.kind != "value":
@@ -2972,6 +2983,7 @@ class PythonSourceDemands:
                     base,
                     "__init_subclass__",
                     user,
+                    member_seen=member_seen,
                     binding_owner=owner,
                 ):
                     if callback.kind == "value":

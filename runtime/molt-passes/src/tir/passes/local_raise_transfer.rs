@@ -22,9 +22,10 @@
 //! region with `try_end L` as normal completion does, and branches to `H2` with
 //! the check's handler arguments and `v`.
 //!
-//! `H`'s arguments and `p` are visible only where `H` dominates, and all of that
-//! lies beyond `H2` once `H` ends in the branch, so the rewrite is one
-//! substitution; no SSA repair is needed.
+//! Rewrite raises while their original operation positions are still valid.
+//! Then split their handlers and rename all dominated uses in one traversal.
+//! The original handler prefix and its new forwarding branch keep the old
+//! argument and pending value names.
 //!
 //! Only a `v` that `molt_exception_prepare_raise` produced qualifies: that is a
 //! normalized exception instance, exactly what `molt_raise` would publish.
@@ -143,40 +144,65 @@ fn transfer_local_raises(func: &mut TirFunction, stats: &mut PassStats) {
             .and_modify(|unique| *unique = None)
             .or_insert(Some(BlockId(block)));
     }
-    let mut split: HashMap<i64, (BlockId, usize)> = HashMap::default();
+    let mut splits = Vec::new();
+    let mut continuations = HashMap::default();
     for site in sites {
-        let Some(Some(handler)) = label_blocks.get(&site.label).copied() else {
-            continue;
-        };
-        let (h2, arity) = match split.get(&site.label) {
-            Some(&done) => done,
-            None => {
-                let Some(done) = split_handler(func, handler, site.label) else {
-                    continue;
-                };
-                split.insert(site.label, done);
-                stats.ops_added += 1;
-                done
+        let continuation = continuations.entry(site.label).or_insert_with(|| {
+            let handler = label_blocks.get(&site.label).copied().flatten()?;
+            let block = func.blocks.get(&handler)?;
+            let pending = handler_pending_read(block, site.label)?;
+            let arity = block.args.len();
+            let continuation = func.fresh_block();
+            splits.push((handler, continuation, pending));
+            stats.ops_added += 1;
+            Some((continuation, arity))
+        });
+        if let Some((continuation, arity)) = *continuation {
+            transfer(func, &site, continuation, arity);
+            stats.ops_removed += 1;
+            stats.ops_added += 2;
+        }
+    }
+    if splits.is_empty() {
+        return;
+    }
+
+    let mut replacements = HashMap::default();
+    let mut moved = HashMap::default();
+    for (handler, continuation, pending) in splits {
+        split_handler(func, handler, continuation, pending, &mut replacements);
+        moved.insert(handler, continuation);
+    }
+    func.remap_loop_terminators(&moved);
+    for block in func.blocks.values_mut() {
+        let rename = |value: &mut ValueId| {
+            if let Some(&(handler, replacement)) = replacements.get(value)
+                && block.id != handler
+            {
+                *value = replacement;
             }
         };
-        transfer(func, &site, h2, arity);
-        stats.ops_removed += 1;
-        stats.ops_added += 2;
+        for op in &mut block.ops {
+            op.operands.iter_mut().for_each(rename);
+        }
+        block.terminator.for_each_value_mut(rename);
     }
 }
 
-/// Split `handler` after its pending read; the new block's id and the number of
-/// handler arguments it takes before the exception.
-fn split_handler(func: &mut TirFunction, handler: BlockId, label: i64) -> Option<(BlockId, usize)> {
-    let pending = handler_pending_read(func.blocks.get(&handler)?, label)?;
-    let h2 = func.fresh_block();
+/// Split a handler after its pending read. Uses below it are renamed in batch.
+fn split_handler(
+    func: &mut TirFunction,
+    handler: BlockId,
+    continuation: BlockId,
+    pending: ValueId,
+    replacements: &mut HashMap<ValueId, (BlockId, ValueId)>,
+) {
     let old_args: Vec<TirValue> = func.blocks[&handler].args.clone();
-    let mut substitution: HashMap<ValueId, ValueId> = HashMap::default();
     let mut new_args = Vec::with_capacity(old_args.len() + 1);
     for arg in &old_args {
         let fresh = func.fresh_value();
         func.value_types.insert(fresh, arg.ty.clone());
-        substitution.insert(arg.id, fresh);
+        replacements.insert(arg.id, (handler, fresh));
         new_args.push(TirValue {
             id: fresh,
             ty: arg.ty.clone(),
@@ -189,7 +215,7 @@ fn split_handler(func: &mut TirFunction, handler: BlockId, label: i64) -> Option
         .cloned()
         .unwrap_or(TirType::DynBox);
     func.value_types.insert(exception, exception_ty.clone());
-    substitution.insert(pending, exception);
+    replacements.insert(pending, (handler, exception));
     new_args.push(TirValue {
         id: exception,
         ty: exception_ty,
@@ -200,7 +226,7 @@ fn split_handler(func: &mut TirFunction, handler: BlockId, label: i64) -> Option
     let terminator = std::mem::replace(
         &mut block.terminator,
         Terminator::Branch {
-            target: h2,
+            target: continuation,
             args: old_args
                 .iter()
                 .map(|arg| arg.id)
@@ -209,39 +235,21 @@ fn split_handler(func: &mut TirFunction, handler: BlockId, label: i64) -> Option
         },
     );
     func.blocks.insert(
-        h2,
+        continuation,
         TirBlock {
-            id: h2,
+            id: continuation,
             args: new_args,
             ops: rest,
             terminator,
         },
     );
-    func.move_loop_terminator(handler, h2);
-    // `H`'s arguments and its pending read are visible only beyond `H2` now.
-    let rename = |value: &mut ValueId| {
-        if let Some(&renamed) = substitution.get(value) {
-            *value = renamed;
-        }
-    };
-    for (id, block) in func.blocks.iter_mut() {
-        if *id == handler {
-            continue;
-        }
-        for op in &mut block.ops {
-            op.operands.iter_mut().for_each(rename);
-        }
-        block.terminator.for_each_value_mut(rename);
-    }
-    Some((h2, old_args.len()))
 }
 
 fn transfer(func: &mut TirFunction, site: &LocalRaise, h2: BlockId, arity: usize) {
     let chained = func.fresh_value();
     func.value_types.insert(chained, TirType::DynBox);
     let block = func.blocks.get_mut(&site.block).expect("raise block");
-    let check = block.ops[site.raise + 1].clone();
-    let handler_args = check.operands.clone();
+    let handler_args = block.ops[site.raise + 1].operands.clone();
     debug_assert_eq!(
         handler_args.len(),
         arity,
@@ -283,4 +291,122 @@ fn transfer(func: &mut TirFunction, site: &LocalRaise, h2: BlockId, arity: usize
             .chain(std::iter::once(site.exception))
             .collect(),
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use molt_ir::ir::FunctionReturnAbi;
+
+    #[test]
+    fn splits_nested_raise_sites_before_renaming_uses() {
+        let mut func = TirFunction::new(
+            "nested".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            FunctionReturnAbi::Value,
+        );
+        let entry = func.entry_block;
+        let inner = func.fresh_block();
+        let outer = func.fresh_block();
+        let seed = func.blocks[&entry].args[0].id;
+        let inner_arg = func.fresh_value();
+        let outer_arg = func.fresh_value();
+        let inner_pending = func.fresh_value();
+        let outer_pending = func.fresh_value();
+        let first = func.fresh_value();
+        let second = func.fresh_value();
+        let setup = |source, result, label, argument| {
+            let mut prepare = TirOp::new(OpCode::Call, vec![source, seed], vec![result]);
+            prepare.runtime = Some(RuntimeFn::ExceptionPrepareRaise);
+            let mut check = TirOp::new(OpCode::CheckException, vec![argument], vec![]);
+            check.attrs.insert("value".into(), AttrValue::Int(label));
+            check.attrs.insert(
+                "exception_edge".into(),
+                AttrValue::Int(ExceptionEdgeKind::Unwind as i64),
+            );
+            [
+                prepare,
+                TirOp::new(OpCode::Raise, vec![result], vec![]),
+                check,
+            ]
+        };
+        func.blocks.get_mut(&entry).unwrap().ops = setup(seed, first, 10, seed).into();
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Unwind;
+        for (id, label, arg, pending) in [
+            (inner, 10, inner_arg, inner_pending),
+            (outer, 20, outer_arg, outer_pending),
+        ] {
+            func.label_id_map.insert(id.0, label);
+            let mut end = TirOp::new(OpCode::TryEnd, vec![], vec![]);
+            end.attrs.insert("value".into(), AttrValue::Int(label));
+            let read = TirOp::new(OpCode::Copy, vec![], vec![pending])
+                .with_origin(OpKind::ExceptionLastPending);
+            let clear =
+                TirOp::new(OpCode::Copy, vec![], vec![]).with_origin(OpKind::ExceptionClear);
+            let mut ops = vec![end, read, clear];
+            let terminator = if id == inner {
+                ops.extend(setup(pending, second, 20, arg));
+                Terminator::Unwind
+            } else {
+                Terminator::Return {
+                    values: vec![pending],
+                }
+            };
+            func.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![TirValue {
+                        id: arg,
+                        ty: TirType::DynBox,
+                    }],
+                    ops,
+                    terminator,
+                },
+            );
+        }
+        for value in [
+            inner_arg,
+            outer_arg,
+            inner_pending,
+            outer_pending,
+            first,
+            second,
+        ] {
+            func.value_types.insert(value, TirType::DynBox);
+        }
+
+        let mut stats = PassStats::default();
+        transfer_local_raises(&mut func, &mut stats);
+        assert_eq!(stats.ops_removed, 2);
+        let Terminator::Branch {
+            target: inner_body,
+            args: incoming,
+        } = &func.blocks[&entry].terminator
+        else {
+            panic!("local transfer to inner handler");
+        };
+        assert_eq!(incoming, &[seed, first]);
+        let body = &func.blocks[inner_body];
+        assert_eq!(body.ops[0].operands[0], body.args[1].id);
+        assert_eq!(body.ops[1].runtime, Some(RuntimeFn::ExceptionChainContext));
+        let Terminator::Branch {
+            target: outer_body,
+            args: forwarded,
+        } = &body.terminator
+        else {
+            panic!("local transfer to outer handler");
+        };
+        assert_eq!(forwarded, &[body.args[0].id, second]);
+        let Terminator::Branch { target, args } = &func.blocks[&inner].terminator else {
+            panic!("ordinary pending ingress");
+        };
+        assert_eq!(target, inner_body);
+        assert_eq!(args, &[inner_arg, inner_pending]);
+        let body = &func.blocks[outer_body];
+        assert!(
+            matches!(&body.terminator, Terminator::Return { values } if values == &[body.args[1].id])
+        );
+    }
 }
