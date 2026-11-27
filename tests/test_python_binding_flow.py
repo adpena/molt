@@ -2032,7 +2032,7 @@ def test_module_spec_member_mutation_invalidates_all_aliases() -> None:
     assert call.callee_identities == OTHER_IDENTITY
 
 
-def test_globals_module_and_frame_capabilities_share_exact_identities() -> None:
+def test_globals_and_frame_capabilities_share_exact_identities() -> None:
     source = (
         "import sys\n"
         "import inspect\n"
@@ -2045,7 +2045,14 @@ def test_globals_module_and_frame_capabilities_share_exact_identities() -> None:
         "function_globals = local.__globals__\n"
     )
     assert _identity_on_line(source, 3, PythonIdentity.CURRENT_GLOBALS)
-    assert _identity_on_line(source, 4, PythonIdentity.CURRENT_MODULE)
+    cache_read = next(
+        fact
+        for fact in analyze_python_source_bindings(source).expressions
+        if fact.node[0] == 4 and fact.node[-1] == "Subscript"
+    )
+    assert identity_fact_may_be(cache_read.identities, PythonIdentity.CURRENT_MODULE)
+    assert cache_read.identities & OTHER_IDENTITY
+    assert cache_read.result.source_origins == frozenset({cache_read.node})
     assert _identity_on_line(source, 5, PythonIdentity.CURRENT_FRAME)
     assert _identity_on_line(source, 6, PythonIdentity.CURRENT_GLOBALS)
     assert _identity_on_line(source, 9, PythonIdentity.CURRENT_GLOBALS)
