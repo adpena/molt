@@ -5,6 +5,10 @@ from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt import compiler_process
 from molt import input_report as _input_report
 from molt.compiler_analysis.python_function_kind import FunctionKind
+from molt.compiler_analysis.python_parameter_classes import (
+    ParameterLiteralClass,
+    UNMATCHED_ARGUMENT,
+)
 from molt.compiler_analysis.python_binding_facts import (
     PythonFunctionResult,
     PythonActivationPartition,
@@ -55,6 +59,7 @@ from molt.compiler_analysis.python_source_keys import (
     PythonSourceProjection,
     PythonSourceKey,
     decode_python_source_key,
+    python_source_contains,
 )
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_identity_catalog_generated import (
@@ -365,8 +370,20 @@ def _encode_namespace_summary(summary: PythonNamespaceSummary) -> dict[str, Any]
 def _validate_import_scan_namespace_summary(
     summary: PythonNamespaceSummary | None, *, source_owner: PythonSourceKey | None
 ) -> None:
-    if source_owner is None and summary is None:
-        raise ValueError("persisted module import scan requires a namespace summary")
+    if source_owner is None:
+        if summary is None:
+            raise ValueError(
+                "persisted module import scan requires a namespace summary"
+            )
+    elif summary is not None and (
+        summary.own_names != frozenset()
+        or summary.own_namespace_line
+        or any(
+            row.source_owner != source_owner or row.needs_binding_refinement
+            for row in summary.foreign_writes
+        )
+    ):
+        raise ValueError("deferred namespace refinement belongs to one completed body")
 
 
 def _decode_namespace_summary(raw: Any) -> PythonNamespaceSummary:
@@ -940,7 +957,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 # 55: bounded string spellings inform import and namespace invalidation.
 # 56: generic positional argument exposure retains its qualified call site.
 # 70: import-cache subscriptions publish the selected value's source origin.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 70
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 72
 
 
 def _import_scan_cache_key(
@@ -988,6 +1005,66 @@ def _import_scan_cache_key(
     )
     encoded = encode_frontend_payload(identity)
     return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _cached_source_argument_classes(
+    snapshot: _module_source.PythonSourceSnapshot,
+    owner: PythonSourceKey,
+    *,
+    module_name: str,
+    is_package: bool,
+    namespace_premise: PythonNamespacePremise | None,
+    target_sys_platform: str | None,
+    target_python: TargetPythonVersion,
+    compute: Callable[[], tuple[ParameterLiteralClass, ...] | None],
+) -> tuple[ParameterLiteralClass, ...] | None:
+    # This is a pure fact projection, keyed by the same source, activation,
+    # target, premise and tooling admission as a generic body import scan.
+    key = _import_scan_cache_key(
+        snapshot.path,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode="module_init",
+        source_owner=owner,
+        snapshot=snapshot,
+        target_sys_platform=target_sys_platform,
+        target_python=target_python,
+        namespace_premise=namespace_premise,
+    )
+    records = frontend_record_files()
+    record = records.get(
+        "activation-classes", key, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
+    )
+    if record is not None:
+        try:
+            raw = decode_frontend_payload(record.payload)
+            classes = (
+                None
+                if raw is None
+                else tuple(
+                    None
+                    if item is None
+                    else frozenset(_source_cache_sorted_strings(item))
+                    for item in _source_cache_list(raw)
+                )
+            )
+            if classes is not None and any(
+                item is not None and UNMATCHED_ARGUMENT in item for item in classes
+            ):
+                raise ValueError("reserved argument-class representative")
+        except (ValueError, RecursionError):
+            pass
+        else:
+            record.refresh()
+            return classes
+    classes = compute()
+    payload = (
+        None
+        if classes is None
+        else [None if item is None else sorted(item) for item in classes]
+    )
+    records.put("activation-classes", key, encode_frontend_payload(payload))
+    return classes
 
 
 def _decode_source_record_json(payload: bytes | None) -> Mapping[str, Any] | None:
@@ -1718,9 +1795,15 @@ def _decode_import_scan_payload(
         ):
             return None
         if admission.source_owner is not None and (
-            values.activation_partitions
+            any(
+                item.owner != admission.source_owner or admission.source_arguments
+                for item in values.activation_partitions
+            )
             or any(item.owner != admission.source_owner for item in values.functions)
-            or any(item.owner != admission.source_owner for item in values.declarations)
+            or any(
+                not python_source_contains(admission.source_owner, item.owner)
+                for item in values.declarations
+            )
         ):
             return None
         if len({item.owner for item in values.activation_partitions}) != len(

@@ -12,6 +12,7 @@ from molt.python_private_names import (
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from molt.typed_cache import typed_cache
 from typing import Literal, NamedTuple, cast, get_args
 from weakref import ReferenceType, ref
 
@@ -109,9 +110,11 @@ from molt.compiler_analysis.python_imports import (
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     python_node_source_key,
+    python_source_contains,
     python_pattern_capture_names,
     _PythonAstDigestAdmission,
 )
+from molt.compiler_analysis.python_parameter_classes import ParameterLiteralClass
 
 
 _IMPORT_SCAN_MODES = frozenset(get_args(ImportScanMode))
@@ -130,6 +133,7 @@ def _source_binding_policy(
     is_package: bool = False,
     namespace_premise: PythonNamespacePremise | None = None,
     include_import_discovery: bool = False,
+    deferred_binding_path: frozenset[PythonSourceKey] | None = None,
     activation_argument_values: tuple[
         tuple[PythonSourceKey, PythonStringValue], ...
     ] = (),
@@ -145,9 +149,48 @@ def _source_binding_policy(
             module_is_package=is_package,
             module_execution_kind="script" if module_name is None else "imported",
             include_import_discovery=include_import_discovery,
+            deferred_binding_path=deferred_binding_path,
             activation_argument_values=activation_argument_values,
         ),
         namespace_premise,
+    )
+
+
+def source_body_argument_classes(
+    tree: ast.Module,
+    admission: _PythonAstDigestAdmission,
+    owner: PythonSourceKey,
+    *,
+    module_name: str,
+    is_package: bool,
+    namespace_premise: PythonNamespacePremise | None,
+    target_sys_platform: str | None,
+    target_python: TargetPythonVersion,
+) -> tuple[ParameterLiteralClass, ...] | None:
+    """Prove argument classes without discovering or admitting imports."""
+    node = admission.deferred_nodes.get(owner)
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return None
+    facts = analyze_python_binding_facts(
+        tree,
+        source_digest=admission.digest,
+        ast_digest_admission=admission,
+        policy=_source_binding_policy(
+            target_sys_platform=target_sys_platform,
+            target_python=target_python,
+            module_name=module_name,
+            is_package=is_package,
+            namespace_premise=namespace_premise,
+            deferred_binding_path=admission.deferred_binding_path(owner),
+        ).flow_policy(),
+    )
+    return next(
+        (
+            item.classes
+            for item in facts.source_activation_partitions
+            if item.owner == owner
+        ),
+        None,
     )
 
 
@@ -905,10 +948,6 @@ def _collect_imports(
     needs_typing = False
     needs_string_templatelib = False
     template_str_cls = getattr(ast, "TemplateStr", None)
-    helper_import_calls: dict[
-        PythonSourceKey,
-        tuple[list[str], set[str], list[_StaticImportCallPayload]],
-    ] = {}
     base_import_context = ModuleImportContext(
         module_name,
         is_package,
@@ -917,9 +956,19 @@ def _collect_imports(
         execution_kind="script" if module_name is None else "imported",
     )
     admission = ast_digest_admission
+    deferred_binding_path = None
+    if _purpose is SourceImportPurpose.EXECUTION and _runtime_catalog is None:
+        deferred_binding_path = (
+            frozenset()
+            if source_owner is None
+            else admission.deferred_binding_path(source_owner)
+        )
 
     def binding_index_for(
-        premise: PythonNamespacePremise | None, *, source_discovery: bool = False
+        premise: PythonNamespacePremise | None,
+        *,
+        source_discovery: bool = False,
+        additional_bodies: frozenset[PythonSourceKey] = frozenset(),
     ) -> PythonBindingIndex:
         return analyze_python_bindings(
             cast(ast.Module, tree),
@@ -932,49 +981,88 @@ def _collect_imports(
                 is_package=is_package,
                 namespace_premise=premise,
                 include_import_discovery=source_discovery,
+                deferred_binding_path=(
+                    None
+                    if deferred_binding_path is None
+                    else deferred_binding_path | additional_bodies
+                ),
                 activation_argument_values=_source_argument_values(
                     admission, source_owner, source_arguments
                 ),
             ),
         )
 
-    binding_index = _premise_analysis(binding_index_for, namespace_premise)
-    source_import_flow: ModuleImportFlow | None = None
+    binding_publication = binding_index_for(namespace_premise)
+    scan_reads = SCAN_PREMISE_READS.get()
+    binding_index = (
+        binding_publication
+        if scan_reads is None
+        else cast(
+            PythonBindingIndex, scan_reads.track(binding_index_for, binding_publication)
+        )
+    )
+    source_import_flows: dict[PythonSourceKey | None, ModuleImportFlow] = {}
     import_flow = binding_index.module_import_flow
     uses_runtime_import_protocol = False
-    if _source_values is not None and source_owner is None:
-        _source_values.append(
-            _SourceValueSummary(
-                binding_index.source_namespaces,
-                binding_index.source_attributes,
-                binding_index.source_elements,
-                binding_index.source_calls,
-                binding_index.source_callable_declarations,
-                binding_index.source_function_results
-                if _purpose is SourceImportPurpose.INVENTORY
-                or _runtime_catalog is not None
-                else (),
-                binding_index.source_bases,
-                binding_index.source_completions,
-                binding_index.source_callables,
-                native_initializers=binding_index.source_native_initializers,
-                classes=binding_index.source_classes,
-                activation_partitions=binding_index.source_activation_partitions,
-            )
-        )
+    if _source_values is not None:
 
-    elif _source_values is not None:
-        assert source_owner is not None
-        # A body outcome becomes available at activation. Its own declaration
-        # keeps the persisted body scan independently decodable.
-        declaration = binding_index.source_callable_declaration_at(source_owner)
-        result = binding_index.source_function_result_at(source_owner)
-        _source_values.append(
-            _SourceValueSummary(
-                declarations=() if declaration is None else (declaration,),
-                functions=() if result is None else (result,),
+        def project_source_values(index: PythonBindingIndex) -> _SourceValueSummary:
+            # Rows begin with the site that publishes the value. The binding
+            # path includes ancestors to establish inputs, but their outputs
+            # belong to their own query and must not be replayed by this body.
+            def in_region[T: tuple[PythonSourceKey, *tuple[object, ...]]](
+                rows: tuple[T, ...],
+            ) -> tuple[T, ...]:
+                owner = source_owner
+                if owner is None:
+                    return rows
+                return tuple(
+                    row for row in rows if python_source_contains(owner, row[0])
+                )
+
+            if source_owner is not None:
+                selected = index.source_function_result_at(source_owner)
+                results = () if selected is None else (selected,)
+                partitions = (
+                    ()
+                    if source_arguments
+                    else tuple(
+                        row
+                        for row in index.source_activation_partitions
+                        if row.owner == source_owner
+                    )
+                )
+            elif (
+                _purpose is SourceImportPurpose.INVENTORY
+                or _runtime_catalog is not None
+            ):
+                results = index.source_function_results
+                partitions = index.source_activation_partitions
+            else:
+                results = ()
+                partitions = index.source_activation_partitions
+            return _SourceValueSummary(
+                in_region(index.source_namespaces),
+                in_region(index.source_attributes),
+                in_region(index.source_elements),
+                in_region(index.source_calls),
+                in_region(index.source_callable_declarations),
+                results,
+                in_region(index.source_bases),
+                in_region(index.source_completions),
+                in_region(index.source_callables),
+                native_initializers=in_region(index.source_native_initializers),
+                classes=in_region(index.source_classes),
+                activation_partitions=partitions,
             )
-        )
+
+        values = project_source_values(binding_publication)
+        _source_values.append(values)
+        if scan_reads is not None:
+            scan_reads.value(
+                lambda premise: project_source_values(binding_index_for(premise)),
+                values,
+            )
 
     conditional_import_sites: list[SourceImportCall] = []
     attribute_writes: list[SourceAttributeWrite] = []
@@ -1148,19 +1236,30 @@ def _collect_imports(
                 )
 
     def _import_contexts(
-        node: ast.AST, *, source_discovery: bool = False
+        node: ast.AST,
+        *,
+        source_discovery: bool = False,
+        helper_owner: PythonSourceKey | None = None,
+        index: PythonBindingIndex = binding_index,
     ) -> tuple[ModuleImportContext, ...]:
-        nonlocal source_import_flow
-        flow = import_flow
+        flow = index.module_import_flow
         if source_discovery and _dynamic_relative_import_discovery is not None:
             # A lexical source-state read needs the second whole-module transfer.
             # Register that projection with the scan's premise log on its first use.
-            if source_import_flow is None:
-                source_import_flow = _premise_analysis(
-                    lambda premise: binding_index_for(premise, source_discovery=True),
+            if helper_owner not in source_import_flows:
+                source_import_flows[helper_owner] = _premise_analysis(
+                    lambda premise: binding_index_for(
+                        premise,
+                        source_discovery=True,
+                        additional_bodies=(
+                            frozenset()
+                            if helper_owner is None
+                            else admission.deferred_binding_path(helper_owner)
+                        ),
+                    ),
                     namespace_premise,
                 ).module_import_flow
-            flow = source_import_flow
+            flow = source_import_flows[helper_owner]
         states = (
             flow.source_states_for(node) if source_discovery else flow.states_for(node)
         )
@@ -1169,9 +1268,12 @@ def _collect_imports(
     source_bindings: dict[str, object] = {}
 
     def _static_import_callable(
-        call: ast.Call, *, allow_possible: bool = False
+        call: ast.Call,
+        *,
+        allow_possible: bool = False,
+        index: PythonBindingIndex = binding_index,
     ) -> PythonImportCallable | None:
-        fact = binding_index.call_fact(call)
+        fact = index.call_fact(call)
         if fact is not None:
             exact_kind = fact.exact_import_call_kind()
             if exact_kind == "dunder_import":
@@ -1193,8 +1295,10 @@ def _collect_imports(
     def _bound_static_value(
         node: ast.expr,
         bindings: Mapping[str, object],
+        *,
+        index: PythonBindingIndex = binding_index,
     ) -> object | None:
-        value = binding_index.static_value(node)
+        value = index.static_value(node)
         if isinstance(value, PythonParameterRef):
             return bindings.get(value.name)
         return value
@@ -1205,9 +1309,13 @@ def _collect_imports(
         return _source_expression_result(binding_index, node, bindings)
 
     def _resolve_string_sequence(
-        node: ast.expr, bindings: dict[str, object], seen: set[str]
+        node: ast.expr,
+        bindings: dict[str, object],
+        seen: set[str],
+        *,
+        index: PythonBindingIndex = binding_index,
     ) -> list[str] | None:
-        value = _bound_static_value(node, bindings)
+        value = _bound_static_value(node, bindings, index=index)
         if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
             return [cast(str, item) for item in value]
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
@@ -1220,17 +1328,20 @@ def _collect_imports(
         seen: set[str] | None = None,
         *,
         loader_metadata: bool = False,
+        index: PythonBindingIndex = binding_index,
     ) -> str | None:
         bindings = bindings or {}
         seen = seen or set()
-        result = _source_expression_result(binding_index, node, bindings)
+        result = _source_expression_result(index, node, bindings)
         value = (
-            result.value if result.value_known else _bound_static_value(node, bindings)
+            result.value
+            if result.value_known
+            else _bound_static_value(node, bindings, index=index)
         )
         if isinstance(value, str):
             return value
         if loader_metadata and isinstance(node, ast.Name) and node.id == "__name__":
-            fact = binding_index.expression_fact(node)
+            fact = index.expression_fact(node)
             if (
                 fact is not None
                 and fact.name_lookup == "global"
@@ -1240,7 +1351,7 @@ def _collect_imports(
             ):
                 names = tuple(
                     context_import_state(context).name
-                    for context in _import_contexts(node)
+                    for context in _import_contexts(node, index=index)
                 )
                 if names and all(
                     name.kind == "known" and type(name.value) is str for name in names
@@ -1259,7 +1370,11 @@ def _collect_imports(
                     and part.format_spec is None
                 ):
                     text = _resolve_string_constant(
-                        part.value, bindings, seen, loader_metadata=loader_metadata
+                        part.value,
+                        bindings,
+                        seen,
+                        loader_metadata=loader_metadata,
+                        index=index,
                     )
                     if text is None:
                         return None
@@ -1269,10 +1384,10 @@ def _collect_imports(
             return "".join(pieces)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = _resolve_string_constant(
-                node.left, bindings, seen, loader_metadata=loader_metadata
+                node.left, bindings, seen, loader_metadata=loader_metadata, index=index
             )
             right = _resolve_string_constant(
-                node.right, bindings, seen, loader_metadata=loader_metadata
+                node.right, bindings, seen, loader_metadata=loader_metadata, index=index
             )
             if left is not None and right is not None:
                 return left + right
@@ -1284,11 +1399,17 @@ def _collect_imports(
                 and len(node.args) == 1
             ):
                 sep = _resolve_string_constant(
-                    node.func.value, bindings, seen, loader_metadata=loader_metadata
+                    node.func.value,
+                    bindings,
+                    seen,
+                    loader_metadata=loader_metadata,
+                    index=index,
                 )
                 if sep is None:
                     return None
-                items = _resolve_string_sequence(node.args[0], bindings, seen)
+                items = _resolve_string_sequence(
+                    node.args[0], bindings, seen, index=index
+                )
                 if items is None:
                     return None
                 return sep.join(items)
@@ -1296,7 +1417,7 @@ def _collect_imports(
                 func_name = node.func.id
                 if func_name in seen:
                     return None
-                origins = binding_index.expression_result(node.func).source_origins
+                origins = index.expression_result(node.func).source_origins
                 if len(origins) != 1:
                     return None
                 helper = ast_digest_admission.deferred_nodes.get(next(iter(origins)))
@@ -1323,12 +1444,16 @@ def _collect_imports(
                 child_bindings: dict[str, object] = dict(bindings)
                 for param, arg in zip(params, node.args):
                     scalar = _resolve_string_constant(
-                        arg, bindings, seen, loader_metadata=loader_metadata
+                        arg,
+                        bindings,
+                        seen,
+                        loader_metadata=loader_metadata,
+                        index=index,
                     )
                     if scalar is not None:
                         child_bindings[param] = scalar
                         continue
-                    seq = _resolve_string_sequence(arg, bindings, seen)
+                    seq = _resolve_string_sequence(arg, bindings, seen, index=index)
                     if seq is not None:
                         child_bindings[param] = seq
                         continue
@@ -1338,6 +1463,7 @@ def _collect_imports(
                     child_bindings,
                     seen | {func_name},
                     loader_metadata=loader_metadata,
+                    index=index,
                 )
         return None
 
@@ -1559,13 +1685,29 @@ def _collect_imports(
     def _resolve_static_import_call(
         payload: _StaticImportCallPayload,
         bindings: dict[str, object] | None = None,
+        *,
+        helper_owner: PythonSourceKey | None = None,
+        index: PythonBindingIndex = binding_index,
     ) -> tuple[str, ...]:
         bindings = bindings or {}
-        name = (
-            _resolve_string_constant(payload.name, bindings, set())
-            if payload.name is not None
-            else None
-        )
+
+        def fact_result(node: ast.expr) -> StaticExpressionResult:
+            return _source_expression_result(index, node, bindings)
+
+        def resolve_string(expression: ast.expr) -> str | None:
+            return _resolve_string_constant(expression, bindings, index=index)
+
+        def import_contexts(
+            node: ast.AST, *, source_discovery: bool = False
+        ) -> tuple[ModuleImportContext, ...]:
+            return _import_contexts(
+                node,
+                source_discovery=source_discovery,
+                helper_owner=helper_owner,
+                index=index,
+            )
+
+        name = resolve_string(payload.name) if payload.name is not None else None
         source_requests: dict[
             StaticImportRequest,
             tuple[tuple[StaticImportRequest, ModuleImportContext], ...],
@@ -1580,7 +1722,7 @@ def _collect_imports(
             if cached is not None:
                 return cached
             candidates = []
-            for context in _import_contexts(payload.call, source_discovery=True):
+            for context in import_contexts(payload.call, source_discovery=True):
                 candidates.extend(
                     (candidate, context)
                     for candidate in source_import_requests_from_expressions(
@@ -1588,15 +1730,13 @@ def _collect_imports(
                         context,
                         package_expression=payload.package,
                         globals_expression=payload.globals,
-                        source_contexts_for_read=lambda expression: _import_contexts(
+                        source_contexts_for_read=lambda expression: import_contexts(
                             expression, source_discovery=True
                         ),
                         resolve_string=resolve_string,
-                        fact_result=lambda node: _bound_expression_result(
-                            node, bindings
-                        ),
-                        expression_fact=binding_index.expression_fact,
-                        call_fact=binding_index.call_fact(payload.call),
+                        fact_result=fact_result,
+                        expression_fact=index.expression_fact,
+                        call_fact=index.call_fact(payload.call),
                     )
                 )
             result = tuple(candidates)
@@ -1674,31 +1814,24 @@ def _collect_imports(
             record_site(payload.call, None)
             return ()
 
-        def resolve_string(expression: ast.expr) -> str | None:
-            return _resolve_string_constant(expression, bindings, set())
-
         import_module_call = (
             payload.callable.behavior is not PythonImportBehavior.DUNDER
         )
         fromlist = (
-            _resolve_string_sequence(payload.fromlist, bindings, set())
+            _resolve_string_sequence(payload.fromlist, bindings, set(), index=index)
             if payload.fromlist is not None
             else []
         )
         if (
             fromlist is None
             and payload.fromlist is not None
-            and static_import_fromlist_is_empty(
-                _bound_expression_result(payload.fromlist, bindings)
-            )
+            and static_import_fromlist_is_empty(fact_result(payload.fromlist))
         ):
             # __import__ skips fromlist processing for every proven falsy value,
             # including explicit None. Unknown and expired values remain dynamic.
             fromlist = []
         level, level_is_invalid = (
-            static_import_level_from_result(
-                _bound_expression_result(payload.level, bindings)
-            )
+            static_import_level_from_result(fact_result(payload.level))
             if payload.level is not None
             else (0, False)
         )
@@ -1709,7 +1842,7 @@ def _collect_imports(
             and not level_is_invalid
         ):
             return require_runtime_call_custody("non-literal __import__ level")
-        contexts = _import_contexts(payload.call)
+        contexts = import_contexts(payload.call)
         modules: list[str] = []
         seen: set[str] = set()
         for context in contexts:
@@ -1727,11 +1860,9 @@ def _collect_imports(
                         payload.package,
                         context,
                         resolve_string,
-                        fact_result=lambda node: _bound_expression_result(
-                            node, bindings
-                        ),
-                        expression_fact=binding_index.expression_fact,
-                        call_fact=binding_index.call_fact(payload.call),
+                        fact_result=fact_result,
+                        expression_fact=index.expression_fact,
+                        call_fact=index.call_fact(payload.call),
                     ),
                 )
                 lexical_request = StaticImportRequest.import_module(
@@ -1740,11 +1871,9 @@ def _collect_imports(
                         payload.package,
                         lexical_context,
                         resolve_string,
-                        fact_result=lambda node: _bound_expression_result(
-                            node, bindings
-                        ),
-                        expression_fact=binding_index.expression_fact,
-                        call_fact=binding_index.call_fact(payload.call),
+                        fact_result=fact_result,
+                        expression_fact=index.expression_fact,
+                        call_fact=index.call_fact(payload.call),
                         allow_activation_metadata_for_discovery=True,
                     ),
                 )
@@ -1761,11 +1890,9 @@ def _collect_imports(
                         payload.globals,
                         context,
                         resolve_string,
-                        fact_result=lambda node: _bound_expression_result(
-                            node, bindings
-                        ),
-                        expression_fact=binding_index.expression_fact,
-                        call_fact=binding_index.call_fact(payload.call),
+                        fact_result=fact_result,
+                        expression_fact=index.expression_fact,
+                        call_fact=index.call_fact(payload.call),
                     ),
                     globals_were_supplied=payload.globals is not None,
                 )
@@ -1778,11 +1905,9 @@ def _collect_imports(
                         payload.globals,
                         lexical_context,
                         resolve_string,
-                        fact_result=lambda node: _bound_expression_result(
-                            node, bindings
-                        ),
-                        expression_fact=binding_index.expression_fact,
-                        call_fact=binding_index.call_fact(payload.call),
+                        fact_result=fact_result,
+                        expression_fact=index.expression_fact,
+                        call_fact=index.call_fact(payload.call),
                         allow_possible_current_globals=True,
                     ),
                     globals_were_supplied=payload.globals is not None,
@@ -1883,76 +2008,84 @@ def _collect_imports(
             return None
         return bindings
 
-    def _source_helper_imports(stmt):
+    @typed_cache(maxsize=None)
+    def _helper_signature(
+        stmt: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[list[str], set[str]]:
         params = [
             arg.arg
-            for arg in (
-                list(stmt.args.posonlyargs)
-                + list(stmt.args.args)
-                + list(stmt.args.kwonlyargs)
-            )
+            for arg in (*stmt.args.posonlyargs, *stmt.args.args, *stmt.args.kwonlyargs)
         ]
         if stmt.args.vararg is not None:
             params.append(stmt.args.vararg.arg)
         if stmt.args.kwarg is not None:
             params.append(stmt.args.kwarg.arg)
-        if not params:
+        return params, _function_required_param_names(stmt, params)
+
+    @typed_cache(maxsize=None)
+    def _source_helper_imports(
+        owner: PythonSourceKey, stmt: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[PythonBindingIndex, tuple[_StaticImportCallPayload, ...]] | None:
+        calls = tuple(node for node in ast.walk(stmt) if isinstance(node, ast.Call))
+        if not calls:
             return None
-        required_params = _function_required_param_names(stmt, params)
-        local_expr_bindings = _simple_function_local_expr_bindings(stmt)
-        for node in ast.walk(stmt):
-            if not isinstance(node, ast.Call):
+        index = binding_index
+        if deferred_binding_path is not None and owner not in deferred_binding_path:
+            index = _premise_analysis(
+                lambda premise: binding_index_for(
+                    premise, additional_bodies=admission.deferred_binding_path(owner)
+                ),
+                namespace_premise,
+            )
+        flow = index.module_import_flow
+        payloads: list[_StaticImportCallPayload] = []
+        local_expr_bindings: dict[str, ast.expr] | None = None
+        for node in calls:
+            if not flow.may_execute(node):
                 continue
-            if not import_flow.may_execute(node):
-                continue
-            callable = _static_import_callable(node, allow_possible=True)
+            callable = _static_import_callable(node, allow_possible=True, index=index)
             if callable is None:
                 continue
+            if local_expr_bindings is None:
+                local_expr_bindings = _simple_function_local_expr_bindings(stmt)
             payload = _static_import_call_payload(
-                node,
-                callable,
-                local_expr_bindings=local_expr_bindings,
+                node, callable, local_expr_bindings=local_expr_bindings
             )
-            if payload is None:
-                continue
-            helper_entry = helper_import_calls.get(python_node_source_key(stmt))
-            if helper_entry is None:
-                helper_import_calls[python_node_source_key(stmt)] = (
-                    params,
-                    required_params,
-                    [payload],
-                )
-            else:
-                helper_entry[2].append(payload)
-
-        return helper_import_calls.get(python_node_source_key(stmt))
-
-    scanned_helpers: set[PythonSourceKey] = set()
+            if payload is not None:
+                payloads.append(payload)
+        if not payloads:
+            return None
+        return index, tuple(payloads)
 
     def _record_helper_call_imports(node: ast.Call) -> None:
         nonlocal projecting_helper
         for origin in binding_index.expression_result(node.func).source_origins:
-            stmt = ast_digest_admission.deferred_nodes.get(origin)
+            stmt = admission.deferred_nodes.get(origin)
             if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if origin not in scanned_helpers:
-                scanned_helpers.add(origin)
-                _source_helper_imports(stmt)
-            helper_call_entry = helper_import_calls.get(origin)
-            if helper_call_entry is not None:
-                params, required_params, payloads = helper_call_entry
-                call_bindings = _bind_helper_call_arguments(
-                    node, params, required_params
-                )
-                if call_bindings is not None:
-                    projecting_helper = True
-                    try:
-                        for payload in payloads:
-                            imports.extend(
-                                _resolve_static_import_call(payload, call_bindings)
-                            )
-                    finally:
-                        projecting_helper = False
+            params, required_params = _helper_signature(stmt)
+            if not params:
+                continue
+            call_bindings = _bind_helper_call_arguments(node, params, required_params)
+            if call_bindings is None:
+                continue
+            entry = _source_helper_imports(origin, stmt)
+            if entry is None:
+                continue
+            index, payloads = entry
+            projecting_helper = True
+            try:
+                for payload in payloads:
+                    imports.extend(
+                        _resolve_static_import_call(
+                            payload,
+                            call_bindings,
+                            helper_owner=origin if index is not binding_index else None,
+                            index=index,
+                        )
+                    )
+            finally:
+                projecting_helper = False
 
     def _record_import_statement(
         node: ast.Import | ast.ImportFrom,
@@ -2591,6 +2724,8 @@ def _collect_imports(
                 _source_demands[index] = _source_demands[index]._replace(
                     owner=region.owner
                 )
+    _source_helper_imports.cache_clear()
+    _helper_signature.cache_clear()
     if _source_values is not None:
         if not _source_values:
             _source_values.append(_SourceValueSummary())
@@ -2601,8 +2736,37 @@ def _collect_imports(
             attribute_writes=tuple(dict.fromkeys(attribute_writes)),
         )
     if _namespace_summary is not None:
+        summary = _namespace_summary[0]
+        namespace_index = binding_index
+        initializer_only = (
+            deferred_binding_path is not None
+            and source_owner is None
+            and import_scan_mode == "module_init"
+        )
+        if (
+            deferred_binding_path is not None
+            and source_owner is None
+            and not initializer_only
+        ):
+            # A complete projection includes proofs for all candidate writers.
+            # Their import requests still belong to body activation.
+            owners = {
+                write.source_owner
+                for write in summary.foreign_writes
+                if write.source_owner is not None and write.needs_binding_refinement
+            }
+            writer_bodies = frozenset().union(
+                *(admission.deferred_binding_path(owner) for owner in owners)
+            )
+            if not writer_bodies.issubset(deferred_binding_path):
+                namespace_index = _premise_analysis(
+                    lambda premise: binding_index_for(
+                        premise, additional_bodies=writer_bodies
+                    ),
+                    namespace_premise,
+                )
         _namespace_summary[0] = refine_namespace_writes(
-            _namespace_summary[0], cache_writes, binding_index
+            summary, cache_writes, namespace_index, initializer_only=initializer_only
         )
     if _runtime_import_protocol is not None:
         _runtime_import_protocol.append(uses_runtime_import_protocol)
@@ -2643,18 +2807,18 @@ def _collect_imports_for_graph(
     source_values: list[_SourceValueSummary] = []
     source_sites: list[SourceImportSite] = []
     runtime_import_protocol: list[bool] = []
-    namespace_summaries = (
-        [
-            python_namespace_summary(
-                tree,
-                package=python_package_name(module_name or "", is_package=is_package),
-                target_python=target_python.feature_version,
-                ast_digest_admission=ast_digest_admission,
-            )
-        ]
-        if source_owner is None and isinstance(tree, ast.Module)
-        else None
-    )
+    namespace_summaries = None
+    if isinstance(tree, ast.Module):
+        raw_namespace = python_namespace_summary(
+            tree,
+            package=python_package_name(module_name or "", is_package=is_package),
+            target_python=target_python.feature_version,
+            ast_digest_admission=ast_digest_admission,
+        )
+        if source_owner is None:
+            namespace_summaries = [raw_namespace]
+        elif writes := raw_namespace.refinement_writes(source_owner):
+            namespace_summaries = [PythonNamespaceSummary(frozenset(), writes)]
     imports = _collect_imports(
         tree,
         module_name,
@@ -2786,6 +2950,7 @@ def _compute_static_module_all_exports(
             target_sys_platform=target_sys_platform,
             target_python=target_python,
             namespace_premise=namespace_premise,
+            deferred_binding_path=frozenset(),
         ).flow_policy(),
     )
     _future, eager = module_annotation_execution(

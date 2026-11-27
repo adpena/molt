@@ -1040,6 +1040,7 @@ def _analyze_module_import_flow_uncached(
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
     source_discovery: bool = False,
     callback_metadata_writes: frozenset[str] = MODULE_IMPORT_METADATA_NAMES,
+    deferred_binding_path: frozenset[PythonSourceKey] | None = None,
 ) -> ModuleImportFlow:
     """Project one requested metadata view through canonical completion facts.
 
@@ -1851,9 +1852,13 @@ def _analyze_module_import_flow_uncached(
                     for expression in annotations:
                         current = evaluate(expression, current)
                 deferred_key = source_key(statement)
-                if deferred_key not in deferred_definitions:
-                    pending_bodies.append(deferred_key)
-                deferred_definitions[deferred_key] = statement
+                if (
+                    deferred_binding_path is None
+                    or deferred_key in deferred_binding_path
+                ):
+                    if deferred_key not in deferred_definitions:
+                        pending_bodies.append(deferred_key)
+                    deferred_definitions[deferred_key] = statement
             elif isinstance(statement, ast.ClassDef):
                 for expression in (
                     *statement.decorator_list,

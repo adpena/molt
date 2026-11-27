@@ -35,7 +35,9 @@ from molt.default_paths import (
 )
 from molt.file_publication import PublicationDurability, atomic_write_bytes
 
-FrontendRecordKind = Literal["import-scan", "module-analysis", "import-graph"]
+FrontendRecordKind = Literal[
+    "import-scan", "module-analysis", "import-graph", "activation-classes"
+]
 _KINDS: Final = frozenset(get_args(FrontendRecordKind))
 _INDEX_HEADER: Final = b"molt-frontend-record-index v1\n"
 _DIGEST: Final = re.compile(r"[0-9a-f]{64}")
