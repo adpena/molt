@@ -8,7 +8,8 @@ from pathlib import Path
 import tomllib
 import io
 import json
-from typing import Literal, cast
+import sys
+from typing import Literal, NoReturn, cast
 import zipfile
 
 import pytest
@@ -432,6 +433,8 @@ def test_scoreboard_signals_reads_real_evidence_before_all_workload_side_effects
         ["--warmup", "2"],
         ["--rss-mb", "1024"],
         ["--timeout", "30"],
+        ["--build-timeout", "30"],
+        ["--build-timeout=30"],
         ["--require-quiescent"],
         ["--quiescence-wait-s", "0"],
         ["--quiescence-poll-s", "15"],
@@ -461,6 +464,159 @@ def test_scoreboard_signals_rejects_every_ignored_mode_or_measurement_option(
     with pytest.raises(SystemExit, match="2"):
         perf_scoreboard.main(["--signals", "absent.json", *args])
     assert "--signals cannot be combined with" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "timeout", ["0", "-1", "nan", "inf", "-inf", "invalid", "1e100"]
+)
+def test_scoreboard_rejects_invalid_build_timeout(
+    timeout: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tools import perf_scoreboard
+
+    with pytest.raises(SystemExit, match="2"):
+        perf_scoreboard.main([f"--build-timeout={timeout}"])
+    assert "--build-timeout: build timeout must be positive and finite" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize(
+    "mode_args",
+    [["--plan"], ["--merge", "absent.json"], ["--rebuild-summary", "absent.json"]],
+)
+def test_scoreboard_rejects_build_timeout_in_modes_without_builds(
+    mode_args: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tools import perf_scoreboard
+
+    with pytest.raises(SystemExit, match="2"):
+        perf_scoreboard.main([*mode_args, "--build-timeout=600"])
+    assert f"--build-timeout cannot be combined with {mode_args[0]}" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("build_timeout", [None, 0.125])
+@pytest.mark.parametrize("hot_only", [False, True])
+def test_scoreboard_forwards_distinct_build_and_execution_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    build_timeout: float | None,
+    hot_only: bool,
+) -> None:
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from tests.tools.perf_scoreboard_fixtures import write_synthetic_build_observation
+    from tools import perf_scoreboard, perf_scoreboard_cli
+    from tools import perf_scoreboard_measure as measure
+    from tools import perf_scoreboard_profile as profiling
+    from tools.safe_run import CapturedStreamIdentity
+
+    class ReachedExecutionBoundary(Exception):
+        pass
+
+    builds: list[float] = []
+    argv = ["--benchmark", "bench_fib.py", "--backend", "native"]
+    if hot_only:
+        argv.append("--sample-hot-only")
+    else:
+        argv.extend(["--timeout", "31.75"])
+    if build_timeout is not None:
+        argv.extend(["--build-timeout", str(build_timeout)])
+
+    def prepare(
+        script: str, *, build_timeout_s: float, **_kwargs: object
+    ) -> bench.MoltBinary | bench.MoltFailure:
+        builds.append(build_timeout_s)
+        if hot_only:
+            assert "for _ in range(" in Path(script).read_text(encoding="utf-8")
+            return bench.classify_molt_process_failure(
+                phase="build",
+                returncode=bench.memory_guard.GUARD_RETURN_CODE,
+                elapsed_s=build_timeout_s,
+                stderr="backend daemon returned empty response",
+                violation=bench.memory_guard.RssViolation(
+                    123, 8192, "fixture compiler", "process"
+                ),
+                stderr_identity=CapturedStreamIdentity.from_capture(
+                    b"backend daemon returned empty response"
+                ),
+            )
+        owner = OwnedTemporaryDirectory(dir=tmp_path)
+        artifact = Path(owner.name) / "bench_fib"
+        observation = write_synthetic_build_observation(
+            artifact, backend="native", profile="release-fast"
+        )
+        return bench.MoltBinary(artifact, owner, 0.1, 1.0, observation)
+
+    def run_guest(
+        _cmd: list[str], *, timeout_s: float, label: str, **_kwargs: object
+    ) -> NoReturn:
+        assert label == "molt-cold:tests/benchmarks/bench_fib.py"
+        assert timeout_s == 31.75
+        raise ReachedExecutionBoundary
+
+    def checkpoint(
+        *_args: object, provenance: Mapping[str, object], **_kwargs: object
+    ) -> None:
+        invocation = cast(list[dict[str, object]], provenance["producer_invocations"])[
+            0
+        ]
+        assert cast(list[str], invocation["argv"])[2:] == argv
+
+    oracle = perf_scoreboard.CpythonOracle(
+        cmd=(sys.executable,),
+        executable=sys.executable,
+        version="3.12.15",
+        implementation="CPython",
+        sys_platform=sys.platform,
+        machine="fixture",
+        arch="fixture",
+        pointer_bits=64,
+    )
+    monkeypatch.setattr(perf_scoreboard, "_resolve_system_cpython", lambda _: oracle)
+    monkeypatch.setattr(
+        perf_scoreboard,
+        "wait_for_quiescence",
+        lambda **_: {"quiet": True, "loadavg_1m": 0, "ncpu": 1, "runnable_signal": 0},
+    )
+    monkeypatch.setattr(
+        perf_scoreboard, "gather_provenance", lambda *_, **__: {"authoritative": True}
+    )
+    monkeypatch.setattr(perf_scoreboard, "_git_rev", lambda: "a" * 40)
+    monkeypatch.setattr(perf_scoreboard, "_checkpoint", checkpoint)
+    monkeypatch.setattr(perf_scoreboard, "SCOREBOARD_DIR", tmp_path)
+    monkeypatch.setattr(perf_scoreboard_cli, "_observe_cpython_runtime", lambda _: {})
+    monkeypatch.setattr(
+        perf_scoreboard_cli, "capture_current_python_runtime", lambda: {}
+    )
+    monkeypatch.setattr(bench, "_BenchBatchBuildServer", lambda _: None)
+    monkeypatch.setattr(bench, "prepare_molt_binary", prepare)
+    monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(measure, "_run_measured_command", run_guest)
+    monkeypatch.setattr(profiling, "SCOREBOARD_DIR", tmp_path)
+    monkeypatch.setattr(profiling, "_profiling_tmp_root", lambda _: tmp_path)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+
+    expected = 600.0 if build_timeout is None else build_timeout
+    if hot_only:
+        out = tmp_path / "profile.json"
+        assert perf_scoreboard.main([*argv, "--out", str(out)]) == 1
+        board = json.loads(out.read_text(encoding="utf-8"))
+        assert board["cells"][0]["build_timeout_s"] == expected
+        build = board["cells"][0]["build"]
+        assert build["reason"] == "profiling build failed: rss_limit_exceeded"
+        failure = build["molt_failure"]
+        assert failure["detail"] == "backend_daemon_empty_response"
+        assert failure["elapsed_s"] == expected
+        assert failure["guard_violation"]["rss_kb"] == 8192
+        assert failure["stderr_identity"]["byte_length"] == len(
+            b"backend daemon returned empty response"
+        )
+    else:
+        with pytest.raises(ReachedExecutionBoundary):
+            perf_scoreboard.main(argv)
+    assert builds == [expected]
 
 
 @pytest.mark.parametrize(

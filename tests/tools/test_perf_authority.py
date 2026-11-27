@@ -263,6 +263,12 @@ def test_metadata_plan_command_cannot_claim_release_measurement(planning: str) -
     assert any("uses non-release perf flags: --plan" in problem for problem in problems)
 
 
+@pytest.mark.parametrize("option", ["--build-timeout 600", "--build-timeout=2.5"])
+def test_custom_build_timeout_cannot_claim_release_measurement(option: str) -> None:
+    problems = pa.canonical_scoreboard_command_problems(f"{pa.CANONICAL_GATE} {option}")
+    assert problems == ["perf receipt uses non-release perf flags: --build-timeout"]
+
+
 @pytest.mark.parametrize(
     "option,value",
     [
@@ -346,6 +352,7 @@ def _current_scoreboard_doc(**overrides: object) -> dict:
             "local_head_sha": "a" * 40,
             "authoritative": True,
             "authoritative_reason": "unit-test",
+            "producer_invocations": [{"argv": ["python", "tools/perf_scoreboard.py"]}],
         }
     )
     summary = doc["summary"]
@@ -371,6 +378,54 @@ def test_current_scoreboard_problems_accepts_current_green_authoritative_board(
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "override", [["--build-timeout", "600"], ["--build-timeout=2.5"]]
+)
+def test_current_scoreboard_problems_rejects_diagnostic_producer_arguments(
+    monkeypatch: pytest.MonkeyPatch, override: list[str]
+) -> None:
+    import shlex
+
+    now = _dt.datetime(2026, 6, 25, tzinfo=_dt.timezone.utc)
+    monkeypatch.setattr(pa, "current_origin_main_rev", lambda: "a" * 40)
+    monkeypatch.setattr(pa.perf_schema, "validate_board", lambda doc: [])
+    board = _current_scoreboard_doc()
+    argv = ["python", *shlex.split(pa.CANONICAL_GATE)]
+    invocations = [{"argv": argv}]
+    board["provenance"]["producer_invocations"] = invocations
+    assert pa.current_scoreboard_problems(board, now=now) == []
+
+    invocations.append({"argv": [*argv, *override]})
+    assert pa.current_scoreboard_problems(board, now=now) == [
+        "scoreboard producer invocation uses non-release perf flags: --build-timeout"
+    ]
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        None,
+        [],
+        [None],
+        [{}],
+        [{"argv": []}],
+        [{"argv": ["python", "--build-timeout", 1]}],
+    ],
+)
+def test_current_scoreboard_refuses_missing_or_malformed_producer_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, records: object
+) -> None:
+    monkeypatch.setattr(pa, "current_origin_main_rev", lambda: "a" * 40)
+    monkeypatch.setattr(pa.perf_schema, "validate_board", lambda doc: [])
+    board = _current_scoreboard_doc()
+    board["provenance"]["producer_invocations"] = records
+    problems = pa.current_scoreboard_problems(
+        board, now=_dt.datetime(2026, 6, 25, tzinfo=_dt.timezone.utc)
+    )
+    assert problems and all("producer invocation" in problem for problem in problems)
+    assert _eval_scoreboard(tmp_path, monkeypatch, board)["hazard"] is True
 
 
 def test_current_scoreboard_problems_rejects_noncurrent_red_or_untrusted_board(
@@ -561,6 +616,9 @@ def _scoreboard_payload(
             "local_head_sha": local_head_sha or git_rev,
             "authoritative": authoritative,
             "authoritative_reason": "unit-test",
+            "producer_invocations": _current_scoreboard_doc()["provenance"][
+                "producer_invocations"
+            ],
         },
         "summary": {"gate_fails": gate_fails},
     }

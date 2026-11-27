@@ -95,7 +95,10 @@ running a workload. It returns at most eight ranked items by default, with total
 and omitted counts. Each item carries a typed kind, severity, confidence and
 action, its coordinate, a concise finding and the retained JSON/log pointer.
 The header names the source and methodology; `--expected-source` requires an
-exact recorded source match. Snapshot evidence never proves live-main status.
+exact recorded source match. Snapshot evidence never proves live-main status. A partial projection carries
+its `run_state` and directs every item, including a limit-one qualification
+item, to inspect the existing run owner or confirm closure before scheduling.
+It does not infer a process is live or dead from the checkpoint.
 
 | Signal | Evidence boundary | Next useful work |
 |---|---|---|
@@ -203,7 +206,8 @@ Drivers emit complete trees/ASTs and generated SQL, never expected-output files
 or timing-marker checksums. Explicit CPython oracle generation records full
 expected stdout; each measured reference must match it before guest parity can
 qualify timing. Upstream expected-case coverage remains a separate conformance
-obligation. Both application runtime-performance cells remain unqualified.
+obligation. Current application qualification and remaining failures belong to
+[V1-07](../../agent/V1_HANDOFF_FINDINGS.md).
 The pinned HTML package imports `six`, whose source `exec` call encounters
 Molt's intentional AOT policy boundary. Retain that diagnostic without a score;
 do not patch the package, special-case its name or broaden eval/exec support.

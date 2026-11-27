@@ -611,12 +611,7 @@ def merge_suite_trip_result(
     child's diagnostics. A child that completed normally retains that success.
     Existing child deadline/signal/infrastructure observations keep precedence.
     """
-    if (
-        evidence is None
-        or evidence.infrastructure_failure is not None
-        or result.timed_out
-        or result.guard_signal is not None
-    ):
+    if result.timed_out or result.guard_signal is not None:
         return result
     child_returncode = getattr(process, "child_returncode", None)
     if child_returncode is None:
@@ -625,18 +620,28 @@ def merge_suite_trip_result(
         return result
     child = getattr(process, "child_process", None)
     owned = getattr(process, "owned_process_identities", ())
-    matched = tuple(
-        trip
-        for trip in evidence.trips
-        if trip.matches(
-            child,
-            owned,
-            request_started_at_ns=getattr(process, "request_started_at_ns", None),
-        )
+    local = getattr(process, "suite_trip_evidence", None)
+    matched = harness_outcomes.matching_suite_trips(
+        child,
+        owned,
+        request_started_at_ns=getattr(process, "request_started_at_ns", None),
+        evidence=(local, evidence),
+        request_finished_at_ns=getattr(process, "request_finished_at_ns", None),
     )
     if not matched:
+        if (
+            isinstance(local, harness_outcomes.SuiteTripEvidence)
+            and local.infrastructure_failure is not None
+            and result.infrastructure_failure is None
+        ):
+            return replace(
+                result,
+                returncode=harness_outcomes.memory_guard.INFRASTRUCTURE_RETURN_CODE,
+                stderr=result.stderr + "\n" + local.message,
+                infrastructure_failure=local.infrastructure_failure,
+            )
         return result
-    message = "\n".join(dict.fromkeys(trip.details for trip in matched)) + "\n"
+    message = "\n".join(dict.fromkeys(trip.details for trip, _ in matched)) + "\n"
     return replace(
         result,
         returncode=result.returncode

@@ -18,6 +18,7 @@ from molt.python_runtime_identity import (
     validate_python_runtime_identity,
 )
 from tools import harness_memory_guard
+from tools.bench import DEFAULT_BATCH_BUILD_TIMEOUT_S, validate_build_timeout
 from tools.bench_suites import BenchmarkInventoryRecord, BenchmarkSet
 from tools.git_identity import is_git_object_id
 from tools.perf_scoreboard_measure import _cpython_run_env
@@ -66,6 +67,13 @@ def _positive_signal_limit(value: str) -> int:
     if limit <= 0:
         raise argparse.ArgumentTypeError("signal limit must be a positive integer")
     return limit
+
+
+def _positive_build_timeout(value: str) -> float:
+    try:
+        return validate_build_timeout(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _expected_source(value: str) -> str:
@@ -266,6 +274,13 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
     parser.add_argument("--warmup", type=int, default=api["DEFAULT_WARMUP"])
     parser.add_argument("--rss-mb", type=int, default=api["DEFAULT_RUN_RSS_MB"])
     parser.add_argument("--timeout", type=float, default=api["DEFAULT_RUN_TIMEOUT_S"])
+    parser.add_argument(
+        "--build-timeout",
+        type=_positive_build_timeout,
+        default=DEFAULT_BATCH_BUILD_TIMEOUT_S,
+        metavar="SECONDS",
+        help="diagnostic timeout per benchmark build (default: %(default)s seconds)",
+    )
     # --- #69 measurement-hygiene flags ------------------------------------
     parser.add_argument(
         "--require-quiescent",
@@ -497,6 +512,14 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         print_agent_signals(report, json_output=ns.signals_format == "json")
         return 0
 
+    if "--build-timeout" in supplied_options:
+        if ns.plan:
+            parser.error("--build-timeout cannot be combined with --plan")
+        if ns.merge is not None:
+            parser.error("--build-timeout cannot be combined with --merge")
+        if ns.rebuild_summary is not None:
+            parser.error("--build-timeout cannot be combined with --rebuild-summary")
+
     if ns.plan_format is not None and not ns.plan:
         parser.error("--plan-format requires --plan")
     if ns.plan and (
@@ -519,10 +542,12 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         )
 
     if ns.merge is not None:
+        merge_suffix = ".diagnostic" if ns.no_gate and ns.allow_nonauthoritative else ""
         merge_out = (
             Path(ns.out)
             if ns.out
-            else api["SCOREBOARD_DIR"] / f"cpython_{api['_git_rev']()}.json"
+            else api["SCOREBOARD_DIR"]
+            / f"cpython_{api['_git_rev']()}{merge_suffix}.json"
         )
         return api["_merge_boards"](
             [Path(p) for p in ns.merge],
@@ -731,6 +756,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
             target_python_version=target_python.short,
             inner_loops=ns.inner_repeat,
             rss_mb=ns.rss_mb,
+            build_timeout_s=ns.build_timeout,
         )
         return api["_emit_hot_only_board"](
             hot_cells,
@@ -985,6 +1011,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
                                 execution_host=execution_host
                                 if spec.build_target == "wasm"
                                 else None,
+                                build_timeout_s=ns.build_timeout,
                             )
                         except NodeRuntimeError as exc:
                             print(
@@ -1084,7 +1111,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
             if bpath is not None and bpath.exists():
                 try:
                     baseline_doc = json.loads(bpath.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
+                except (OSError, UnicodeError, json.JSONDecodeError):
                     baseline_doc = None
         api["apply_classification"](
             cells, quiescent=bool(quiescence["quiet"]), baseline_doc=baseline_doc

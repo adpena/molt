@@ -2860,7 +2860,12 @@ def test_merge_partial_plan_with_disjoint_continuation_retains_observations(
     assert merged["coverage"]["not_run"] == (
         [still_missing.as_record()] if leave_unrun else []
     )
-    assert merged["run_state"] == ("partial" if leave_unrun else "complete")
+    # Attempted cells do not prove that the input owners closed their runs.
+    assert merged["run_state"] == "partial"
+    from tools.perf_scoreboard_report import build_agent_signals
+
+    signals = build_agent_signals(merged, evidence_path=str(output), limit=1)
+    assert signals.signals[0].action_code.value == "inspect_run_owner"
     assert merged["provenance"]["authoritative"] is False
     assert merged["coverage"]["release_qualified"] == 0
     assert sorted(cell["benchmark"] for cell in schema.flatten_cells(merged)) == [
@@ -4312,3 +4317,274 @@ def test_agent_signals_bound_unrepresentable_json_numeric_evidence(
     assert all(
         s.kind is not signal_report.SignalKind.PERFORMANCE_LOSS for s in report.signals
     )
+
+
+@pytest.mark.parametrize("observation", ["none", "mismatch", "build_failure", "noisy"])
+def test_partial_signals_check_owner_before_any_ranked_scheduling_action(
+    observation: Literal["none", "mismatch", "build_failure", "noisy"],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cell = _signal_cell()
+    if observation == "mismatch":
+        cell.output_parity = schema.output_parity_evidence(
+            reference_observations=[("cpython:cold", "expected", "", 0)],
+            molt_observations=[("molt:cold", "different", "", 0)],
+        )
+        _signal_failure(cell, status="output_mismatch")
+    elif observation == "build_failure":
+        _signal_failure(cell, phase="build", status="build_failed")
+    elif observation == "noisy":
+        cell.repeat_stability = None
+        cell.repeat_passes = None
+        cell.repeat_ci_lo = cell.repeat_ci_hi = None
+        cell.repeat_warm_speedups = None
+        ps.apply_classification([cell], quiescent=True)
+        assert "run --repeat" in cell.classification_reason
+    missing = schema.PlannedCell(
+        "tests/benchmarks/bench_sum.py", "native", "native", "release-fast"
+    )
+    coordinates = (
+        (missing,)
+        if observation == "none"
+        else (
+            schema.PlannedCell(cell.benchmark, cell.target, cell.backend, cell.profile),
+            missing,
+        )
+    )
+    doc = _board(
+        [] if observation == "none" else [cell],
+        provenance={"authoritative": False, "quiescence": {"quiet": False}},
+        planned_cells=coordinates,
+        run_state="partial",
+    )
+    doc["git_rev"] = "a" * 40
+    assert schema.validate_board(doc) == []
+    # With no observations, the qualification item comes before missing coverage.
+    # With a failed observation, the failure comes first. Both routes need a fence.
+    report = signal_report.build_agent_signals(
+        doc, evidence_path="running.partial.json", limit=1
+    )
+    assert report.run_state == "partial"
+    assert report.as_record()["snapshot"]["run_state"] == "partial"
+    assert len(report.signals) == 1
+    assert report.signals[0].action_code is signal_report.SignalAction.INSPECT_RUN_OWNER
+    assert report.signals[0].action.startswith(
+        "Inspect the existing run owner or confirm closure"
+    )
+    full = signal_report.build_agent_signals(doc, evidence_path="running.partial.json")
+    assert all(
+        s.action_code is signal_report.SignalAction.INSPECT_RUN_OWNER
+        for s in full.signals
+    )
+    assert any(
+        s.kind is signal_report.SignalKind.MISSING_COVERAGE for s in full.signals
+    )
+    signal_report.print_agent_signals(report)
+    assert "run_state=partial" in capsys.readouterr().out
+    ps.print_summary(doc)
+    output = capsys.readouterr().out
+    assert "RUN STATE: partial" in output
+    assert "NEXT ACTION: inspect_run_owner:" in output
+    assert "origin_rerun_needed" not in output
+    assert "re-measure quiet" not in output
+    assert "run --repeat" not in output
+
+
+def test_complete_signals_retain_direct_diagnostic_action() -> None:
+    report = signal_report.build_agent_signals(
+        _signal_board([_signal_cell()]), evidence_path="closed.json"
+    )
+    assert report.run_state == "complete"
+    assert report.as_record()["snapshot"]["run_state"] == "complete"
+    assert report.signals[0].action_code is signal_report.SignalAction.PROFILE_LOSS
+
+
+def test_agent_signals_keep_orphan_receipt_a_measurement_lead_with_daemon_status() -> (
+    None
+):
+    cell = _signal_cell()
+    _signal_failure(cell, phase="build", status="build_failed")
+    measure._record_molt_failure(
+        cell,
+        measure.bench.MoltFailure(
+            phase="build",
+            status="daemon_crash",
+            returncode=1,
+            timed_out=False,
+            elapsed_s=1.0,
+            detail="backend_daemon_empty_response",
+            orphaned_process_groups=(123,),
+        ),
+    )
+    report = signal_report.build_agent_signals(
+        _signal_board([cell]), evidence_path="orphans.json"
+    )
+    assert cell.molt_failure_status == "daemon_crash"
+    assert report.signals[0].kind is signal_report.SignalKind.MEASUREMENT_FAILURE
+
+
+@pytest.mark.parametrize("authority,quiet", [(False, True), (True, False)])
+def test_summary_does_not_promote_unqualified_apparent_win(
+    authority: bool, quiet: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    doc = _board(
+        [_signal_cell(2.0)],
+        provenance={"authoritative": authority, "quiescence": {"quiet": quiet}},
+    )
+    assert schema.validate_board(doc) == []
+    doc["git_rev"] = "a" * 40
+    expected = signal_report.build_agent_signals(
+        doc, evidence_path="snapshot.json", limit=1
+    ).signals[0]
+    ps.print_summary(doc)
+    text = capsys.readouterr().out
+    next_action = text.split("NEXT ACTION:", 1)[1]
+    assert f"{expected.action_code.value}: {expected.action}" in next_action
+    assert "protect the greens" not in text
+    assert "won classes" not in text
+    assert "GREENS WORTH PROTECTING" not in text
+    assert "machine quiescent" not in text
+
+
+@pytest.mark.parametrize("case", ["build_failure", "missing_repeats", "cold_budget"])
+def test_summary_reuses_signal_admission_for_quiet_incomplete_evidence(
+    case: Literal["build_failure", "missing_repeats", "cold_budget"],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cell = _signal_cell(3.0)
+    if case == "build_failure":
+        _signal_failure(cell, phase="build", status="build_failed")
+    else:
+        cell.repeat_warm_speedups = None
+        if case == "cold_budget":
+            cell.cold_molt_s = 1.2
+            cell.finalize(budget_ms=1.0, authoritative=True)
+    doc = _signal_board([cell])
+    expected = signal_report.build_agent_signals(
+        doc, evidence_path="quiet.json", limit=1
+    ).signals[0]
+    assert expected.action_code is not signal_report.SignalAction.PROFILE_LOSS
+    ps.print_summary(doc)
+    text = capsys.readouterr().out
+    assert f"NEXT ACTION: {expected.action_code.value}: {expected.action}" in text
+    assert "won classes" not in text and "widen the suite" not in text
+
+
+def test_summary_retains_table_when_source_evidence_is_incoherent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    doc = _signal_board([_signal_cell(3.0)])
+    doc["git_rev"] = "b" * 40
+    ps.print_summary(doc)
+    text = capsys.readouterr().out
+    assert "tests/benchmarks/bench_fib.py" in text
+    assert "validate the retained schema and source evidence" in text
+    assert "won classes" not in text
+
+
+@pytest.mark.parametrize("state", ["partial", "complete"])
+def test_baseline_lifecycle_admission_checks_metadata_not_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: Literal["partial", "complete"],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from dataclasses import replace
+
+    old = _signal_cell(1.0)
+    old.classification = ps.CLASS_TIE
+    old.repeat_stability = "STRADDLES"
+    old.repeat_ci_lo, old.repeat_ci_hi = 0.95, 1.05
+    old.binary_size_kib = 1000.0
+    baseline = _board(
+        [old], run_state=state, provenance={"authoritative": state == "complete"}
+    )
+    assert schema.validate_board(baseline) == []
+    ordinary_name = tmp_path / "cpython_zzzz.json"
+    ordinary_name.write_text(json.dumps(baseline), encoding="utf-8")
+    monkeypatch.setattr(signal_report, "SCOREBOARD_DIR", tmp_path)
+    assert signal_report._latest_baseline() == (
+        ordinary_name if state == "complete" else None
+    )
+    current = replace(old, binary_size_kib=500.0)
+    assert (
+        ps.classify_cell(current, quiescent=True, baseline_cell=asdict(old))[0]
+        == ps.CLASS_DIMENSIONAL_WIN
+    )
+    ps.apply_classification([current], quiescent=True, baseline_doc=baseline)
+    assert current.classification == (
+        ps.CLASS_DIMENSIONAL_WIN if state == "complete" else ps.CLASS_TIE
+    )
+    messages, regressed = ps.diff_against_baseline(_board([current]), ordinary_name)
+    if state == "partial":
+        assert messages and "baseline run is not complete" in messages[0]
+        assert not regressed
+        assert "baseline run is not complete" in capsys.readouterr().err
+    else:
+        assert not messages and not regressed
+
+
+@pytest.mark.parametrize("route", ["rebuild", "merge"])
+def test_partial_summary_failure_keeps_owner_fence_through_projection(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    route: Literal["rebuild", "merge"],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cell = _signal_cell()
+    _signal_failure(cell, phase="build", status="build_failed")
+    provenance = _shard_board(cell.benchmark, None, run_state="partial")["provenance"]
+    doc = _board([cell], provenance=provenance, run_state="partial")
+    doc["git_rev"] = "a" * 40
+    assert schema.validate_board(doc) == []
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(doc), encoding="utf-8")
+    if route == "rebuild":
+        assert (
+            ps._rebuild_summary(source, no_gate=True, allow_nonauthoritative=True) == 0
+        )
+    else:
+        monkeypatch.setattr(ps, "SCOREBOARD_DIR", tmp_path)
+        monkeypatch.setattr(ps, "_git_rev", lambda: "a" * 40)
+        ordinary = tmp_path / f"cpython_{'a' * 40}.json"
+        ordinary.write_text("retained ordinary board\n", encoding="utf-8")
+        assert (
+            ps.main(["--merge", str(source), "--no-gate", "--allow-nonauthoritative"])
+            == 0
+        )
+        assert ordinary.read_text(encoding="utf-8") == "retained ordinary board\n"
+        merged = json.loads(
+            (tmp_path / f"cpython_{'a' * 40}.diagnostic.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert merged["run_state"] == "partial"
+    output = capsys.readouterr().out
+    assert "RUN STATE: partial" in output
+    assert "NEXT ACTION: inspect_run_owner:" in output
+    assert "origin_rerun_needed" not in output
+    assert "re-measure quiet" not in output
+
+
+def test_latest_baseline_uses_recorded_time_instead_of_revision_sort_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    earlier = _shard_board("tests/benchmarks/bench_a.py", None)
+    later = _shard_board("tests/benchmarks/bench_a.py", None)
+    earlier["generated_at"] = "2026-11-25T12:00:00+00:00"
+    later["generated_at"] = "2026-11-26T12:00:00+00:00"
+    newest = tmp_path / "cpython_aaaa.json"
+    for path, doc in ((tmp_path / "cpython_zzzz.json", earlier), (newest, later)):
+        assert schema.validate_board(doc) == []
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    corrupt = tmp_path / "cpython_0000.json"
+    corrupt.write_bytes(b"\xff")
+    damaged = json.loads(json.dumps(earlier))
+    schema.flatten_cells(damaged)[0]["verdict"] = []
+    (tmp_path / "cpython_0001.json").write_text(json.dumps(damaged), encoding="utf-8")
+    monkeypatch.setattr(signal_report, "SCOREBOARD_DIR", tmp_path)
+    assert signal_report._latest_baseline() == newest
+    failures, regressions = ps.diff_against_baseline(later, corrupt)
+    assert failures and "baseline unreadable" in failures[0]
+    assert not regressions
+    assert signal_report.baseline_snapshot_problems(damaged)

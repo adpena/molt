@@ -15,6 +15,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from tools import harness_memory_guard
+from tools.memory_guard_core import harness_outcomes
 from molt.backend_daemon_suite_custody import LEASE_ENV
 from molt.process_spawn import ProcessGroupKwargs
 from molt.source_root import compiler_source_root
@@ -25,7 +26,11 @@ class BatchCompileRequestCustody:
     child_process: harness_memory_guard.memory_guard.GuardedChildProcess
     request_started_at_ns: int
     returncode: int
-    owned_process_identities: tuple = ()
+    request_finished_at_ns: int
+    owned_process_identities: tuple[
+        tuple[int, harness_memory_guard.memory_guard.ProcessIdentity], ...
+    ] = ()
+    suite_trip_evidence: harness_outcomes.SuiteTripEvidence | None = None
 
 
 class BatchCompileResponse(dict[str, object]):
@@ -90,9 +95,12 @@ class BatchCompileServerClient:
         process_group_kwargs: ProcessGroupKwargs | None = None,
         force_close: Callable[[subprocess.Popen[str]], None] | None = None,
         reader_name: str = "molt-batch-server-reader",
+        borrowed_sentinel: harness_memory_guard.RepoProcessMemorySentinel | None = None,
+        start_local_sentinel: bool = True,
     ) -> None:
         self._proc: subprocess.Popen[str] | None = None
         self._guard_sentinel = None
+        self._borrowed_sentinel = borrowed_sentinel
         self._force_close: Callable[[subprocess.Popen[str]], None] | None = None
         self._response_reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
@@ -150,20 +158,23 @@ class BatchCompileServerClient:
                     )
                 )
             )
-            self._guard_sentinel = None
-            if self._guard_context is not None:
+            if (
+                self._guard_context is not None
+                and start_local_sentinel
+                and borrowed_sentinel is None
+            ):
                 label = reader_name.removesuffix("-reader").replace("-", "_")
                 self._guard_sentinel = self._guard_context.start_repo_sentinel(
                     label=label,
                     drain_until_clean_sec=0.1,
                     drain_max_runtime_sec=2.0,
                 )
-                if self._guard_sentinel is not None:
-                    # Starting the sentinel can acquire a new suite lease.
-                    # Bind the child to the lease this sentinel just selected.
-                    lease = os.environ.get(LEASE_ENV)
-                    if lease is not None:
-                        launch_env[LEASE_ENV] = lease
+            if self._guard_sentinel is not None or borrowed_sentinel is not None:
+                # The active sentinel may have acquired its suite lease after
+                # the client environment was constructed.
+                lease = os.environ.get(LEASE_ENV)
+                if lease is not None:
+                    launch_env[LEASE_ENV] = lease
             process = subprocess.Popen(
                 list(cmd),
                 cwd=str(cwd),
@@ -222,6 +233,23 @@ class BatchCompileServerClient:
         if self._proc is None:
             raise RuntimeError("batch compiler child has not been launched")
         return self._proc
+
+    def _request_custody(
+        self, request_started_at_ns: int, request_finished_at_ns: int, returncode: int
+    ) -> BatchCompileRequestCustody:
+        sentinel = self._borrowed_sentinel or self._guard_sentinel
+        evidence = (
+            sentinel.suite_trip_evidence()
+            if returncode != 0 and sentinel is not None
+            else None
+        )
+        return BatchCompileRequestCustody(
+            self.child_process,
+            request_started_at_ns,
+            returncode,
+            request_finished_at_ns,
+            suite_trip_evidence=evidence,
+        )
 
     def _stdout_reader_loop(self) -> None:
         stdout = self._require_process().stdout
@@ -328,7 +356,7 @@ class BatchCompileServerClient:
         if self._closing.is_set():
             raise RuntimeError("batch compile server is closing")
         if not self._request_lock.acquire(
-            timeout=max(0.0, deadline - time.monotonic())
+            timeout=min(max(0.0, timeout), max(0.0, deadline - time.monotonic()))
         ):
             # No exclusive admission: do not attribute another request's work
             # to this caller or poison its still-synchronized server.
@@ -344,21 +372,23 @@ class BatchCompileServerClient:
                     op, params=params, env_overrides=env_overrides, deadline=deadline
                 )
             except Exception as exc:
+                request_finished_at_ns = time.monotonic_ns()
                 setattr(
                     exc,
                     "batch_request_custody",
-                    BatchCompileRequestCustody(
-                        self.child_process, request_started_at_ns, 127
+                    self._request_custody(
+                        request_started_at_ns, request_finished_at_ns, 127
                     ),
                 )
                 raise
+            request_finished_at_ns = time.monotonic_ns()
             returncode = response.get("returncode")
             if type(returncode) is not int:
                 returncode = 0 if response.get("ok") else 1
             return BatchCompileResponse(
                 response,
-                BatchCompileRequestCustody(
-                    self.child_process, request_started_at_ns, returncode
+                self._request_custody(
+                    request_started_at_ns, request_finished_at_ns, returncode
                 ),
             )
         finally:

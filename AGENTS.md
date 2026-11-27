@@ -1,248 +1,208 @@
 # Molt Agent Constitution
 
-Use expert judgment and first-principles reasoning. These are outcome and invariant constraints,
-not a fixed implementation recipe. Prefer live code, tests, measurements and explicit user direction
-over stale prose or precedent.
+Use expert judgment and first principles within these outcome and invariant constraints. Prefer
+explicit user direction and verified live code, tests and measurements to stale prose or precedent;
+repair in-scope guidance. `AGENTS.md` is standing policy; `CLAUDE.md` remains `@AGENTS.md`.
 
-## Work as an early-stage, world-class AOT compiler project
+## Operate like an early-stage AOT compiler project
 
-- Before each design, dispatch, review, landing or report, ask what an early-stage, world-class AOT
-  compiler project (early Bun, Zig, Go and LLVM; GraalVM Native Image, Codon, mypyc) would do; act
-  on it unprompted. Process only keeps trunk green and moving: short presubmit, revert within an
-  hour, few lanes, differential tests over implementation pins, gates apart from development load.
+Before design, dispatch, review, landing or reporting, apply the standards of early Bun, Zig, Go
+and LLVM and leading AOT compilers. Keep trunk green and moving: short presubmit, revert within
+an hour, few lanes, differential tests over implementation pins, development load apart from gates.
+Add process only for a measured bottleneck; minimize wall clock to qualified outcomes.
 
-## Own the outcome
+## Bind the work and finish the outcome
 
-- Own the authorized outcome: choose the design and undertake necessary cross-layer refactors,
-  migrations and deletions without routine approval. Complete verification, landing and retirement;
-  landing and retirement are separate facts. Resolve/report custody blockers and retain evidence.
-- Reuse existing work before creating an isolated lane. New isolated work uses the managed
-  lane/landing queue lifecycle in `docs/ops/INTEGRATION.md`, which owns automatic retirement.
-- A defect you meet is yours, pre-existing or not. "Fails on main too" says who caused it, never
-  who fixes it: fix it, or give it an owner and a slot the same day.
-- Questions and reviews authorize inspection; change requests authorize scoped fixes and checks. Name completion and its integration owner.
-- Pause only for user-only input, a real scope change or unauthorized destructive, irreversible,
-  privileged or externally consequential action. Proceed with authorized safe, reversible work.
-- Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
-  useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
-- Minimize wall clock to qualified user outcomes. Consult the published V1 ledger below before
-  choosing work; update it as evidence changes scope, priorities, blockers or qualification. It
-  alone owns current V1 burndown state; other roadmaps link to it. State passes, failures, unknowns.
-- Follow safer live facts over stale guidance; repair in-scope guidance in the same change.
+- Bind startup to the assigned absolute checkout, branch, HEAD and dirty/owned paths: inspect
+  `git -C <checkout> status --short --branch`, `git -C <checkout> rev-parse HEAD`, nested instructions
+  and retained proof state. From that checkout, use
+  `uv run --no-project python -B tools/venv_exec.py python tools/agent_coordination.py context`.
+  Read only task-relevant authorities; consult the published
+  `docs/agent/V1_HANDOFF_FINDINGS.md` before choosing work. It alone owns V1 burndown, priorities,
+  blockers and qualification; update it when evidence changes them. Other roadmaps link to it.
+- Reconcile assignments, WIP/history/handoffs and donors before replacement. Messages/memory and
+  path-only records are leads, not locks: verify source, current owner and running-command state.
+  Staleness grants no write permission; resolve ambiguous/live matching ownership with the integrator.
+- Questions/reviews authorize inspection; change requests authorize scoped fixes/checks. Name outcome
+  and integrator. Choose needed cross-layer refactors/migrations/deletions without routine approval;
+  finish verification, landing and retirement while useful authorized work remains. Recover interrupted
+  tools from durable source/proof state. Pause only for user-only input, scope change or unauthorized
+  destructive, irreversible, privileged or external action.
+- Fix encountered defects, including pre-existing ones, or assign an owner and same-day slot.
+  Reuse existing work; managed lanes, canonical landing and automatic retirement belong to
+  `docs/ops/INTEGRATION.md` and `tools/molt_dev.py`. Harvest unlanded work without a live worker
+  into main, prove and land it or fold it into main and retire it the same day. Preservation precedes
+  movement and is not the endpoint; landing and retirement are separate observed facts.
+- Review diff, generated synchronization, docs/diagnostics, failure/resource paths and cleanup before
+  completion. Report behavior, executed evidence/identities, failures/unknowns/unverified cells, ledger,
+  remaining obligations and observed landing/retirement. Before rescheduling partial work, check its
+  current owner, retained evidence and closure against the ledger.
 
-## Engineer coherent systems
+## Preserve the Python AOT contract
 
-- Trace the invariant through its authority, producers/consumers and backend/profile/platform siblings
-  by mechanism and symbol. Bound discovery, not the required end state: a narrow aperture must lead
-  to the complete correction. Use independent family-wide regression/differential oracles; record
-  exceptions/unverified cells and preserve sites with different semantics. Scale research to risk.
-- Keep one canonical authority per fact, transition, owner, protocol or generated table, in code and
-  documents. Complete replacements by deleting legacy implementations, dead consumers and obsolete
-  projections in the same migration. No internal compatibility lanes, shims, duplicate registries or speculative fallbacks.
-- Write an operation's meaning once: a late-TIR expansion into primitives every backend lowers,
-  else one `molt-codegen-abi` generator. A backend holds instruction selection only. Migrate
-  duplicate backend lanes to that shared lowering; add none. Build each backend with its feature on.
-- **Incomplete consumer migration blocks landing.** Authority/schema/API/ABI/identity/ownership changes
-  are indivisible. Reconcile WIP; migrate callers, projections, fixtures, build/install/release paths,
-  docs and backend/target/platform cells together. Search obsolete contracts before costly validation.
-  Fixtures implement the real boundary with an independent oracle. No aliases, adapters, permissive
-  validators or fallbacks may hide unfinished work. Exercise consumers, fix exposed failures and state
-  unverified cells; a green producer cannot prove migration.
-- Challenge inherited designs and proposed mechanisms with first-principles reasoning and bounded
-  experiments. Choose the simplest coherent architecture; abstractions, apparatus and specialized representations
-  must remove duplication, expose an invariant or enable measured optimization while preserving contracts.
-- Treat all compiler layers, runtime, ABI, tooling, diagnostics, packaging, tests and docs as one architecture.
+- Molt compiles standalone native/WASM programs, never depending on host Python or interpreter
+  fallback. Native/WASM are co-equal frontier targets; LLVM, MLIR, every IR layer, linker, memory
+  manager and shipped backend/profile are optimization surfaces. Portability includes all tooling,
+  tests and developer apparatus; host assumptions cannot enter target semantics/shared infrastructure.
+- `docs/spec/areas/compat/contracts/verified_subset_contract.md` owns intended Python semantics;
+  `docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md` (0216) owns exclusions.
+  Source `eval`/`exec` are unsupported; `compile` only validates parsing. No arbitrary runtime
+  monkeypatching or reflection defeating static reasoning; scoped mutation/introspection retain
+  their contracts. Missing support, slowness or failing tests cannot shrink scope. Expansion needs
+  evidence and explicit user approval before implementation; packages/benchmarks grant no exception.
+- Support upstream ecosystems through reusable primitives, package/import custody, source-built
+  extensions and correct C-API/ABI. No substitute NumPy/SciPy or other package reimplementations;
+  forks/patches are maintained, provenance-pinned repairs for upstream defects.
+- Never rewrite Python in Python: compile CPython's pinned Python stdlib sources, patched only
+  where the verified subset requires; C modules/hot paths use Rust intrinsics and thin Python glue.
+  The stdlib participates in whole-program pruning, specialization and inlining, not a prebuilt
+  library. Per-module summaries preserve rebuild speed; pure bodies initialize an immortal image
+  heap at build time; target facts are constants. The exact plan is
+  `docs/spec/areas/compat/plans/stdlib_lowering_plan.md`, “Closed-world stdlib (architecture)”.
+- Preserve deterministic CPython behavior by default while designing for free-threaded/GIL-less
+  execution. State support as matrices over OS, architecture, ABI, Python version, concurrency,
+  backend, profile and optimization level. Gate on demonstrated capability/correctness/performance,
+  never convenience; reject unsupported cells early with useful diagnostics.
 
-## Build to the state of the art
+## One architecture, complete migrations
 
-- Research our codebase/history/WIP and leading projects' designs and pitfalls before architectural or
-  performance work. Seek reusable algorithms, data structures, code and tools: AOT first (GraalVM
-  Native Image, Go, mypyc, Codon, MLIR/LLVM, Cranelift, rustc; spec 0216 closes the program), then
-  CPython, PyPy, HotSpot/V8 where static proof fails. Borrow/adapt with provenance and license duties.
-  Reuse matching research; keep inquiry decision-focused. Record sources, invariants, alternatives
-  and measured tradeoffs in the owning design; avoid repeated surveys or new documents by ritual.
-- Identity is typed, never spelled; lifecycles are typed state machines; rewrites prove themselves
-  against the formal model. One source generates closed types that rustc and `ty` enforce. Detail:
-  `docs/design/foundation/typed_identity_state_machines.md`.
-- A string match is a compile-time decision made again at run time. A runtime entry, callee,
-  global, attribute or representation travels as a typed id, slot, offset or guarded code address,
-  never as a name to look up. Strings serve reflection and messages. Spelled-identity sites only fall.
-- Every registered entity needs a proven producer; retire its consumers with its last producer.
-  `tools/op_kinds/census.py` proves op kinds. Test filters need a producer in the selected crate/features.
+- Trace invariants by symbol/mechanism through authorities, consumers and backend/profile/platform
+  siblings. Bound discovery, not correction; preserve different semantics, report class-sweep siblings,
+  exceptions/unverified cells and use independent family-wide oracles. All layers form one architecture.
+- Keep one authority per fact, transition, owner, protocol or table. **Incomplete consumer migration
+  blocks landing:** reconcile WIP and migrate callers, generated projections, fixtures, build/install/
+  release paths, docs and target cells together. Delete replaced implementations, dead consumers
+  and obsolete projections in the same migration. Search obsolete contracts before expensive validation. No internal compatibility
+  lanes, shims, duplicate registries or speculative fallbacks. No aliases, adapters or permissive
+  validators may hide unfinished migration. Exercise real consumers; a green producer is insufficient.
+- Define operation semantics once in late-TIR primitives every backend lowers, otherwise one
+  `molt-codegen-abi` generator. Backends select instructions only; migrate duplicate lowering and
+  build each backend with its feature enabled.
+- Research code/history/WIP and leading designs before architecture/performance work: AOT first
+  (GraalVM Native Image, Go, mypyc, Codon, MLIR/LLVM, Cranelift, rustc), dynamic systems where static
+  proof fails. Reuse matching research; record sources/licenses, invariants, alternatives and measured
+  trades in the owning design. Choose the simplest coherent architecture; bounded experiments
+  challenge precedent. Abstractions must remove
+  duplication, expose invariants or enable measured optimization; scale inquiry to risk, avoid ritual.
+- Identity is typed, never spelled; lifecycles use typed state machines; rewrites prove against the
+  formal model. One source generates rustc/`ty`-enforced closed types:
+  `docs/design/foundation/typed_identity_state_machines.md`. Runtime entries, callees, globals,
+  attributes and representations travel as typed IDs, slots, offsets or guarded code addresses;
+  strings serve reflection/messages. Spelled-identity sites only decrease. Apply “Typed facts at the
+  gate” in `docs/design/presubmit_test_strategy.md` to signatures and fact representation.
+- Every registered entity needs a proven producer; retire consumers with its last producer.
+  `tools/op_kinds/census.py` owns op-kind proof; test filters need a producer in selected crate/features.
+  Generated files are projections: change their source/generator and regenerate in the same arc.
 
-## Project direction
+## Performance is correctness
 
-- Molt is an optimizing AOT Python compiler/runtime for standalone native and WASM programs;
-  emitted programs never depend on a host Python interpreter or interpreter fallback.
-- The verified-subset/dynamic-execution contracts below own intended semantics, not passing coverage.
-  Source builtin `eval`/`exec` are unsupported; `compile` provides parser validation only. No arbitrary
-  runtime monkeypatching or reflection that defeats static reasoning. Never widen policy for a
-  package/benchmark; expansion needs its evidence and explicit user approval before implementation.
-  Missing support, slowness or failures cannot redefine scope. Scoped mutation/introspection stay contracted.
-- Ecosystem support uses reusable primitives, package/import custody, source-built extensions and
-  correct C-API/ABI, not substitute packages. Forks/patches must be maintained, provenance-pinned
-  repairs for upstream defects; Molt does not reimplement NumPy, SciPy or other upstream packages.
-- Never rewrite Python in Python. A stdlib module CPython ships as Python compiles from CPython's
-  pinned source, patched only where the verified subset requires; a C module or hot path becomes a
-  Rust intrinsic with thin Python glue. Speed comes from Rust and from code that avoids the runtime.
-- The stdlib is part of the closed-world program, not a prebuilt library: one whole-program
-  analysis prunes, specializes and inlines across it; cached per-module summaries keep rebuilds
-  fast; pure module bodies run at build time into an immortal image heap; target facts
-  (`sys.platform`, version) are constants. Plan: `stdlib_lowering_plan.md` "Closed-world stdlib".
-- Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
-  runtime memory management and every shipped backend/profile are first-class optimization surfaces.
-- Preserve deterministic CPython behavior by default while designing for free-threaded and GIL-less execution.
-- Support claims are explicit matrices over target OS, architecture, ABI, Python version,
-  concurrency mode, backend, profile, and optimization level. Gate only on demonstrated capability,
-  correctness or performance, never convenience. Refuse unsupported cells early with useful diagnostics.
-- Portability covers compiler/runtime, CLI, tests, build/release tooling, and developer apparatus
-  alike; host-specific assumptions must not leak into target semantics or shared infrastructure.
+- Correctness, CPython conformance and compiled performance are inseparable. Preserve observables
+  with proven semantics and representative whole-program time/memory evidence; no benchmark tricks,
+  weakened oracles or unbounded memory. The bar is equivalent C
+  (`clang -O2`, within 2x instructions per loop iteration); CPython is semantic oracle and floor.
+  Work above that bar may land as progress, with its ledger row open.
+- Read stage status in `docs/design/foundation/call_anatomy.md` before performance analysis,
+  ordering or speed claims. Whole-program facts no code can change are compile-time constants:
+  proven sites emit the instruction, fixed-offset load or direct compiled call, with no runtime
+  call to find/check/bind it. Guards/caches/site records require a possible writer named in the
+  diagnostic. A cheaper runtime entry only helps unproven sites. Measure instructions retired
+  and executed runtime calls per iteration before/after; static call-site counts include cold paths.
+- Carry facts on typed SSA values one way through lowering to codegen: no name-keyed facts,
+  re-lifted IR, shape re-derivation or second optimizer for one fact family. A refusing pass diagnoses
+  lost facts; no silent generic-runtime degradation. Compiled code carries execution context and
+  inlines fast paths, leaving runtime work cold where static proof is unavailable.
+- User compile/edit/rebuild latency outweighs compiler self-build time; accept measured user gains
+  without losing correctness/conformance/generated speed. Cargo/Go/uv set the millisecond unchanged
+  rebuild bar. Measure affected before/after latency/throughput/startup, syscalls/flushes/locks/I/O/
+  spawns/serialization, allocation, peak live/process-tree memory, caches/atomics/contention,
+  code/artifact size, link time and failure atomicity.
+- Time exact uv-managed CPython in isolated mode (`-I`), not the guarded dev environment. Cost
+  attribution needs agreeing source, per-module profile and interleaved A/B. Recover purpose and
+  measured Molt/CPython value before deletion; a fast path needs a general replacement. Recover speed
+  through proven/guarded bindings and inlining, never name matching. Use typed platform/architecture
+  capability plans, never retry/fallback feature detection.
+- Instrument only to shorten decisions or remove measured recurring bottlenecks. Build profiling:
+  `docs/OPERATIONS.md`, “Build time” (`MOLT_BUILD_DIAGNOSTICS`,
+  `MOLT_BUILD_DIAGNOSTICS_FILE`, `MOLT_CLI_PROFILE`). Development apparatus is frozen: add no runner,
+  receipt, ledger, scanner, dashboard or generated projection without a measured defect it would
+  catch; delete apparatus with its last consumer. `docs/design/presubmit_test_strategy.md` owns the exit.
 
-## Performance is part of correctness
+## Prove the changed claim once
 
-- User-code compile/edit/rebuild latency outweighs compiler self-build time. Accept slower compiler
-  builds for measured user-facing gains, preserving correctness, conformance and generated-code speed.
-- Account for hot/cold costs: syscalls, flushes, locks, I/O, spawns, allocations, peak memory,
-  serialization and unchanged-input work. Choose a simple coherent design; measure trades.
-  Cargo, Go and uv set the millisecond no-change rebuild bar.
-- Measure changed contracts before/after: latency/throughput, startup, allocation/I/O, peak live
-  and process-tree memory, caches/atomics/contention, code/artifact size, link time, failure atomicity.
-- Time CPython with the uv-managed interpreter in isolated mode (`python3.X -I`); the dev
-  environment re-execs test scripts under a memory guard. Attribute a cost only when its source, a
-  per-module profile and an interleaved A/B agree; `docs/design/foundation/call_anatomy.md` is the anchor.
-- Optimize per platform and architecture through typed capability and target plans. Do not use
-  post-failure retries or silent fallback as feature detection.
-- Extend instrumentation only to shorten decisions or remove measured recurring bottlenecks; avoid
-  per-fix machinery. Measure slow builds: `MOLT_BUILD_DIAGNOSTICS(_FILE)`,
-  `MOLT_CLI_PROFILE` (`docs/OPERATIONS.md`, "Build time").
-- Correctness, conformance and compiled user-code performance are inseparable. Derive speed from
-  proven semantics and sound invariants; preserve observable behavior. Require representative
-  whole-program time/memory evidence, never benchmark tricks, weakened oracles or unbounded memory.
-- The bar is C: a program is not correct until it is competitive with the equivalent C program
-  (clang -O2; within 2x in instructions per loop iteration). CPython is the semantic oracle and the
-  floor, never the target. A slice above that bar lands as progress; its ledger row stays open.
-- Before deleting an implementation, recover its purpose and measured value against current Molt
-  and CPython. Removing a fast path without a general replacement is a regression. Recover speed
-  through proven/guarded bindings and inlining, never name-matched lowering.
-- Facts live on typed SSA values and flow one way to codegen: no name-keyed facts, no re-lifted
-  lowered IR, no second optimizer for one fact family. A fact proven before a lowering is carried
-  across it, not re-derived from shape. A lost fact must not fall to the generic runtime in
-  silence: the pass that refuses says why in a build diagnostic. Compiled code carries the execution context,
-  inlines common fast paths, and leaves the runtime as a cold fallback, not the operation.
-- Closed world (`call_anatomy.md` 4.5a): Molt compiles the whole program, so a fact no code in it can
-  change is a compile-time constant. A proven site emits the operation itself (an instruction, a
-  fixed-offset load, a direct call of compiled code) and makes no runtime call to find, check or bind
-  it. A guard, cache or site record exists only where the program holds a possible writer, and its
-  diagnostic names that writer. A cheaper runtime call is still a runtime call: tuning a runtime entry
-  serves unproven sites and never fixes proven ones. Judge a design by the runtime calls it executes
-  per iteration in a sampled profile; static call-site counts include cold fallback paths.
+- Name the changed obligation, plausible defect and independent oracle; extend existing test
+  authorities under `docs/spec/areas/testing/0007-testing.md`. No implementation mirrors, mock-only
+  success or count/coverage quotas. Every test file belongs to a proof cell that runs it. Load-bearing
+  changes get adversarial review; recurse on findings, not quotas. Prose/scratch needs no new tests/apparatus.
+- One proof owner selects affected obligations under `tools/proof_plan.toml` and
+  `docs/agent/PROOF_QUEUE.md`, inspecting receipts first. Reuse only matching source/tool/environment/
+  workload/artifacts and proven process closure; declare remaining obligations. Repeat/widen only
+  for changed inputs, new failure or uncovered obligation; one cell cannot prove a family. Stop at
+  sufficient development evidence; mandatory landing/release gates still run once, CI qualifies releases.
+- Before each commit, run `tools/consumer_gate.py run -- PATHS` in the selected environment
+  (static gates, reached Rust lib tests and first-hop importers, presubmit `-n auto --skip-slow`).
+  Mark median >=60 s tests `@pytest.mark.slow` for postsubmit. Implementation handoff requires
+  `tools/molt_dev.py land --repo <checkout> --precheck-only` and changed tests passing in the
+  runner's plain environment, not lane `env.sh`; read-only findings have no per-turn proof quota.
+- Preflight prerequisites in the actual child environment; parsing is not readiness. Validate mutations
+  at their canonical boundary. Reuse compatible compiled producers/affected selectors; avoid unrelated
+  suites, cold targets and competing Cargo writers. Measure before changing concurrency/coverage.
+  Stop dependent batches at first failure; retain/classify product/harness/artifact drift/unknown before
+  retry. Silent/frozen processes remain unknown until live process/log/artifact/guard evidence resolves them.
+- Keep implementation, verified cells and release acceptance distinct. Align `README.md`/onboarding,
+  then owning contracts/status projections; link canonical matrices. Keep raw proof logs private.
 
-## Work with the live repository
+## Coordinate through existing owners
 
-- Start with `uv run --no-project python -B tools/venv_exec.py python
-  tools/agent_coordination.py context` (plain `uv run` makes a checkout `.venv`: HF-522), `git status`,
-  nested instructions and proof state; for Pact work read only relevant `docs/agent/ORCHESTRATION.md`.
-- `.python-version` and `uv.lock` are the one environment authority (`docs/design/one_environment.md`);
-  never pass `--python` or call a bare `python3`, which override or bypass the pin.
-- Harvest and land signal; do not hoard it. A lane, worktree or WIP without a live worker and with
-  unlanded commits is merged with main, proven and landed (or folded into main and retired) the
-  same day; preserve before moving, but preservation is never the end state.
-- Preserve live user and parallel-agent work; never reset, clean, overwrite, revert or stage unrelated edits.
-  Bind Git mutations to an explicit checkout (`git -C` or a bound Git object), assert its branch/HEAD
-  and exact owned path set, and review the scoped diff before staging, committing or landing.
-- Generated files are projections; change the source or generator and regenerate in the same arc.
-- Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
-  reuse uv selection and record its version separately from the CLI/project target (`docs/getting-started.md`).
-- Resolve versioned CPython oracles through interpreter/source authorities and verify exact identity.
-  Never switch project-scoped `uv run --python` minors in an active checkout: it replaces shared state.
-  Extra environments require owned `UV_PROJECT_ENVIRONMENT`; close readers before environment changes.
-- The development apparatus (runners, receipts, ledgers, scanners, dashboards, generated
-  projections) is frozen: add none unless a measured defect it would have caught justifies it,
-  and delete one with its last consumer. Capacity goes to compiler and runtime work
-  (`docs/design/presubmit_test_strategy.md`, exit condition).
-- Keep history and procedures in owning designs/specs/runbooks, not this always-loaded file. Per-run
-  logs, scratch plans and handoffs stay outside tracked source (`docs/ROOT_LAYOUT.md`); preserve
-  private evidence and fold durable conclusions into the public contract.
+- Only integrators dispatch; workers never delegate/open a second lane. Delegate substantial work/
+  review only when saved critical path exceeds startup/context costs; batch independent reads/checks,
+  avoid tiny agents/overlapping writers/duplicate proofs. Parent owns architecture/integration; one
+  owner per ledger family, no copied facts.
+- Use validated `DispatchBounds` through `tools/dispatch_prompt.py` and existing coordination records.
+  `docs/ops/MULTI_AGENT_COORDINATION.md` owns brief review, budgets, proof families, stop conditions,
+  parent-controlled scope expansion, class-sweep reports and ownership closure. Task messages and
+  worktrees are not locks. Integrator runs each lane's Goldfish design review
+  (`tools/subagent_contract.py`, `DESIGN_REVIEW`); workers close owned commands canonically.
+- Dispatch/resume with Codex `gpt-6.2-sol` at `high`, `gpt-6.2-astra` for hardest work, never `ultra`.
+  Respect concurrency limits; Claude follows the same custody/evidence rules.
 
-## Delegate deliberately
+## Preserve custody
 
-- Reconcile canonical authorities, history, handoffs and WIP before replacement/deletion; identify
-  reuse, donors and custody. Verify messages/memory as leads; resolve unclear ownership with the integrator.
-- Delegate substantial independent work or a meaningful correctness review when it shortens the
-  critical path after startup/context costs. Batch independent reads and checks; avoid tiny review
-  agents, overlapping writers and duplicate proofs. The parent owns architecture and integration.
-- One owner implements each ledger family across lanes; no other lane copies its facts. Dispatch
-  with validated `DispatchBounds` via `tools/dispatch_prompt.py`; record ownership and handoffs in
-  coordination records. `docs/ops/MULTI_AGENT_COORDINATION.md` owns brief review, budgets,
-  proofs, stop rules and parent-controlled expansion. Task messages and worktrees are not source locks.
-- Use Codex `gpt-6.2-sol` at `high` for dispatches and resumes. Use `gpt-6.2-astra` for the hardest work.
-  Do not use `ultra`.
-  Respect concurrency limits; Claude follows the same custody/evidence rules and opens no second lane.
-- Only the integrator dispatches. Workers never delegate to subagents, forks or other agents;
-  the integrator runs each lane's Goldfish design review (`tools/subagent_contract.py` DESIGN_REVIEW).
+- `.python-version`/`uv.lock` own the environment (`docs/design/one_environment.md`); reuse/repair
+  project launchers, no `--python` override or bare `python3`. Frontend CPython 3.12+ includes 3.15;
+  record exact frontend and guest/CLI versions separately (`docs/getting-started.md`). Follow
+  `docs/ops/MULTI_AGENT_COORDINATION.md`, “Interpreter environments are mutable proof inputs”:
+  pinned oracle identities, no active project-scoped uv minor switches, owned extra environments,
+  readers closed before mutation.
+- Bind every Git mutation to the absolute checkout, expected branch/HEAD and exact owned paths;
+  inspect the scoped diff before staging/commit/landing. Never reset, clean, overwrite, revert or stage
+  unrelated user/parallel work. Destructive Git and broad cleanup require explicit authorization and
+  verified targets. Preserve credentials, people and external systems; publishing, messaging, issues,
+  pushes or other external mutations require user authorization or an explicit requested workflow step.
+- Retiring WIP requires two source/history/current-owner passes, one independent when available:
+  harvest useful changes, identify satisfied/superseded work and preserve unresolved signal with an
+  indexed recovery path and owner/question. Archives, age and cache-like names prove no reconciliation
+  and grant no source-deletion authority.
+- Stop only live-proved Molt-owned children/workers; test observers use `tests/process_guard_common.py`.
+  Never stop Codex, Claude, app/renderer/server helpers, MCP/plugins, shell hosts, Git pollers,
+  ancestors or ambiguous control-plane processes; preserve evidence and repair custody.
+- Dependencies/toolchains/Actions use the newest release >=7 days old; advisory fixes need dated
+  exemptions. No AI attribution in commits/PRs (`tools/check_commit_attribution.py`).
+- Keep procedures/history in owning runbooks/designs, per-run logs/plans/handoffs outside tracked
+  source (`docs/ROOT_LAYOUT.md`); retain private evidence and fold durable conclusions into public contracts.
 
-## Verify the claim, not the ritual
+## Route only to the needed authority
 
-- Tests must distinguish correct behavior from a plausible defect using an independent oracle.
-  Extend the existing test authority; avoid implementation mirrors, mock-only success, and
-  test-count or coverage quotas. Follow `docs/spec/areas/testing/0007-testing.md` when adding or reviewing tests.
-- Name the changed obligation and plausible defect. Use independent oracles and adversarial review
-  for load-bearing changes; recurse on new findings, not review quotas. With one proof owner, stop at
-  sufficient evidence. Repeat/widen only for changed inputs, a new failure or an uncovered obligation.
-  One cell cannot prove a family; prose/scratch work needs no new permanent tests or apparatus.
-- Separate development feedback from integration/release qualification. Run selected landing gates
-  once; CI arbitrates release candidates. Review matching receipts; avoid duplicate prechecks and
-  reflexive rechecks. Hand off a lane only after `tools/molt_dev.py land --repo <checkout>
-  --precheck-only` and its changed tests pass in the runner's plain environment, not a lane env.sh.
-- Before each commit, `tools/consumer_gate.py run -- PATHS` runs the static gates, the reached
-  Rust lib tests and first-hop importers as presubmit does (`-n auto --skip-slow`). Mark a test whose median is 60 s or more
-  `@pytest.mark.slow`; postsubmit runs it (`docs/ops/INTEGRATION.md`).
-- Reuse one compiled producer for compatible profiles/features and affected selectors. Batch useful
-  checks without adding unrelated suites to amortize a compile; avoid cold targets and competing
-  Cargo writers. Measure the actual critical path before changing concurrency or coverage.
-- Preflight selected toolchain/target/runtime prerequisites with the actual child environment before
-  expensive work; parser acceptance is not readiness. Validate mutations at their canonical boundary.
-- Stop dependent batches at the first failure and keep its receipts; classify product, harness,
-  artifact drift or unknown before retrying. Reuse phases only on matching source/tool/env/artifacts.
-- Every test file belongs to a proof cell; a test that no cell runs rots without notice.
-- Treat silent or frozen processes as unknown until logs, artifacts, guard state or live process evidence establish a result.
-- Before completion, review the owned diff, generated synchronization, docs, diagnostics, failure
-  paths, allocations and cleanup. Fix newly exposed in-scope defects instead of merely reporting them.
-- Align public docs: `README.md`/onboarding, then owning contract/status projections. Link canonical
-  matrices; distinguish implementation, verified cells and release acceptance. Keep proof logs private.
+| Task | Existing owner |
+| --- | --- |
+| Choose/close V1 work | `docs/agent/V1_HANDOFF_FINDINGS.md` |
+| Land/retire | `docs/ops/INTEGRATION.md`, `tools/molt_dev.py` |
+| Dispatch/handoff/ownership | `docs/ops/MULTI_AGENT_COORDINATION.md` |
+| Proof execution/custody | `docs/agent/PROOF_QUEUE.md`, `tools/proof_plan.toml` |
+| Architecture/docs discovery | `docs/CANONICALS.md`, `docs/INDEX.md`, `docs/spec/README.md` |
+| Live multi-agent/Pact state | Relevant parts of `docs/agent/ORCHESTRATION.md` |
+| TIR generation | `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py` |
+| Runtime/ABI | `runtime/molt-runtime/src/intrinsics/manifest.pyi`, `runtime/runtime_abi.toml` |
+| CI/JUnit triage | `tools/ci_triage.py RUN_ID` or `tools/ci_triage.py --junit FILE` |
+| Loop anatomy/cost buckets | `tools/opt_explorer.py`, `tools/PERF_AUTHORITY.md` |
 
-## Safety and custody
-
-- Preserve unrelated files, credentials, external systems, and people. Do not publish, message, file
-  issues, push, or mutate external state unless the user authorized that action or it is an explicit
-  step of the requested workflow.
-- Never add Claude or other AI attribution (`Co-Authored-By: Claude`, "Generated with Claude Code")
-  to a commit or pull request; `tools/check_commit_attribution.py` enforces it in hooks and CI.
-- Dependencies, toolchains, Actions: newest release >=7 days old; advisory fixes by dated exemption.
-- Destructive Git operations and broad filesystem cleanup require explicit authorization and verified targets.
-- Before retiring WIP, review source/history/current owners in two passes, one independent when available.
-  Harvest useful work; identify satisfied/superseded changes. Preserve unresolved signal with an indexed
-  recovery path and explicit owner/question. Archives, age or cache-like names do not prove reconciliation
-  or authorize source deletion.
-- Molt process cleanup may stop only a live-proved Molt-owned child or worker; test observers use `tests/process_guard_common.py`.
-  Never stop Codex, Claude, app/renderer/server helpers, MCP/plugin processes, shell hosts,
-  Git pollers, ancestors or ambiguous host control-plane processes; preserve evidence and repair unclear custody.
-
-## Useful authorities
-
-- Python semantics: `docs/spec/areas/compat/contracts/verified_subset_contract.md`
-- AOT exclusions and expansion gates: `docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md`
-- Live multi-agent/Pact state: `docs/agent/ORCHESTRATION.md`
-- Open findings and the v1.0 burn-down (start here): `docs/agent/V1_HANDOFF_FINDINGS.md`
-- Architecture and documentation map: `docs/CANONICALS.md`, `docs/INDEX.md`, `docs/spec/README.md`
-- Proof-queue operations: `docs/agent/PROOF_QUEUE.md`
-- TIR facts and generation: `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py`
-- Runtime and ABI manifests: `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
-  `runtime/runtime_abi.toml`
-- CI or JUnit failure triage (NEW versus main, owners): `tools/ci_triage.py RUN_ID|--junit FILE`
-- Why Molt is slow and the staged plan (read its stage status before any performance analysis,
-  ordering or speed claim; time CPython with the managed interpreter, never the dev env):
-  `docs/design/foundation/call_anatomy.md`
-- Loop anatomy and cost buckets: `tools/opt_explorer.py`, `tools/PERF_AUTHORITY.md`
-
-Load only the authority the task needs, and update it when its facts change.
+Load only what the task needs; update the owning authority when its facts change.

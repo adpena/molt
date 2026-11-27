@@ -486,6 +486,33 @@ def test_release_board_is_the_requested_landed_revision_not_the_main_tip():
     assert any("merge_base_sha" in p for p in _revision_problems(off_main))
 
 
+@pytest.mark.parametrize(
+    "option", [["--build-timeout", "600"], ["--build-timeout=2.5"]]
+)
+def test_release_board_rejects_a_recorded_build_timeout_override(
+    option: list[str],
+) -> None:
+    import datetime as dt
+    import shlex
+
+    from tools import perf_authority as pa
+
+    doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
+    command = ["python", *shlex.split(pa.CANONICAL_GATE)]
+    invocations = [{"argv": command}]
+    doc["provenance"]["producer_invocations"] = invocations
+    now = dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc)
+    refusal = "release scoreboard producer invocation uses non-release perf flags: --build-timeout"
+    assert refusal not in pa.release_scoreboard_problems(
+        doc, expected_source_sha="a" * 40, now=now
+    )
+
+    invocations.append({"argv": [*command, *option]})
+    assert refusal in pa.release_scoreboard_problems(
+        doc, expected_source_sha="a" * 40, now=now
+    )
+
+
 def test_shards_measured_while_main_moved_on_still_merge(tmp_path):
     a = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
     b = _merge_source("llvm", CANONICAL_PERF_BENCHMARKS[1])
