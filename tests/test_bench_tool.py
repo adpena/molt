@@ -1288,7 +1288,7 @@ def test_regular_benchmark_rejects_guest_warmup_output(
     assert result["molt_speedup"] is None
 
 
-@pytest.mark.parametrize("failure", ["exit", "timeout"])
+@pytest.mark.parametrize("failure", ["exit", "timeout", "oracle"])
 def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
     monkeypatch, tmp_path, failure
 ):
@@ -1311,6 +1311,7 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
             60.0,
         ),
         "timeout": ("import time\ntime.sleep(60)\n", 1.0),
+        "oracle": ("print('incorrect reference')", 60.0),
     }[failure]
     actual_guard = bench_tool.harness_memory_guard.guarded_completed_process
     observed = []
@@ -1391,6 +1392,14 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
         assert result["molt_failure_timed_out"] is False
         assert payload["stdout_tail"] == "partial reference\n"
         assert payload["stderr_tail"] == "independent reference failed\n"
+    elif failure == "oracle":
+        assert guarded.returncode == 0
+        assert guarded.timed_out is False
+        assert result["molt_failure_status"] == "output_mismatch"
+        assert result["molt_failure_returncode"] == 0
+        assert result["molt_failure_child_returncode"] == 0
+        assert payload["detail"] == "sealed_reference_oracle_mismatch"
+        assert payload["stdout_tail"] == "incorrect reference\n"
     else:
         assert guarded.timed_out is True
         assert result["molt_failure_status"] == "timeout"
@@ -1410,7 +1419,12 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
     assert result["cpython_time_s"] is None
     assert result["cpython_samples_s"] == []
     assert result["cpython_warmup_samples_s"] == []
-    assert result["molt_output_parity"]["reason"] == "reference_unavailable"
+    assert result["molt_output_parity"]["reason"] == (
+        "reference_oracle_mismatch" if failure == "oracle" else "reference_unavailable"
+    )
+    assert bench_tool._has_native_output_parity_failures(
+        {"benchmarks": {str(workload.script): result}}
+    ) is (failure == "oracle")
     assert result["molt_ok"] is False
     assert result["molt_time_s"] is None and result["molt_build_s"] is None
     assert result["molt_samples_s"] == []

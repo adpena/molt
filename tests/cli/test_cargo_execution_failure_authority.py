@@ -17,6 +17,7 @@ from typing import Mapping
 import pytest
 
 from molt import disk_capacity as DISK_CAPACITY
+from molt import dx
 from molt.cli.models import _RuntimeArtifactState
 from molt.cargo_execution_policy import (
     CARGO_WRAPPER_ENV_NAMES,
@@ -567,7 +568,7 @@ def test_canonical_cargo_environment_uses_normal_policy_without_sccache(
 ) -> None:
     for name in CARGO_WRAPPER_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(CARGO, "pinned_sccache", lambda _env: None)
+    monkeypatch.setattr(dx, "pinned_sccache", lambda _env: None)
     if explicit is None:
         monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
     else:

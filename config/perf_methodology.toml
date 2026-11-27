@@ -82,8 +82,8 @@ schema = "molt-perf-methodology-v1"
 # sealed recipe inputs and explicit deployment ownership replace batch defaults.
 # v162: exact managed isolated CPython, shared workload custody and parity,
 # complete baseline samples, and matching observed oracle identities for comparisons.
-version = 162
-content_sha256 = "f091453536960c18c3da7f0873b250e9fa1360a93751f38ce53cac14c4f316bc"
+version = 163
+content_sha256 = "4c4fb9ec6916b58ea156d0858787cf4c32290e1bfe8f3a7bb2843e1850b84d70"
 
 [[methodology]]
 path = "tools/safe_run.py"

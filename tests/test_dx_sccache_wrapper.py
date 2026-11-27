@@ -35,13 +35,11 @@ def test_epoch_cache_selection_preserves_input_before_discovery(
 ):
     import molt.cli.cargo_execution as ce
 
-    module, select = (
-        (dx, dx._ensure_sccache_wrapper)
-        if consumer == "dx"
-        else (ce, ce._maybe_enable_sccache)
+    select = (
+        dx._ensure_sccache_wrapper if consumer == "dx" else ce._maybe_enable_sccache
     )
     monkeypatch.setattr(
-        module,
+        dx,
         "pinned_sccache",
         lambda _env: pytest.fail("epoch selection must precede discovery"),
     )
@@ -81,13 +79,11 @@ def test_explicit_other_wrapper_shadows_forced_automatic_cache(monkeypatch, cons
     import molt.cli.cargo_execution as ce
     from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 
-    module, select = (
-        (dx, dx._ensure_sccache_wrapper)
-        if consumer == "dx"
-        else (ce, ce._maybe_enable_sccache)
+    select = (
+        dx._ensure_sccache_wrapper if consumer == "dx" else ce._maybe_enable_sccache
     )
     monkeypatch.setattr(
-        module,
+        dx,
         "pinned_sccache",
         lambda _env: pytest.fail("explicit wrapper owns selection"),
     )
@@ -278,7 +274,7 @@ def test_maybe_enable_sccache_leaves_incremental_to_the_profile(
 ):
     import molt.cli.cargo_execution as ce
 
-    monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
+    monkeypatch.setattr(dx, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
     # Name the cache: a derived default follows the run context, which this
     # minimal environment lacks, and would pin its server temp dir in a CI
@@ -368,7 +364,7 @@ def test_cli_sccache_selection_does_not_probe_or_start_a_server(
     def reject_process(*args, **kwargs):
         pytest.fail("wrapper selection must not run a readiness process")
 
-    monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
+    monkeypatch.setattr(dx, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(ce, "_run_completed_command", reject_process)
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
     env = ProcessEnvironmentBuilder(
@@ -510,12 +506,11 @@ def test_dx_sccache_provisioner_receives_the_selected_tool_root(
     assert not tools.exists() and not artifacts.exists()
 
 
-def test_direct_cargo_sccache_uses_selected_environment_and_installed_home(
-    tmp_path, monkeypatch
-):
+def test_sccache_uses_selected_environment_and_installed_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from tests.test_tool_releases import _installed_demo
     from molt import tool_releases
-    from molt.cli import cargo_execution
 
     discovery = _installed_demo(tmp_path, monkeypatch)
     source = tmp_path / "bundle/source"
@@ -531,19 +526,14 @@ def test_direct_cargo_sccache_uses_selected_environment_and_installed_home(
         lambda _root: {"sccache": discovery.release},
     )
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "wrong-ambient-root"))
-    assert cargo_execution.pinned_sccache({"MOLT_HOME": str(tmp_path)}) == str(
-        discovery.executable
-    )
-    assert (
-        cargo_execution.pinned_sccache({"MOLT_TARGET_ROOT": str(tmp_path / "missing")})
-        is None
-    )
+    assert dx.pinned_sccache({"MOLT_HOME": str(tmp_path)}) == str(discovery.executable)
+    assert dx.pinned_sccache({"MOLT_TARGET_ROOT": str(tmp_path / "missing")}) is None
     invalid = tmp_path / "invalid"
     invalid.write_text("not a directory", encoding="utf-8")
     import pytest
 
     with pytest.raises(tool_releases.ToolReleaseError, match="not a directory"):
-        cargo_execution.pinned_sccache({"MOLT_TARGET_ROOT": str(invalid)})
+        dx.pinned_sccache({"MOLT_TARGET_ROOT": str(invalid)})
 
 
 def test_sccache_clients_reach_only_their_cache_private_server(

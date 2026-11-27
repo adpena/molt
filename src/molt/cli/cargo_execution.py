@@ -26,11 +26,9 @@ from molt.cargo_execution_policy import (
 )
 from molt.exact_json import loads_exact
 from molt.dx import (
-    DEFAULT_SCCACHE_CACHE_SIZE,
     control_state_dir,
     development_artifact_env,
     development_artifacts_requested,
-    pinned_sccache,
 )
 from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 from molt.cli import progress as _progress
@@ -306,39 +304,12 @@ def _maybe_enable_sccache(env: ProcessEnvironmentBuilder) -> None:
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
     if mode in {"0", "false", "no", "off"}:
         return
-    forced = mode in {"1", "true", "yes", "on"}
-    sccache = pinned_sccache(env)
+    defaults = development_artifact_env(compiler_source_root(), env, create_dirs=False)
+    sccache = defaults.get("RUSTC_WRAPPER")
     if sccache is None:
-        if forced:
-            _sccache_diag(
-                "MOLT_USE_SCCACHE set but the pinned sccache release is not "
-                "provisioned under MOLT_TARGET_ROOT (config/tool_releases.toml); "
-                "using direct rustc."
-            )
         return
-    # sccache delivers 0 cache hits on this Windows host and crashes builds
-    # mid-compile (os error 10054), converting cacheable compiler builds into
-    # multi-minute timeouts + manual reruns. Default it OFF on Windows (no value
-    # lost) unless explicitly forced; power users can set MOLT_USE_SCCACHE=1.
-    if os.name == "nt" and not forced:
-        _sccache_diag(
-            "disabled by default on Windows (0 cache hits + mid-compile crashes here); "
-            "set MOLT_USE_SCCACHE=1 to force. Using direct rustc."
-        )
-        return
-    cache_env = ProcessEnvironmentBuilder(env)
-    if not cache_env.get("SCCACHE_DIR"):
-        # The DX authority owns the artifact root. Deriving it here fell back to
-        # the checkout, which put the cache, and the server temp dir pinned
-        # beside it, inside the checkout.
-        defaults = development_artifact_env(
-            compiler_source_root(), env, create_dirs=False
-        )
-        if "SCCACHE_DIR" not in defaults:
-            return  # The canonical selection declined the proposed DX default.
-        cache_env["SCCACHE_DIR"] = defaults["SCCACHE_DIR"]
-    cache_env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
-    env.update(cache_env)
+    for key in ("SCCACHE_DIR", "SCCACHE_CACHE_SIZE"):
+        env[key] = defaults[key]
     env["RUSTC_WRAPPER"] = sccache
     _adopt_normalized_cargo_environment(env)
     _sccache_diag(
