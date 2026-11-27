@@ -402,8 +402,10 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             OpCode::Mod => self.binary_arith_op(b, op, OpKind::Mod),
             OpCode::Pow => self.binary_arith_op(b, op, OpKind::Pow),
             OpCode::CheckedAdd | OpCode::CheckedMul => self.checked_arith_op(b, op),
-            OpCode::TryBuffer2dLoadI64 => self.try_buffer_load(b, op),
-            OpCode::TryBuffer2dStoreI64 => self.try_buffer_store(b, op),
+            OpCode::TryBuffer2dLoadI64 | OpCode::LoadPackedBuffer2d => self.try_buffer_load(b, op),
+            OpCode::TryBuffer2dStoreI64 | OpCode::StorePackedBuffer2d => {
+                self.try_buffer_store(b, op)
+            }
             OpCode::Neg => self.unary_op(b, op, OpKind::Neg),
             OpCode::Pos => self.unary_op(b, op, OpKind::Pos),
             OpCode::Not => self.unary_op(b, op, OpKind::Not),

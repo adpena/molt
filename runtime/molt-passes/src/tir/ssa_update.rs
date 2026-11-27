@@ -14,12 +14,9 @@
 //!    definition that reaches it, and every edge into a new argument carries
 //!    the definition at the end of its source block.
 //!
-//! Exception edges leave a block in the middle, at the operation that can
-//! raise, and pass no new block arguments. A repair that needs an argument on
-//! a block an exception edge enters is refused. The repair also checks that
-//! every exception edge into a block where the variable is live carries the
-//! definition that the block reads. On refusal the function is left partly
-//! rewritten: the caller restores its own snapshot.
+//! Executable exception edges carry the definition before the observing
+//! operation. Region registrations cannot carry new arguments. On refusal the
+//! function is left partly rewritten: the caller restores its own snapshot.
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 use std::collections::BTreeSet;
@@ -28,8 +25,8 @@ use super::blocks::BlockId;
 use super::dominators::{
     CfgEdgePolicy, build_dom_children, build_pred_map, build_pred_map_with,
     compute_dominance_frontiers, compute_dominator_tree, dom_tree_preorder,
-    exception_label_to_block, exception_transfer_target, executable_reachable_blocks,
-    iterated_dominance_frontier,
+    exception_edge_binds_handler_arguments, exception_label_to_block, exception_transfer_target,
+    executable_reachable_blocks, iterated_dominance_frontier,
 };
 use super::function::TirFunction;
 use super::types::TirType;
@@ -50,7 +47,8 @@ pub struct Variable {
 pub enum RepairRefusal {
     /// A name has no definition or belongs to two variables.
     MalformedName,
-    /// A block that an exception edge enters needs a new block argument.
+    /// The caller has not authorized a new payload, or a region registration
+    /// blocks the required handler argument.
     JoinAtExceptionTarget,
     /// A path reaches a use, or a needed merge, with no definition.
     UndefinedUse,
@@ -103,6 +101,7 @@ struct Cfg {
     exception_preds: HashMap<BlockId, Vec<(BlockId, usize)>>,
     /// source block -> (operation index, target) of each exception edge.
     exception_succs: HashMap<BlockId, Vec<(usize, BlockId)>>,
+    registrations: HashSet<BlockId>,
     defs: HashMap<ValueId, (BlockId, DefPos)>,
     uses: HashMap<ValueId, Vec<(BlockId, UseSite)>>,
 }
@@ -118,6 +117,7 @@ impl Cfg {
         let labels = exception_label_to_block(func);
         let mut exception_preds: HashMap<BlockId, Vec<(BlockId, usize)>> = HashMap::default();
         let mut exception_succs: HashMap<BlockId, Vec<(usize, BlockId)>> = HashMap::default();
+        let mut registrations = HashSet::default();
         let mut defs = HashMap::default();
         let mut uses: HashMap<ValueId, Vec<(BlockId, UseSite)>> = HashMap::default();
         for (&bid, block) in &func.blocks {
@@ -128,6 +128,12 @@ impl Cfg {
                 for &result in &op.results {
                     defs.insert(result, (bid, DefPos::Op(index)));
                 }
+                let exception = exception_transfer_target(op, &labels);
+                if let Some(target) = exception
+                    && !exception_edge_binds_handler_arguments(op.opcode)
+                {
+                    registrations.insert(target);
+                }
                 if !reachable.contains(&bid) {
                     continue;
                 }
@@ -136,7 +142,7 @@ impl Cfg {
                         .or_default()
                         .push((bid, UseSite::Op(index)));
                 }
-                if let Some(target) = exception_transfer_target(op, &labels) {
+                if let Some(target) = exception {
                     exception_preds
                         .entry(target)
                         .or_default()
@@ -164,6 +170,7 @@ impl Cfg {
             terminator_preds,
             exception_preds,
             exception_succs,
+            registrations,
             defs,
             uses,
         }
@@ -175,6 +182,23 @@ impl Cfg {
 pub fn repair(
     func: &mut TirFunction,
     variables: &[Variable],
+) -> Result<RepairStats, RepairRefusal> {
+    repair_impl(func, variables, false)
+}
+
+/// The caller validates the new transport after representation selection.
+/// Preparing an exception payload must not allocate on the continuing path.
+pub(crate) fn repair_with_exception_payloads(
+    func: &mut TirFunction,
+    variables: &[Variable],
+) -> Result<RepairStats, RepairRefusal> {
+    repair_impl(func, variables, true)
+}
+
+fn repair_impl(
+    func: &mut TirFunction,
+    variables: &[Variable],
+    carry_exception_payloads: bool,
 ) -> Result<RepairStats, RepairRefusal> {
     if variables.is_empty() {
         return Ok(RepairStats::default());
@@ -190,7 +214,14 @@ pub fn repair(
     }
     let mut stats = RepairStats::default();
     for (index, variable) in variables.iter().enumerate() {
-        plan.place_joins(func, &cfg, variable, index, &mut stats)?;
+        plan.place_joins(
+            func,
+            &cfg,
+            variable,
+            index,
+            carry_exception_payloads,
+            &mut stats,
+        )?;
     }
     plan.rename(func, &cfg, variables.len(), &mut stats)?;
     Ok(stats)
@@ -211,6 +242,7 @@ impl RenamePlan {
         cfg: &Cfg,
         variable: &Variable,
         variable_index: usize,
+        carry_exception_payloads: bool,
         stats: &mut RepairStats,
     ) -> Result<(), RepairRefusal> {
         // Only the first definition can kill a live-in requirement. Arg
@@ -270,8 +302,10 @@ impl RenamePlan {
                 live_in.contains(block) && !matches!(first_defs.get(block), Some(DefPos::Arg))
             })
             .collect();
-        for block in joins {
-            if cfg.exception_preds.contains_key(&block) {
+        for &block in &joins {
+            if cfg.registrations.contains(&block)
+                || (!carry_exception_payloads && cfg.exception_preds.contains_key(&block))
+            {
                 return Err(RepairRefusal::JoinAtExceptionTarget);
             }
             let arg = func.fresh_value();
@@ -289,7 +323,7 @@ impl RenamePlan {
             stats.joins += 1;
         }
         for block in live_in {
-            if cfg.exception_preds.contains_key(&block) {
+            if cfg.exception_preds.contains_key(&block) && !joins.contains(&block) {
                 self.handler_live_ins
                     .entry(block)
                     .or_default()
@@ -349,6 +383,14 @@ impl RenamePlan {
                         break;
                     }
                     exception_edges.next();
+                    if let Some(joined) = self.joins.get(&target) {
+                        let at = op.exception_payload().len();
+                        let payload = joined
+                            .iter()
+                            .map(|&variable| reaching[variable].ok_or(RepairRefusal::UndefinedUse))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        op.operands.splice(at..at, payload);
+                    }
                     for &variable in self.handler_live_ins.get(&target).into_iter().flatten() {
                         let carried = reaching[variable];
                         if exception_carried
@@ -429,12 +471,19 @@ impl RenamePlan {
             .copied()
             .filter(|bid| !cfg.reachable.contains(bid))
             .collect();
+        let labels = exception_label_to_block(func);
         for bid in unreachable {
             let variables: BTreeSet<_> = func.blocks[&bid]
                 .terminator
                 .successors()
-                .iter()
-                .flat_map(|target| self.joins.get(target).into_iter().flatten().copied())
+                .into_iter()
+                .chain(
+                    func.blocks[&bid]
+                        .ops
+                        .iter()
+                        .filter_map(|op| exception_transfer_target(op, &labels)),
+                )
+                .flat_map(|target| self.joins.get(&target).into_iter().flatten().copied())
                 .collect();
             if variables.is_empty() {
                 continue;
@@ -448,9 +497,25 @@ impl RenamePlan {
                 })
                 .collect();
             let block = func.blocks.get_mut(&bid).expect("block exists");
-            block.ops.extend(placeholders.values().map(|&value| {
-                crate::tir::ops::TirOp::new(crate::tir::ops::OpCode::ConstNone, vec![], vec![value])
-            }));
+            for op in &mut block.ops {
+                if let Some(target) = exception_transfer_target(op, &labels)
+                    && let Some(joined) = self.joins.get(&target)
+                {
+                    let at = op.exception_payload().len();
+                    op.operands
+                        .splice(at..at, joined.iter().map(|v| placeholders[v]));
+                }
+            }
+            block.ops.splice(
+                0..0,
+                placeholders.values().map(|&value| {
+                    crate::tir::ops::TirOp::new(
+                        crate::tir::ops::OpCode::ConstNone,
+                        vec![],
+                        vec![value],
+                    )
+                }),
+            );
             block.terminator.for_each_edge_mut(|target, args| {
                 args.extend(
                     self.joins

@@ -968,9 +968,7 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         let helper = match body {
             SiteBody::FieldGet { offset } => self.backend.field_slot_get_helper(offset),
             SiteBody::FieldProbe { offset } => self.backend.field_slot_probe_helper(offset),
-            SiteBody::FrameEntryProbe { reservation } => {
-                self.backend.frame_entry_probe_helper(reservation)
-            }
+            SiteBody::FrameProbe { probe } => self.backend.frame_probe_helper(probe),
             SiteBody::FieldSet { offset, suffix } => {
                 self.backend.field_slot_set_helper(offset, suffix)
             }

@@ -1538,8 +1538,12 @@ gvn_numberable_attr_key_opcodes = [
 final_tir_opcodes = [
     "TryBuffer2dLoadI64",
     "TryBuffer2dStoreI64",
+    "TryAcquirePackedBuffer2d",
+    "LoadPackedBuffer2d",
+    "StorePackedBuffer2d",
     "ProbeInlineField",
     "FrameEntryAdmits",
+    "FrameArenaAdmits",
     "StringLiteralCellReady",
     "IsInlineInt",
     "UnboxInlineInt",
@@ -1560,6 +1564,14 @@ final_tir_opcodes = [
     "NativeSymbolAddr",
     "CallNative",
     "GlobalSlotBase",
+]
+
+# These checked accesses read the packed backing, including on a guard
+# miss. A heap reaching definition alone cannot eliminate the guard.
+alias_read_only_access_opcodes = [
+    "TryBuffer2dLoadI64",
+    "TryAcquirePackedBuffer2d",
+    "LoadPackedBuffer2d",
 ]
 
 # A value rooted in another owner, with no independent reference credit.
@@ -1796,6 +1808,7 @@ repr_raw_i64_full_deopt_seed_rules = [
     { opcode = "CheckedAdd", rule = "checked_result0" },
     { opcode = "CheckedMul", rule = "checked_result0" },
     { opcode = "TryBuffer2dLoadI64", rule = "checked_result0" },
+    { opcode = "LoadPackedBuffer2d", rule = "checked_result0" },
     { opcode = "ConstInt", rule = "const_int_not_inline_safe" },
     # The late stage's fast arm (HF-821): the sum of two inline-int payloads is
     # exact in i64 and may leave the inline window.
@@ -1905,6 +1918,9 @@ alias_region_container_element_opcodes = [
     "StoreIndex",
     "TryBuffer2dLoadI64",
     "TryBuffer2dStoreI64",
+    "TryAcquirePackedBuffer2d",
+    "LoadPackedBuffer2d",
+    "StorePackedBuffer2d",
 ]
 
 alias_region_module_dict_opcodes = [
@@ -3403,6 +3419,50 @@ result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
+# A loop entry may acquire a view of packed backing for non-negative
+# indices below the admitted inclusive limits. The raw data and stride
+# are usable only on success and while the borrowed owner remains live.
+[[opcode]]
+name = "TryAcquirePackedBuffer2d"
+may_call_python = false
+operand_arity = 3
+operand_independent_result_types = ["i64", "i64", "bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "three"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# Operands are the live owner, raw data and stride, and two bounded indices.
+# A coordinate that is still boxed must pass the integer-tag check.
+[[opcode]]
+name = "LoadPackedBuffer2d"
+may_call_python = false
+operand_arity = 5
+operand_independent_result_types = ["i64", "bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StorePackedBuffer2d"
+may_call_python = false
+operand_arity = 6
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
 # Read a borrowed field word from a proven fixed layout. A miss returns None.
 [[opcode]]
 name = "ProbeInlineField"
@@ -3422,6 +3482,19 @@ result_absorbs_operands = false
 name = "FrameEntryAdmits"
 may_call_python = false
 operand_arity = 1
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = true
+purity = "impure"
+may_access_arbitrary_heap = false
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "FrameArenaAdmits"
+may_call_python = false
+operand_arity = 0
 operand_independent_result_types = ["bool"]
 may_throw = false
 side_effecting = true

@@ -353,8 +353,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // final TIR (FinalLowering::FinalTir), so its ops never reach SimpleIR.
         OpCode::TryBuffer2dLoadI64
         | OpCode::TryBuffer2dStoreI64
+        | OpCode::TryAcquirePackedBuffer2d
+        | OpCode::LoadPackedBuffer2d
+        | OpCode::StorePackedBuffer2d
         | OpCode::ProbeInlineField
         | OpCode::FrameEntryAdmits
+        | OpCode::FrameArenaAdmits
         | OpCode::StringLiteralCellReady
         | OpCode::IsInlineInt
         | OpCode::UnboxInlineInt

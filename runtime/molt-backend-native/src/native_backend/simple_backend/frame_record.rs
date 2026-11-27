@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::codegen_ssa::frame::{self, FrameBody, FramePlacement};
-use molt_codegen_abi::frame_record::{FrameBuilder, FrameReservation};
+use molt_codegen_abi::frame_record::{FrameBuilder, FrameProbe};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
@@ -49,13 +49,13 @@ impl RecordWordBuilder for NativeFrameBuilder<'_, '_> {
     }
 }
 
-pub(crate) fn emit_frame_entry_probe(
+pub(crate) fn emit_frame_probe(
     builder: &mut FunctionBuilder<'_>,
     sites: NativeFrameSites,
     thread: Value,
     function: Value,
     code: Value,
-    reservation: FrameReservation,
+    probe: FrameProbe,
 ) -> Value {
     let mut b = NativeFrameBuilder {
         words: NativeWords { builder },
@@ -63,13 +63,7 @@ pub(crate) fn emit_frame_entry_probe(
         slow_blocks: Vec::new(),
         tasks: None,
     };
-    molt_codegen_abi::frame_record::generate_frame_entry_admits(
-        &mut b,
-        thread,
-        function,
-        code,
-        reservation,
-    )
+    molt_codegen_abi::frame_record::generate_frame_probe(&mut b, thread, function, code, probe)
 }
 
 impl NativeFrameBuilder<'_, '_> {

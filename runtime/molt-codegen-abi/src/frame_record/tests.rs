@@ -261,6 +261,29 @@ fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
             "slot={slot}, reservation={reservation:?}"
         );
     }
+    for (bytes, expected) in [(exact.arena_bytes, 1), (oversized.arena_bytes, 0)] {
+        assert_eq!(
+            generate_frame_probe(&mut machine, THREAD, 0, 0, FrameProbe::Arena(bytes)),
+            expected,
+        );
+    }
+    let admitted_arena = FrameReservation {
+        arena_bytes: 0,
+        ..two
+    };
+    for (limit, expected) in [(9, 0), (10, 1)] {
+        machine.write(RECURSION_LIMIT, 0, limit);
+        assert_eq!(
+            generate_frame_probe(
+                &mut machine,
+                THREAD,
+                function,
+                code_slot,
+                FrameProbe::Entry(admitted_arena),
+            ),
+            expected,
+        );
+    }
     let virtual_level = FrameReservation {
         virtual_exception_level: true,
         ..two
