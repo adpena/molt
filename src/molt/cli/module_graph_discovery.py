@@ -2626,7 +2626,6 @@ def _load_module_import_scan(
             purpose=purpose,
             resolution_cache=resolution_cache,
             target_python=target_python,
-            source=source,
         )
     finally:
         SCAN_PREMISE_READS.reset(reads_token)
@@ -2715,7 +2714,6 @@ def _collect_module_import_scan(
     purpose: _source_import_scan.SourceImportPurpose,
     resolution_cache: _module_resolution._ModuleResolutionCache,
     target_python: TargetPythonVersion,
-    source: str | None,
 ) -> tuple[_ImportDiscoveryProjection, _ImportScanRequests]:
     """One source's graph projection and its requests under one premise view."""
     import_projection = resolution_cache.collect_graph_imports(
@@ -2743,7 +2741,6 @@ def _collect_module_import_scan(
         source_arguments=source_arguments,
         target_python=target_python,
         ast_digest_admission=ast_digest_admission,
-        source=source,
         namespace_premise=namespace_premise,
         target_sys_platform=resolution_cache.target_sys_platform,
         purpose=purpose,

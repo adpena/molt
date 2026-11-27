@@ -355,6 +355,19 @@ def test_relocated_source_reuses_requests_and_resolves_its_own_edges(
     assert changed.scan.source_executions == ()
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import runpy\nrunpy.ｒｕｎ＿ｐａｔｈ('loaded.py')\n",
+        "from runpy import ｒｕｎ＿ｐａｔｈ as execute\nexecute('loaded.py')\n",
+    ],
+)
+def test_source_execution_uses_parsed_identifiers(tmp_path, source):
+    entry = write(tmp_path / "entry.py", source)
+    child = write(tmp_path / "loaded.py")
+    assert load(entry).scan.source_executions == ((None, child),)
+
+
 def test_run_path_directory_main_creation_and_deletion(tmp_path):
     source = write(tmp_path / "entry.py", "import runpy\nrunpy.run_path('site')\n")
     assert load(source).scan.source_executions == ()

@@ -575,20 +575,25 @@ class _StaticImportCallPayload:
     requires_runtime_binding: bool = False
 
 
-_STATIC_SOURCE_LOADER_TARGETS = frozenset(
-    {
-        "importlib.util.spec_from_file_location",
-        "importlib.machinery.SourceFileLoader",
-        "importlib.machinery.SourcelessFileLoader",
-    }
-)
+class _StaticSourceExecutionParameters(NamedTuple):
+    path: tuple[int, str]
+    module_name: tuple[int, str] | None = None
 
 
-_STATIC_SOURCE_EXECUTION_MARKERS = (
-    "spec_from_file_location",
-    "SourceFileLoader",
-    "SourcelessFileLoader",
-    "run_path",
+_STATIC_SOURCE_EXECUTION_TARGETS = {
+    "importlib.util.spec_from_file_location": _StaticSourceExecutionParameters(
+        (1, "location"), (0, "name")
+    ),
+    "importlib.machinery.SourceFileLoader": _StaticSourceExecutionParameters(
+        (1, "path"), (0, "name")
+    ),
+    "importlib.machinery.SourcelessFileLoader": _StaticSourceExecutionParameters(
+        (1, "path"), (0, "name")
+    ),
+    "runpy.run_path": _StaticSourceExecutionParameters((0, "path_name")),
+}
+_STATIC_SOURCE_EXECUTION_NAMES = frozenset(
+    target.rpartition(".")[2] for target in _STATIC_SOURCE_EXECUTION_TARGETS
 )
 
 
@@ -601,8 +606,10 @@ _STATIC_SOURCE_PATH_JOIN_OPERATIONS: Mapping[
 }
 
 
-def _source_may_use_static_source_execution(source: str) -> bool:
-    return any(marker in source for marker in _STATIC_SOURCE_EXECUTION_MARKERS)
+def _source_may_use_static_source_execution(
+    admission: _PythonAstDigestAdmission,
+) -> bool:
+    return admission.contains_reference_name(_STATIC_SOURCE_EXECUTION_NAMES)
 
 
 def _collect_static_source_execution_requests(
@@ -770,22 +777,21 @@ def _collect_static_source_execution_requests(
         if not import_flow.may_execute(node):
             continue
         target = qualified_name(node.func)
+        parameters = (
+            None if target is None else _STATIC_SOURCE_EXECUTION_TARGETS.get(target)
+        )
+        if parameters is None:
+            continue
         request_name: str | None
-        path_expr: ast.expr | None
-        if target in _STATIC_SOURCE_LOADER_TARGETS:
-            name_expr = call_argument(node, 0, "name")
-            path_expr = call_argument(node, 1, "location")
-            if target != "importlib.util.spec_from_file_location":
-                path_expr = call_argument(node, 1, "path")
+        if parameters.module_name is not None:
+            name_expr = call_argument(node, *parameters.module_name)
             name_value = static_value(name_expr) if name_expr is not None else None
             if not isinstance(name_value, str):
                 continue
             request_name = name_value
-        elif target == "runpy.run_path":
-            request_name = None
-            path_expr = call_argument(node, 0, "path_name")
         else:
-            continue
+            request_name = None
+        path_expr = call_argument(node, *parameters.path)
         path_value = static_value(path_expr) if path_expr is not None else None
         if path_value is None:
             continue
@@ -3145,12 +3151,11 @@ def _collect_import_scan_requests(
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
     ast_digest_admission: _PythonAstDigestAdmission,
-    source: str | None = None,
     purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
 ) -> _ImportScanRequests:
     executions = (
         ()
-        if source is not None and not _source_may_use_static_source_execution(source)
+        if not _source_may_use_static_source_execution(ast_digest_admission)
         else _collect_static_source_execution_requests(
             tree,
             is_package=is_package,

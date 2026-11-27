@@ -42,10 +42,7 @@ from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import PythonSourceSnapshot, PythonSourceChangedError
 from molt.cli.python_import_topology import PythonImportTopology
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
-from molt.compiler_analysis.python_import_scan import (
-    SourceImportPurpose,
-    _source_may_use_static_source_execution,
-)
+from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.compiler_analysis.python_imports import ImportScanMode, _ImportScanRequests
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
@@ -128,14 +125,7 @@ def _source_line_identity(
         tree = _parse_source_for_target(
             snapshot.text, filename=str(snapshot.path), target_python=target_python
         )
-        lines = python_ast_line_identity(tree)
-        # Path execution has a text prefilter independent of AST equivalence.
-        digest = hashlib.sha256(
-            _bytes(
-                (lines.digest, _source_may_use_static_source_execution(snapshot.text))
-            )
-        ).hexdigest()
-        return PythonAstLineIdentity(digest, lines.lines)
+        return python_ast_line_identity(tree)
     except (SyntaxError, ValueError, RecursionError):
         return None
 
