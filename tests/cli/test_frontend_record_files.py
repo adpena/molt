@@ -105,18 +105,24 @@ def test_an_operation_publishes_one_index_and_a_peer_sees_it_after_a_miss(
 ) -> None:
     files = FrontendRecordFiles(tmp_path)
     monkeypatch.setattr(files, "_pinned_by_operation", lambda: True)
+    monkeypatch.setattr(records, "_PACK_BYTES", 8)
     peer = FrontendRecordFiles(tmp_path)
     assert _read(peer, "import-scan", _KEY, max_bytes=_LIMIT) is None
     for index in range(5):
         assert files.put("import-scan", f"{index:024x}", f"[{index}]".encode())
+    # Equal records and aliases in later batches point to the first extent.
+    assert files.put("import-scan", _KEY, b"[0]")
+    assert files.link("import-scan", _OTHER, _KEY)
     # Queued, not indexed: the owner reads its own records, a peer cannot.
     assert _index_files(tmp_path) == []
     assert _read(files, "import-scan", f"{3:024x}", max_bytes=_LIMIT) == b"[3]"
+    assert _read(files, "import-scan", _OTHER, max_bytes=_LIMIT) == b"[0]"
     assert files.save()
     assert len(_index_files(tmp_path)) == 1
-    assert len(_blobs(tmp_path)) == 1
+    assert len(_blobs(tmp_path)) == 3
     # The peer loaded the index before it existed; its next miss rescans.
     assert _read(peer, "import-scan", f"{4:024x}", max_bytes=_LIMIT) == b"[4]"
+    assert _read(peer, "import-scan", _OTHER, max_bytes=_LIMIT) == b"[0]"
 
 
 def test_member_verification_is_independent_inside_a_pack(
