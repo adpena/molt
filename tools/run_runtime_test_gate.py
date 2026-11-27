@@ -57,6 +57,7 @@ from molt.flag_strings import FlagStringRule  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S  # noqa: E402
 from molt.rust_toolchain import rust_flag_spans  # noqa: E402
+from molt.toolchain_identity import StableRegularFileObservation  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 from tools.runtime_test_gate_plan import (  # noqa: E402
     OBSERVER_FEATURE,
@@ -703,6 +704,12 @@ def child_failure_summary(
     return "\n".join(lines)
 
 
+def observe_runtime_image(path: Path) -> StableRegularFileObservation:
+    return StableRegularFileObservation.capture(
+        path.resolve(strict=True), label="runtime gate image"
+    )
+
+
 def execute_child(
     binary: Path,
     child_args: list[str],
@@ -934,8 +941,9 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
         artifact = lifecycle_artifact(
             build.stdout, metadata, package=package, target=target, kind=kind
         )
-        binary = Path(artifact["executable"])
-        identity = truth._file_identity(binary)
+        observation = observe_runtime_image(Path(artifact["executable"]))
+        binary = observation.identity.path
+        identity = (observation.identity.size, observation.identity.sha256)
         if triple == WASI_TARGET:
             with binary.open("rb") as stream:
                 if stream.read(8) != b"\x00asm\x01\x00\x00\x00":
@@ -953,7 +961,9 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
                 if Path(name).suffix != ".rlib"
             }
         image["build"] = {
-            "retained_artifact": descendants.retain_file(binary, run),
+            "retained_artifact": descendants.retain_file(
+                binary, run, observed=observation
+            ),
             "artifact": artifact,
             "executable_size": identity[0],
             "executable_sha256": identity[1],
@@ -975,10 +985,16 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
                 kind="bin",
                 test=False,
             )
-            host_binary = Path(host_artifact["executable"])
-            host_identity = truth._file_identity(host_binary)
+            host_observation = observe_runtime_image(Path(host_artifact["executable"]))
+            host_binary = host_observation.identity.path
+            host_identity = (
+                host_observation.identity.size,
+                host_observation.identity.sha256,
+            )
             image["production_host"] = {
-                "retained_artifact": descendants.retain_file(host_binary, run),
+                "retained_artifact": descendants.retain_file(
+                    host_binary, run, observed=host_observation
+                ),
                 "artifact": host_artifact,
                 "executable_size": host_identity[0],
                 "executable_sha256": host_identity[1],
@@ -1220,11 +1236,12 @@ def run_zlib_wasi(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
     if node_options and node_options != node_bootstrap_options():
         raise RuntimeError("zlib-wasi permits only queue-owned Node bootstrap options")
     node = resolve_node_runtime(source_root=ROOT, environment=environment)
-    node_identity = truth._file_identity(node.path)
+    node_observation = observe_runtime_image(node.path)
+    node_identity = (node_observation.identity.size, node_observation.identity.sha256)
     aggregate["node"] = {
         "path": str(node.path),
         "version": node.version,
-        "retained": descendants.retain_file(node.path, run),
+        "retained": descendants.retain_file(node.path, run, observed=node_observation),
     }
     cargo = os.environ.get("CARGO", "cargo")
     metadata = COMMANDS.run(
@@ -1255,13 +1272,14 @@ def run_zlib_wasi(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
     artifact, observed = zlib_wasi_artifact(
         build.stdout, metadata, args.profile, environment
     )
-    wasm = Path(artifact["executable"])
-    wasm_identity = truth._file_identity(wasm)
+    wasm_observation = observe_runtime_image(Path(artifact["executable"]))
+    wasm = wasm_observation.identity.path
+    wasm_identity = (wasm_observation.identity.size, wasm_observation.identity.sha256)
     image = aggregate["images"]["zlib_rs"] = {
         "artifact": artifact,
         "observed": observed,
         "target_triple": WASI_TARGET,
-        "retained": descendants.retain_file(wasm, run),
+        "retained": descendants.retain_file(wasm, run, observed=wasm_observation),
     }
     bootstrap = "\n".join(
         [
@@ -1460,8 +1478,9 @@ def main(argv: list[str] | None = None) -> int:
         images = {}
         for target, artifact in selected_artifacts.items():
             observed = observed_images[target]
-            binary = Path(artifact["executable"])
-            identity = truth._file_identity(binary)
+            observation = observe_runtime_image(Path(artifact["executable"]))
+            binary = observation.identity.path
+            identity = (observation.identity.size, observation.identity.sha256)
             runner._ACTIVE_EVIDENCE_DIR = run / target / "discovery-evidence"
             runner._ACTIVE_EVIDENCE_DIR.mkdir(parents=True)
             # Discovery is the freshly linked image's first exec, which pays
@@ -1491,7 +1510,9 @@ def main(argv: list[str] | None = None) -> int:
             images[target] = (binary, identity, selection)
             aggregate["images"][target] = {
                 "build": {
-                    "retained_artifact": descendants.retain_file(binary, run),
+                    "retained_artifact": descendants.retain_file(
+                        binary, run, observed=observation
+                    ),
                     "observed": observed,
                     "artifact": artifact,
                     "executable_size": identity[0],
