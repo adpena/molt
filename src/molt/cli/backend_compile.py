@@ -60,6 +60,7 @@ from molt.cli.backend_execution import (
     _start_backend_daemon,
 )
 from molt.cli.build_locks import BuildLockAcquisitionError, _build_lock
+from molt.cli.cargo_execution import _CargoPreparation
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli.config_resolution import (
@@ -236,6 +237,7 @@ def _ensure_selected_backend_binary(
     cargo_timeout: float | None,
     json_output: bool,
     stage_timings_ms: dict[str, float] | None = None,
+    cargo_preparation: _CargoPreparation | None = None,
 ) -> _backend_binary._BackendBinaryEnsureResult:
     return _backend_binary._ensure_backend_binary(
         selection.binary,
@@ -246,6 +248,7 @@ def _ensure_selected_backend_binary(
         backend_features=selection.features,
         rust_cpu=selection.rust_cpu,
         stage_timings_ms=stage_timings_ms,
+        cargo_preparation=cargo_preparation,
     )
 
 
@@ -396,6 +399,24 @@ def _prepare_backend_setup(
         codegen_backend=codegen.backend,
         rust_cpu=rust_cpu,
     )
+    runtime_ready: bool | None = None
+
+    def build_runtime() -> None:
+        nonlocal runtime_ready
+        assert materialize_runtime_wasm is not None
+        started = time.perf_counter()
+        runtime_ready = materialize_runtime_wasm()
+        _record_pipeline_stage_ms(
+            stage_timings_ms,
+            "backend_setup_runtime_wasm_materialization",
+            started,
+        )
+
+    runtime_cargo_plan = (
+        None
+        if materialize_runtime_wasm is None
+        else materialize_runtime_wasm.cargo_plan
+    )
     backend_binary_start = time.perf_counter()
     backend_ensure_result = _ensure_selected_backend_binary(
         backend_selection,
@@ -403,6 +424,11 @@ def _prepare_backend_setup(
         cargo_timeout=cargo_timeout,
         json_output=json_output,
         stage_timings_ms=stage_timings_ms,
+        cargo_preparation=(
+            None
+            if runtime_cargo_plan is None
+            else _CargoPreparation(runtime_cargo_plan, build_runtime)
+        ),
     )
     _record_pipeline_stage_ms(
         stage_timings_ms,
@@ -417,13 +443,8 @@ def _prepare_backend_setup(
     assert backend_bin is not None
     runtime_wasm_codegen_digest = ""
     if materialize_runtime_wasm is not None:
-        runtime_materialization_start = time.perf_counter()
-        runtime_ready = materialize_runtime_wasm()
-        _record_pipeline_stage_ms(
-            stage_timings_ms,
-            "backend_setup_runtime_wasm_materialization",
-            runtime_materialization_start,
-        )
+        if runtime_ready is None:
+            build_runtime()
         if not runtime_ready:
             return None, runtime_wasm_failure()
         binding = runtime_state.runtime_wasm_codegen_binding

@@ -75,6 +75,32 @@ def _graph(monkeypatch, importers: tuple[str, ...]) -> list[list[str]]:
     return seen
 
 
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_exact_receipt_checks_paths_hidden_by_the_live_index(
+    repo: Path, flag: str
+) -> None:
+    tree = _git(repo, "rev-parse", "HEAD^{tree}").strip()
+    assert consumer_gate.checkout_matches(repo, tree)
+    _git(repo, "update-index", flag, "lib.py")
+    (repo / "lib.py").write_text(
+        "VALUE = 'changed outside the candidate'\n", encoding="utf-8"
+    )
+    assert not _git(repo, "diff", "--name-only").strip()
+    assert not consumer_gate.checkout_matches(repo, tree)
+    assert not _git(repo, "diff", "--name-only").strip()
+
+
+def test_exact_receipt_checks_ctime_when_config_disables_it(repo: Path) -> None:
+    tree = _git(repo, "rev-parse", "HEAD^{tree}").strip()
+    _git(repo, "config", "core.trustctime", "false")
+    _git(repo, "config", "core.checkStat", "minimal")
+    path = repo / "lib.py"
+    before = path.stat()
+    path.write_bytes(b"VALUE = 2\n")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert not consumer_gate.checkout_matches(repo, tree)
+
+
 def test_run_writes_a_receipt_that_check_accepts_until_the_change_moves(
     repo, monkeypatch, capsys
 ):

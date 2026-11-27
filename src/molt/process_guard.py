@@ -9,7 +9,7 @@ import shlex
 import signal
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -274,6 +274,7 @@ def run_completed_command(
     progress_label: str | None = None,
     guard_loader: GuardLoader = load_harness_memory_guard,
     guard_source_root: Path | None = None,
+    cancellation_requested: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     if isinstance(cmd, (str, bytes)):
         raise TypeError("command must be typed argv, not shell text")
@@ -290,6 +291,8 @@ def run_completed_command(
         raise ValueError("stderr must inherit, PIPE, DEVNULL, or STDOUT")
     text_mode = bool(text or encoding is not None or errors is not None)
     if memory_guard_prefix is None:
+        if cancellation_requested is not None:
+            raise ValueError("cancellable commands require guarded execution")
         if stdout_capture_path is not None or stderr_capture_path is not None:
             raise ValueError("evidence capture paths require guarded execution")
         # A probe has a deadline only when its caller sets one, as a guarded
@@ -404,6 +407,7 @@ def run_completed_command(
         encoding=encoding or "utf-8",
         errors=errors or "strict",
         progress_label=progress_label,
+        cancellation_requested=cancellation_requested,
     )
     if stderr == subprocess.DEVNULL:
         result.stderr = None

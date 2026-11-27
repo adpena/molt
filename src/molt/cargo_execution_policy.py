@@ -864,6 +864,18 @@ def memory_bounded_cargo_jobs(
     )
 
 
+def cargo_job_groups_fit(
+    jobs: Sequence[int], environ: Mapping[str, str] | None = None
+) -> bool:
+    """Admit simultaneous Cargo invocations from one live memory snapshot."""
+    capacity = host_capacity.memory_capacity(environ)
+    known = tuple(value for value in capacity.bounded_bytes if value is not None)
+    required = len(jobs) * _CARGO_JOB_MEMORY_HEADROOM + sum(jobs) * _BYTES_PER_CARGO_JOB
+    return bool(known) and required + host_capacity.headroom_bytes(capacity) <= min(
+        known
+    )
+
+
 def cargo_subprocess_environment(
     command: Sequence[str],
     environ: Mapping[str, str] | None,
