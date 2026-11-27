@@ -1575,6 +1575,27 @@ fn a_proven_call_skips_admission_and_the_code_guard() {
 }
 
 #[test]
+fn captured_call_expansion_uses_executable_reachability() {
+    let (mut func, _) = guarded_call(true);
+    let entry = func.entry_block;
+    let call = &mut func.blocks.get_mut(&entry).unwrap().ops[0];
+    call.set_proven_target(true);
+    let mut retained_call = call.clone();
+    let dead = func.fresh_block();
+    retained_call.operands[0] = func.fresh_value();
+    retained_call.results[0] = func.fresh_value();
+    let mut retained = super::new_block(dead, vec![], Terminator::Unreachable);
+    retained.ops.push(retained_call);
+    func.blocks.insert(dead, retained);
+    func.loop_roles
+        .insert(dead, crate::tir::blocks::LoopRole::LoopEnd);
+    assert_eq!(super::run(&mut func, &targets(1, false)).values_changed, 1);
+    assert_eq!(ops(&func, OpCode::DirectCall).len(), 1);
+    assert_eq!(func.blocks[&dead].ops[0].opcode, OpCode::Call);
+    assert_valid(&func);
+}
+
+#[test]
 fn recursion_refusal_does_not_feed_the_proven_call_result() {
     use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 

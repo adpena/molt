@@ -134,10 +134,13 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         ..Default::default()
     };
     let hot = CodeTemperature::of_function(&func.name).inline_fast_paths();
-    let mut pending: Vec<_> = func
-        .blocks
-        .iter()
-        .filter_map(|(&id, block)| {
+    // The verifier and both emitters admit executable blocks. Structural
+    // loop or region labels can survive unreachable-code pruning along
+    // with dead ops whose SSA inputs no longer exist.
+    let mut pending: Vec<_> = crate::tir::dominators::executable_reverse_postorder(func)
+        .into_iter()
+        .filter_map(|id| {
+            let block = &func.blocks[&id];
             let mut eligible = block.ops.iter().filter(|op| may_expand(op, targets));
             if hot {
                 return eligible.next().map(|_| (id, false, true));
@@ -937,8 +940,14 @@ fn expansion_of(
                         .parameter_count(facts.has_closure);
                 assert!(
                     boxed_callee && parameters == Ok(Some(facts.arity)),
-                    "proven call of function #{} disagrees with its linkage row",
-                    guarded_target(op).map_or(u32::MAX, |id| id.0)
+                    "proven call of function #{} disagrees with its linkage row: \
+                     operands={:?}, callable_repr={:?}, physical_count={parameters:?}, \
+                     declared_count={}, closure={}",
+                    guarded_target(op).map_or(u32::MAX, |id| id.0),
+                    op.operands,
+                    repr.get(&op.operands[0]),
+                    facts.arity,
+                    facts.has_closure,
                 );
                 return Some(Expansion::CapturedCall {
                     closure: Some(facts.has_closure),
