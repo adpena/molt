@@ -37,7 +37,14 @@ struct Source {
 struct Access {
     block: BlockId,
     source: Source,
+    field_read: Option<(BlockId, ValueId)>,
     read: bool,
+}
+
+struct View {
+    backing: ValueId,
+    data: ValueId,
+    stride: ValueId,
 }
 
 struct Plan {
@@ -405,7 +412,9 @@ fn select<T>(
                 }
                 continue;
             }
-            let Some(source) = view_source(op, &aliases, &defs, &dom, preheader, natural) else {
+            let Some((source, field_read)) =
+                view_source(op, &aliases, &defs, &dom, preheader, natural)
+            else {
                 if trace {
                     eprintln!("[packed-region] {block}: variant owner");
                 }
@@ -427,6 +436,7 @@ fn select<T>(
             accesses.push(Access {
                 block,
                 source,
+                field_read,
                 read: op.opcode == OpCode::TryBuffer2dLoadI64,
             });
         }
@@ -523,12 +533,13 @@ fn view_source(
     dom: &DominatorTree,
     preheader: BlockId,
     natural: &HashSet<BlockId>,
-) -> Option<Source> {
+) -> Option<(Source, Option<(BlockId, ValueId)>)> {
     // Follow custody, not Python value equality. A frame store transfers the
     // argument's credit into the frame and gives the result a new live view.
     let root = |v| aliases.root(v);
     let value = root(op.operands[0]);
-    let (_, def) = defs.get(&value)?;
+    let &(block, def) = defs.get(&value)?;
+    let mut field_read = None;
     let mut source = Source {
         owner: value,
         field: None,
@@ -539,13 +550,15 @@ fn view_source(
         let Some(AttrValue::Int(offset)) = def.attrs.get("value") else {
             return None;
         };
+        field_read = Some((block, value));
         source = Source {
             owner: root(def.operands[0]),
             field: Some(*offset),
         };
     }
     let &(definition, _) = defs.get(&source.owner)?;
-    (!natural.contains(&definition) && dom.dominates(definition, preheader)).then_some(source)
+    (!natural.contains(&definition) && dom.dominates(definition, preheader))
+        .then_some((source, field_read))
 }
 
 fn fresh(func: &mut TirFunction, ty: TirType) -> ValueId {
@@ -733,7 +746,14 @@ fn apply(func: &mut TirFunction, original: &TirFunction, plan: Plan) -> bool {
                 },
             },
         );
-        views.insert(source, [data, stride]);
+        views.insert(
+            source,
+            View {
+                backing,
+                data,
+                stride,
+            },
+        );
         success = (id, vec![]);
     }
     // Ready cells never revert to empty. Guard their read at region entry,
@@ -822,11 +842,35 @@ fn apply(func: &mut TirFunction, original: &TirFunction, plan: Plan) -> bool {
         target: success.0,
         args: success.1,
     };
+    let mut reused_fields = 0;
     for access in plan.accesses {
+        let view = &views[&access.source];
+        if let Some((block, result)) = access.field_read
+            && let Some(&cloned) = map.blocks.get(&block)
+            && let Some(probe) = func
+                .blocks
+                .get_mut(&cloned)
+                .unwrap()
+                .ops
+                .iter_mut()
+                .find(|op| {
+                    op.opcode == OpCode::ProbeInlineField
+                        && op.results.as_slice() == [map.value(result)]
+                })
+        {
+            // The lease acquired this field on the same owner. A writer or
+            // reentrant observer can run only after leaving the region.
+            // Preserve the borrowed word on those continuations as well.
+            *probe = TirOp::new(
+                OpCode::Copy,
+                vec![view.backing],
+                std::mem::take(&mut probe.results),
+            );
+            reused_fields += 1;
+        }
         let block = func.blocks.get_mut(&map.blocks[&access.block]).unwrap();
         let op = block.ops.pop().expect("selected access");
-        let [data, stride] = views[&access.source];
-        let mut operands = vec![access.source.owner, data, stride];
+        let mut operands = vec![access.source.owner, view.data, view.stride];
         operands.extend_from_slice(&op.operands[1..]);
         let projection = if access.read {
             OpCode::LoadPackedBuffer2d
@@ -870,6 +914,12 @@ fn apply(func: &mut TirFunction, original: &TirFunction, plan: Plan) -> bool {
         return false;
     }
     let trace = crate::tir::pass_manager::trace_func_enabled(&func.name);
+    if trace && reused_fields != 0 {
+        eprintln!(
+            "[packed-region] {}: reused {reused_fields} acquired field reads",
+            func.name
+        );
+    }
     // An explicit packed load and its raw arithmetic may establish a clear
     // synchronous exception state where an original call could raise. Keep
     // authored asynchronous work service and remove checks only through the
@@ -1067,6 +1117,46 @@ mod tests {
                           && !terminator_successors(original_terminator).contains(&else_block)
                 )
         }));
+    }
+
+    #[test]
+    fn cloned_accesses_share_the_field_captured_at_entry() {
+        let (mut func, latch, _) = guarded_loop(1);
+        let Terminator::CondBranch {
+            else_block: header, ..
+        } = func.blocks[&latch].terminator
+        else {
+            panic!("guarded latch")
+        };
+        let Terminator::CondBranch {
+            then_block: store, ..
+        } = func.blocks[&header].terminator
+        else {
+            panic!("guarded read")
+        };
+        let owner = func.blocks[&func.entry_block].args[0].id;
+        let backing = fresh(&mut func, TirType::DynBox);
+        let mut probe = TirOp::new(OpCode::ProbeInlineField, vec![owner], vec![backing]);
+        probe.attrs.insert("value".into(), AttrValue::Int(0));
+        for block in [header, store] {
+            func.blocks.get_mut(&block).unwrap().ops[0].operands[0] = backing;
+        }
+        func.blocks.get_mut(&header).unwrap().ops.insert(0, probe);
+
+        assert!(run(&mut func));
+        let ops = || func.blocks.values().flat_map(|block| &block.ops);
+        let acquire = ops()
+            .find(|op| op.opcode == OpCode::TryAcquirePackedBuffer2d)
+            .unwrap();
+        let field_probes = ops()
+            .filter(|op| op.opcode == OpCode::ProbeInlineField)
+            .count();
+        assert_eq!(
+            field_probes, 2,
+            "only the original and entry read the field"
+        );
+        assert!(ops().any(|op| op.opcode == OpCode::Copy && op.operands == [acquire.operands[0]]));
+        crate::tir::verify::verify_function(&func).unwrap();
     }
 
     #[test]
