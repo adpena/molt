@@ -47,6 +47,7 @@ static_type = [
   { params = [], results = ["ptr"] },
   { params = ["i64", "ptr", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64"], results = ["f64"] },
+  { params = ["i64", "i64", "i64", "i64"], results = [] },
 ]
 
 non_runtime_callable_intrinsic = [
@@ -763,22 +764,22 @@ return_contract = "raw_bits"
 raw_call = true
 
 [[import]]
-name = "spliced_frame_bind"
-type = 6
-runtime_name = "molt_spliced_frame_bind"
-callable_arity = 4
+name = "spliced_frame_bind_home"
+type = 32
+runtime_name = "molt_spliced_frame_bind_home"
+boxed_call = true
 
 [[import]]
-name = "spliced_frame_origin"
-type = 3
-runtime_name = "molt_spliced_frame_origin"
-callable_arity = 2
+name = "spliced_frame_capture_origin"
+type = 5
+runtime_name = "molt_spliced_frame_capture_origin"
+boxed_call = true
 
 [[import]]
-name = "spliced_frame_unlink"
-type = 2
-runtime_name = "molt_spliced_frame_unlink"
-callable_arity = 1
+name = "spliced_frame_pop"
+type = 1
+runtime_name = "molt_spliced_frame_pop"
+boxed_call = true
 
 [[import]]
 name = "spliced_frame_finish"

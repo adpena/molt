@@ -624,7 +624,7 @@ pub static CALL_CENSUS_NAMES: [&str; CALL_CENSUS_SLOTS] = [
     "molt_bridge_exception_class",
     "molt_exception_trace_prepend",
     "molt_exception_frame_origin",
-    "molt_spliced_frame_origin",
+    "molt_spliced_frame_capture_origin",
     "molt_exception_chain_context",
     "molt_exception_new",
     "molt_exception_new_builtin",
@@ -682,8 +682,8 @@ pub static CALL_CENSUS_NAMES: [&str; CALL_CENSUS_SLOTS] = [
     "molt_frame_locals_proxy_update",
     "molt_spliced_frame_link",
     "molt_spliced_frame_finish",
-    "molt_spliced_frame_bind",
-    "molt_spliced_frame_unlink",
+    "molt_spliced_frame_bind_home",
+    "molt_spliced_frame_pop",
     "molt_frame_context_set",
     "molt_frame_locals_set",
     "molt_frame_class_locals_set",
@@ -4084,7 +4084,7 @@ pub mod id {
     pub const molt_bridge_exception_class: usize = 617;
     pub const molt_exception_trace_prepend: usize = 618;
     pub const molt_exception_frame_origin: usize = 619;
-    pub const molt_spliced_frame_origin: usize = 620;
+    pub const molt_spliced_frame_capture_origin: usize = 620;
     pub const molt_exception_chain_context: usize = 621;
     pub const molt_exception_new: usize = 622;
     pub const molt_exception_new_builtin: usize = 623;
@@ -4142,8 +4142,8 @@ pub mod id {
     pub const molt_frame_locals_proxy_update: usize = 675;
     pub const molt_spliced_frame_link: usize = 676;
     pub const molt_spliced_frame_finish: usize = 677;
-    pub const molt_spliced_frame_bind: usize = 678;
-    pub const molt_spliced_frame_unlink: usize = 679;
+    pub const molt_spliced_frame_bind_home: usize = 678;
+    pub const molt_spliced_frame_pop: usize = 679;
     pub const molt_frame_context_set: usize = 680;
     pub const molt_frame_locals_set: usize = 681;
     pub const molt_frame_class_locals_set: usize = 682;

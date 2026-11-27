@@ -2938,11 +2938,11 @@ pub(crate) fn molt_exception_frame_origin_attached_body(
 /// explicitly raised exception, or None for the pending one. A failed capture
 /// keeps the selected exception and its traceback; the records are popped on
 /// every path.
-pub(crate) fn molt_spliced_frame_origin_attached_body(
+pub(crate) fn molt_spliced_frame_capture_origin_attached_body(
     _py: &crate::PyToken<'_>,
     exc_bits: u64,
     count_bits: u64,
-) -> u64 {
+) {
     crate::with_attached_entry_nopanic!(_py, py, {
         let count = to_i64(obj_from_bits(count_bits))
             .and_then(|count| usize::try_from(count).ok())
@@ -2963,7 +2963,6 @@ pub(crate) fn molt_spliced_frame_origin_attached_body(
             });
         }
         crate::builtins::frames::pop_spliced_frames(py, count);
-        MoltObject::none().bits()
     })
 }
 

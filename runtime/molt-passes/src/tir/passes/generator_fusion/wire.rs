@@ -244,7 +244,7 @@ fn retire_identity(
     for id in ids {
         let mut block = caller.blocks.remove(&id).unwrap();
         if block.terminator.exits_activation() {
-            block.ops.push(finish_op(caller, identity));
+            block.ops.push(finish_op(identity));
         }
         let mut landing = |target| {
             *landings.entry(target).or_insert_with(|| {
@@ -270,7 +270,7 @@ fn retire_identity(
                     target,
                     args: args.iter().map(|arg| arg.id).collect(),
                 };
-                let release = finish_op(caller, identity);
+                let release = finish_op(identity);
                 caller.blocks.insert(
                     id,
                     TirBlock {

@@ -3108,11 +3108,11 @@ macro_rules! attached_symbol {
     ("molt_socketserver_unregister") => { "molt_socketserver_unregister__molt_context_66fa900595616b00" };
     ("molt_sorted_builtin") => { "molt_sorted_builtin__molt_context_66fa900595616b00" };
     ("molt_spawn") => { "molt_spawn__molt_context_66fa900595616b00" };
-    ("molt_spliced_frame_bind") => { "molt_spliced_frame_bind__molt_context_66fa900595616b00" };
+    ("molt_spliced_frame_bind_home") => { "molt_spliced_frame_bind_home__molt_context_66fa900595616b00" };
+    ("molt_spliced_frame_capture_origin") => { "molt_spliced_frame_capture_origin__molt_context_66fa900595616b00" };
     ("molt_spliced_frame_finish") => { "molt_spliced_frame_finish__molt_context_66fa900595616b00" };
     ("molt_spliced_frame_link") => { "molt_spliced_frame_link__molt_context_66fa900595616b00" };
-    ("molt_spliced_frame_origin") => { "molt_spliced_frame_origin__molt_context_66fa900595616b00" };
-    ("molt_spliced_frame_unlink") => { "molt_spliced_frame_unlink__molt_context_66fa900595616b00" };
+    ("molt_spliced_frame_pop") => { "molt_spliced_frame_pop__molt_context_66fa900595616b00" };
     ("molt_sqlite3_arraysize_set") => { "molt_sqlite3_arraysize_set__molt_context_66fa900595616b00" };
     ("molt_sqlite3_close") => { "molt_sqlite3_close__molt_context_66fa900595616b00" };
     ("molt_sqlite3_commit") => { "molt_sqlite3_commit__molt_context_66fa900595616b00" };

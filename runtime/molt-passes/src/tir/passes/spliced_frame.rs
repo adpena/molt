@@ -10,17 +10,17 @@
 //! (the fusion slot plan, the inliner's home stores); this module turns a
 //! state into runtime calls every backend already lowers. The state links one
 //! record per level (`molt_spliced_frame_link`) and binds its locals
-//! (`molt_spliced_frame_bind`); no call allocates or refuses a pending
+//! (`molt_spliced_frame_bind_home`); no call allocates or refuses a pending
 //! exception, so the state can be built on an exception edge:
 //!
 //! * an Origin check keeps its kind (the backend captures the record-owning
 //!   caller at the call site) and its exceptional successor becomes a cold
 //!   block that links the state and inserts its entries beneath that caller's
-//!   entry (`molt_spliced_frame_origin`, [`origin_cold_block`]);
+//!   entry (`molt_spliced_frame_capture_origin`, [`origin_cold_block`]);
 //! * an explicit raise's Origin is followed by the same insertion
 //!   ([`raise_ops`]);
 //! * an operation that may run Python code is bracketed by the state's links
-//!   and `molt_spliced_frame_unlink` ([`bracket_ops`]); after the caller is
+//!   and `molt_spliced_frame_pop` ([`bracket_ops`]); after the caller is
 //!   re-optimized, [`prune_brackets`] deletes each bracket whose operations
 //!   typed facts have since proved callback-free, so a proven hot path pays
 //!   nothing.
@@ -77,23 +77,12 @@ pub(crate) fn const_int(func: &mut TirFunction, value: i64, ops: &mut Vec<TirOp>
 /// The runtime-call form both final-TIR and SimpleIR targets lower: a `Call`
 /// whose typed runtime entry its symbol names.
 fn runtime_call(
-    func: &mut TirFunction,
     runtime: RuntimeFn,
     operands: Vec<ValueId>,
     span: Option<(u32, u32)>,
     ops: &mut Vec<TirOp>,
 ) {
-    let results = if matches!(
-        runtime,
-        RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameFinish
-    ) {
-        Vec::new()
-    } else {
-        let result = func.fresh_value();
-        func.value_types.insert(result, TirType::DynBox);
-        vec![result]
-    };
-    let mut op = TirOp::new(OpCode::Call, operands, results);
+    let mut op = TirOp::new(OpCode::Call, operands, vec![]);
     op.runtime = Some(runtime);
     // The call never raises: it keeps the selected exception and abandons
     // its own failures. It is no exception event of its own.
@@ -136,7 +125,6 @@ pub(crate) fn link_level(
     let location = const_int(func, level.location.unwrap_or(-1), ops);
     let key_space = const_int(func, level.key_space as i64, ops);
     runtime_call(
-        func,
         RuntimeFn::SplicedFrameLink,
         vec![level.function, location, level.identity],
         span,
@@ -145,8 +133,7 @@ pub(crate) fn link_level(
     for binding in &level.bindings {
         let key = const_int(func, binding.key, ops);
         runtime_call(
-            func,
-            RuntimeFn::SplicedFrameBind,
+            RuntimeFn::SplicedFrameBindHome,
             vec![key_space, key, binding.value, binding.present],
             span,
             ops,
@@ -160,9 +147,9 @@ pub(crate) fn is_spliced_frame_call(op: &TirOp) -> bool {
         op.runtime,
         Some(
             RuntimeFn::SplicedFrameLink
-                | RuntimeFn::SplicedFrameBind
-                | RuntimeFn::SplicedFrameOrigin
-                | RuntimeFn::SplicedFrameUnlink
+                | RuntimeFn::SplicedFrameBindHome
+                | RuntimeFn::SplicedFrameCaptureOrigin
+                | RuntimeFn::SplicedFramePop
                 | RuntimeFn::SplicedFrameFinish
         )
     )
@@ -211,13 +198,7 @@ pub(crate) fn linked_origin_block(
     let mut ops = Vec::new();
     if !capture {
         let count = const_int(func, count, &mut ops);
-        runtime_call(
-            func,
-            RuntimeFn::SplicedFrameUnlink,
-            vec![count],
-            span,
-            &mut ops,
-        );
+        runtime_call(RuntimeFn::SplicedFramePop, vec![count], span, &mut ops);
         return TirBlock {
             id: cold,
             args: Vec::new(),
@@ -230,8 +211,7 @@ pub(crate) fn linked_origin_block(
     ops.push(TirOp::new(OpCode::ConstNone, vec![], vec![none]));
     let count = const_int(func, count, &mut ops);
     runtime_call(
-        func,
-        RuntimeFn::SplicedFrameOrigin,
+        RuntimeFn::SplicedFrameCaptureOrigin,
         vec![none, count],
         span,
         &mut ops,
@@ -263,8 +243,7 @@ pub(crate) fn raise_ops(
         none
     });
     runtime_call(
-        func,
-        RuntimeFn::SplicedFrameOrigin,
+        RuntimeFn::SplicedFrameCaptureOrigin,
         vec![exception, count],
         span,
         &mut ops,
@@ -281,20 +260,13 @@ pub(crate) fn bracket_ops(
 ) -> (Vec<TirOp>, Vec<TirOp>) {
     let (enter, count) = link_ops(func, levels, span);
     let mut exit = Vec::new();
-    runtime_call(
-        func,
-        RuntimeFn::SplicedFrameUnlink,
-        vec![count],
-        span,
-        &mut exit,
-    );
+    runtime_call(RuntimeFn::SplicedFramePop, vec![count], span, &mut exit);
     (enter, exit)
 }
 
-pub(crate) fn finish_op(func: &mut TirFunction, identity: ValueId) -> TirOp {
+pub(crate) fn finish_op(identity: ValueId) -> TirOp {
     let mut ops = Vec::with_capacity(1);
     runtime_call(
-        func,
         RuntimeFn::SplicedFrameFinish,
         vec![identity],
         None,
@@ -313,7 +285,7 @@ pub(crate) fn has_observer_bracket(func: &TirFunction, first_new_value: u32) -> 
                 Some(RuntimeFn::SplicedFrameLink) => {
                     linked |= op.operands[2].0 >= first_new_value;
                 }
-                Some(RuntimeFn::SplicedFrameUnlink | RuntimeFn::SplicedFrameOrigin) => {
+                Some(RuntimeFn::SplicedFramePop | RuntimeFn::SplicedFrameCaptureOrigin) => {
                     linked = false;
                 }
                 _ if linked && may_observe_frames(op, &exact) => return true,
@@ -347,7 +319,7 @@ pub(crate) fn may_observe_frames(op: &TirOp, exact: &HashMap<ValueId, TirType>) 
 fn is_link_op(op: &TirOp) -> bool {
     matches!(
         op.runtime,
-        Some(RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameBind)
+        Some(RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameBindHome)
     ) || op.opcode == OpCode::ConstInt
 }
 
@@ -359,7 +331,7 @@ fn poll_and_unlink(ops: &[TirOp]) -> bool {
     matches!(ops, [poll, unlink, ..] if poll.opcode == OpCode::CheckException
         && poll.is_async_work_poll()
         && matches!(poll.attrs.get("value"), Some(AttrValue::Int(_)))
-        && unlink.runtime == Some(RuntimeFn::SplicedFrameUnlink))
+        && unlink.runtime == Some(RuntimeFn::SplicedFramePop))
 }
 
 /// The complete cold service arm built by generator frame elision. Nothing
@@ -381,7 +353,7 @@ pub(super) fn poll_service(ops: &[TirOp]) -> Option<&TirOp> {
         && retire.operands == close.results
         && retire.results.is_empty()
         && bracket.iter().any(|op| {
-            op.runtime == Some(RuntimeFn::SplicedFrameBind)
+            op.runtime == Some(RuntimeFn::SplicedFrameBindHome)
                 && op.operands.get(2) == retain.operands.first()
         }) {
         bracket
@@ -394,7 +366,7 @@ pub(super) fn poll_service(ops: &[TirOp]) -> Option<&TirOp> {
     let mut calls = setup.iter().filter(|op| op.opcode != OpCode::ConstInt);
     let link = calls.next()?;
     (link.runtime == Some(RuntimeFn::SplicedFrameLink)
-        && calls.all(|op| op.runtime == Some(RuntimeFn::SplicedFrameBind))
+        && calls.all(|op| op.runtime == Some(RuntimeFn::SplicedFrameBindHome))
         && poll.exception_edge_kind()
             == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
         && poll_and_unlink(&ops[setup.len()..]))
@@ -417,7 +389,7 @@ pub(super) fn starts_with_poll_bracket(ops: &[TirOp]) -> bool {
     // A joined continuation may close the preceding operation's frame and
     // bind its result into SSA before publishing the poll's frame.
     let ops = match ops {
-        [close, rest @ ..] if close.runtime == Some(RuntimeFn::SplicedFrameUnlink) => rest,
+        [close, rest @ ..] if close.runtime == Some(RuntimeFn::SplicedFramePop) => rest,
         _ => ops,
     };
     let aliases = ops
@@ -486,7 +458,7 @@ pub(crate) fn prune_brackets(func: &mut TirFunction) -> usize {
                 end += 1;
             }
             let Some(close) =
-                (end..ops.len()).find(|&at| ops[at].runtime == Some(RuntimeFn::SplicedFrameUnlink))
+                (end..ops.len()).find(|&at| ops[at].runtime == Some(RuntimeFn::SplicedFramePop))
             else {
                 break;
             };
@@ -611,7 +583,7 @@ pub(crate) fn retire_if_observed_under(
     if let Some(frame) = frame {
         ops.extend(snapshot_ops(caller, frame));
     }
-    ops.push(finish_op(caller, identity));
+    ops.push(finish_op(identity));
     ops.extend(unlink);
     if_frame_observed(caller, source, identity, ops);
 }
