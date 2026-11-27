@@ -7,9 +7,6 @@ visit_Lambda, and visit_Return. Async function/generator visitor methods live in
 
 from __future__ import annotations
 
-from molt.frontend.lowering.op_kinds_generated import (
-    FrontendKinds,
-)
 
 from molt.compiler_analysis.python_lexical_scope import (
     expression_contains_yield,
@@ -119,7 +116,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             in self.module_body_selection.declaration_only
         )
         is_generator = function_contains_yield(node)
-        has_return = not declaration_only and self._function_contains_return(node)
         func_name = node.name
         qualname = self._definition_qualname(node)
         if is_generator:
@@ -224,7 +220,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                     params=["self"],
                     compiler_params={"self"},
                     type_facts_name=func_name,
-                    needs_return_slot=has_return,
                 )
                 self._inherit_free_var_import_resolution(free_vars, prev_state)
                 self.global_decls = self._collect_global_decls(node.body)
@@ -247,7 +242,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                             hint = self._annotation_to_hint(arg.annotation)
                             if hint is not None:
                                 self.explicit_type_hints[arg.arg] = hint
-                self._store_return_slot_for_stateful()
                 self.emit(
                     MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none"))
                 )
@@ -266,7 +260,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                             break
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff(node.body[-1])
+                self._emit_implicit_return(node.body[-1])
                 closure_size = self._seal_stateful_frame(frame_plan)
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars
@@ -418,7 +412,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 params=func_params,
                 param_types=_param_type_hints if _param_type_hints else None,
                 type_facts_name=func_name,
-                needs_return_slot=has_return,
                 has_exception_handlers=self._body_has_exception_handlers(node.body),
                 code_slots=code_slots,
                 source_node=node,
@@ -484,18 +477,8 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                         break
             finally:
                 self._pop_qualname()
-            if self.return_label is not None:
-                if not body_terminated and not self._ends_with_return_jump():
-                    res = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res, node.body[-1])
-                self._emit_return_label()
-            elif not body_terminated and not (
-                self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret
-            ):
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_return_value(res, node.body[-1])
+            if not body_terminated:
+                self._emit_implicit_return(node.body[-1])
         if is_gpu_kernel:
             descriptor_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(
@@ -621,7 +604,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                     params=["self"],
                     compiler_params={"self"},
                     type_facts_name=func_symbol,
-                    needs_return_slot=False,
                 )
                 self._inherit_free_var_import_resolution(free_vars, prev_state)
                 self.current_method_first_param = params[0] if params else None
@@ -645,7 +627,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                             hint = self._annotation_to_hint(arg.annotation)
                             if hint is not None:
                                 self.explicit_type_hints[arg.arg] = hint
-                self._store_return_slot_for_stateful()
                 self.emit(
                     MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none"))
                 )
@@ -661,7 +642,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                     self.visit(return_node)
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff(node.body)
+                self._emit_implicit_return(node.body)
                 closure_size = self._seal_stateful_frame(frame_plan)
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars

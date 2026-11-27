@@ -2,8 +2,8 @@
 
 Move-only extraction from frontend/__init__.py. These helpers own per-function
 lifecycle state: locals-call scans, function entry reset, nested-function state
-capture/restore, async return slots, return lowering, and function exception
-exit emission shared by function, async, module, and control-flow visitors.
+capture/restore, and the return and exception exit paths shared by function,
+async, module, and control-flow visitors.
 """
 
 from __future__ import annotations
@@ -33,10 +33,6 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-_ENDS_WITH_RETURN_JUMP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
-    {"ret_void", "ret"}
-)
 
 
 if TYPE_CHECKING:
@@ -240,21 +236,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         return base
 
     @staticmethod
-    def _function_contains_return(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        stack: list[ast.AST] = list(node.body)
-        while stack:
-            current = stack.pop()
-            if isinstance(current, ast.Return):
-                return True
-            if isinstance(
-                current,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                continue
-            stack.extend(ast.iter_child_nodes(current))
-        return False
-
-    @staticmethod
     def _body_has_exception_handlers(body: list[ast.stmt]) -> bool:
         """Return True if the body contains try/with handler constructs.
 
@@ -335,7 +316,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         compiler_params: set[str] | None = None,
         param_types: list[str] | None = None,
         type_facts_name: str | None = None,
-        needs_return_slot: bool = False,
         has_exception_handlers: bool = True,
         python_first_arg: str | MoltValue | None = None,
         stateful_frame_plan: StatefulFunctionFramePlan | None = None,
@@ -455,8 +435,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         else:
             self.exception_stack_prev_baseline = None
             self.exception_stack_depth_baseline = None
-        if needs_return_slot:
-            self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)
 
     @staticmethod
@@ -541,44 +519,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             self.imported_attr_names.pop(name, None)
             self.local_imported_names.discard(name)
 
-    def _init_return_slot(self) -> None:
-        if self.return_label is not None:
-            return
-        if not self.is_async():
-            return
-        self.return_label = self.next_label()
-        init = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=init))
-        self.return_slot = self._emit_cell_new(init)
-
-    def _store_return_slot_for_stateful(self) -> None:
-        if not self.is_async() or self.return_slot is None:
-            return
-        if self.return_slot_offset is None:
-            self.return_slot_offset = self._new_async_internal_slot()
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", self.return_slot_offset, self.return_slot],
-                result=MoltValue("none"),
-            )
-        )
-
-    def _load_return_slot(self) -> MoltValue | None:
-        if self.return_slot is None:
-            return None
-        if self.is_async() and self.return_slot_offset is not None:
-            slot_val = MoltValue(self.next_var(), type_hint="cell")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", self.return_slot_offset],
-                    result=slot_val,
-                )
-            )
-            return slot_val
-        return self.return_slot
-
     def _emit_return_value(
         self, value: MoltValue, source_node: ast.AST | None = None
     ) -> None:
@@ -590,50 +530,15 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             # retires every binding the frame still holds; no compiled release
             # precedes it.
             value = self._capture_expression_reference(value)
-            exit_baseline_now = self.return_slot is None or self.return_label is None
-            if exit_baseline_now:
-                self._emit_restore_exception_stack_depth(exit_baseline=True)
-                self._emit_normal_return_terminator(value)
-                return
-            self._emit_restore_exception_stack_depth(exit_baseline=False)
-            slot = self._load_return_slot()
-            if slot is None:
-                self._emit_normal_return_terminator(value)
-                return
-            self._emit_cell_set(slot, value)
-            self.emit(
-                MoltOp(kind="JUMP", args=[self.return_label], result=MoltValue("none"))
-            )
+            self._emit_restore_exception_stack_depth(exit_baseline=True)
+            self._emit_normal_return_terminator(value)
 
-    def _emit_generator_falloff(self, source_node: ast.AST) -> None:
-        """Return None from a generator body that falls off its end.
-
-        The return terminator reports completion (``_emit_return_terminator``).
-        """
-        if self.return_label is not None:
-            if not self._ends_with_return_jump():
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                self._emit_return_value(none_val, source_node)
-            self._emit_return_label()
-        elif not (self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret):
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            with self._source_location_scope(source_node):
-                self._emit_normal_return_terminator(none_val)
-
-    def _emit_return_label(self) -> None:
-        if self.return_label is None or self.return_slot is None:
+    def _emit_implicit_return(self, source_node: ast.AST) -> None:
+        if self._ends_with_return():
             return
-        self.emit(
-            MoltOp(kind="LABEL", args=[self.return_label], result=MoltValue("none"))
-        )
-        self._emit_restore_exception_stack_depth()
-        slot = self._load_return_slot()
-        if slot is None:
-            return
-        res = self._emit_cell_get(slot)
-        self._emit_normal_return_terminator(res)
+        value = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=value))
+        self._emit_return_value(value, source_node)
 
     def _emit_normal_return_terminator(self, value: MoltValue) -> None:
         """Emit the single canonical normal-return lifecycle boundary.
@@ -728,7 +633,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         if active_label is None:
             return
         module_failure_cleanup = bool(self.module_name and self._is_module_entry())
-        if module_failure_cleanup and not self._ends_with_return_jump():
+        if module_failure_cleanup and not self._ends_with_return():
             self._emit_void_return_terminator()
         pre_frame_label = (
             self.module_pre_frame_exception_label
@@ -784,8 +689,8 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             "frame_entry_failure_label"
         )
         if entry_failure_label is not None:
-            # Entry precedes exception-stack baselines, return slots and local
-            # initialization. Its cleanup owns only the attempted frame entry;
+            # Entry precedes exception-stack baselines and local initialization.
+            # Its cleanup owns only the attempted frame entry;
             # the ordinary body handler would read uninitialized cleanup SSA.
             with self._suppress_check_exception(emit_on_exit=False):
                 self.emit(
@@ -798,20 +703,11 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                 self._emit_unwind_terminator()
         self.function_exception_label = prev_label
 
-    def _ends_with_return_jump(self) -> bool:
-        if not self.current_ops:
-            return False
-        last = self.current_ops[-1]
-        if last.kind in _ENDS_WITH_RETURN_JUMP_KINDS_1:
-            return True
-        if (
-            last.kind == FrontendKinds.JUMP
-            and self.return_label is not None
-            and last.args
-            and last.args[0] == self.return_label
-        ):
-            return True
-        return False
+    def _ends_with_return(self) -> bool:
+        return bool(
+            self.current_ops
+            and self.current_ops[-1].kind in (FrontendKinds.ret, FrontendKinds.ret_void)
+        )
 
     def resume_function(self, name: str) -> None:
         if self.current_func_name != name:

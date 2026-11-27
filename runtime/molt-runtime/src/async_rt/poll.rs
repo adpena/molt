@@ -480,6 +480,49 @@ mod tests {
         crate::MoltObject::from_int(73).bits() as i64
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn fresh_result_poll(context: u64, _raw: u64) -> i64 {
+        let py = unsafe { crate::PyToken::from_attached_context(context) };
+        crate::MoltObject::from_ptr(crate::alloc_list(py, &[])).bits() as i64
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn coroutine_completion_transfers_the_result_without_retaining_an_owner() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            use crate::{dec_ref_bits, ptr_from_bits};
+            let poll =
+                crate::provenance::abi::expose_function_address(fresh_result_poll as *const ());
+            let coroutine =
+                crate::task_new_for_pending_invocation(py, poll, 0, crate::TASK_KIND_COROUTINE);
+            assert!(!ptr_from_bits(coroutine).is_null());
+            let result = crate::molt_future_poll_attached_body(py, coroutine) as u64;
+            let result_ptr = ptr_from_bits(result);
+            assert!(!result_ptr.is_null());
+            assert!(!crate::exception_pending(py));
+            assert_eq!(
+                unsafe { (*crate::header_from_obj_ptr(result_ptr)).ref_count_snapshot() },
+                1,
+                "the poll caller owns the sole reference to the returned list"
+            );
+            dec_ref_bits(py, result);
+
+            let reused = crate::molt_future_poll_attached_body(py, coroutine) as u64;
+            assert_eq!(reused, 0);
+            assert!(crate::exception_pending(py));
+            let error = crate::molt_exception_last_attached_body(py);
+            assert!(crate::builtins::exceptions::exception_matches_kind(
+                py,
+                error,
+                crate::BuiltinExc::RuntimeError
+            ));
+            crate::clear_exception(py);
+            dec_ref_bits(py, error);
+            dec_ref_bits(py, coroutine);
+        });
+    }
+
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn runtime_poll_objects_and_compiled_raw_self_have_distinct_release_safe_domains() {

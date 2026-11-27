@@ -14,7 +14,7 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonSourceClass,
 )
 
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import IntFlag, StrEnum
 from collections.abc import Callable, Collection, Iterable, Mapping
@@ -59,6 +59,9 @@ from molt.compiler_analysis.static_truth import (
     IMPLICIT_INSTANCE_SPECIAL_METHODS,
     context_execution_protocol,
 )
+
+
+_EMPTY_CANDIDATES: frozenset[SourceCandidate] = frozenset()
 
 
 class ClassLifecycleWrite(IntFlag):
@@ -335,16 +338,26 @@ class PythonSourceDemands:
             tuple[str, PythonSourceKey], set[PythonSourceKey]
         ] = {}
         self.imported_modules: set[str] = set()
-        self.value_candidates: dict[SourceValue, set[SourceCandidate]] = {}
-        self.value_users: dict[SourceValue, set[SourceValue]] = {}
-        self.operand_users: dict[SourceValue, set[SourceValue]] = {}
+        self.value_candidates: dict[
+            SourceValue, set[SourceCandidate] | frozenset[SourceCandidate]
+        ] = {}
+        self.value_users: defaultdict[SourceValue, set[SourceValue]] = defaultdict(set)
+        self.operand_users: defaultdict[SourceValue, set[SourceValue]] = defaultdict(
+            set
+        )
         self.pending_operands: dict[SourceValue, _OperandDeltas] = {}
         # Operand transfers read candidate membership and callable shape.
         # Outcome facts such as a growing return set have their own users.
-        self.candidate_users: dict[SourceValue, set[SourceValue]] = {}
+        self.candidate_users: defaultdict[SourceValue, set[SourceValue]] = defaultdict(
+            set
+        )
         self.declaration_users: dict[SourceValue, set[SourceValue]] = {}
-        self.value_phases: dict[SourceValue, set[SourceDemand]] = {}
-        self.pending_phases: dict[SourceValue, set[SourceDemand]] = {}
+        self.value_phases: defaultdict[SourceValue, set[SourceDemand]] = defaultdict(
+            set
+        )
+        self.pending_phases: defaultdict[SourceValue, set[SourceDemand]] = defaultdict(
+            set
+        )
         self.elements: dict[SourceValue, PythonSourceElement] = {}
         self.cache_origins: dict[SourceCacheItem, set[tuple[SourceValue, bool]]] = {}
         self.cache_reads: dict[
@@ -438,13 +451,13 @@ class PythonSourceDemands:
         argument_count: int | None = None,
         consumer: str | None = None,
     ) -> None:
-        phases = self.value_phases.setdefault(value, set())
+        phases = self.value_phases[value]
         incidence = SourceDemand(
             phase, arguments, argument_count, consumer or self._consumer or value[0]
         )
         if incidence not in phases:
             phases.add(incidence)
-            self.pending_phases.setdefault(value, set()).add(incidence)
+            self.pending_phases[value].add(incidence)
             # Method and store demands also determine receiver binding
             # and escape in the attribute transfer.
             needs_candidates = (
@@ -452,14 +465,16 @@ class PythonSourceDemands:
             )
             self.queue_value(value, refresh=needs_candidates)
 
-    def watch(self, origin: SourceValue, user: SourceValue) -> set[SourceCandidate]:
-        self.value_users.setdefault(origin, set()).add(user)
+    def watch(
+        self, origin: SourceValue, user: SourceValue
+    ) -> set[SourceCandidate] | frozenset[SourceCandidate]:
+        self.value_users[origin].add(user)
         return self._ensure_value(origin)
 
     def _watch_candidates(
         self, origin: SourceValue, user: SourceValue
-    ) -> set[SourceCandidate]:
-        self.candidate_users.setdefault(origin, set()).add(user)
+    ) -> Collection[SourceCandidate]:
+        self.candidate_users[origin].add(user)
         return self._ensure_value(origin)
 
     def _operand_candidates(
@@ -467,7 +482,7 @@ class PythonSourceDemands:
     ) -> Collection[SourceCandidate]:
         if deltas is not None:
             return deltas.get(origin, ())
-        self.operand_users.setdefault(origin, set()).add(user)
+        self.operand_users[origin].add(user)
         return tuple(self._ensure_value(origin))
 
     def _add_operand_candidates(
@@ -480,9 +495,11 @@ class PythonSourceDemands:
             pending.setdefault(origin, set()).update(added)
             self.queue_value(user, refresh=False)
 
-    def _ensure_value(self, origin: SourceValue) -> set[SourceCandidate]:
+    def _ensure_value(
+        self, origin: SourceValue
+    ) -> set[SourceCandidate] | frozenset[SourceCandidate]:
         if origin not in self.value_candidates:
-            self.value_candidates[origin] = set()
+            self.value_candidates[origin] = _EMPTY_CANDIDATES
             self.queue_value(origin)
         return self.value_candidates[origin]
 
@@ -1145,7 +1162,7 @@ class PythonSourceDemands:
                 self.value_jobs[value] = False
             result = self._refresh_class_members(lookup, value)
         subscribers = self.operand_users if operand else self.value_users
-        subscribers.setdefault(value, set()).add(user)
+        subscribers[value].add(user)
         if result.property_results:
             self._property_results.setdefault(user, set()).update(
                 result.property_results
@@ -2581,9 +2598,19 @@ class PythonSourceDemands:
                                 candidate, binding.attribute, value, from_import=True
                             )
                         )
-        known = self.value_candidates.setdefault(value, set())
-        added = candidates - known
-        known.update(added)
+        known = self.value_candidates.setdefault(value, _EMPTY_CANDIDATES)
+        if not candidates:
+            self._activate_pending(value, known, _EMPTY_CANDIDATES)
+            return
+        if isinstance(known, frozenset):
+            # Demand creates a graph node, but its lattice stays empty until
+            # a producer publishes the first candidate.
+            known = candidates.copy()
+            self.value_candidates[value] = known
+            added = candidates
+        else:
+            added = candidates - known
+            known.update(added)
         if added:
             if writes := self.attribute_writes.get(value):
                 self._record_attribute_receivers(module_name, writes, added)
@@ -2596,7 +2623,7 @@ class PythonSourceDemands:
     def _activate_pending(
         self,
         value: SourceValue,
-        known: set[SourceCandidate],
+        known: Collection[SourceCandidate],
         added: Collection[SourceCandidate],
     ) -> None:
         # A demand-only wake joins existing candidates without evaluating their

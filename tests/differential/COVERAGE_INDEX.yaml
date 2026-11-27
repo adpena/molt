@@ -8,6 +8,7 @@
 core:
   expression_semantics:
     tests:
+      - tests/differential/basic/await_completion_result_lifetime.py
       - tests/differential/basic/expression_result_authority.py
       - tests/differential/basic/condition_flow_truth_custody.py
       - tests/differential/basic/branchless_count_semantics.py

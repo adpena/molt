@@ -109,6 +109,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: Any
@@ -181,9 +182,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     qualname_stack: list[tuple[str, bool]]
     reserved_func_symbols: dict[CallableId | GeneratedCallableId, str]
     reserved_python_identifiers: set[str]
-    return_label: int | None
-    return_slot: MoltValue | None
-    return_slot_offset: int | None
     return_unwind_depth: Any
     scope_assigned: set[str]
     source_callable_symbols: dict[CallableId, str]
@@ -1098,8 +1096,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         delta_expr: ast.expr,
     ) -> None: ...
 
-    def _emit_generator_falloff(self, source_node: ast.AST) -> None: ...
-
     def _emit_generic_attribute_load(
         self,
         obj: MoltValue,
@@ -1194,6 +1190,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_hoisted_loop_guards(
         self, body: list[ast.stmt]
     ) -> dict[str, tuple[ClassId, MoltValue, int]]: ...
+
+    def _emit_implicit_return(self, source_node: ast.AST) -> None: ...
 
     def _emit_import_alias_binding(self, module_name: str) -> MoltValue: ...
 
@@ -1488,8 +1486,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, *, exit_baseline: bool = ...
     ) -> None: ...
 
-    def _emit_return_label(self) -> None: ...
-
     def _emit_return_terminator(
         self, kind: FrontendOpKind, args: list[MoltValue], *, unwind: bool = ...
     ) -> None: ...
@@ -1634,7 +1630,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.While, break_name: ScratchCell | None, assigned: set[str]
     ) -> None: ...
 
-    def _ends_with_return_jump(self) -> bool: ...
+    def _ends_with_return(self) -> bool: ...
 
     def _ensure_code_slots_init(self) -> None: ...
 
@@ -1761,11 +1757,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _function_binds_homes(self, name: str) -> bool: ...
 
-    @staticmethod
-    def _function_contains_return(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> bool: ...
-
     def _function_needs_frame_trace(self, name: str | None = ...) -> bool: ...
 
     @classmethod
@@ -1835,8 +1826,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         stdlib_allowlist: set[str] | None,
         target_python: tuple[int, int],
     ) -> None: ...
-
-    def _init_return_slot(self) -> None: ...
 
     def _init_scope_async_locals(self, arg_nodes: list[ast.arg]) -> None: ...
 
@@ -1954,8 +1943,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _load_name_in_scope(self, node: ast.Name) -> Any: ...
 
     def _load_python_first_arg(self) -> MoltValue | None: ...
-
-    def _load_return_slot(self) -> MoltValue | None: ...
 
     def _load_scratch_cell(self, cell: ScratchCell) -> MoltValue: ...
 
@@ -2469,8 +2456,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, name: str, value: MoltValue, *, publish_module: bool = ...
     ) -> None: ...
 
-    def _store_return_slot_for_stateful(self) -> None: ...
-
     def _store_scratch_cell(self, cell: ScratchCell, value: MoltValue) -> None: ...
 
     def _sum_element_is_exact_int(
@@ -2689,7 +2674,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         compiler_params: set[str] | None = ...,
         param_types: list[str] | None = ...,
         type_facts_name: str | None = ...,
-        needs_return_slot: bool = ...,
         has_exception_handlers: bool = ...,
         python_first_arg: str | MoltValue | None = ...,
         stateful_frame_plan: StatefulFunctionFramePlan | None = ...,

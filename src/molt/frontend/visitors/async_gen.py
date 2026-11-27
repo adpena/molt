@@ -83,7 +83,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
             poll_func_name = f"{func_symbol}_poll"
             self._record_func_default_specs(poll_func_name, node.args)
-            has_return = self._function_contains_return(node)
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
                 node.args
             )
@@ -132,7 +131,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     params=["self"],
                     compiler_params={"self"},
                     type_facts_name=func_name,
-                    needs_return_slot=has_return,
                 )
                 self._inherit_free_var_import_resolution(free_vars, prev_state)
                 self.current_method_first_param = params[0] if params else None
@@ -158,7 +156,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                                 self.explicit_type_hints[arg.arg] = hint
                         if hint is not None:
                             self.async_public_hints[arg.arg] = hint
-                self._store_return_slot_for_stateful()
                 self.emit(
                     MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none"))
                 )
@@ -177,7 +174,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                             break
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff(node.body[-1])
+                self._emit_implicit_return(node.body[-1])
                 closure_size = self._seal_stateful_frame(frame_plan)
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars
@@ -246,7 +243,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         func_symbol = self._source_definition_symbol(node, kind=FunctionKind.ASYNC)
         poll_func_name = f"{func_symbol}_poll"
         self._record_func_default_specs(poll_func_name, node.args)
-        has_return = self._function_contains_return(node)
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
         pos_or_kw_names = [arg.arg for arg in pos_or_kw]
@@ -294,7 +290,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 params=["self"],
                 compiler_params={"self"},
                 type_facts_name=func_name,
-                needs_return_slot=has_return,
             )
             self._inherit_free_var_import_resolution(free_vars, prev_state)
             self.current_method_first_param = params[0] if params else None
@@ -319,7 +314,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                             self.explicit_type_hints[arg.arg] = hint
                     if hint is not None:
                         self.async_public_hints[arg.arg] = hint
-            self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
             self._prebox_scope_cell_vars(
@@ -332,17 +326,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     self.visit(item)
             finally:
                 self._pop_qualname()
-            if self.return_label is not None:
-                if not self._ends_with_return_jump():
-                    res = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res, node.body[-1])
-                self._emit_return_label()
-            else:
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                with self._source_location_scope(node.body[-1]):
-                    self._emit_normal_return_terminator(res)
+            self._emit_implicit_return(node.body[-1])
             closure_size = self._seal_stateful_frame(frame_plan)
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
         func_hint = frame_plan.function_type_hint(closure_size)
