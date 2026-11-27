@@ -42,9 +42,10 @@ pub(crate) use locals_proxy::{
     frame_locals_proxy_detach, frame_locals_proxy_visit, frame_object_detach, frame_object_visit,
 };
 pub(crate) use namespace::{
-    CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, acquire_function_context,
-    acquire_pending_invocation_context, compiled_slot_for_code, globals_namespace_storage_bits,
-    globals_namespace_storage_ptr, pending_invocation, take_invocation_namespace,
+    CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, OwnedFrameNamespace,
+    acquire_function_context, acquire_pending_invocation_context, compiled_slot_for_code,
+    globals_namespace_storage_bits, globals_namespace_storage_ptr, pending_invocation,
+    take_invocation_namespace,
 };
 pub(crate) use records::{clear_frame_home_tls_storage, touch_frame_home_tls_lifetime};
 pub(crate) use spliced::{pop_spliced_frames, trace_with_spliced_frames};
@@ -474,12 +475,11 @@ pub(crate) fn frame_stack_push_owned(
 /// record instead ([`records::link_stateful`]).
 pub(crate) fn frame_stack_enter(
     py: &PyToken<'_>,
-    code_bits: u64,
-    globals_bits: u64,
-    builtins_bits: u64,
+    namespace: OwnedFrameNamespace<'_, '_>,
     plan: FramePlan,
 ) -> bool {
     crate::gil_assert();
+    let [globals_bits, builtins_bits, code_bits] = namespace.into_bits();
     let linked = records::push(plan.homes as usize, |base| FrameEntry {
         code_bits,
         location_snapshot: None,
@@ -519,13 +519,13 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
     /// borrowed lexical cells; their frame owners are retained separately.
     pub(crate) fn adopt(
         py: &'a PyToken<'py>,
-        context: [u64; 3],
+        namespace: OwnedFrameNamespace<'_, '_>,
         plan: FramePlan,
         arguments: &[u64],
         cells: &[u64],
     ) -> Result<Self, ()> {
         use molt_codegen_abi::{FRAME_HOME_CELL, FRAME_HOME_PLAIN, FRAME_HOME_WORDS};
-        let [globals, builtins, code] = context;
+        let [_, _, code] = namespace.bits();
         if !plan.optimized || plan.homes as usize != arguments.len() + cells.len() {
             raise_exception::<()>(
                 py,
@@ -534,10 +534,7 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
             );
             return Err(());
         }
-        for bits in context {
-            inc_ref_bits(py, bits);
-        }
-        let entered = frame_stack_enter(py, code, globals, builtins, plan);
+        let entered = frame_stack_enter(py, namespace, plan);
         let record = records::top();
         let mut frame = Self {
             py,

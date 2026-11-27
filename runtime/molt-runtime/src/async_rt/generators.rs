@@ -404,16 +404,17 @@ pub(crate) fn generator_step_value(py: &PyToken<'_>, result: GeneratorResult) ->
     }
 }
 /// Allocate every task kind with explicitly selected code and namespace custody.
-/// `function` is the function `context` came from, borrowed, if any: a
-/// generator takes its `__name__` and `__qualname__` from it, as CPython's
-/// `make_gen` takes `func_name` and `func_qualname`.
+/// A compiled task transfers an acquired namespace. Its borrowed function
+/// supplies a generator's initial name and qualname.
 fn task_new_with_context(
     _py: &PyToken<'_>,
     poll_fn_addr: u64,
     closure_size: u64,
     kind_bits: u64,
-    context: [u64; 3],
-    function: Option<*mut u8>,
+    frame: Option<(
+        *mut u8,
+        crate::builtins::frames::OwnedFrameNamespace<'_, '_>,
+    )>,
 ) -> u64 {
     let Some(closure_size) = crate::provenance::abi::address(closure_size) else {
         return raise_exception::<_>(
@@ -474,12 +475,15 @@ fn task_new_with_context(
         // current words are None; exclude non-owning field fast paths before
         // any backend publishes captures into the payload.
         crate::object::object_mark_has_ptrs(_py, ptr);
+        let function = frame.as_ref().map(|(function, _)| *function);
         if !object_init_poll_fn_unpublished(ptr, poll_fn_addr)
             || !object_init_shape_unpublished(ptr, task_shape_for_poll_fn(poll_fn_addr))
             || !object_init_state_unpublished(ptr, 0)
-            || !crate::object::aux_header::object_init_frame_context_unpublished(
-                _py, ptr, context[0], context[1], context[2],
-            )
+            || frame.is_some_and(|(_, namespace)| {
+                !crate::object::aux_header::object_init_frame_context_unpublished(
+                    _py, ptr, namespace,
+                )
+            })
         {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             if !crate::exception_pending(_py) {
@@ -540,24 +544,12 @@ pub(crate) fn task_new_for_pending_invocation(
     kind_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let function = crate::builtins::frames::pending_invocation(_py);
-        let pending = function.and_then(|function| {
-            crate::builtins::frames::acquire_function_context(_py, function, poll_fn_addr)
+        let frame = crate::builtins::frames::pending_invocation(_py).and_then(|function| {
+            let namespace =
+                crate::builtins::frames::acquire_function_context(_py, function, poll_fn_addr)?;
+            Some((function, namespace))
         });
-        let result = task_new_with_context(
-            _py,
-            poll_fn_addr,
-            closure_size,
-            kind_bits,
-            pending.unwrap_or([0; 3]),
-            pending.and(function),
-        );
-        if let Some(context) = pending {
-            for bits in context {
-                dec_ref_bits(_py, bits);
-            }
-        }
-        result
+        task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, frame)
     })
 }
 
@@ -579,31 +571,21 @@ pub(crate) fn molt_task_new_attached_body(
     crate::with_attached_entry_nopanic!(_py, _py, {
         let function = obj_from_bits(function_bits);
         if function.is_none() {
-            return task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, [0; 3], None);
+            return task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, None);
         }
-        let function = function.as_ptr();
-        let context = function.and_then(|function| {
-            crate::builtins::frames::acquire_function_context(_py, function, poll_fn_addr)
+        let frame = function.as_ptr().and_then(|function| {
+            let namespace =
+                crate::builtins::frames::acquire_function_context(_py, function, poll_fn_addr)?;
+            Some((function, namespace))
         });
-        let Some(context) = context else {
+        let Some(frame) = frame else {
             return raise_exception::<_>(
                 _py,
                 BuiltinExc::SystemError,
                 "task constructor names a function whose code is not its poll",
             );
         };
-        let result = task_new_with_context(
-            _py,
-            poll_fn_addr,
-            closure_size,
-            kind_bits,
-            context,
-            function,
-        );
-        for bits in context {
-            dec_ref_bits(_py, bits);
-        }
-        result
+        task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, Some(frame))
     })
 }
 

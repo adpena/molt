@@ -140,7 +140,9 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         let ptr = obj_from_bits(task).as_ptr().expect("generator task");
         assert!(unsafe {
             crate::object::aux_header::object_init_frame_context_unpublished(
-                py, ptr, globals, builtins, code,
+                py,
+                ptr,
+                crate::builtins::frames::OwnedFrameNamespace::retain(py, [globals, builtins, code]),
             )
         });
         register(
@@ -215,7 +217,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
             assert_eq!(lookup(py, live, x), Some(int(19)));
             assert_eq!(lookup(py, live, body), None);
             dec_ref_bits(py, live);
-            assert_eq!(take_invocation_namespace(py, slot), Ok(None));
+            assert!(matches!(take_invocation_namespace(py, slot), Ok(None)));
             let payload = frame_stack_trace_payload_bits(py).unwrap();
             drop(scope);
             payload
@@ -438,7 +440,12 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 let ptr = obj_from_bits(task).as_ptr().unwrap();
                 assert!(unsafe {
                     crate::object::aux_header::object_init_frame_context_unpublished(
-                        py, ptr, globals, builtins, code,
+                        py,
+                        ptr,
+                        crate::builtins::frames::OwnedFrameNamespace::retain(
+                            py,
+                            [globals, builtins, code],
+                        ),
                     )
                 });
                 register(
@@ -473,7 +480,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                     baseline,
                     "the linked frame borrows its activation"
                 );
-                assert_eq!(take_invocation_namespace(py, slot), Ok(None));
+                assert!(matches!(take_invocation_namespace(py, slot), Ok(None)));
                 let before = unsafe { activation_locals_bits(py, ptr) }.unwrap();
                 assert_eq!(lookup(py, before, x), Some(raw_cell));
                 assert_eq!(lookup(py, before, body), None);
@@ -614,9 +621,7 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
         }
         assert!(frame_stack_enter(
             py,
-            code,
-            globals,
-            builtins,
+            crate::builtins::frames::OwnedFrameNamespace::adopt(py, [globals, builtins, code]),
             FramePlan::default()
         ));
         super::frame_stack_top_entry()

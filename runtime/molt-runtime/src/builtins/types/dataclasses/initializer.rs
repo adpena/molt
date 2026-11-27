@@ -585,8 +585,8 @@ unsafe fn execute_initializer(
     let target = fn_key!(molt_dataclasses_init_trampoline);
     let context = crate::builtins::frames::acquire_pending_invocation_context(py, target)
         .ok_or_else(|| invalid(py, "dataclass initializer has no function invocation"))?;
-    let [globals, builtins, code] = context.map(|__ptr| DcValue::owned(py, __ptr));
-    let code_ptr = obj_from_bits(code.bits).as_ptr().unwrap();
+    let [globals, builtins, code] = context.bits();
+    let code_ptr = obj_from_bits(code).as_ptr().unwrap();
     let plan = unsafe { (*code_plan_word(code_ptr)).as_ref() }
         .ok_or_else(|| invalid(py, "dataclass initializer code has no body plan"))?;
     if count != plan.arity {
@@ -609,6 +609,7 @@ unsafe fn execute_initializer(
         invalid(py, "invalid dataclass initializer closure");
         return Err(());
     }
+    // The linked frame owns these namespace words throughout initializer execution.
     let frame =
         crate::builtins::frames::PythonFunctionFrame::adopt(py, context, plan.frame, args, cells)?;
     pending.into_entry();
@@ -695,17 +696,14 @@ unsafe fn execute_initializer(
             values.push(match *input {
                 PostInitInput::Argument(slot) => argument(slot)?,
                 PostInitInput::Global(name) => {
-                    let value = crate::builtins::modules::lookup_namespace_item(
-                        py,
-                        globals.bits,
-                        names[name],
-                    )?;
+                    let value =
+                        crate::builtins::modules::lookup_namespace_item(py, globals, names[name])?;
                     let value = match value {
                         Some(value) => Some(value),
                         None => crate::builtins::modules::lookup_builtin_global(
                             py,
                             names[name],
-                            builtins.bits,
+                            builtins,
                         )?,
                     };
                     let Some(value) = value else {

@@ -223,7 +223,10 @@ fn pending_cleanup_preserves_lazy_runtime_traceback_without_projection() {
         // raised-state publication and frame-stack pop are not error events.
         let frame = crate::builtins::frames::PythonFunctionFrame::adopt(
             py,
-            [0, 0, MoltObject::from_ptr(code).bits()],
+            crate::builtins::frames::OwnedFrameNamespace::retain(
+                py,
+                [0, 0, MoltObject::from_ptr(code).bits()],
+            ),
             crate::builtins::frames::FramePlan {
                 optimized: true,
                 ..Default::default()

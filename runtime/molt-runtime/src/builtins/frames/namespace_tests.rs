@@ -491,41 +491,32 @@ fn invocation_handoff_is_keyed_nested_single_use_and_restored_when_unconsumed() 
         let second_builtins = unsafe { function_builtins_bits(second_fn) };
         let pending = || crate::state::execution_tls().pending_invocation.get();
         let outer = FrameInvocationGuard::for_function(py, first_fn);
-        assert_eq!(take_invocation_namespace(py, 1), Ok(None));
+        assert!(matches!(take_invocation_namespace(py, 1), Ok(None)));
         {
             let inner = FrameInvocationGuard::for_function(py, second_fn);
             assert!(acquire_pending_invocation_context(py, 101).is_none());
             let captured = acquire_pending_invocation_context(py, 102).unwrap();
-            assert_eq!(captured, [second, second_builtins, second_code]);
+            assert_eq!(captured.bits(), [second, second_builtins, second_code]);
             assert_eq!(refs(second), 3, "caller, function and capture");
-            for bits in captured {
-                dec_ref_bits(py, bits);
-            }
-            assert_eq!(take_invocation_namespace(py, 0), Ok(None));
-            let [globals, builtins, code] = take_invocation_namespace(py, 1).unwrap().unwrap();
-            assert_eq!(
-                [globals, builtins, code],
-                [second, second_builtins, second_code]
-            );
-            dec_ref_bits(py, globals);
-            dec_ref_bits(py, builtins);
-            dec_ref_bits(py, code);
-            assert_eq!(take_invocation_namespace(py, 1), Ok(None));
+            drop(captured);
+            assert!(matches!(take_invocation_namespace(py, 0), Ok(None)));
+            let namespace = take_invocation_namespace(py, 1).unwrap().unwrap();
+            assert_eq!(namespace.bits(), [second, second_builtins, second_code]);
+            drop(namespace);
+            assert!(matches!(take_invocation_namespace(py, 1), Ok(None)));
             assert!(acquire_pending_invocation_context(py, 102).is_none());
             drop(inner);
         }
         // The inner call's return restores the outer handoff, untaken.
         assert_eq!(pending(), MoltObject::from_ptr(first_fn).bits());
-        let [globals, builtins, code] = take_invocation_namespace(py, 0).unwrap().unwrap();
-        assert_eq!(
-            take_invocation_namespace(py, 0),
-            Ok(None),
+        let namespace = take_invocation_namespace(py, 0).unwrap().unwrap();
+        let [globals, _, code] = namespace.bits();
+        assert!(
+            matches!(take_invocation_namespace(py, 0), Ok(None)),
             "a recursive symbol entry cannot consume twice"
         );
         assert_eq!([globals, code], [first, first_code]);
-        dec_ref_bits(py, globals);
-        dec_ref_bits(py, builtins);
-        dec_ref_bits(py, code);
+        drop(namespace);
         drop(outer);
         assert_eq!(pending(), 0);
         // A handoff is borrowed: only the callers and the functions own edges.
@@ -713,7 +704,12 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
             let task_ptr = obj_from_bits(task).as_ptr().expect("suspended task");
             assert!(unsafe {
                 crate::object::aux_header::object_init_frame_context_unpublished(
-                    py, task_ptr, globals, captured, code,
+                    py,
+                    task_ptr,
+                    crate::builtins::frames::OwnedFrameNamespace::retain(
+                        py,
+                        [globals, captured, code],
+                    ),
                 )
             });
             assert_eq!(
@@ -872,9 +868,7 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
         }
         assert!(frame_stack_enter(
             py,
-            code,
-            globals,
-            builtins,
+            crate::builtins::frames::OwnedFrameNamespace::adopt(py, [globals, builtins, code]),
             FramePlan::default()
         ));
         frame_stack_set_locals_dict(py, locals);
@@ -941,10 +935,8 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
         let invocation = FrameInvocationGuard::for_function(py, function);
         crate::molt_code_slot_set_attached_body(py, 0, replacement, globals);
         let pending = acquire_pending_invocation_context(py, 103).unwrap();
-        assert_eq!(pending[2], original);
-        for bits in pending {
-            dec_ref_bits(py, bits);
-        }
+        assert_eq!(pending.bits()[2], original);
+        drop(pending);
         let entry_result = crate::builtins::frames::compiled_entry::enter(py, 0);
         assert!(obj_from_bits(entry_result).is_none());
         dec_ref_bits(py, entry_result);
@@ -1009,10 +1001,8 @@ fn failed_task_allocation_releases_acquired_context_without_consuming_invocation
                 "a failed task releases the context it acquired"
             );
             let pending = acquire_pending_invocation_context(py, 104).unwrap();
-            assert_eq!(pending, [globals, builtins, code]);
-            for bits in pending {
-                dec_ref_bits(py, bits);
-            }
+            assert_eq!(pending.bits(), [globals, builtins, code]);
+            drop(pending);
             drop(invocation);
             assert!(acquire_pending_invocation_context(py, 104).is_none());
             assert_eq!([code, globals, builtins].map(refs), baseline);
@@ -1038,11 +1028,14 @@ fn handed_namespace_without_globals_fails_the_entry_that_takes_it() {
         unsafe { function_set_globals_bits(py, function, MoltObject::none().bits()) }.unwrap();
         let invocation = FrameInvocationGuard::for_function(py, function);
         // Another slot's entry leaves the handoff alone.
-        assert_eq!(take_invocation_namespace(py, 1), Ok(None));
+        assert!(matches!(take_invocation_namespace(py, 1), Ok(None)));
         assert!(!crate::exception_pending(py));
-        assert_eq!(take_invocation_namespace(py, 0), Err(()));
+        assert!(matches!(take_invocation_namespace(py, 0), Err(())));
         assert!(crate::exception_pending(py));
-        assert_eq!(take_invocation_namespace(py, 0), Ok(None), "taken once");
+        assert!(
+            matches!(take_invocation_namespace(py, 0), Ok(None)),
+            "taken once"
+        );
         crate::molt_exception_clear_attached_body(py);
         drop(invocation);
         dec_ref_bits(py, MoltObject::from_ptr(function).bits());
@@ -1381,10 +1374,11 @@ mod task_allocation_refusal {
                 crate::molt_exception_clear_attached_body(py);
 
                 let pending = acquire_pending_invocation_context(py, TARGET).unwrap();
-                assert_eq!(pending, [globals.bits(), builtins.bits(), code.bits()]);
-                for bits in pending {
-                    dec_ref_bits(py, bits);
-                }
+                assert_eq!(
+                    pending.bits(),
+                    [globals.bits(), builtins.bits(), code.bits()]
+                );
+                drop(pending);
                 {
                     let _scope = crate::CurrentTaskScope::enter(py, suspended_task);
                     assert_eq!(crate::exception_last_bits_noinc(py), Some(suspended_error));

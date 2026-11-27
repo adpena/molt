@@ -5,7 +5,8 @@ pub(crate) use builtin_collections::molt_sum_builtin_attached_body;
 
 use crate::BuiltinExc;
 use crate::builtins::frames::{
-    CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, take_invocation_namespace,
+    CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, OwnedFrameNamespace,
+    take_invocation_namespace,
 };
 use crate::object::ops_string::utf8_char_to_byte_index_cached;
 use crate::runtime_flags::{self, RuntimeFlag};
@@ -215,16 +216,8 @@ pub(crate) fn molt_frame_record_enter_attached_body(_py: &crate::PyToken<'_>, co
         let Ok(handed) = take_invocation_namespace(_py, code_id) else {
             return 0;
         };
-        let (binding, builtins_bits) = if let Some([globals, builtins, code]) = handed {
-            // The invocation already owns every edge. Do not acquire and then
-            // discard unrelated lexical owners from the mutable default slot.
-            (
-                CodeNamespace {
-                    code_bits: code,
-                    globals_bits: globals,
-                },
-                builtins,
-            )
+        let namespace = if let Some(namespace) = handed {
+            namespace
         } else {
             let Some(binding) = code_slot_acquire(_py, code_id) else {
                 raise_exception::<u64>(
@@ -244,8 +237,7 @@ pub(crate) fn molt_frame_record_enter_attached_body(_py: &crate::PyToken<'_>, co
                     return 0;
                 }
             };
-            inc_ref_bits(_py, builtins);
-            (binding, builtins)
+            binding.with_builtins(_py, builtins)
         };
         // An optimized body keeps its bindings in homes its code slot's plan
         // sizes.
@@ -255,13 +247,7 @@ pub(crate) fn molt_frame_record_enter_attached_body(_py: &crate::PyToken<'_>, co
             .and_then(|slots| slots.get(usize::try_from(code_id).ok()?))
             .map(CompiledCodeSlot::frame_plan)
             .unwrap_or_default();
-        let entered = crate::builtins::frames::frame_stack_enter(
-            _py,
-            binding.code_bits,
-            binding.globals_bits,
-            builtins_bits,
-            plan,
-        );
+        let entered = crate::builtins::frames::frame_stack_enter(_py, namespace, plan);
         if !entered {
             crate::record_memory_error_without_allocation(_py);
         }
@@ -326,14 +312,9 @@ pub(crate) fn molt_class_frame_enter_attached_body(
             );
         };
         debug_assert!(!plan.optimized);
-        for bits in [code_bits, globals_bits, builtins_bits] {
-            inc_ref_bits(py, bits);
-        }
         let entered = crate::builtins::frames::frame_stack_enter(
             py,
-            code_bits,
-            globals_bits,
-            builtins_bits,
+            OwnedFrameNamespace::retain(py, [globals_bits, builtins_bits, code_bits]),
             plan,
         );
         if !entered {
