@@ -45,19 +45,13 @@ from molt import file_hashing as molt_file_hashing
 from molt import target_python as molt_target_python
 from molt.cli import backend_cache as cli_backend_cache
 
-# Key algebra consumes explicit content identities. Filesystem fingerprinting has
-# separate producer tests; rereading the live compiler here both repeats expensive
-# work and races concurrent source edits unrelated to the semantic key contract.
-_KEY_FINGERPRINTS = {
-    "cache_compiler_fingerprint": "compiler-fixture",
-    "cache_tooling_fingerprint": "tooling-fixture",
-}
-
-
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_CACHE = importlib.import_module("molt.cli.backend_cache")
 BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
+_KEY_FINGERPRINTS = CACHE_KEYS.ObjectCacheFingerprints(
+    compiler="compiler-fixture", tooling="tooling-fixture"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -380,7 +374,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -388,7 +382,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -426,8 +420,7 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
                 TargetKind.NATIVE,
                 None,
                 variant,
-                compiler_fingerprint="compiler-fixture",
-                tooling_fingerprint="tooling-fixture",
+                fingerprints=_KEY_FINGERPRINTS,
             )
             for program in (first, rebound)
         ]
@@ -438,7 +431,7 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
             program,
             entry_module="app",
             stdlib_modules=stdlib_modules,
-            compiler_fingerprint="compiler-fingerprint",
+            fingerprints=_KEY_FINGERPRINTS,
         )
         for program in (first, rebound)
     ]
@@ -448,12 +441,11 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
     keys = [
         cli_backend_cache._shared_stdlib_cache_key(
             program,
-            **_KEY_FINGERPRINTS,
+            fingerprints=_KEY_FINGERPRINTS,
             entry_module="app",
             stdlib_modules=stdlib_modules,
             target_triple=None,
             cache_variant=variant,
-            compiler_fingerprint="compiler-fingerprint",
         )
         for program in (first, rebound)
     ]
@@ -477,16 +469,21 @@ def test_shared_stdlib_cache_key_uses_payload_digest_authority() -> None:
         ir,
         entry_module="app",
         stdlib_modules=stdlib_modules,
-        compiler_fingerprint="compiler-fingerprint",
+        fingerprints=_KEY_FINGERPRINTS,
+    )
+    assert (
+        payload_ir["compiler_fingerprint"]
+        == hashlib.sha256(
+            b'{"runtime_backend":"compiler-fixture","tooling":"tooling-fixture"}'
+        ).hexdigest()
     )
     assert cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple="aarch64-apple-darwin",
         cache_variant=variant,
-        compiler_fingerprint="compiler-fingerprint",
     ) == _payload_digest_cache_key(
         payload_ir,
         target="native",
@@ -522,7 +519,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -530,7 +527,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -538,7 +535,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
     )
     key_c = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple="aarch64-apple-darwin",
@@ -568,21 +565,23 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=CACHE_KEYS.ObjectCacheFingerprints(
+            "compiler-a", "tooling-fixture"
+        ),
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
-        compiler_fingerprint="compiler-a",
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=CACHE_KEYS.ObjectCacheFingerprints(
+            "compiler-b", "tooling-fixture"
+        ),
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
-        compiler_fingerprint="compiler-b",
     )
 
     assert key_a != key_b
@@ -685,7 +684,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = {"compiler": 0, "tooling": 0}
+    compiler_calls = 0
     payload_digest_calls = 0
     function_payload_digests: list[str | None] = []
     function_tooling_fingerprints: list[str | None] = []
@@ -694,7 +693,8 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     compiler_include_runtime_sources: list[object] = []
 
     def compiler_fingerprint(**kwargs: object) -> str:
-        calls["compiler"] += 1
+        nonlocal compiler_calls
+        compiler_calls += 1
         backend_features = kwargs.get("backend_features")
         runtime_features = kwargs.get("runtime_features")
         assert backend_features is not None
@@ -702,9 +702,6 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         assert runtime_features is None
         compiler_include_runtime_sources.append(kwargs.get("include_runtime_sources"))
         return "compiler-fingerprint"
-
-    def unexpected_fingerprint_call() -> str:
-        raise AssertionError("backend cache setup did not reuse fingerprint inputs")
 
     original_payload_digest = cli_backend_cache_setup._cache_payload_digest
     original_function_cache_key = cli_backend_cache_setup._function_cache_key
@@ -719,13 +716,12 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
 
     def recording_function_cache_key(*args: object, **kwargs: object) -> str:
         payload_digest = kwargs.get("payload_digest")
-        tooling_fingerprint = kwargs.get("tooling_fingerprint")
+        fingerprints = kwargs["fingerprints"]
+        assert isinstance(fingerprints, CACHE_KEYS.ObjectCacheFingerprints)
         function_payload_digests.append(
             payload_digest if isinstance(payload_digest, str) else None
         )
-        function_tooling_fingerprints.append(
-            tooling_fingerprint if isinstance(tooling_fingerprint, str) else None
-        )
+        function_tooling_fingerprints.append(fingerprints.tooling)
         return original_function_cache_key(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -744,30 +740,6 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         cli_backend_cache_setup,
         "_function_cache_key",
         recording_function_cache_key,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        CACHE_KEYS,
-        "_cache_fingerprint",
-        unexpected_fingerprint_call,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        CACHE_KEYS,
-        "_cache_tooling_fingerprint",
-        unexpected_fingerprint_call,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_cache_fingerprint",
-        unexpected_fingerprint_call,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_cache_tooling_fingerprint",
-        unexpected_fingerprint_call,
         raising=True,
     )
 
@@ -823,7 +795,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     assert setup.cache_key is not None
     assert setup.function_cache_key is not None
     assert setup.stdlib_object_cache_key is not None
-    assert calls == {"compiler": 1, "tooling": 0}
+    assert compiler_calls == 1
     assert compiler_backend_features == [("native-backend",)]
     assert compiler_include_runtime_sources == [False]
     assert payload_digest_calls == 1
@@ -1169,18 +1141,6 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
         unexpected_fingerprint_call,
         raising=True,
     )
-    monkeypatch.setattr(
-        CACHE_KEYS,
-        "_cache_fingerprint",
-        unexpected_fingerprint_call,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        BACKEND_CACHE,
-        "_cache_fingerprint",
-        unexpected_fingerprint_call,
-        raising=True,
-    )
 
     ir = _ir_with_stdlib(
         user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
@@ -1277,7 +1237,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1285,7 +1245,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1373,7 +1333,7 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1381,7 +1341,7 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1449,7 +1409,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1457,7 +1417,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1545,7 +1505,7 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1553,7 +1513,7 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1617,7 +1577,7 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_modules() -> None:
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1625,7 +1585,7 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_modules() -> None:
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -1650,7 +1610,7 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=_explicit_stdlib_modules("sys"),
         target_triple=None,
@@ -1658,7 +1618,7 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=_explicit_stdlib_modules(
             "importlib", "importlib.machinery", "importlib.util", "sys"
@@ -1710,7 +1670,7 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
 
     key_base = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=base_symbols,
         target_triple=None,
@@ -1718,7 +1678,7 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
     )
     key_support = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=runtime_support_symbols,
         target_triple=None,
@@ -1728,9 +1688,7 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
         ir,
         entry_module="app",
         stdlib_modules=runtime_support_symbols,
-        compiler_fingerprint=BACKEND_CACHE._shared_stdlib_compiler_fingerprint(
-            **_KEY_FINGERPRINTS
-        ),
+        fingerprints=_KEY_FINGERPRINTS,
     )
     function_names = {func["name"] for func in payload["functions"]}
 
@@ -2927,7 +2885,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -2935,7 +2893,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -2984,7 +2942,7 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
 
     key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
         entry_module="app",
         stdlib_modules=stdlib_modules,
         target_triple=None,
@@ -2996,7 +2954,7 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
         stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant_b,
-        **_KEY_FINGERPRINTS,
+        fingerprints=_KEY_FINGERPRINTS,
     )
 
     assert key_a == key_b

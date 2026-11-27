@@ -8,6 +8,7 @@ import ast
 import hashlib
 import json
 import os
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, TextIO
 
 from molt.frontend import (
@@ -26,8 +27,22 @@ from molt.cli import function_records
 from molt.cli.function_records import FunctionDigestSeed
 from molt.exact_json import encode_frontend_payload
 
-from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
-from molt.cli.rust_cpu_policy import RustCpuPolicy
+
+@dataclass(frozen=True, slots=True)
+class ObjectCacheFingerprints:
+    """The identities admitted for one backend operation's object caches."""
+
+    compiler: str
+    tooling: str
+    shared_stdlib: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        encoded = json.dumps(
+            {"runtime_backend": self.compiler, "tooling": self.tooling},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        object.__setattr__(self, "shared_stdlib", hashlib.sha256(encoded).hexdigest())
 
 
 _CACHE_KEY_SCHEMA_VERSION = "v6"
@@ -371,17 +386,11 @@ def _cache_key_for_payload_digest(
     target_triple: str | None,
     variant: str,
     schema_version: str,
-    compiler_fingerprint: str | None = None,
-    tooling_fingerprint: str | None = None,
+    fingerprints: ObjectCacheFingerprints,
 ) -> str:
     suffix = target_triple or target_name(target)
     if variant:
         suffix = f"{suffix}:{variant}"
-    if compiler_fingerprint is None:
-        # No admitted compiler means no build request: the baseline compiler.
-        compiler_fingerprint = _cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE)
-    if tooling_fingerprint is None:
-        tooling_fingerprint = _cache_tooling_fingerprint()
     digest = hashlib.sha256()
     digest.update(b"payload-digest-v1")
     digest.update(b"|")
@@ -389,44 +398,12 @@ def _cache_key_for_payload_digest(
     digest.update(b"|")
     digest.update(suffix.encode("utf-8"))
     digest.update(b"|")
-    digest.update(compiler_fingerprint.encode("utf-8"))
+    digest.update(fingerprints.compiler.encode("utf-8"))
     digest.update(b"|")
-    digest.update(tooling_fingerprint.encode("utf-8"))
+    digest.update(fingerprints.tooling.encode("utf-8"))
     digest.update(b"|")
     digest.update(schema_version.encode("utf-8"))
     return digest.hexdigest()
-
-
-def _cache_key_for_json_payload_bytes(
-    payload_chunks: Iterable[bytes],
-    *,
-    target: Target,
-    target_triple: str | None,
-    variant: str,
-    schema_version: str,
-    compiler_fingerprint: str | None = None,
-    tooling_fingerprint: str | None = None,
-) -> str:
-    suffix = target_triple or target_name(target)
-    if variant:
-        suffix = f"{suffix}:{variant}"
-    if compiler_fingerprint is None:
-        # No admitted compiler means no build request: the baseline compiler.
-        compiler_fingerprint = _cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE)
-    if tooling_fingerprint is None:
-        tooling_fingerprint = _cache_tooling_fingerprint()
-    payload_hasher = hashlib.sha256()
-    for chunk in payload_chunks:
-        payload_hasher.update(chunk)
-    return _cache_key_for_payload_digest(
-        payload_hasher.hexdigest(),
-        target=target,
-        target_triple=target_triple,
-        variant=variant,
-        schema_version=schema_version,
-        compiler_fingerprint=compiler_fingerprint,
-        tooling_fingerprint=tooling_fingerprint,
-    )
 
 
 def _cache_key_for_payload_ir(
@@ -436,8 +413,7 @@ def _cache_key_for_payload_ir(
     target_triple: str | None,
     variant: str,
     schema_version: str,
-    compiler_fingerprint: str | None = None,
-    tooling_fingerprint: str | None = None,
+    fingerprints: ObjectCacheFingerprints,
     payload_digest: str | None = None,
     function_digests: FunctionDigests | None = None,
 ) -> str:
@@ -449,8 +425,7 @@ def _cache_key_for_payload_ir(
         target_triple=target_triple,
         variant=variant,
         schema_version=schema_version,
-        compiler_fingerprint=compiler_fingerprint,
-        tooling_fingerprint=tooling_fingerprint,
+        fingerprints=fingerprints,
     )
 
 
@@ -459,10 +434,10 @@ def _cache_key(
     target: Target,
     target_triple: str | None,
     variant: str = "",
+    *,
+    fingerprints: ObjectCacheFingerprints,
     payload_ir: Mapping[str, Any] | None = None,
     payload_digest: str | None = None,
-    compiler_fingerprint: str | None = None,
-    tooling_fingerprint: str | None = None,
     function_digests: FunctionDigests | None = None,
 ) -> str:
     if payload_ir is None:
@@ -473,8 +448,7 @@ def _cache_key(
         target_triple=target_triple,
         variant=variant,
         schema_version=_CACHE_KEY_SCHEMA_VERSION,
-        compiler_fingerprint=compiler_fingerprint,
-        tooling_fingerprint=tooling_fingerprint,
+        fingerprints=fingerprints,
         payload_digest=payload_digest,
         function_digests=function_digests,
     )
@@ -540,10 +514,10 @@ def _function_cache_key(
     target: Target,
     target_triple: str | None,
     variant: str = "",
+    *,
+    fingerprints: ObjectCacheFingerprints,
     payload_ir: Mapping[str, Any] | None = None,
     payload_digest: str | None = None,
-    compiler_fingerprint: str | None = None,
-    tooling_fingerprint: str | None = None,
 ) -> str:
     if payload_ir is None:
         payload_ir = _cache_backend_payload_ir(ir)
@@ -553,7 +527,6 @@ def _function_cache_key(
         target_triple=target_triple,
         variant=variant,
         schema_version=_FUNCTION_CACHE_KEY_SCHEMA_VERSION,
-        compiler_fingerprint=compiler_fingerprint,
-        tooling_fingerprint=tooling_fingerprint,
+        fingerprints=fingerprints,
         payload_digest=payload_digest,
     )
