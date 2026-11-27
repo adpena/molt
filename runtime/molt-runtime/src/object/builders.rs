@@ -1418,7 +1418,7 @@ pub(crate) struct CanonicalObjectCache {
     not_implemented: std::sync::atomic::AtomicPtr<u8>,
     ellipsis: std::sync::atomic::AtomicPtr<u8>,
     class_builder: std::sync::atomic::AtomicU64,
-    ascii_chars: [std::sync::atomic::AtomicPtr<u8>; 128],
+    latin1_chars: [std::sync::atomic::AtomicPtr<u8>; 256],
     interned_strings: std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>>,
 }
 
@@ -1444,7 +1444,7 @@ impl CanonicalObjectCache {
             not_implemented: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             ellipsis: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             class_builder: std::sync::atomic::AtomicU64::new(0),
-            ascii_chars: [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128],
+            latin1_chars: [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 256],
             interned_strings: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -1667,9 +1667,7 @@ pub(crate) fn canonical_singleton_allocation_probe(py: &PyToken<'_>) -> bool {
 
 #[cfg(test)]
 pub(crate) fn uncached_ascii_character_for_test(py: &PyToken<'_>) -> Option<u8> {
-    runtime_state(py)
-        .canonical_objects
-        .ascii_chars
+    runtime_state(py).canonical_objects.latin1_chars[..128]
         .iter()
         .position(|slot| slot.load(std::sync::atomic::Ordering::Acquire).is_null())
         .map(|index| index as u8)
@@ -2635,38 +2633,51 @@ fn canonical_inline_bytes(
     interned: bool,
 ) -> *mut u8 {
     canonical_singleton(_py, slot, interned, || {
-        let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), kind);
-        if !ptr.is_null() {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    bytes.as_ptr(),
-                    super::layout::InlineBytesStorage::data(ptr),
-                    bytes.len(),
-                );
-                if matches!(kind, InlineBytesKind::String) && bytes.len() <= 1 {
-                    super::layout::StringStorage::publish_ascii(ptr, bytes.is_ascii());
-                }
-            }
+        let ptr = alloc_inline_bytes(_py, bytes, kind);
+        if !ptr.is_null() && matches!(kind, InlineBytesKind::String) {
+            unsafe { super::layout::StringStorage::publish_ascii(ptr, bytes.is_ascii()) };
         }
         ptr
     })
 }
 
-/// Try to return an interned single-ASCII-character string.
-/// Returns Some for every one-byte ASCII input, including NULL on allocation
-/// failure. Only ineligible input returns None; callers must not retry a failure.
+fn canonical_latin1_char(py: &PyToken<'_>, ordinal: u8) -> *mut u8 {
+    let slot = &runtime_state(py).canonical_objects.latin1_chars[usize::from(ordinal)];
+    canonical_singleton(py, slot, true, || {
+        molt_obj_model::text_storage::with_code_point_bytes(u32::from(ordinal), |bytes| {
+            let ptr = alloc_inline_bytes(py, bytes, InlineBytesKind::String);
+            if !ptr.is_null() {
+                unsafe { super::layout::StringStorage::publish_ascii(ptr, ordinal.is_ascii()) };
+            }
+            ptr
+        })
+    })
+}
+
+/// Construct one character from an admitted Python code point.
+pub(crate) fn alloc_character(py: &PyToken<'_>, code: u32) -> *mut u8 {
+    if let Ok(ordinal) = u8::try_from(code) {
+        return canonical_latin1_char(py, ordinal);
+    }
+    molt_obj_model::text_storage::with_code_point_bytes(code, |bytes| {
+        let ptr = alloc_inline_bytes(py, bytes, InlineBytesKind::String);
+        if !ptr.is_null() {
+            unsafe { super::layout::StringStorage::publish_ascii(ptr, false) };
+        }
+        ptr
+    })
+}
+
+/// CPython reuses every one-character string in U+0000..=U+00FF. A null
+/// result still belongs to that domain and must not retry via another allocator.
 #[inline]
-fn try_intern_ascii_char(_py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
-    if bytes.len() != 1 {
-        return None;
-    }
-    let byte = bytes[0];
-    if byte > 127 {
-        return None;
-    }
-    let slot = &runtime_state(_py).canonical_objects.ascii_chars[byte as usize];
-    let raw = canonical_inline_bytes(_py, slot, bytes, InlineBytesKind::String, true);
-    Some(raw)
+fn try_intern_latin1_char(py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
+    let ordinal = match *bytes {
+        [ascii @ 0..=0x7f] => ascii,
+        [lead @ 0xc2..=0xc3, tail @ 0x80..=0xbf] => ((lead & 3) << 6) | (tail & 0x3f),
+        _ => return None,
+    };
+    Some(canonical_latin1_char(py, ordinal))
 }
 
 pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
@@ -2674,7 +2685,7 @@ pub(crate) fn alloc_interned_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 
         let slot = &runtime_state(_py).canonical_objects.empty_string;
         return canonical_inline_bytes(_py, slot, bytes, InlineBytesKind::String, true);
     }
-    if let Some(ptr) = try_intern_ascii_char(_py, bytes) {
+    if let Some(ptr) = try_intern_latin1_char(_py, bytes) {
         return ptr;
     }
     let cache = &runtime_state(_py).canonical_objects;
@@ -2722,9 +2733,8 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         return alloc_interned_string(_py, bytes);
     }
 
-    // Fast path: single ASCII character strings (space, digits, punctuation, etc.)
-    // are served from a dedicated 128-entry lookup table — no hashing, no locking.
-    if let Some(ptr) = try_intern_ascii_char(_py, bytes) {
+    // A Latin-1 character uses a dedicated slot with lock-free reads.
+    if let Some(ptr) = try_intern_latin1_char(_py, bytes) {
         return ptr;
     }
 
@@ -2764,15 +2774,14 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
 
 /// Allocate a string as CPython's non-interned constructors do
 /// (`PyUnicode_DecodeUTF8`, `PyUnicode_FromKindAndData`): a fresh object,
-/// except the statically interned singletons, the empty string and the
-/// one-character strings (Molt's table holds the ASCII ones). Unlike
+/// except the empty string and statically interned Latin-1 characters. Unlike
 /// `alloc_string` it never auto-interns an identifier-like string, so a
 /// decoded value keeps CPython's interned state (marshal's non-interned tags).
 pub(crate) fn alloc_string_uninterned(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     if bytes.is_empty() {
         return alloc_string(_py, bytes);
     }
-    if let Some(ptr) = try_intern_ascii_char(_py, bytes) {
+    if let Some(ptr) = try_intern_latin1_char(_py, bytes) {
         return ptr;
     }
     alloc_string_nointern(_py, bytes)
@@ -2837,8 +2846,8 @@ pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>, state: &crate::Runtime
     ];
     let singleton_ptrs = singleton_slots
         .map(|slot| slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel));
-    let ascii_ptrs = cache
-        .ascii_chars
+    let latin1_ptrs = cache
+        .latin1_chars
         .each_ref()
         .map(|slot| slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel));
     let mut pool = cache
@@ -2849,12 +2858,11 @@ pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>, state: &crate::Runtime
     drop(pool);
     drop(init);
 
-    // These domains are disjoint by construction: fixed values and every
-    // one-byte ASCII string have dedicated slots, and the pool only admits
-    // remaining nonempty strings. Do not hide collisions by deduplicating.
+    // The intern pool admits nonempty strings outside the fixed Latin-1 slots.
+    // The fixed values, characters and intern pool each own their objects.
     #[cfg(debug_assertions)]
     {
-        let singleton_ptrs: Vec<_> = singleton_ptrs.into_iter().chain(ascii_ptrs).collect();
+        let singleton_ptrs: Vec<_> = singleton_ptrs.into_iter().chain(latin1_ptrs).collect();
         for (index, &ptr) in singleton_ptrs.iter().enumerate() {
             if !ptr.is_null() {
                 assert!(!singleton_ptrs[index + 1..].contains(&ptr));
@@ -2864,7 +2872,7 @@ pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>, state: &crate::Runtime
     }
     for ptr in singleton_ptrs
         .into_iter()
-        .chain(ascii_ptrs)
+        .chain(latin1_ptrs)
         .chain(interned.into_values().map(|raw| raw as *mut u8))
     {
         if !ptr.is_null() {

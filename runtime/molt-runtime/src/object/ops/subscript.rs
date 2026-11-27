@@ -689,7 +689,7 @@ pub(crate) fn index_impl(
                         }
                         let start =
                             utf8_char_to_byte_index_cached(_py, bytes, i, Some(ptr as usize));
-                        let Some((end, _)) = wtf8_step(bytes, start, false) else {
+                        let Some((_, code)) = wtf8_step(bytes, start, false) else {
                             raise_exception::<()>(
                                 _py,
                                 BuiltinExc::IndexError,
@@ -697,7 +697,7 @@ pub(crate) fn index_impl(
                             );
                             return Err(());
                         };
-                        let out_ptr = alloc_string(_py, &bytes[start..end]);
+                        let out_ptr = crate::object::builders::alloc_character(_py, code);
                         if out_ptr.is_null() {
                             return Err(());
                         }

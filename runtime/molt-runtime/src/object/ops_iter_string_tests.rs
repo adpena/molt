@@ -194,3 +194,38 @@ fn string_iteration_allocation_failure_matches_cpython_directional_transitions()
         }
     });
 }
+
+#[test]
+fn warmed_latin1_iteration_uses_the_chr_singleton_without_allocating() {
+    use crate::object::ops_sys::molt_chr_attached_body;
+    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let ordinal = MoltObject::from_int(0xe9).bits();
+        let character = molt_chr_attached_body(py, ordinal);
+        unsafe { assert_character(character, &[0xc3, 0xa9]) };
+        let source = MoltObject::from_ptr(alloc_string(py, &[0xc3, 0xa9, 0xc3, 0xa9])).bits();
+        let forward = molt_iter_attached_body(py, source);
+        let reverse = molt_reversed_builtin_attached_body(py, source);
+        assert!(!crate::exception_pending(py));
+        let reset = crate::test_support::restore_unlimited_tracker_on_drop();
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_allocations: Some(0),
+            ..ResourceLimits::default()
+        })));
+        assert_eq!(molt_chr_attached_body(py, ordinal), character);
+        for iter in [forward, reverse] {
+            for _ in 0..2 {
+                let (done, value) = unsafe { next_owned(py, iter, true) };
+                assert!(!done);
+                assert_eq!(value, character);
+                dec_ref_bits(py, value);
+            }
+        }
+        drop(reset);
+        for owner in [forward, reverse, source, character] {
+            dec_ref_bits(py, owner);
+        }
+    });
+}

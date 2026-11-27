@@ -74,29 +74,38 @@ impl Iterator for CodePoints<'_> {
 
 impl std::iter::FusedIterator for CodePoints<'_> {}
 
-/// Append one Python Unicode code point, including a surrogate. Invalid
-/// ordinals fail before changing the output. Keep the direct Vec append path:
-/// a measured stack-buffer/extend path costs substantially more per point.
+/// Pass the storage bytes of one Python code point to a synchronous consumer.
+/// These bytes may encode a surrogate and must never become a Rust str.
 #[inline(always)]
-pub fn push_code_point(out: &mut Vec<u8>, code: u32) {
+pub fn with_code_point_bytes<T>(code: u32, consume: impl FnOnce(&[u8]) -> T) -> T {
     if code <= 0x7f {
-        out.push(code as u8);
+        consume(&[code as u8])
     } else if code <= 0x7ff {
-        out.extend_from_slice(&[0xc0 | ((code >> 6) as u8), 0x80 | (code as u8 & 0x3f)]);
+        consume(&[0xc0 | ((code >> 6) as u8), 0x80 | (code as u8 & 0x3f)])
     } else if code <= 0xffff {
-        out.extend_from_slice(&[
+        consume(&[
             0xe0 | ((code >> 12) as u8),
             0x80 | (((code >> 6) as u8) & 0x3f),
             0x80 | (code as u8 & 0x3f),
-        ]);
+        ])
     } else {
         assert!(code <= 0x10ffff, "Python code point exceeds U+10FFFF");
-        out.extend_from_slice(&[
+        consume(&[
             0xf0 | ((code >> 18) as u8),
             0x80 | (((code >> 12) as u8) & 0x3f),
             0x80 | (((code >> 6) as u8) & 0x3f),
             0x80 | (code as u8 & 0x3f),
-        ]);
+        ])
+    }
+}
+
+/// Append one Python code point directly, with no intermediate buffer.
+#[inline(always)]
+pub fn push_code_point(out: &mut Vec<u8>, code: u32) {
+    if code <= 0x7f {
+        out.push(code as u8);
+    } else {
+        with_code_point_bytes(code, |storage| out.extend_from_slice(storage));
     }
 }
 

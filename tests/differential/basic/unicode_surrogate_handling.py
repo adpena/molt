@@ -76,6 +76,27 @@ def indexing_matrix(label, text):
         )
 
 
+def character_identity(code):
+    original = chr(code)
+    source = original + "!"
+    decoded = codecs.decode(
+        original.encode("utf-8", "surrogatepass"), "utf-8", "surrogatepass"
+    )
+    return (
+        original is chr(code),
+        original is source[0],
+        original is next(iter(source)),
+        original is next(reversed("!" + original)),
+        original is decoded,
+    )
+
+
+# Fresh results and singleton results differ by the code point, not by the
+# number of storage bytes or by which character producer exposed the value.
+for ordinal in (0, 65, 127, 128, 162, 233, 255, 256, 8364, 55296, 128512):
+    print("character identity", ordinal, character_identity(ordinal))
+
+
 # Build the text at runtime. Adjacent explicit surrogates remain two Python
 # code points beside the distinct supplementary scalar and an embedded NUL.
 mixed = "".join(

@@ -340,17 +340,10 @@ fn encoding_name_matches(bytes: &[u8], aliases: &[&[u8]]) -> bool {
 }
 
 pub(crate) fn push_codepoint_utf8(out: &mut Vec<u8>, code: u32) -> Option<()> {
-    if (0xd800..=0xdfff).contains(&code) {
-        out.extend_from_slice(&[
-            0xed,
-            0x80 | ((code >> 6) as u8 & 0x3f),
-            0x80 | (code as u8 & 0x3f),
-        ]);
-        return Some(());
+    if code > 0x10ffff {
+        return None;
     }
-    let ch = char::from_u32(code)?;
-    let mut buf = [0u8; 4];
-    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+    molt_lang_obj_model::text_storage::push_code_point(out, code);
     Some(())
 }
 
@@ -936,8 +929,8 @@ pub unsafe extern "C" fn PyUnicode_IS_ASCII(op: *mut PyObject) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_FromOrdinal(ordinal: c_int) -> *mut PyObject {
-    let mut bytes = Vec::new();
-    let Some(()) = push_codepoint_utf8(&mut bytes, ordinal as u32) else {
+    let code = ordinal as u32;
+    if code > 0x10ffff {
         unsafe {
             crate::api::errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
@@ -945,8 +938,10 @@ pub unsafe extern "C" fn PyUnicode_FromOrdinal(ordinal: c_int) -> *mut PyObject 
             );
         }
         return ptr::null_mut();
-    };
-    unsafe { unicode_from_python_bytes(&bytes) }
+    }
+    molt_lang_obj_model::text_storage::with_code_point_bytes(code, |bytes| unsafe {
+        unicode_from_python_bytes(bytes)
+    })
 }
 
 #[unsafe(no_mangle)]

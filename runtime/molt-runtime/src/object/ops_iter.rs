@@ -2471,14 +2471,9 @@ unsafe fn reversed_target_next(
                 if idx == 0 {
                     return Ok(None);
                 }
-                let (next_idx, _) = super::ops_string::wtf8_step(bytes, idx, true)
+                let (next_idx, code) = super::ops_string::wtf8_step(bytes, idx, true)
                     .expect("nonempty Python string prefix");
-                // Preserve one admitted code point, including a surrogate,
-                // without retaining a heap borrow over GC.
-                let width = idx - next_idx;
-                let mut buf = [0u8; 4];
-                buf[..width].copy_from_slice(&bytes[next_idx..idx]);
-                let out_ptr = alloc_string(py, &buf[..width]);
+                let out_ptr = super::builders::alloc_character(py, code);
                 if out_ptr.is_null() {
                     // CPython reversed_next retires its sequence on retrieval
                     // failure without clearing MemoryError.
@@ -2631,15 +2626,12 @@ unsafe fn sequence_iterator_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationRes
                 if idx >= bytes.len() {
                     return sequence_iterator_finish(py, ptr);
                 }
-                let (next_idx, _) = super::ops_string::wtf8_step(bytes, idx, false)
+                let (next_idx, code) = super::ops_string::wtf8_step(bytes, idx, false)
                     .expect("nonempty Python string suffix");
-                let width = next_idx - idx;
-                let mut buf = [0u8; 4];
-                buf[..width].copy_from_slice(&bytes[idx..next_idx]);
                 // CPython unicodeiter_next consumes the code point before
                 // allocating its one-character result, even on failure.
                 iter_set_index(ptr, next_idx);
-                let out_ptr = alloc_string(py, &buf[..width]);
+                let out_ptr = super::builders::alloc_character(py, code);
                 if out_ptr.is_null() {
                     return Err(());
                 }

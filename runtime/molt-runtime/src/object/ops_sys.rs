@@ -1403,51 +1403,24 @@ pub(crate) fn molt_id_attached_body(_py: &crate::PyToken<'_>, val: u64) -> u64 {
 
 pub(crate) fn molt_chr_attached_body(_py: &crate::PyToken<'_>, val: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        // Fast path: inline small integer in valid codepoint range.
-        // Avoids BigInt allocation, error-message formatting, and (for ASCII)
-        // goes straight to the interned single-char cache.
-        let obj = obj_from_bits(val);
-        if let Some(i) = to_i64(obj) {
-            if !(0..=0x10FFFF).contains(&i) {
-                return raise_exception::<_>(
-                    _py,
-                    BuiltinExc::ValueError,
-                    "chr() arg not in range(0x110000)",
-                );
-            }
-            let code = i as u32;
-            let mut out_bytes = Vec::with_capacity(4);
-            molt_obj_model::text_storage::push_code_point(&mut out_bytes, code);
-            let out = alloc_string(_py, &out_bytes);
-            if out.is_null() {
+        let code = if let Some(i) = to_i64(obj_from_bits(val)) {
+            u32::try_from(i).ok()
+        } else {
+            let Some(value) =
+                index_bigint_from_obj(_py, val, crate::builtins::numbers::not_an_integer(_py, val))
+            else {
                 return MoltObject::none().bits();
-            }
-            return MoltObject::from_ptr(out).bits();
-        }
-
-        // Slow path: BigInt / __index__ protocol.
-        let Some(value) =
-            index_bigint_from_obj(_py, val, crate::builtins::numbers::not_an_integer(_py, val))
-        else {
-            return MoltObject::none().bits();
+            };
+            value.to_u32()
         };
-        if value.is_negative() || value > BigInt::from(0x10FFFF) {
-            return raise_exception::<_>(
-                _py,
-                BuiltinExc::ValueError,
-                "chr() arg not in range(0x110000)",
-            );
-        }
-        let Some(code) = value.to_u32() else {
+        let Some(code) = code.filter(|&code| code <= 0x10ffff) else {
             return raise_exception::<_>(
                 _py,
                 BuiltinExc::ValueError,
                 "chr() arg not in range(0x110000)",
             );
         };
-        let mut out_bytes = Vec::with_capacity(4);
-        molt_obj_model::text_storage::push_code_point(&mut out_bytes, code);
-        let out = alloc_string(_py, &out_bytes);
+        let out = super::builders::alloc_character(_py, code);
         if out.is_null() {
             return MoltObject::none().bits();
         }
