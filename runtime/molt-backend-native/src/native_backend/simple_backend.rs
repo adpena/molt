@@ -75,6 +75,8 @@ pub enum NativeProgramScope {
 pub struct CompileOutput {
     /// The compiled object file bytes.
     pub bytes: Vec<u8>,
+    /// The admitted input key if these bytes came from the LLVM artifact store.
+    pub reused_object_key: Option<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -83,6 +85,8 @@ pub struct SimpleBackend {
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     pub(crate) import_ids: RuntimeImportIds,
     pub program_scope: NativeProgramScope,
+    /// A supervised emission must preserve its own actual codegen process.
+    pub require_fresh_emission: bool,
     pub skip_shared_stdlib_partition: bool,
     /// Where the persistent TIR cache lives: the backend process's own root,
     /// unless the caller names one (the JIT runner names its image's).

@@ -241,6 +241,7 @@ impl SimpleBackend {
             module,
             import_ids: RuntimeImportIds::default(),
             program_scope: NativeProgramScope::WholeProgram,
+            require_fresh_emission: false,
             skip_shared_stdlib_partition: false,
             tir_cache: crate::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
             emit_app_callable_resolver: true,

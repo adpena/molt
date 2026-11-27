@@ -27,7 +27,7 @@ pub(crate) struct NativeApplicationArtifactResult {
     pub(crate) function_count: usize,
     pub(crate) batch_count: usize,
     pub(crate) output: crate::backend_process::input::ContentIdentity,
-    pub(crate) workers: Option<Vec<super::super::worker::NativeWorkerOrigin>>,
+    pub(crate) codegen: crate::backend_process::origin::CodegenOrigin,
 }
 
 /// Source stdlib constituents keep their independent content keys. Application

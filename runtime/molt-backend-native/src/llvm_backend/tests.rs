@@ -7,6 +7,59 @@ use molt_ir::runtime_fn_generated::RuntimeFn;
 use object::{Object, ObjectSection, ObjectSymbol};
 
 #[test]
+fn llvm_object_admission_binds_the_lowered_body_pipeline_and_target() {
+    use molt_ir::backend_environment::{self as backend_env, BackendEnvironment};
+    use std::sync::Arc;
+
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-object-admission").unwrap();
+    let root = TirCacheLocation::Root(artifacts.path().to_path_buf());
+    let request = |settings: serde_json::Value| {
+        backend_env::enter(Arc::new(
+            BackendEnvironment::from_request(settings.as_object().unwrap()).unwrap(),
+        ))
+    };
+    let _request = request(serde_json::json!({}));
+    let ctx = Context::create();
+    let lower = |target, optimization, value| {
+        let llvm = LlvmBackend::new_for_target(&ctx, "cached_module", target, optimization);
+        let word = ctx.i32_type();
+        let body = llvm
+            .module
+            .add_function("compiled_body", word.fn_type(&[], false), None);
+        llvm.builder
+            .position_at_end(ctx.append_basic_block(body, "entry"));
+        llvm.builder
+            .build_return(Some(&word.const_int(value, false)))
+            .unwrap();
+        llvm.module.verify().unwrap();
+        llvm
+    };
+
+    for target in [CodegenTarget::Host, CodegenTarget::Wasm32Wasip1] {
+        let llvm = lower(target, MoltOptLevel::O3, 42);
+        let mut entry = llvm.object_artifact(&root).unwrap();
+        assert!(entry.restore().is_none());
+        llvm.optimize().unwrap();
+        let bytes = llvm.emit_object().unwrap();
+        entry.publish(&bytes);
+
+        let ready = lower(target, MoltOptLevel::O3, 42);
+        assert_eq!(
+            ready.object_artifact(&root).unwrap().restore().as_deref(),
+            Some(bytes.as_slice()),
+        );
+        for (opt, value) in [(MoltOptLevel::O3, 43), (MoltOptLevel::O0, 42)] {
+            let changed = lower(target, opt, value);
+            assert!(changed.object_artifact(&root).unwrap().restore().is_none());
+        }
+        let explicit_tir = TirCacheLocation::Directory(artifacts.path().join("tir-only"));
+        assert!(ready.object_artifact(&explicit_tir).is_none());
+        let _diagnostics = request(serde_json::json!({"MOLT_LLVM_DUMP_IR": "1"}));
+        assert!(ready.object_artifact(&root).is_none());
+    }
+}
+
+#[test]
 fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
     use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
@@ -320,7 +373,7 @@ fn test_create_target_machine_all_levels() {
     ] {
         assert_eq!(level.pipeline(), pipeline);
         assert_eq!(level.machine_level(), machine);
-        let _machine = backend.target.create_target_machine(level);
+        let _backend = LlvmBackend::new_for_target(&ctx, "tm_test", backend.target, level);
     }
 }
 
