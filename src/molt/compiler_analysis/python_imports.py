@@ -26,9 +26,10 @@ if TYPE_CHECKING:
 import ast
 from molt.python_private_names import python_import_binding
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
-from collections import deque
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections import OrderedDict, deque
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from threading import Lock
 from types import MappingProxyType
 from typing import Literal, NamedTuple, assert_never
 
@@ -1026,6 +1027,107 @@ def _normalized_import_context(context: ModuleImportContext) -> ModuleImportCont
     return replace(context, spec_name=context.module_name)
 
 
+_IMPORT_INITIALIZER_FACT_BUDGET = 65_536
+_MISSING_IMPORT_FACT = object()
+
+type _ImportInitializerKey = tuple[
+    ast.Module, ModuleImportContext, bool, frozenset[str]
+]
+type _ImportFact = (
+    PythonStatementFact
+    | PythonIterationFact
+    | PythonExpressionFact
+    | int
+    | PythonCallSiteFact
+)
+
+
+class _ImportInitializerReads[T](Mapping[PythonSourceKey, T]):
+    def __init__(self, facts: Mapping[PythonSourceKey, T]) -> None:
+        self._facts = facts
+        self.observed: dict[PythonSourceKey, object] = {}
+
+    def __len__(self) -> int:
+        return len(self._facts)
+
+    def __iter__(self) -> Iterator[PythonSourceKey]:
+        return iter(self._facts)
+
+    def __getitem__(self, key: PythonSourceKey) -> T:
+        try:
+            value = self._facts[key]
+        except KeyError:
+            self.observed[key] = _MISSING_IMPORT_FACT
+            raise
+        self.observed[key] = value
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class _ImportInitializer:
+    observed: tuple[Mapping[PythonSourceKey, object], ...]
+    states_by_node: Mapping[PythonSourceKey, _ImportStates]
+    all_states: frozenset[ModuleImportState]
+    definitions: Mapping[PythonSourceKey, ast.FunctionDef | ast.AsyncFunctionDef]
+    expressions: Mapping[PythonSourceKey, ast.expr]
+    final_states: _ImportStates
+
+    @property
+    def size(self) -> int:
+        return (
+            sum(len(reads) for reads in self.observed)
+            + len(self.states_by_node)
+            + len(self.all_states)
+            + len(self.definitions)
+            + len(self.expressions)
+            + len(self.final_states)
+        )
+
+
+class _ImportInitializerCache:
+    """Completed metadata initializers within one binding revision scope."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._entries: OrderedDict[_ImportInitializerKey, _ImportInitializer] = (
+            OrderedDict()
+        )
+        self._size = 0
+
+    def matching(
+        self,
+        key: _ImportInitializerKey,
+        facts: tuple[Mapping[PythonSourceKey, _ImportFact], ...],
+    ) -> _ImportInitializer | None:
+        with self._lock:
+            prefix = self._entries.get(key)
+            if prefix is not None:
+                self._entries.move_to_end(key)
+        if prefix is not None and all(
+            mapping.get(site, _MISSING_IMPORT_FACT) == expected
+            for mapping, reads in zip(facts, prefix.observed, strict=True)
+            for site, expected in reads.items()
+        ):
+            return prefix
+        return None
+
+    def remember(self, key: _ImportInitializerKey, prefix: _ImportInitializer) -> None:
+        size = prefix.size
+        if size > _IMPORT_INITIALIZER_FACT_BUDGET:
+            return
+        with self._lock:
+            replaced = self._entries.pop(key, None)
+            if replaced is not None:
+                self._size -= replaced.size
+            self._entries[key] = prefix
+            self._size += size
+            while (
+                self._size > _IMPORT_INITIALIZER_FACT_BUDGET or len(self._entries) > 128
+            ):
+                _, evicted = self._entries.popitem(last=False)
+                self._size -= evicted.size
+
+
 def _analyze_module_import_flow_uncached(
     tree: ast.Module,
     context: ModuleImportContext,
@@ -1041,6 +1143,7 @@ def _analyze_module_import_flow_uncached(
     source_discovery: bool = False,
     callback_metadata_writes: frozenset[str] = MODULE_IMPORT_METADATA_NAMES,
     deferred_binding_path: frozenset[PythonSourceKey] | None = None,
+    initializer_cache: _ImportInitializerCache | None = None,
 ) -> ModuleImportFlow:
     """Project one requested metadata view through canonical completion facts.
 
@@ -1083,6 +1186,7 @@ def _analyze_module_import_flow_uncached(
             eager_annotations=eager, future_annotations=future
         )
 
+    capturing_initializer = False
     initial = frozenset({context_import_state(context)})
     by_node: dict[PythonSourceKey, _ImportStates] = {}
     all_states: set[ModuleImportState] = set(initial)
@@ -1853,10 +1957,14 @@ def _analyze_module_import_flow_uncached(
                         current = evaluate(expression, current)
                 deferred_key = source_key(statement)
                 if (
-                    deferred_binding_path is None
+                    capturing_initializer
+                    or deferred_binding_path is None
                     or deferred_key in deferred_binding_path
                 ):
-                    if deferred_key not in deferred_definitions:
+                    if (
+                        not capturing_initializer
+                        and deferred_key not in deferred_definitions
+                    ):
                         pending_bodies.append(deferred_key)
                     deferred_definitions[deferred_key] = statement
             elif isinstance(statement, ast.ClassDef):
@@ -2182,11 +2290,79 @@ def _analyze_module_import_flow_uncached(
         return completion
 
     body = tuple(getattr(tree, "body", ()))
-    module_completion = flow_statements(
-        body,
-        initial,
-    )
-    final_states = module_completion.normal or _EMPTY_IMPORT_STATES
+    if (
+        initializer_cache is None
+        or deferred_binding_path is None
+        or ast_digest_admission is None
+    ):
+        module_completion = flow_statements(body, initial)
+        final_states = module_completion.normal or _EMPTY_IMPORT_STATES
+    else:
+        initializer_key = (tree, context, source_discovery, callback_metadata_writes)
+        inputs = (
+            statement_facts,
+            iteration_facts,
+            expression_facts,
+            assignment_effects,
+            call_facts,
+        )
+        prefix = initializer_cache.matching(initializer_key, inputs)
+        if prefix is None:
+            statements = _ImportInitializerReads(statement_facts)
+            iterations = _ImportInitializerReads(iteration_facts)
+            expressions = _ImportInitializerReads(expression_facts)
+            assignments = _ImportInitializerReads(assignment_effects)
+            calls = _ImportInitializerReads(call_facts)
+            (
+                statement_facts,
+                iteration_facts,
+                expression_facts,
+                assignment_effects,
+                call_facts,
+            ) = (statements, iterations, expressions, assignments, calls)
+            capturing_initializer = True
+            module_completion = flow_statements(body, initial)
+            capturing_initializer = False
+            (
+                statement_facts,
+                iteration_facts,
+                expression_facts,
+                assignment_effects,
+                call_facts,
+            ) = inputs
+            final_states = module_completion.normal or _EMPTY_IMPORT_STATES
+            initializer_cache.remember(
+                initializer_key,
+                _ImportInitializer(
+                    (
+                        statements.observed,
+                        iterations.observed,
+                        expressions.observed,
+                        assignments.observed,
+                        calls.observed,
+                    ),
+                    by_node.copy(),
+                    frozenset(all_states),
+                    deferred_definitions.copy(),
+                    deferred_expressions.copy(),
+                    final_states,
+                ),
+            )
+        else:
+            by_node.update(prefix.states_by_node)
+            all_states.update(prefix.all_states)
+            deferred_definitions.update(prefix.definitions)
+            deferred_expressions.update(prefix.expressions)
+            final_states = prefix.final_states
+
+        # Departure from the initializer selects bodies. All reached declarations
+        # belong to the prefix, including ones this request does not execute.
+        deferred_definitions = {
+            key: definition
+            for key, definition in deferred_definitions.items()
+            if key in deferred_binding_path
+        }
+        pending_bodies = deque(deferred_definitions)
     deferred_states = _join_import_states(all_states, final_states)
     # Function imports observe globals when called. Graph consumers therefore
     # union every reachable module state; frontend lowering keeps them relative.

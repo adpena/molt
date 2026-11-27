@@ -1154,3 +1154,63 @@ def test_unknown_truth_can_replace_scalar_binding_before_loop(monkeypatch):
     assert truth.truth_effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
         _modules(source, (3, 12))
+
+
+@pytest.mark.parametrize("source_discovery", [False, True])
+def test_metadata_initializer_reuses_only_matching_inputs(
+    source_discovery: bool,
+) -> None:
+    from molt.compiler_analysis.python_imports import (
+        ModuleImportFlow,
+        _ImportInitializerCache,
+        _analyze_module_import_flow_uncached,
+    )
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+    tree = ast.parse(
+        "marker = 1\n"
+        "def first():\n    from .first_child import value\n"
+        "def second():\n    from .second_child import value\n"
+    )
+    assignment, first, second = tree.body
+    assert isinstance(assignment, ast.Assign)
+    admission = _PythonAstDigestAdmission.for_tree(tree)
+    cache = _ImportInitializerCache()
+    context = ModuleImportContext("pkg.entry", False)
+
+    def analyze(owner: ast.stmt, *, known: bool, reuse: bool) -> ModuleImportFlow:
+        return _analyze_module_import_flow_uncached(
+            tree,
+            context,
+            statement_facts={},
+            iteration_facts={},
+            expression_facts={},
+            assignment_effects={admission.source_key(assignment.targets[0]): 0}
+            if known
+            else {},
+            call_facts={},
+            argument_plan=admission.call_argument_plan,
+            source_key=admission.source_key,
+            ast_digest_admission=admission,
+            source_discovery=source_discovery,
+            deferred_binding_path=frozenset({admission.source_key(owner)}),
+            initializer_cache=cache if reuse else None,
+        )
+
+    controls = []
+    prefixes = []
+    for owner, known in (
+        (first, False),
+        (second, False),
+        (first, True),
+        (second, True),
+    ):
+        expected = analyze(owner, known=known, reuse=False)
+        assert analyze(owner, known=known, reuse=True) == expected
+        controls.append(expected)
+        assert len(cache._entries) == 1
+        prefixes.append(next(iter(cache._entries.values())))
+    assert controls[0].final_states != controls[2].final_states
+    assert prefixes[0] is prefixes[1]
+    assert prefixes[0] is not prefixes[2]
+    assert prefixes[2] is prefixes[3]
