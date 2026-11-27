@@ -281,7 +281,7 @@ def main() -> int:
         "--optimize-level",
         default="Oz",
         choices=WASM_OPT_LEVELS,
-        help="wasm-opt optimization level (O1/O2/O3/O4/Os/Oz, default: Oz)",
+        help="Post-link optimization policy (default: Oz)",
     )
     parser.add_argument(
         "--split-runtime",

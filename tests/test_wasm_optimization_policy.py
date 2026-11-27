@@ -5,13 +5,14 @@ import pytest
 from molt.wasm_optimization import (
     WASM_OPT_FEATURE_FLAGS,
     WASM_OPT_LEVELS,
+    WasmOptLevel,
     wasm_link_policy,
     wasm_opt_pipeline,
 )
 
 
 @pytest.mark.parametrize("level", WASM_OPT_LEVELS)
-def test_optimizer_policy_covers_every_binaryen_level(level: str) -> None:
+def test_optimizer_policy_covers_every_level(level: WasmOptLevel) -> None:
     link = wasm_link_policy(level)
 
     assert link.level == level
@@ -33,6 +34,38 @@ def test_dev_link_policy_runs_one_nonconverging_o1_level() -> None:
 def test_optimizer_pipeline_rejects_unknown_level() -> None:
     with pytest.raises(ValueError, match="unsupported wasm-opt level"):
         wasm_opt_pipeline("O99")
+
+
+def test_bounded_policy_uses_one_pass_sequence_across_entrypoints() -> None:
+    from molt.cli.build_request_resolution import (
+        parse_build_arguments,
+        resolve_build_request,
+    )
+
+    args = parse_build_arguments(
+        ["--target", "wasm", "--wasm-opt-level", "bounded"], file_path="app.py"
+    )
+    request = resolve_build_request(args, build_cfg={}, cfg_capabilities=None, env={})
+    assert request.wasm_opt_level == "bounded"
+    policy = wasm_link_policy("bounded")
+
+    assert policy.apply_level is False
+    assert policy.pipeline == wasm_opt_pipeline("bounded")
+    assert all(not flag.startswith("-O") for flag in policy.pipeline)
+    assert "--converge" not in policy.pipeline
+    assert policy.pipeline[-7:] == (
+        "--remove-unused-module-elements",
+        "--optimize-instructions",
+        "--merge-blocks",
+        "--vacuum",
+        "--reorder-locals",
+        "--reorder-functions",
+        "--memory-packing",
+    )
+    with pytest.raises(ValueError, match="runs one pass sequence"):
+        wasm_opt_pipeline("bounded", converge=True)
+    with pytest.raises(ValueError, match="without a grade flag"):
+        wasm_opt_pipeline("bounded", apply_level=True)
 
 
 @pytest.mark.parametrize("level", WASM_OPT_LEVELS)
