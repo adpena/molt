@@ -1,18 +1,6 @@
 use super::*;
+use crate::test_support::{cargo_test_artifacts, native_object_execution};
 use molt_ir::OpKind;
-
-mod cargo_test_artifacts {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../test_support/cargo_test_artifacts.rs"
-    ));
-}
-mod native_object_execution {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../test_support/native_object_execution.rs"
-    ));
-}
 
 fn task_factory(
     name: &str,

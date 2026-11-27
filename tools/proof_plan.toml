@@ -1536,7 +1536,7 @@ dependencies = []
 [[ci_family]]
 name = "llvm"
 description = "LLVM, MLIR, and linker executable build/lowering/link/differential proof."
-inputs = ["runtime/test_support/native_object_execution.rs", ".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-llvm-link/**", "src/molt/llvm_link_plan.py", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**", "config/release_acceptance_matrix.toml", "src/molt/release_lanes.py", "src/molt/compiler_distribution.py", "src/molt/cli/compiler_identity.py", "src/molt/cli/installed_runtime.py", "tools/release/native_build.py", "tools/release/runtime_cells.py", "tools/release/verify_consumer.py", "vendor/llvm/**", "tests/cli/test_compiler_identity.py", "tests/cli/test_wasm_facts_tool.py", "tests/cli/test_installed_runtime.py", "tests/tools/test_release_native_build.py", "tests/test_release_lanes.py"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-llvm-link/**", "src/molt/llvm_link_plan.py", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**", "config/release_acceptance_matrix.toml", "src/molt/release_lanes.py", "src/molt/compiler_distribution.py", "src/molt/cli/compiler_identity.py", "src/molt/cli/installed_runtime.py", "tools/release/native_build.py", "tools/release/runtime_cells.py", "tools/release/verify_consumer.py", "vendor/llvm/**", "tests/cli/test_compiler_identity.py", "tests/cli/test_wasm_facts_tool.py", "tests/cli/test_installed_runtime.py", "tests/tools/test_release_native_build.py", "tests/test_release_lanes.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "llvm-backend"
@@ -6148,7 +6148,8 @@ name = "backend-native"
 toolchains = ["python", "rustc", "cargo"]
 description = "Host backend driver and native generation: owning release-fast library and binary tests."
 globs = [
-  "runtime/test_support/native_object_execution.rs",
+  "runtime/molt-backend-native/src/test_support/**/*.rs",
+  "runtime/molt-backend-native/src/test_support.rs",
   "runtime/molt-backend/**/*.rs",
   "runtime/molt-backend/**/Cargo.toml",
   "runtime/molt-backend-native/Cargo.toml",
@@ -6284,7 +6285,8 @@ name = "backend-llvm"
 toolchains = ["python", "rustc", "cargo", "llvm-sdk"]
 description = "LLVM backend Rust: clippy + LLVM-feature lib tests."
 globs = [
-  "runtime/test_support/native_object_execution.rs",
+  "runtime/molt-backend-native/src/test_support/**/*.rs",
+  "runtime/molt-backend-native/src/test_support.rs",
   "runtime/molt-backend-native/Cargo.toml",
   "runtime/molt-backend-native/src/lib.rs",
   "runtime/molt-llvm-link/**",
@@ -6487,7 +6489,8 @@ name = "native-callable-abi"
 toolchains = ["python", "rustc", "cargo", "rustfmt", "node", "wasm-ld", "llvm-sdk"]
 description = "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification."
 globs = [
-  "runtime/test_support/native_object_execution.rs",
+  "runtime/molt-backend-native/src/test_support/**/*.rs",
+  "runtime/molt-backend-native/src/test_support.rs",
   "runtime/native_callable_abi.toml",
   "tools/gen_native_callable_abi.py",
   "src/molt/native_callable_abi.py",

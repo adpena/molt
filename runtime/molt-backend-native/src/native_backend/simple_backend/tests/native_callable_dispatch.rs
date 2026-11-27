@@ -25,6 +25,7 @@ use crate::native_backend::simple_backend::tests::{
     compile_final_functions, compile_selected_functions_direct, emit_direct_object,
     finalize_through_tir,
 };
+use crate::test_support::native_object_execution;
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 use molt_ir::OpKind;
 use native_object_execution::{link_and_run_native_object, rustc_path};
@@ -173,19 +174,6 @@ fn main(){unsafe{
         harness,
         "inline async-work poll",
     );
-}
-
-mod cargo_test_artifacts {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../test_support/cargo_test_artifacts.rs"
-    ));
-}
-mod native_object_execution {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../test_support/native_object_execution.rs"
-    ));
 }
 
 /// The runtime object-call symbol every executable native callable dispatch

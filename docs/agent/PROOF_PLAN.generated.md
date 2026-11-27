@@ -56,7 +56,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `native_integration` | pre-push, pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 39 |
 | `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 13 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 330 min | 19560 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 23 |
-| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 77 min | 4200 s | 120 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 77 min | 4200 s | 120 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 45 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 7 |
@@ -417,14 +417,14 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `browser-simd` | 14 | 0 |
 | `rust-clippy-changed` | 8 | 1 |
 | `rust-test-changed` | 6 | 1 |
-| `backend-native` | 9 | 1 |
+| `backend-native` | 10 | 1 |
 | `wasm-facts-host-tool` | 7 | 2 |
 | `backend-daemon-cache` | 12 | 2 |
 | `backend-ir-framing` | 4 | 1 |
 | `maintained-regalloc-moves` | 1 | 1 |
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 13 | 2 |
-| `backend-llvm` | 7 | 1 |
+| `backend-llvm` | 8 | 1 |
 | `tir-midend` | 9 | 2 |
 | `wasm-host` | 9 | 2 |
 | `gpu-runtime` | 3 | 1 |
@@ -434,7 +434,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `python-identity-catalog-authority` | 9 | 0 |
 | `builtin-binding-guard-authority` | 9 | 1 |
 | `wasm-optimizer-policy` | 6 | 1 |
-| `native-callable-abi` | 17 | 1 |
+| `native-callable-abi` | 18 | 1 |
 | `native-launch-abi` | 9 | 1 |
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |

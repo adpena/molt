@@ -1,5 +1,4 @@
-//! Object-format-aware test symbol inspection and Cranelift IR fixtures shared
-//! by native test families.
+//! Native object inspection and final-link fixtures shared by backend tests.
 
 use std::collections::BTreeSet;
 
@@ -30,3 +29,13 @@ pub(super) fn native_object_symbols(bytes: &[u8]) -> NativeObjectSymbols {
     }
     symbols
 }
+
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) mod native_object_execution;

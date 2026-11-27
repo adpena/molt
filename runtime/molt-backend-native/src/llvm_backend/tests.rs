@@ -1,5 +1,6 @@
 use super::*;
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+use crate::test_support::cargo_test_artifacts;
 use inkwell::context::Context;
 use inkwell::values::AnyValue;
 use molt_ir::runtime_fn_generated::RuntimeFn;
@@ -186,15 +187,6 @@ fn refcount_sites_past_the_inline_budget_call_one_outlined_transition() {
     );
     backend.optimize().unwrap();
     backend.module.verify().unwrap();
-}
-
-// LLVM emits in process; the shared helper also owns subprocess arguments.
-#[allow(dead_code)]
-mod cargo_test_artifacts {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../test_support/cargo_test_artifacts.rs"
-    ));
 }
 
 #[test]

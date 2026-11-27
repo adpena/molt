@@ -9460,7 +9460,7 @@ def test_native_execution_helper_selects_all_compiled_consumers(rule_name: str) 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == rule_name)
     gates, matched = _rule_only(config, rule).select(
-        ["runtime/test_support/native_object_execution.rs"]
+        ["runtime/molt-backend-native/src/test_support/native_object_execution.rs"]
     )
     assert [rule.name for rule in matched] == [rule_name]
     test_gates = [
@@ -9474,8 +9474,10 @@ def test_native_execution_helper_selects_all_compiled_consumers(rule_name: str) 
     )
 
 
-def test_shared_native_execution_helper_selects_rust_and_llvm_ci() -> None:
-    selected = PLAN.select(["runtime/test_support/native_object_execution.rs"])
+def test_native_execution_helper_selects_rust_and_llvm_ci() -> None:
+    selected = PLAN.select(
+        ["runtime/molt-backend-native/src/test_support/native_object_execution.rs"]
+    )
     assert {"rust", "llvm"} <= {family.name for family in selected.selected}
 
 

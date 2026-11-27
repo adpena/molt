@@ -1,5 +1,5 @@
 {
-  "baseline_total": 55,
+  "baseline_total": 54,
   "entries": [
     {
       "id": "runtime/build_support/variadic_exports.rs::allow_dead_code::fn:render_rust_anchors",
@@ -20,11 +20,6 @@
       "id": "runtime/molt-backend-native/src/codegen_ssa/builder.rs::allow_dead_code::variant:Address",
       "owner": "shared-codegen",
       "waiver": "LLVM constructs pointer-typed MachineKind::Address; Cranelift represents addresses as Word, so only builds without the llvm feature allow this unused variant"
-    },
-    {
-      "id": "runtime/molt-backend-native/src/llvm_backend/tests.rs::allow_dead_code::mod:cargo_test_artifacts",
-      "owner": "runtime-authority-closure",
-      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
     },
     {
       "id": "runtime/molt-cext-discovery/src/lib.rs::allow_dead_code::mod:cargo_test_artifacts",
