@@ -362,7 +362,7 @@ def test_relocated_source_reuses_requests_and_resolves_its_own_edges(
         "from runpy import ｒｕｎ＿ｐａｔｈ as execute\nexecute('loaded.py')\n",
     ],
 )
-def test_source_execution_uses_parsed_identifiers(tmp_path, source):
+def test_source_execution_uses_parsed_identifiers(tmp_path: Path, source: str) -> None:
     entry = write(tmp_path / "entry.py", source)
     child = write(tmp_path / "loaded.py")
     assert load(entry).scan.source_executions == ((None, child),)
