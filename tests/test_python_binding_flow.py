@@ -2693,6 +2693,46 @@ def test_unread_foreign_slots_do_not_publish_source_values(
     )
 
 
+@pytest.mark.parametrize(
+    ("before", "after", "reusable"),
+    [
+        (("keep", "unused"), ("keep",), True),
+        (("keep", "unused"), ("added", "keep"), True),
+        (("unused",), ("added",), True),
+        (("unused",), (), False),
+        (("keep", "len"), ("keep",), False),
+        (("__getattr__", "keep"), ("keep",), False),
+    ],
+)
+def test_foreign_slot_retirement_matches_fresh_binding_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    before: tuple[str, ...],
+    after: tuple[str, ...],
+    reusable: bool,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = (
+        "external_callback()\n"
+        "def public(argument):\n"
+        "    local = len(argument)\n"
+        "    return local\n"
+    )
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=before,
+        foreign_namespace_universe=frozenset(before) | frozenset(after),
+        opaque_activation_sources=(),
+    )
+    analyze_python_source_bindings(source, policy=policy)
+    requested = replace(policy, foreign_namespace_writes=after)
+    revised = analyze_python_source_bindings(source, policy=requested)
+    assert flow.python_binding_core_computations() == (1 if reusable else 2)
+
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    fresh = analyze_python_source_bindings(source, policy=requested)
+    assert replace(revised, telemetry=fresh.telemetry) == fresh
+
+
 def test_small_binding_revision_reuses_initializer_and_independent_jobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
