@@ -7727,3 +7727,71 @@ def test_local_literal_call_coverage_revisions_match_fresh_transfer(
                 )
                 == expected
             )
+
+
+def test_selected_bodies_reuse_initializer_with_open_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    tree = ast.parse(
+        "fallback = sorted\n"
+        "def first(value): return fallback(value)\n"
+        "def second(value): return len(value)\n"
+    )
+    first, second = map(python_node_source_key, tree.body[1:])
+    admission = _PythonAstDigestAdmission.for_tree(tree)
+    base = PythonBindingFlowPolicy(
+        target_python=(3, 13),
+        opaque_activation_sources=(),
+        frame_locals_writer=None,
+        foreign_namespace_writes=None,
+        deferred_binding_path=frozenset(),
+    )
+    policies = (
+        base,
+        replace(base, deferred_binding_path=frozenset({first})),
+        replace(
+            base,
+            deferred_binding_path=frozenset({second}),
+            opaque_activation_sources=(second,),
+        ),
+        replace(base, frame_locals_writer="possible frame writer"),
+        replace(base, foreign_namespace_writes=("fallback",)),
+    )
+
+    def analyze(
+        policy: PythonBindingFlowPolicy,
+    ) -> python_binding_flow.PythonBindingFacts:
+        return flow.analyze_python_binding_facts(
+            tree,
+            source_digest=admission.digest,
+            ast_digest_admission=admission,
+            policy=policy,
+        )
+
+    fresh = [analyze(policy) for policy in policies]
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    calls: list[PythonBindingFlowPolicy] = []
+    original = flow._Analyzer._execute_initializer
+
+    def record(
+        analyzer: python_binding_flow._Analyzer,
+        entry: int,
+        continuation: python_binding_flow._InitializerContinuation | None = None,
+    ) -> None:
+        calls.append(analyzer.policy)
+        original(analyzer, entry, continuation)
+
+    monkeypatch.setattr(flow._Analyzer, "_execute_initializer", record)
+    with flow.python_binding_revision_scope():
+        for policy, expected in zip(policies, fresh, strict=True):
+            actual = analyze(policy)
+            assert (
+                replace(
+                    actual,
+                    state_count=expected.state_count,
+                    telemetry=expected.telemetry,
+                )
+                == expected
+            )
+    assert calls == [policies[0], policies[3], policies[4]]
