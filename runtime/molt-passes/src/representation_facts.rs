@@ -943,7 +943,7 @@ fn raw_i64_safe_values_for_with_types(
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     let mut seed = raw_i64_safe_value_seed(tir_func, vr, value_types);
     seed.extend(gpu_intrinsic_raw_i64_values(tir_func, value_types));
-    propagate_raw_i64_identity_values(tir_func, seed, value_types)
+    propagate_raw_i64_identity_values(tir_func, &seed, value_types)
 }
 
 /// Full-range raw-i64 carriers. These values are not inline-box-safe; their
@@ -957,6 +957,7 @@ fn raw_i64_full_deopt_values_for_with_types(
     value_types: &HashMap<ValueId, TirType>,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     let mut seed = molt_ir::deterministic_hash::HashSet::default();
+    let mut quotients: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
     let inline_payloads: molt_ir::deterministic_hash::HashSet<ValueId> = tir_func
         .blocks
         .values()
@@ -1006,44 +1007,50 @@ fn raw_i64_full_deopt_values_for_with_types(
                         }
                     }
                 }
+                ReprRawI64FullDeoptSeedRule::QuotientByConstantDivisor
+                    if let [dividend, divisor] = op.operands[..]
+                        && let [result] = op.results[..]
+                        && is_raw_i64_semantic_candidate(value_types, result)
+                        && !inline_safe_values.contains(&result)
+                        && vr
+                            .const_int_of(divisor)
+                            .is_some_and(|divisor| divisor != 0 && divisor != -1) =>
+                {
+                    quotients.entry(dividend).or_default().push(result);
+                }
                 _ => {}
             }
         }
     }
-    let mut full = propagate_raw_i64_full_deopt_identity_values(
-        tir_func,
-        inline_safe_values,
-        seed.clone(),
-        value_types,
-    );
-    // A quotient joins once its dividend is a raw carrier; a chain of them
-    // (`x // 3 // 5`) needs one round per link.
+    // A quotient becomes a seed once its dividend has a raw carrier. Follow
+    // direct chains before solving the identity graph again. An unseeded
+    // dependency cycle cannot make itself a quotient seed.
+    let mut ready: Vec<_> = quotients
+        .keys()
+        .copied()
+        .filter(|dividend| inline_safe_values.contains(dividend) || seed.contains(dividend))
+        .collect();
     loop {
-        let before = seed.len();
-        for op in tir_func.blocks.values().flat_map(|block| &block.ops) {
-            if opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode)
-                == ReprRawI64FullDeoptSeedRule::QuotientByConstantDivisor
-                && let [dividend, divisor] = op.operands[..]
-                && let [result] = op.results[..]
-                && is_raw_i64_semantic_candidate(value_types, result)
-                && !inline_safe_values.contains(&result)
-                && (inline_safe_values.contains(&dividend) || full.contains(&dividend))
-                && vr
-                    .const_int_of(divisor)
-                    .is_some_and(|divisor| divisor != 0 && divisor != -1)
-            {
-                seed.insert(result);
+        while let Some(dividend) = ready.pop() {
+            if let Some(users) = quotients.remove(&dividend) {
+                ready.extend(users.into_iter().filter(|result| seed.insert(*result)));
             }
         }
-        if seed.len() == before {
-            return full;
-        }
-        full = propagate_raw_i64_full_deopt_identity_values(
+        let full = propagate_raw_i64_full_deopt_identity_values(
             tir_func,
             inline_safe_values,
-            seed.clone(),
+            &seed,
             value_types,
         );
+        ready.extend(
+            quotients
+                .keys()
+                .copied()
+                .filter(|value| full.contains(value)),
+        );
+        if ready.is_empty() {
+            return full;
+        }
     }
 }
 
@@ -1291,7 +1298,7 @@ fn gpu_intrinsic_raw_i64_values(
 /// cannot introduce an unsound carrier.
 fn propagate_raw_i64_identity_values(
     tir_func: &TirFunction,
-    seed: molt_ir::deterministic_hash::HashSet<ValueId>,
+    seed: &molt_ir::deterministic_hash::HashSet<ValueId>,
     value_types: &HashMap<ValueId, TirType>,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, None, value_types)
@@ -1300,7 +1307,7 @@ fn propagate_raw_i64_identity_values(
 fn propagate_raw_i64_full_deopt_identity_values(
     tir_func: &TirFunction,
     inline_safe_values: &molt_ir::deterministic_hash::HashSet<ValueId>,
-    seed: molt_ir::deterministic_hash::HashSet<ValueId>,
+    seed: &molt_ir::deterministic_hash::HashSet<ValueId>,
     value_types: &HashMap<ValueId, TirType>,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     propagate_raw_i64_identity_values_with_phi_support(
@@ -1313,11 +1320,14 @@ fn propagate_raw_i64_full_deopt_identity_values(
 
 fn propagate_raw_i64_identity_values_with_phi_support(
     tir_func: &TirFunction,
-    seed: molt_ir::deterministic_hash::HashSet<ValueId>,
+    seed: &molt_ir::deterministic_hash::HashSet<ValueId>,
     phi_support: Option<&molt_ir::deterministic_hash::HashSet<ValueId>>,
     value_types: &HashMap<ValueId, TirType>,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     use molt_ir::deterministic_hash::HashSet;
+    if seed.is_empty() {
+        return HashSet::default();
+    }
 
     // Collect block-argument incoming edges: (target block, arg index) -> list
     // of source values passed on each emitted branch edge.
@@ -1364,7 +1374,7 @@ fn propagate_raw_i64_identity_values_with_phi_support(
     // The inline-safe lane has no support: its cycles admit only seeds.
     let no_support = HashSet::default();
     propagate_checked_identity_values(
-        &seed,
+        seed,
         phi_support.unwrap_or(&no_support),
         &copy_source,
         &block_arg_ids,
@@ -1398,18 +1408,18 @@ fn propagate_checked_identity_values(
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     use molt_ir::deterministic_hash::HashSet;
 
-    let sources = |id: ValueId| -> Option<Vec<ValueId>> {
-        if let Some(&src) = copy_source.get(&id) {
-            return Some(vec![src]);
+    let sources = |id: ValueId| -> Option<&[ValueId]> {
+        if let Some(src) = copy_source.get(&id) {
+            return Some(std::slice::from_ref(src));
         }
         let &(block, index) = block_arg_ids.get(&id)?;
         block_arg_incomings
             .get(&(block, index))
             .filter(|incomings| !incomings.is_empty())
-            .cloned()
+            .map(Vec::as_slice)
     };
     // Optimistic start: every identity value of int type may be checked.
-    let candidates: Vec<(ValueId, Vec<ValueId>)> = all_value_ids
+    let candidates: Vec<_> = all_value_ids
         .iter()
         .copied()
         .filter(|id| !seed.contains(id) && is_raw_i64_semantic_candidate(value_types, *id))
@@ -1417,34 +1427,77 @@ fn propagate_checked_identity_values(
         .collect();
     let mut assumed: HashSet<ValueId> = seed.clone();
     assumed.extend(candidates.iter().map(|(id, _)| *id));
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (id, srcs) in &candidates {
-            if assumed.contains(id)
-                && !srcs
-                    .iter()
-                    .all(|src| assumed.contains(src) || support.contains(src))
-            {
-                assumed.remove(id);
-                changed = true;
+    // A rejected input can invalidate its users only once. A support value
+    // remains available even when it lacks a checked proof of its own.
+    let mut users: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
+    let mut rejected = Vec::new();
+    for (value, inputs) in candidates {
+        for &input in inputs {
+            if !assumed.contains(&input) && !support.contains(&input) {
+                rejected.push(value);
             }
+            users.entry(input).or_default().push(value);
+        }
+    }
+    while let Some(value) = rejected.pop() {
+        if assumed.remove(&value)
+            && !support.contains(&value)
+            && let Some(dependents) = users.get(&value)
+        {
+            rejected.extend_from_slice(dependents);
         }
     }
     // Keep the values that some checked result reaches.
     let mut checked: HashSet<ValueId> = seed.clone();
-    changed = true;
-    while changed {
-        changed = false;
-        for (id, srcs) in &candidates {
-            if assumed.contains(id)
-                && !checked.contains(id)
-                && srcs.iter().any(|src| checked.contains(src))
-            {
-                checked.insert(*id);
-                changed = true;
-            }
+    let mut ready: Vec<_> = seed.iter().copied().collect();
+    while let Some(value) = ready.pop() {
+        if let Some(dependents) = users.get(&value) {
+            ready.extend(
+                dependents
+                    .iter()
+                    .copied()
+                    .filter(|value| assumed.contains(value) && checked.insert(*value)),
+            );
         }
     }
     checked
+}
+
+#[cfg(test)]
+#[test]
+fn raw_carrier_worklist_requires_support_and_seed_reachability() {
+    let value = ValueId;
+    let seed = HashSet::from_iter([value(0)]);
+    let support = HashSet::from_iter([value(1)]);
+    let copies = HashMap::from_iter([
+        (value(3), value(2)),
+        (value(5), value(6)),
+        (value(9), value(8)),
+    ]);
+    let block_args = HashMap::from_iter([
+        (value(2), (BlockId(1), 0)),
+        (value(4), (BlockId(2), 0)),
+        (value(7), (BlockId(3), 0)),
+        (value(8), (BlockId(4), 0)),
+    ]);
+    let incomings = HashMap::from_iter([
+        ((BlockId(1), 0), vec![value(0), value(1), value(3)]),
+        ((BlockId(2), 0), vec![value(2), value(5)]),
+        ((BlockId(3), 0), vec![value(2), value(7)]),
+        ((BlockId(4), 0), vec![value(1), value(9)]),
+    ]);
+    let values: Vec<_> = (0..10).map(value).collect();
+    let types = HashMap::from_iter(values.iter().map(|&id| (id, TirType::I64)));
+    assert_eq!(
+        propagate_checked_identity_values(
+            &seed,
+            &support,
+            &copies,
+            &block_args,
+            &incomings,
+            &values,
+            &types,
+        ),
+        HashSet::from_iter([value(0), value(2), value(3), value(7)]),
+    );
 }
