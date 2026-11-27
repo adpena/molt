@@ -595,6 +595,30 @@ def test_terminated_try_body_has_no_normal_close_edge(
     assert not any(op.kind == "TRY_END" and op.args == owner for op in ops[:handler])
 
 
+def test_sync_try_exception_cleanup_preserves_normal_return_shape() -> None:
+    source = (
+        "def completed(value):\n"
+        "    try:\n"
+        "        return value\n"
+        "    except TypeError:\n"
+        "        raise ValueError() from None\n"
+        "\n"
+        "def fallthrough(callback):\n"
+        "    try:\n"
+        "        return callback()\n"
+        "    except TypeError:\n"
+        "        pass\n"
+    )
+    functions = {
+        item["name"]: item["ops"] for item in compile_to_tir(source)["functions"]
+    }
+    completed = functions["py.__main__.completed"]
+    fallthrough = functions["py.__main__.fallthrough"]
+    assert sum(op["kind"] == "ret" for op in completed) == 1
+    assert any(op.get("unwind") for op in completed if op["kind"] == "ret_void")
+    assert sum(op["kind"] == "ret" for op in fallthrough) == 2
+
+
 def test_async_context_capsule_cpython_reference(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

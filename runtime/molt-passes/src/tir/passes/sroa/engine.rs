@@ -5,6 +5,7 @@ use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
+use crate::tir::passes::alias_analysis::AliasAnalysis;
 use crate::tir::passes::escape_analysis::{EscapeState, finalizer_alloc_roots};
 use crate::tir::passes::typed_slot_access::{boxed_allocation_layout, fixed_layout_inputs};
 use crate::tir::values::ValueId;
@@ -13,22 +14,22 @@ use super::super::PassStats;
 use super::report::emit_report;
 
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-    run_with(func, am)
-}
-
-fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "sroa",
         ..Default::default()
     };
-    if func.blocks.values().all(|b| b.ops.is_empty()) {
+    let mut allocations = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter_map(|op| boxed_allocation_layout(op).map(|allocation| (op, allocation)))
+        .peekable();
+    if allocations.peek().is_none() {
         return stats;
     }
 
-    let (alias, ranges) = fixed_layout_inputs(func, am);
+    let alias = am.get::<AliasAnalysis>(func);
     let exact_types = alias.exact_scalar_types();
-    let facts = super::super::value_identity::ScalarFacts::with_types(func, exact_types);
-    let non_heap_values = crate::representation_facts::non_heap_boxed_values_from(&facts, ranges);
     let finalizer_roots: HashSet<ValueId> = finalizer_alloc_roots(func)
         .into_iter()
         .map(|value| alias.root(value))
@@ -38,32 +39,28 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let mut candidate_roots = HashMap::default();
     let mut fixed_layout_allocations = 0usize;
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if let Some(allocation) = boxed_allocation_layout(op) {
-                fixed_layout_allocations += 1;
-                let root = alias.root(allocation.result);
-                let effects = super::super::effects::op_effects_with_types(op, exact_types);
-                if effects.nothrow
-                    && !effects.may_access_arbitrary_heap
-                    && !finalizer_roots.contains(&root)
-                    && matches!(
-                        alias.escape_state(root),
-                        EscapeState::NoEscape | EscapeState::ArgEscape
-                    )
-                {
-                    candidate_roots.insert(root, allocation);
-                } else if report {
-                    diag.push(format!(
-                        "  root v{} REJECTED: nothrow={} arbitrary_heap={} finalizer={} escape_state={:?}",
-                        root.0,
-                        effects.nothrow,
-                        effects.may_access_arbitrary_heap,
-                        finalizer_roots.contains(&root),
-                        alias.escape_state(root)
-                    ));
-                }
-            }
+    for (op, allocation) in allocations {
+        fixed_layout_allocations += 1;
+        let root = alias.root(allocation.result);
+        let effects = super::super::effects::op_effects_with_types(op, exact_types);
+        if effects.nothrow
+            && !effects.may_access_arbitrary_heap
+            && !finalizer_roots.contains(&root)
+            && matches!(
+                alias.escape_state(root),
+                EscapeState::NoEscape | EscapeState::ArgEscape
+            )
+        {
+            candidate_roots.insert(root, allocation);
+        } else if report {
+            diag.push(format!(
+                "  root v{} REJECTED: nothrow={} arbitrary_heap={} finalizer={} escape_state={:?}",
+                root.0,
+                effects.nothrow,
+                effects.may_access_arbitrary_heap,
+                finalizer_roots.contains(&root),
+                alias.escape_state(root)
+            ));
         }
     }
     if candidate_roots.is_empty() {
@@ -71,6 +68,10 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         return stats;
     }
 
+    let (alias, ranges) = fixed_layout_inputs(func, am);
+    let facts =
+        super::super::value_identity::ScalarFacts::with_types(func, alias.exact_scalar_types());
+    let non_heap_values = crate::representation_facts::non_heap_boxed_values_from(&facts, ranges);
     let mut blocked: HashSet<ValueId> = HashSet::default();
     let mut removable_ops: HashMap<ValueId, Vec<(BlockId, usize)>> = HashMap::default();
 

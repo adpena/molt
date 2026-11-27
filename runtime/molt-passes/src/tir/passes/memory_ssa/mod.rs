@@ -93,7 +93,7 @@ pub use access::{LIVE_ON_ENTRY, MemAccess, MemVersion, MemorySsaResult};
 pub use builder::compute_standalone;
 pub use classify::typed_slot_store_value;
 
-use crate::tir::analysis::{Analysis, AnalysisId, AnalysisManager};
+use crate::tir::analysis::{Analysis, AnalysisId, AnalysisManager, DomChildren};
 use crate::tir::function::TirFunction;
 
 use super::alias_analysis::AliasAnalysis;
@@ -116,6 +116,11 @@ impl Analysis for MemorySSA {
     }
 
     fn compute_in(func: &TirFunction, analyses: &mut AnalysisManager) -> Self::Result {
-        compute_standalone(func, analyses.get::<AliasAnalysis>(func))
+        analyses.get::<DomChildren>(func);
+        analyses.get::<AliasAnalysis>(func);
+        let alias = analyses
+            .cached::<AliasAnalysis>()
+            .expect("MemorySSA alias dependency");
+        builder::compute_with_cfg(func, alias, analyses)
     }
 }

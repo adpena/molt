@@ -5987,9 +5987,15 @@ class _Analyzer:
                 and isinstance(node.slice, ast.Name)
                 and node.slice.id == "__name__"
             ):
-                identities = exact_identity(PythonIdentity.CURRENT_MODULE)
-                if owner_identities != int(PythonIdentity.SYS_MODULES):
-                    identities |= OTHER_IDENTITY
+                # The key or cache entry can be rebound. Keep the possible
+                # current-module effects, and let the cache graph decide which
+                # source value the exact dictionary read can actually select.
+                identities = _MODULE_OR_UNKNOWN_IDENTITIES
+                if owner_identities == int(PythonIdentity.SYS_MODULES):
+                    result_override = StaticExpressionResult(
+                        identities=identities,
+                        source_origins=frozenset({self._node_key(node)}),
+                    )
             else:
                 shape = static_subscription_shape(
                     assignment_target.owner_result,

@@ -1041,12 +1041,19 @@ def _collect_imports(
 
     def cache_origins(node):
         result = binding_index.expression_result(node)
-        origins = result.source_origins
-        if result.identities == int(PythonIdentity.CURRENT_MODULE):
-            origins |= frozenset({python_node_source_key(tree)})
         # The existing exposed provenance is a may-containment closure. Keep
         # both incidences when one source occurs at the top and inside a value.
-        return origins, result.exposed_source_origins
+        return result.source_origins, result.exposed_source_origins
+
+    def cache_operand_effect_origins(node: ast.expr) -> frozenset[PythonSourceKey]:
+        result = binding_index.expression_result(node)
+        origins = result.source_origins | result.exposed_source_origins
+        if result.exposes_module_globals:
+            # Binding flow can also publish the aggregate namespace effect.
+            # Suppress that effect for a held operand without attributing the
+            # operand's value to this module in the cache graph.
+            origins |= {python_node_source_key(tree)}
+        return origins
 
     def cache_store(target, value=None):
         if not isinstance(target, ast.Subscript) or not exact_import_dictionary(
@@ -2371,10 +2378,7 @@ def _collect_imports(
         if held_call_values:
             for held in held_call_values:
                 top, contents = cache_origins(held)
-                held_call_origins |= binding_index.expression_result(
-                    held
-                ).exposed_source_origins
-                held_call_origins |= top | contents
+                held_call_origins |= cache_operand_effect_origins(held)
                 if _source_demands is not None:
                     _source_demands.extend(
                         _SourceValueDemand(origin, "release", None, None)
@@ -2403,11 +2407,7 @@ def _collect_imports(
                         if key is not None
                     )
             for key in keys:
-                top, contents = cache_origins(key)
-                held_call_origins -= top | contents
-                held_call_origins -= binding_index.expression_result(
-                    key
-                ).exposed_source_origins
+                held_call_origins -= cache_operand_effect_origins(key)
         fact = (
             binding_index.statement_fact(node)
             if isinstance(node, ast.stmt)

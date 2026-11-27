@@ -4104,6 +4104,48 @@ def test_finite_member_read_of_cache_value_reaches_only_selected_bodies(
     )
 
 
+def test_rebound_loader_name_keeps_selected_import_cache_receiver(
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    (tmp_path / "recipient.py").write_text("flag = 7\n", encoding="utf-8")
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "import sys, recipient\n"
+        "__name__ = 'recipient'\n"
+        "selected = sys.modules[__name__]\n"
+        "selected.__dict__.update({'flag': 42})\n"
+        "print(recipient.flag, 'flag' in globals())\n",
+        encoding="utf-8",
+    )
+    oracle = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import runpy,sys;sys.path.insert(0,sys.argv[1]);"
+            "runpy.run_path(sys.argv[2],run_name='__main__')",
+            str(tmp_path),
+            str(entry),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert oracle.stdout == "42 False\n"
+    graph = module_graph_discovery._discover_module_graph(
+        entry, [tmp_path], [tmp_path], tmp_path, None, set()
+    )
+    assert graph.discovery is not None
+    assert {
+        (write.module, write.name)
+        for write in graph.discovery.namespace_writes["entry"]
+        if write.construct == "namespace" and write.line == 4
+    } == {("recipient", "flag")}
+
+
 @pytest.mark.parametrize(
     ("update", "expected_writes"),
     [

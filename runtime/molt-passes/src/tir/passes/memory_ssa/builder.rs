@@ -1,8 +1,9 @@
-use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_ir::deterministic_hash::HashSet;
 
+use crate::tir::analysis::{AnalysisManager, DomChildren, ImmediateDoms, PredMap};
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{
-    self, compute_dominance_frontiers, dom_tree_preorder, iterated_dominance_frontier,
+    compute_dominance_frontiers, dom_tree_preorder, iterated_dominance_frontier,
 };
 use crate::tir::function::TirFunction;
 
@@ -18,11 +19,13 @@ use super::classify::{MemRole, classify};
 /// Build the complete [`MemorySsaResult`] for `func`, given a precomputed
 /// [`AliasAnalysisResult`].
 ///
-/// "Standalone" because it takes the alias result as a parameter rather than
-/// pulling it from an [`AnalysisManager`](crate::tir::analysis::AnalysisManager):
-/// the deferred S1 `Analysis` impl will compute the alias result inline (since
-/// `Analysis::compute` takes only `&TirFunction`) and delegate here.
-///
+/// Standalone callers provide the alias result and start with a fresh CFG
+/// cache. During optimization this builder borrows the existing full CFG.
+pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> MemorySsaResult {
+    let mut analyses = AnalysisManager::new();
+    analyses.get::<DomChildren>(func);
+    compute_with_cfg(func, alias, &analyses)
+}
 /// The three classical phases:
 ///
 /// * **A** — classify each op into Def / Use / neither (via [`classify`]).
@@ -30,12 +33,19 @@ use super::classify::{MemRole, classify};
 ///   containing a Def (and the entry, which holds [`LIVE_ON_ENTRY`]).
 /// * **C** — a dominator-tree renaming walk binds each Use to its
 ///   region-aware reaching def and each Def to the version it flows through.
-pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> MemorySsaResult {
+pub(super) fn compute_with_cfg(
+    func: &TirFunction,
+    alias: &AliasAnalysisResult,
+    analyses: &AnalysisManager,
+) -> MemorySsaResult {
     let slot_access = crate::tir::passes::typed_slot_access::for_alias(func, alias);
-    // --- Shared CFG facts (full-CFG view, matching the S1 dominator analyses).
-    let pred_map = dominators::build_pred_map(func);
-    let tree = dominators::compute_dominator_tree(func, &pred_map);
-    let dom_children = dominators::build_dom_children(&tree);
+    let pred_map = analyses
+        .cached::<PredMap>()
+        .expect("dominator predecessors");
+    let tree = analyses.cached::<ImmediateDoms>().expect("dominator tree");
+    let dom_children = analyses
+        .cached::<DomChildren>()
+        .expect("dominator children");
     // The tree's blocks are exactly the full-CFG reachable set.
     let reachable: HashSet<BlockId> = tree.blocks().iter().copied().collect();
 
@@ -64,7 +74,7 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
     }
 
     // --- Phase B: iterated dominance frontier phi placement. ----------------
-    let df = compute_dominance_frontiers(&tree, &pred_map);
+    let df = compute_dominance_frontiers(tree, pred_map);
     let phi_blocks = iterated_dominance_frontier(&def_blocks, &df);
     for &bid in &rpo {
         if phi_blocks.contains(&bid) {
@@ -84,13 +94,9 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
     }
 
     // --- Phase C: dominator-tree renaming walk. -----------------------------
-    // `entry_version[b]` = the version live on entry to block `b` (its phi, if
-    // any, else the version flowing in from its idom's exit). `exit_def[b]` =
-    // the version live at the end of `b`.
-    let mut entry_version: HashMap<BlockId, MemVersion> = HashMap::default();
     // The renaming proceeds in dominator-tree preorder so a block's idom is
     // always processed first (its exit version is the block's inherited entry).
-    let preorder = dom_tree_preorder(func.entry_block, &dom_children);
+    let preorder = dom_tree_preorder(func.entry_block, dom_children);
 
     for &bid in &preorder {
         // Inherited version on entry to this block.
@@ -104,8 +110,6 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
             Some(&phi_ver) => phi_ver,
             None => inherited,
         };
-        entry_version.insert(bid, current);
-
         // Walk the block's ops, threading the current version.
         let block = &func.blocks[&bid];
         for (op_idx, op) in block.ops.iter().enumerate() {
