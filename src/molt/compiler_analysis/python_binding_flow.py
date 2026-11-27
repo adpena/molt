@@ -11007,7 +11007,9 @@ _BINDING_INITIALIZER_BUDGET: Final = 65536
 @dataclass(frozen=True, slots=True)
 class _RebasableInitializer:
     prefix: _Analyzer
-    reads: _InitializerPremiseReads
+    # Without a namespace read log only an identical writer premise can reuse
+    # the completed initializer. Body selection is independent of that premise.
+    reads: _InitializerPremiseReads | None
     size: int
     continuation: _InitializerContinuation | None = None
 
@@ -11015,12 +11017,14 @@ class _RebasableInitializer:
     def capture(
         cls,
         owner: _Analyzer,
-        reads: _InitializerPremiseReads,
+        reads: _InitializerPremiseReads | None,
         completion: PythonCompletionFlow[int] | None = None,
     ) -> _RebasableInitializer | None:
-        if owner._foreign_reads is None and completion is not None:
+        if completion is not None and (reads is None or owner._foreign_reads is None):
             return None
-        size = _binding_checkpoint_size(owner) + len(reads.metadata)
+        size = _binding_checkpoint_size(owner)
+        if reads is not None:
+            size += len(reads.metadata)
         # A completed initializer serves every subsequently demanded body.
         # Charge it to the same total budget as speculative replay prefixes.
         limit = (
@@ -11035,7 +11039,7 @@ class _RebasableInitializer:
         )
         if completion is None:
             return cls(prefix, reads, size)
-        assert owner._foreign_reads is not None
+        assert reads is not None and owner._foreign_reads is not None
         current = owner._observed_stack[0]
         history_job = next(
             (
@@ -11072,7 +11076,7 @@ class _RebasableInitializer:
             return None
         if self.continuation is not None:
             entry = self.continuation.completion.normal
-            assert entry is not None
+            assert entry is not None and self.reads is not None
             work._initializer_premise_reads = replace(
                 self.reads,
                 metadata=self.reads.metadata.copy(),
@@ -11095,7 +11099,7 @@ def _binding_activation_reads_agree(
 
 
 def _rebase_binding_namespace(
-    prefix: _Analyzer, requested: _Analyzer, reads: _InitializerPremiseReads
+    prefix: _Analyzer, requested: _Analyzer, reads: _InitializerPremiseReads | None
 ) -> _Analyzer | None:
     """Keep valid physical coordinates when a source gains foreign writers."""
     before, policy = prefix.policy, requested.policy
@@ -11104,47 +11108,47 @@ def _rebase_binding_namespace(
         before.foreign_namespace_writes,
         policy.foreign_namespace_writes,
     )
-    if active is None or former is None or current is None:
-        return None
-    if not _binding_activation_reads_agree(prefix, active):
+    if active is None or not _binding_activation_reads_agree(prefix, active):
         return None
     exposed = frame_locals_exposed(policy.target_python, policy.frame_locals_writer)
     formerly_exposed = frame_locals_exposed(
         before.target_python, before.frame_locals_writer
     )
     if exposed != formerly_exposed and (
-        reads.frame_borrows
+        reads is None
+        or reads.frame_borrows
         or any(
             scope.kind not in ("module", "class") and scope.slots
             for scope in prefix.scopes
         )
     ):
         return None
-    additions = frozenset(current).difference(former)
-    if prefix._callback_module_names is None:
-        # Both premises supply concrete foreign writes, so source-owned
-        # reflection kept the callback domain open. The explicit
-        # __builtins__ writer still participates in pristine lookup.
-        if ("__builtins__" in former) != ("__builtins__" in current):
+    additions: frozenset[str] = frozenset()
+    if former != current:
+        if reads is None or former is None or current is None:
             return None
-    else:
-        if not frozenset(former).issubset(current):
-            return None
-        if not additions.isdisjoint(reads.names) or (
-            additions and prefix._has_empty_module_expiry
-        ):
-            return None
-        assert prefix.module_scope is not None
-        existing = additions.intersection(prefix.module_scope.slots)
-        if existing and any(state.taint_epoch for state in prefix.states._states):
-            return None
+        additions = frozenset(current).difference(former)
+        if prefix._callback_module_names is None:
+            # Source reflection already left the callback domain open. The
+            # explicit __builtins__ writer still affects pristine lookup.
+            if ("__builtins__" in former) != ("__builtins__" in current):
+                return None
+        else:
+            if not frozenset(former).issubset(current):
+                return None
+            if not additions.isdisjoint(reads.names) or prefix._has_empty_module_expiry:
+                return None
+            assert prefix.module_scope is not None
+            existing = additions.intersection(prefix.module_scope.slots)
+            if existing and any(state.taint_epoch for state in prefix.states._states):
+                return None
     work = prefix._fork_at_deferred_boundary()
     work.policy = policy
     work._opaque_activation_sources = active
     work._activation_argument_values = requested._activation_argument_values.copy()
-    if work._callback_module_names is None:
+    if not additions or work._callback_module_names is None:
         return work
-    assert work._foreign_reads is not None
+    assert reads is not None and work._foreign_reads is not None
     work._callback_module_names |= additions
     appended_start = len(work.slot_names)
     for name in sorted(additions):
@@ -11271,7 +11275,11 @@ class _BindingRevisions:
             key[0],
             replace(
                 key[1],
-                foreign_namespace_writes=(),
+                foreign_namespace_writes=(
+                    policy.foreign_namespace_writes
+                    if analyzer._foreign_universe is None
+                    else ()
+                ),
                 frame_locals_writer=None,
                 deferred_binding_path=None,
             ),
@@ -11371,7 +11379,7 @@ class _BindingRevisions:
                 finally:
                     analyzer._initializer_premise_reads = None
                     analyzer._capture_initializer = None
-                if reads is not None:
+                if reads is not None or policy.deferred_binding_path is not None:
                     completed = _RebasableInitializer.capture(analyzer, reads)
                     if completed is not None:
                         self._retain_initializers(
