@@ -321,6 +321,7 @@ def test_kqueue_exit_notification_before_zombie_waits_for_reapable_child(
             kill=lambda *args: None,
         ),
     )
+    monkeypatch.setattr(process_custody, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
     proc = _owned_handle()
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())

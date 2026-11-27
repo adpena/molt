@@ -110,7 +110,7 @@ def parser(
         type=float,
         default=None,
         help=(
-            "Apply an RLIMIT_RSS backstop to the direct guarded child before "
+            "Apply an RLIMIT_RSS backstop where supported, before the child calls "
             "exec; defaults to the adaptive per-process RSS budget and never "
             "constrains sparse virtual-address reservations. Set <=0 to disable "
             "this layer."

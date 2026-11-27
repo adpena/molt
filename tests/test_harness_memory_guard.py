@@ -962,7 +962,10 @@ def test_execution_context_owns_env_limits_and_batch_kwargs(
     assert context.limits.enabled is True
     kwargs = context.process_group_kwargs()
     assert kwargs["start_new_session"] is True
-    assert callable(kwargs["preexec_fn"])
+    assert ("preexec_fn" in kwargs) == (
+        harness_memory_guard.memory_guard.child_rss_limit_preexec(2 * 1024 * 1024)
+        is not None
+    )
 
 
 @pytest.mark.parametrize(
@@ -2755,8 +2758,8 @@ def test_batch_process_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
     applied: list[int] = []
     monkeypatch.setattr(
         harness_memory_guard.memory_guard,
-        "_apply_child_resource_limit",
-        lambda limit_kb: applied.append(limit_kb),
+        "child_rss_limit_preexec",
+        lambda limit_kb: lambda: applied.append(limit_kb),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,

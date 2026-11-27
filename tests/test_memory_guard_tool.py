@@ -46,7 +46,7 @@ from tests.process_guard_common import (
     install_thread_module_view,
     hung_child_marker,
     processes_carrying,
-    run_in_fresh_guard_observer,
+    run_isolated_python_probe,
     start_owned_test_process,
     stop_test_processes_carrying,
 )
@@ -4631,8 +4631,9 @@ def test_default_child_rlimit_tracks_process_rss_budget() -> None:
     ) == pytest.approx(46.0)
 
 
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_child_rss_backstop_preserves_sparse_virtual_address_reservations(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, platform: str
 ) -> None:
     calls: list[tuple[int, tuple[int, int]]] = []
     fake_resource = types.ModuleType("resource")
@@ -4648,20 +4649,17 @@ def test_child_rss_backstop_preserves_sparse_virtual_address_reservations(
         lambda resource, limits: calls.append((resource, limits)),
     )
     monkeypatch.setitem(sys.modules, "resource", fake_resource)
-    install_module_view(
-        monkeypatch,
-        "sys",
-        sys,
-        memory_guard,
-        platform="linux",
-    )
+    install_module_view(monkeypatch, "sys", sys, memory_guard, platform=platform)
+    install_module_view(monkeypatch, "os", os, memory_guard, name="posix")
 
-    memory_guard._apply_child_resource_limit(1024)
-
-    assert [resource for resource, _limits in calls] == [rlimit_rss]
-    assert rlimit_as not in [resource for resource, _limits in calls]
-    assert rlimit_data not in [resource for resource, _limits in calls]
-    assert all(limits == (1024 * 1024, 1024 * 1024) for _resource, limits in calls)
+    preexec = memory_guard.child_rss_limit_preexec(1024)
+    if platform == "linux":
+        assert preexec is None
+        assert calls == []
+    else:
+        assert preexec is not None
+        preexec()
+        assert calls == [(rlimit_rss, (1024 * 1024, 1024 * 1024))]
 
 
 def test_run_command_passes_through_success() -> None:
@@ -7134,23 +7132,37 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
 def test_run_command_rusage_catches_short_lived_allocator_spike() -> None:
     if memory_guard.os.name != "posix" or not hasattr(memory_guard.os, "wait4"):
         pytest.skip("requires POSIX wait4 resource accounting")
-    script = "import os\nbuf = bytearray(192 * 1024 * 1024)\nos._exit(0)"
+    # Isolate the launcher so its peak is independent of earlier pytest
+    # allocations. A blind sampler makes only exit accounting observable.
+    probe = """
+import json
+import sys
+from tools import memory_guard
 
-    # A blind sampler models a spike between samples on every host: a fast
-    # sampler (Linux /proc) can otherwise catch it live. Only the exit rusage
-    # can then report the violation.
+launcher_heap = bytearray(128 * 1024 * 1024)
+exit_records = []
+for script in (
+    "pass",
+    "import os; retained = bytearray(256 * 1024 * 1024); os._exit(0)",
+):
     result = memory_guard.run_guarded(
         [sys.executable, "-c", script],
         max_rss_kb=96 * 1024,
         max_total_rss_kb=160 * 1024,
         poll_interval=1.0,
-        child_rlimit_kb=None,
         sampler=lambda: {},
     )
-
-    assert result.returncode == memory_guard.GUARD_RETURN_CODE
-    assert result.violation is not None
-    assert result.violation.scope == "process_rusage"
+    exit_records.append([
+        result.returncode,
+        None if result.violation is None else result.violation.scope,
+        result.child_cpu_seconds is not None,
+    ])
+print(json.dumps(exit_records))
+"""
+    assert run_isolated_python_probe(probe) == [
+        [0, None, True],
+        [memory_guard.GUARD_RETURN_CODE, "process_rusage", True],
+    ]
 
 
 def test_run_command_returns_timeout_code_when_wall_clock_expires() -> None:
@@ -9111,10 +9123,8 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
 
 @pytest.mark.parametrize("temproot_mode", ["managed", "explicit", "unset"])
 def test_run_guarded_marks_child_environment_as_guarded(
-    request, tmp_path, temproot_mode
+    tmp_path: Path, temproot_mode: str
 ) -> None:
-    if run_in_fresh_guard_observer(request):
-        return
     env = dict(os.environ)
     env["MOLT_GUARD_SCRATCH_ROOT"] = str(tmp_path / "outer-scratch")
     if temproot_mode == "managed":
@@ -9180,14 +9190,11 @@ def test_run_guarded_marks_child_environment_as_guarded(
     [(0, memory_guard.INFRASTRUCTURE_RETURN_CODE), (7, 7), (137, 137)],
 )
 def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
-    request: pytest.FixtureRequest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     child_returncode: int,
     expected_returncode: int,
 ) -> None:
-    if run_in_fresh_guard_observer(request):
-        return
 
     class FakeLease:
         target = tmp_path / "guard-scratch"
@@ -9291,7 +9298,6 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
     ],
 )
 def test_run_guarded_retention_sweep_health_preserves_primary_result(
-    request: pytest.FixtureRequest,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -9299,8 +9305,6 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     retention_errors: list[str],
     expected_returncode: int,
 ) -> None:
-    if run_in_fresh_guard_observer(request):
-        return
 
     class FakeLease:
         target = tmp_path / "guard-scratch"
@@ -9424,7 +9428,6 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     [(0, memory_guard.INFRASTRUCTURE_RETURN_CODE), (7, 7)],
 )
 def test_run_guarded_fails_a_clean_run_whose_own_payload_stays_retained(
-    request: pytest.FixtureRequest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     child_returncode: int,
@@ -9435,8 +9438,6 @@ def test_run_guarded_fails_a_clean_run_whose_own_payload_stays_retained(
     A removal that failed leaves the payload retained and indexed for the
     next sweep, which is still this clean run's own custody failure.
     """
-    if run_in_fresh_guard_observer(request):
-        return
 
     class FakeLease:
         target = tmp_path / "guard-scratch"
@@ -9801,10 +9802,8 @@ def test_published_observer_marker_keeps_custody_refusals(tmp_path, defect):
 
 @pytest.mark.parametrize("raw_available", [None, "7.5"])
 def test_run_guarded_exports_backend_memory_contract(
-    request, raw_available, monkeypatch
+    raw_available: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if run_in_fresh_guard_observer(request):
-        return
     if raw_available is None:
         monkeypatch.delenv("MOLT_BACKEND_MEMORY_AVAILABLE_GB", raising=False)
     else:
@@ -10088,27 +10087,37 @@ def test_guarded_interpreter_preserves_virtual_environment(
     assert witness == "selected environment"
 
 
-def test_guarded_launch_applies_resource_limit_before_exec_on_posix() -> None:
+@pytest.mark.parametrize("has_kernel_backstop", [False, True])
+def test_guarded_launch_opens_start_pipe_only_for_a_kernel_backstop(
+    monkeypatch: pytest.MonkeyPatch, has_kernel_backstop: bool
+) -> None:
     command = [sys.executable, "-c", "print('child')"]
-    launch = memory_guard._guarded_launch(
-        command,
-        {"KEEP": "1"},
-        child_rlimit_kb=12345,
-    )
+    applied: list[int | None] = []
 
-    if memory_guard.os.name == "posix":
-        assert launch.command == command
-        assert launch.env == {"KEEP": "1"}
+    def backstop(limit_kb: int | None) -> Callable[[], None] | None:
+        return (lambda: applied.append(limit_kb)) if has_kernel_backstop else None
+
+    monkeypatch.setattr(memory_guard, "child_rss_limit_preexec", backstop)
+    launch = memory_guard._guarded_launch(command, {"KEEP": "1"}, child_rlimit_kb=12345)
+
+    assert launch.command == command
+    assert launch.env == {"KEEP": "1"}
+    if has_kernel_backstop:
         assert launch.preexec_fn is not None
         assert launch.started_read_fd is not None
         assert launch.pass_fds == launch.close_fds
+        try:
+            launch.preexec_fn()
+            assert applied == [12345]
+            assert (
+                memory_guard._read_child_started_at(launch.started_read_fd) is not None
+            )
+        finally:
+            memory_guard._close_fds((launch.started_read_fd,))
     else:
-        assert launch.command == command
-        assert launch.env == {"KEEP": "1"}
-        assert launch.pass_fds == ()
-        assert launch.close_fds == ()
+        assert launch.preexec_fn is None
         assert launch.started_read_fd is None
-    memory_guard._close_fds((*launch.close_fds, launch.started_read_fd))
+        assert launch.pass_fds == launch.close_fds == ()
 
 
 def test_child_started_timestamp_read_preserves_single_close_authority() -> None:
@@ -10888,8 +10897,18 @@ def test_child_clock_is_independent_of_guard_setup_and_sampler(
     assert result.elapsed_s == result.child_elapsed_s + result.cleanup_elapsed_s
 
 
-def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
-    import threading
+@pytest.mark.parametrize(
+    ("launcher_peak", "child_peak"), [(32, 64), (64, None), (None, None)]
+)
+def test_posix_child_clock_has_one_reaper_independent_of_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+    launcher_peak: int | None,
+    child_peak: int | None,
+) -> None:
+    install_module_view(monkeypatch, "sys", sys, process_custody, platform="linux")
+    monkeypatch.setattr(
+        process_model, "linux_self_rss_high_water_kb", lambda: launcher_peak
+    )
 
     calls = []
 
@@ -10928,7 +10947,7 @@ def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
     exited = clock.finished
     assert proc.poll() == 0
     usage = process_custody._take_child_exit_usage(proc)
-    assert usage.max_rss_kb > 0
+    assert usage is not None and usage.max_rss_kb == child_peak
     assert usage.cpu_seconds == 0.375
     assert process_custody._take_child_exit_usage(proc) is None
     assert clock.finished == exited

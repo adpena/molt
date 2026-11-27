@@ -852,8 +852,8 @@ def test_popen_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_DIFF_CHILD_RLIMIT_GB", "0.5")
     monkeypatch.setattr(
         module.memory_guard,
-        "_apply_child_resource_limit",
-        lambda limit_kb: applied.append(limit_kb),
+        "child_rss_limit_preexec",
+        lambda limit_kb: lambda: applied.append(limit_kb),
     )
 
     kwargs = module._popen_group_kwargs()
@@ -887,7 +887,9 @@ def test_popen_group_kwargs_keeps_child_rlimit_when_guard_disabled(
     kwargs = module._popen_group_kwargs()
 
     assert kwargs["start_new_session"] is True
-    assert callable(kwargs["preexec_fn"])
+    assert ("preexec_fn" in kwargs) == (
+        module.memory_guard.child_rss_limit_preexec(1024) is not None
+    )
 
 
 def test_run_subprocess_preserves_signal_diagnostic(

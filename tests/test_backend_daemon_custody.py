@@ -436,15 +436,18 @@ daemon = subprocess.Popen(
         str(backend_bin),
         "-c",
         """
-    + repr(HUNG_CHILD_SOURCE)
+    + repr("print('ready', flush=True)\n" + HUNG_CHILD_SOURCE)
     + r""",
         "--daemon",
         "--socket",
         str(socket_path),
     ],
     executable=sys.executable,
+    stdout=subprocess.PIPE,
 )
 try:
+    # exec can close CPython's error pipe before Linux publishes /proc argv.
+    assert daemon.stdout.readline() == b"ready\n"
     identity = custody.backend_daemon_identity_for_pid(
         daemon.pid,
         socket_path=socket_path,

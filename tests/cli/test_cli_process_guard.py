@@ -75,7 +75,10 @@ def test_cli_test_popen_kwargs_applies_platform_process_containment(
         assert "start_new_session" not in kwargs
     else:
         assert kwargs.get("start_new_session") is True
-        assert callable(kwargs.get("preexec_fn"))
+        if sys.platform == "linux":
+            assert "preexec_fn" not in kwargs
+        else:
+            assert callable(kwargs.get("preexec_fn"))
 
 
 def test_guarded_cli_test_popen_enters_memory_guard_wrapper(

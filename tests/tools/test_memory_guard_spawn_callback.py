@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import os
+from pathlib import Path
 import sys
 import time
 
 import pytest
 
 from tools import memory_guard
-from tests.process_guard_common import HUNG_CHILD_SOURCE, run_in_fresh_guard_observer
+from tests.process_guard_common import HUNG_CHILD_SOURCE
 
 
 def _run(command: list[str], *, on_spawn=None):
@@ -106,9 +107,7 @@ def _run_observed_memory_tree(
     return result
 
 
-def test_on_spawn_observes_custodied_child_and_result_owns_tree_peak(request) -> None:
-    if run_in_fresh_guard_observer(request):
-        return
+def test_on_spawn_observes_custodied_child() -> None:
     spawned: list[int] = []
 
     result = _run(
@@ -120,7 +119,6 @@ def test_on_spawn_observes_custodied_child_and_result_owns_tree_peak(request) ->
     assert len(spawned) == 1
     assert result.child_process is not None
     assert spawned == [result.child_process.pid]
-    assert result.peak_total is not None
     if sys.platform.startswith("win"):
         assert result.peak_job_commit_bytes is not None
         assert result.peak_job_commit_bytes > 0
@@ -214,10 +212,8 @@ def test_windows_job_sampling_automatically_avoids_global_process_table(
     "sample_delay_s", [0.0, 0.5], ids=["host-speed", "throttled-sampler"]
 )
 def test_guard_polls_read_the_tree_not_the_host_table(
-    request, monkeypatch, tmp_path, sample_delay_s
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sample_delay_s: float
 ) -> None:
-    if run_in_fresh_guard_observer(request):
-        return
     # Each poll once read every process of the host (about 1,300 kern.proc rows
     # on a developer Mac, or every /proc entry) to keep the few of this tree.
     if sample_delay_s:

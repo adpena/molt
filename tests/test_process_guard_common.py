@@ -2,137 +2,13 @@ from __future__ import annotations
 
 import subprocess
 import json
-import os
-from pathlib import Path
 import sys
-import textwrap
 from typing import Any
 
 import pytest
 
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tests import process_guard_common
-
-
-@pytest.mark.skipif(os.name != "posix", reason="fresh observer requires POSIX")
-@pytest.mark.parametrize("disable_autoload", [False, True])
-def test_fresh_guard_observer_keeps_pytest_cache_outside_a_fresh_project(
-    tmp_path: Path, disable_autoload: bool
-) -> None:
-    root = Path(__file__).resolve().parents[1]
-    project = tmp_path / "project"
-    project.mkdir()
-    # The project starts clean but imports the actual helper and plugin.
-    for name in ("src", "tools", "tests"):
-        (project / name).symlink_to(root / name, target_is_directory=True)
-    (project / "pyproject.toml").write_text(
-        '[tool.pytest.ini_options]\ncache_dir = "tmp/pytest-cache"\n'
-        'addopts = ["-p", "molt.pytest_memory_guard_config_plugin"]\n',
-        encoding="utf-8",
-    )
-    case = project / "test_observer_cache.py"
-    case.write_text(
-        textwrap.dedent("""
-        import json
-        import os
-        from pathlib import Path
-        from tests.process_guard_common import run_in_fresh_guard_observer
-
-        def test_selected(request):
-            assert run_in_fresh_guard_observer(request) is False
-            cache_path = request.config.cache.mkdir("observer")
-            request.config.cache.set("observer/selected", True)
-            assert not hasattr(request.config, "workerinput")
-            with Path(os.environ["GUARD_OBSERVER_REPORT"]).open("a", encoding="utf-8") as report:
-                report.write(json.dumps({
-                    "pid": os.getpid(), "nodeid": request.node.nodeid,
-                    "cache_path": str(cache_path),
-                }) + "\\n")
-
-        def test_unselected():
-            raise AssertionError("the observer must run only the selected node")
-        """),
-        encoding="utf-8",
-    )
-    before = {path.relative_to(project) for path in project.rglob("*")}
-    report = tmp_path / "observed.jsonl"
-    nodeid = "test_observer_cache.py::test_selected"
-    source = (
-        "from types import SimpleNamespace; "
-        "from tests.process_guard_common import run_in_fresh_guard_observer; "
-        f"config = SimpleNamespace(rootpath={str(project)!r}, "
-        "pluginmanager=SimpleNamespace(get_plugins=lambda: [])); "
-        f"node = SimpleNamespace(nodeid={nodeid!r}); "
-        "assert run_in_fresh_guard_observer(SimpleNamespace(config=config, node=node))"
-    )
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join((str(root / "src"), str(root)))
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["GUARD_OBSERVER_REPORT"] = str(report)
-    if disable_autoload:
-        env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    else:
-        env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
-    result = process_guard_common.run_guarded_test_process(
-        [sys.executable, "-B", "-c", source],
-        cwd=project,
-        env=env,
-        timeout=90.0,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    calls = [
-        json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()
-    ]
-    assert len(calls) == 1
-    assert calls[0]["nodeid"] == nodeid
-    assert calls[0]["pid"] != os.getpid()
-    cache_path = Path(calls[0]["cache_path"])
-    assert cache_path.is_dir()
-    assert not cache_path.resolve().is_relative_to(project.resolve())
-    assert {path.relative_to(project) for path in project.rglob("*")} == before
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux exec lifetime RSS")
-def test_fresh_guard_observer_excludes_the_inherited_parent_image(tmp_path) -> None:
-    root = Path(__file__).resolve().parents[1]
-    case = tmp_path / "test_fresh_observer.py"
-    case.write_text(
-        "import os, sys\n"
-        "from tools import memory_guard\n"
-        "from tests.process_guard_common import run_in_fresh_guard_observer\n"
-        "def test_subject(request, monkeypatch, tmp_path):\n"
-        "    if run_in_fresh_guard_observer(request): return\n"
-        "    monkeypatch.setenv('GUARD_OBSERVER_FIXTURE', str(tmp_path))\n"
-        "    result = memory_guard.run_guarded(\n"
-        "        [sys.executable, '-c', 'import os; print(os.environ[\"GUARD_OBSERVER_FIXTURE\"])'],\n"
-        "        max_rss_kb=256*1024, max_total_rss_kb=512*1024,\n"
-        "        poll_interval=0.01, timeout=10)\n"
-        "    assert result.returncode == 0, result.stderr\n"
-        "    assert result.stdout.strip() == str(tmp_path)\n"
-        "    assert result.violation is None\n",
-        encoding="utf-8",
-    )
-    source = (
-        "import sys; from types import SimpleNamespace; "
-        "from tools import memory_guard; "
-        "from tests.process_guard_common import run_in_fresh_guard_observer; "
-        "allocation = bytearray(384*1024*1024); "
-        "direct = memory_guard.run_guarded([sys.executable, '-c', 'pass'], "
-        "max_rss_kb=256*1024, max_total_rss_kb=512*1024, "
-        "poll_interval=0.01, timeout=10); "
-        "assert direct.child_returncode == 0, direct; "
-        "assert direct.returncode == 137, direct; "
-        "assert direct.violation.scope == 'process_rusage', direct; "
-        f"config = SimpleNamespace(rootpath={str(root)!r}, "
-        "pluginmanager=SimpleNamespace(get_plugins=lambda: [])); "
-        f"node = SimpleNamespace(nodeid={str(case) + '::test_subject'!r}); "
-        "assert run_in_fresh_guard_observer(SimpleNamespace(config=config, node=node)); "
-        "assert len(allocation) == 384*1024*1024"
-    )
-    result = process_guard_common.run_guarded_test_process(
-        [sys.executable, "-B", "-c", source], cwd=root, timeout=90.0
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_run_guarded_test_process_preserves_prefix_and_timeout(monkeypatch) -> None:

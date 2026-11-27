@@ -1741,17 +1741,12 @@ def batch_process_group_kwargs(
     if os.name != "posix":
         return {}
     kwargs: ProcessGroupKwargs = {"start_new_session": True}
-    child_rlimit_kb = resolved_limits.current_child_rlimit_kb(env)
-    if child_rlimit_kb is not None:
-        kwargs["preexec_fn"] = _child_resource_limit_preexec(child_rlimit_kb)
+    preexec = memory_guard.child_rss_limit_preexec(
+        resolved_limits.current_child_rlimit_kb(env)
+    )
+    if preexec is not None:
+        kwargs["preexec_fn"] = preexec
     return kwargs
-
-
-def _child_resource_limit_preexec(limit_kb: int) -> Callable[[], None]:
-    def apply_limit() -> None:
-        memory_guard._apply_child_resource_limit(limit_kb)
-
-    return apply_limit
 
 
 def force_close_process_group(proc: subprocess.Popen[str]) -> None:

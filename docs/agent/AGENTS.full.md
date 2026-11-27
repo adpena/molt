@@ -1554,8 +1554,8 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - NON-NEGOTIABLE: Differential work MUST use canonical artifact roots (`CARGO_TARGET_DIR`, `MOLT_DIFF_ROOT`, `MOLT_DIFF_TMPDIR`, `MOLT_CACHE`) and must not spill ad hoc artifacts elsewhere in the repo.
 - NON-NEGOTIABLE: Differential memory profiling is default-on; set `MOLT_DIFF_MEASURE_RSS=0` only for an explicit local investigation.
 - NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in [tests/differential/INDEX.md](tests/differential/INDEX.md).
-- NON-NEGOTIABLE: Use the adaptive diff memory guard and adaptive per-process OS rlimit; direct pytest and harnessed test runs must not bypass RSS custody, and cleanup must never kill Claude, Codex, or other host control-plane process groups.
-  - macOS/Linux: let `tests/molt_diff.py` apply its adaptive child limit by default; use `MOLT_DIFF_CHILD_RLIMIT_GB` only for a deliberate narrower cap, or `MOLT_DIFF_CHILD_RLIMIT_GB=0` only for an explicit local investigation.
+- NON-NEGOTIABLE: Use the adaptive diff memory guard; direct pytest and harnessed test runs must not bypass RSS custody, and cleanup must never kill Claude, Codex, or other host control-plane process groups.
+  - Leave the supported-host child backstop at its default. See [Operations](../OPERATIONS.md#differential-suite-operational-controls) for scope and investigation settings.
   - If the adaptive limit is hit or memory pressure occurs, inspect the guard telemetry, reduce parallelism (`--jobs 2` or `--jobs 1`) only as a containment step, and fix the underlying allocation growth.
 - Differential artifacts can be redirected to an external volume to avoid local disk pressure.
   - Set `MOLT_DIFF_ROOT` to an absolute path to select differential custody for summaries, failure queues and guard evidence; the default is canonical run scratch. Cargo targets and the codegen cache keep their separate `MOLT_DIFF_CARGO_TARGET_DIR` and `MOLT_CACHE` selections.

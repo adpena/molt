@@ -1432,7 +1432,9 @@ def _apply_memory_limit() -> None:
     if limit is None:
         _MEM_LIMIT_APPLIED = True
         return
-    memory_guard._apply_child_resource_limit(max(1, limit // 1024))
+    preexec = memory_guard.child_rss_limit_preexec(max(1, limit // 1024))
+    if preexec is not None:
+        preexec()
     _MEM_LIMIT_APPLIED = True
 
 
