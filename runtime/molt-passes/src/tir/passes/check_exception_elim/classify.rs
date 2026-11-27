@@ -168,10 +168,39 @@ pub(super) fn check_has_exception_edge(op: &TirOp, labels: &HashMap<i64, BlockId
         && crate::tir::dominators::exception_transfer_target(op, labels).is_some()
 }
 
-pub(super) fn pending_after_check(has_edge: bool, op: &TirOp, pending: bool) -> bool {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PendingTransfer {
+    Preserve,
+    Clear,
+    MaySet,
+}
+
+impl PendingTransfer {
+    pub(super) fn apply(self, pending: bool) -> bool {
+        match self {
+            Self::Preserve => pending,
+            Self::Clear => false,
+            Self::MaySet => true,
+        }
+    }
+}
+
+pub(super) fn check_pending_transfer(has_edge: bool, op: &TirOp) -> PendingTransfer {
     if has_edge {
-        false
+        PendingTransfer::Clear
+    } else if op.is_async_work_poll() {
+        PendingTransfer::MaySet
     } else {
-        pending || op.is_async_work_poll()
+        PendingTransfer::Preserve
+    }
+}
+
+pub(super) fn operation_pending_transfer(raise: &RaiseFacts, op: &TirOp) -> PendingTransfer {
+    if op_clears_pending_exception(op) {
+        PendingTransfer::Clear
+    } else if raise.op_may_raise(op) {
+        PendingTransfer::MaySet
+    } else {
+        PendingTransfer::Preserve
     }
 }
