@@ -86,6 +86,7 @@ from molt.compiler_analysis.python_binding_flow import (
 )
 from molt.compiler_analysis.python_binding_facts import (
     PythonBindingFacts,
+    PythonOpaqueActivationReads,
     PythonBindingIndex,
     PythonClassPreparation,
 )
@@ -204,10 +205,31 @@ type _ProjectionRead = tuple[
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class _ActivationCutoff:
+    context: PythonNamespacePremise
+    reads: PythonOpaqueActivationReads
+
+    @classmethod
+    def from_reads(
+        cls,
+        premise: PythonNamespacePremise | None,
+        reads: PythonOpaqueActivationReads | None,
+    ) -> _ActivationCutoff | None:
+        if (
+            premise is None
+            or premise.opaque_activation_sources is None
+            or reads is None
+        ):
+            return None
+        return cls(replace(premise, opaque_activation_sources=None), reads)
+
+
 @dataclass(slots=True)
 class _ProjectionReads:
     build: _PremiseBuilder
     origin: ReferenceType[_ProjectionRoot] | None = None
+    activation: _ActivationCutoff | None = None
     reads: dict[tuple[object, ...], _ProjectionRead] = field(default_factory=dict)
 
     def record(
@@ -226,8 +248,21 @@ class _ProjectionReads:
         )
         self.reads.setdefault(key, (path, args, kwargs, result))
 
-    def unchanged_under(self, premise: PythonNamespacePremise | None) -> bool:
+    def unchanged_under(
+        self,
+        premise: PythonNamespacePremise | None,
+        context: PythonNamespacePremise | None,
+        opaque: frozenset[PythonSourceKey] | None,
+    ) -> bool:
         if not self.reads:
+            return True
+        activation = self.activation
+        if (
+            activation is not None
+            and context == activation.context
+            and opaque is not None
+            and activation.reads.unchanged_under(opaque)
+        ):
             return True
         root = self.build(premise)
         if root is not None and self.origin is not None and self.origin() is root:
@@ -261,18 +296,42 @@ class ScanPremiseReads:
         self._projections: dict[int, _ProjectionReads] = {}
         self.usable = True
 
-    def track(self, build: _PremiseBuilder, target: _ProjectionRoot) -> object:
+    def track(
+        self,
+        build: _PremiseBuilder,
+        target: _ProjectionRoot,
+        premise: PythonNamespacePremise | None = None,
+    ) -> object:
+        activation = _ActivationCutoff.from_reads(
+            premise,
+            target.opaque_activation_reads
+            if isinstance(target, PythonBindingFacts)
+            else None,
+        )
         reads = self._projections.get(id(build))
         if reads is None:
-            reads = self._projections[id(build)] = _ProjectionReads(build, ref(target))
-        elif reads.origin is not None and reads.origin() is not target:
+            reads = self._projections[id(build)] = _ProjectionReads(
+                build, ref(target), activation
+            )
+        elif reads.origin is None or reads.origin() is not target:
             reads.origin = None
+            reads.activation = None
         return _TrackedPremiseRead(self, reads, (), target)
 
-    def value(self, build: _PremiseBuilder, result: object) -> None:
+    def value(
+        self,
+        build: _PremiseBuilder,
+        result: object,
+        *,
+        activation: _ActivationCutoff | None = None,
+    ) -> None:
         reads = self._projections.get(id(build))
         if reads is None:
-            reads = self._projections[id(build)] = _ProjectionReads(build)
+            reads = self._projections[id(build)] = _ProjectionReads(
+                build, activation=activation
+            )
+        elif reads.activation != activation:
+            reads.activation = None
         reads.origin = None
         reads.record(None, None, {}, result)
 
@@ -280,9 +339,14 @@ class ScanPremiseReads:
         """Whether every logged answer is the same under ``premise``."""
         if not self.usable:
             return False
+        context, opaque = None, None
+        if premise is not None and premise.opaque_activation_sources is not None:
+            context = replace(premise, opaque_activation_sources=None)
+            opaque = frozenset(premise.opaque_activation_sources)
         try:
             return all(
-                reads.unchanged_under(premise) for reads in self._projections.values()
+                reads.unchanged_under(premise, context, opaque)
+                for reads in self._projections.values()
             )
         except Exception:
             return False
@@ -350,7 +414,7 @@ def _premise_analysis[T: _ProjectionRoot](
     log = SCAN_PREMISE_READS.get()
     if log is None:
         return result
-    return cast(T, log.track(build, result))
+    return cast(T, log.track(build, result, namespace_premise))
 
 
 def _module_import_scan_mode(module_name: str, *, full_scan: bool) -> ImportScanMode:
@@ -998,7 +1062,8 @@ def _collect_imports(
         binding_publication
         if scan_reads is None
         else cast(
-            PythonBindingIndex, scan_reads.track(binding_index_for, binding_publication)
+            PythonBindingIndex,
+            scan_reads.track(binding_index_for, binding_publication, namespace_premise),
         )
     )
     source_import_flows: dict[PythonSourceKey | None, ModuleImportFlow] = {}
@@ -1062,6 +1127,9 @@ def _collect_imports(
             scan_reads.value(
                 lambda premise: project_source_values(binding_index_for(premise)),
                 values,
+                activation=_ActivationCutoff.from_reads(
+                    namespace_premise, binding_publication.opaque_activation_reads
+                ),
             )
 
     conditional_import_sites: list[SourceImportCall] = []
@@ -2892,7 +2960,9 @@ def _static_module_all_exports(
     """
     admission = _PythonAstDigestAdmission.for_tree(tree, ast_digest_admission)
 
-    def exports(premise: PythonNamespacePremise | None) -> SourceAllExports:
+    def publication(
+        premise: PythonNamespacePremise | None,
+    ) -> tuple[SourceAllExports, PythonOpaqueActivationReads | None]:
         context = (target_python, target_sys_platform, premise)
         cached = admission.module_all_exports.get(context)
         if cached is None:
@@ -2911,10 +2981,14 @@ def _static_module_all_exports(
             admission.module_all_exports[context] = cached
         return cached
 
-    result = exports(namespace_premise)
+    result, reads = publication(namespace_premise)
     log = SCAN_PREMISE_READS.get()
     if log is not None:
-        log.value(exports, result)
+        log.value(
+            lambda premise: publication(premise)[0],
+            result,
+            activation=_ActivationCutoff.from_reads(namespace_premise, reads),
+        )
     return result
 
 
@@ -2925,7 +2999,7 @@ def _compute_static_module_all_exports(
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion,
     ast_digest_admission: _PythonAstDigestAdmission,
-) -> SourceAllExports:
+) -> tuple[SourceAllExports, PythonOpaqueActivationReads | None]:
     """Prove a literal export set only while its source owner stays sealed.
 
     The existing binding authority decides whether executed code can observe
@@ -2933,13 +3007,18 @@ def _compute_static_module_all_exports(
     An unknown result remains an import obligation, never an empty export set.
     """
     if not isinstance(tree, ast.Module):
-        return SourceAllExports("incomplete", reason="export source is not a module")
+        return SourceAllExports(
+            "incomplete", reason="export source is not a module"
+        ), None
     if namespace_premise is not None and (
         namespace_premise.foreign_writes is None
         or "__all__" in namespace_premise.foreign_writes
     ):
-        return SourceAllExports(
-            "unknown", reason="graph code may rebind the export namespace"
+        return (
+            SourceAllExports(
+                "unknown", reason="graph code may rebind the export namespace"
+            ),
+            None,
         )
     admission = _PythonAstDigestAdmission.for_tree(tree, ast_digest_admission)
     facts = analyze_python_binding_facts(
@@ -3010,11 +3089,14 @@ def _compute_static_module_all_exports(
         if facts.module_getattr_may_be_bound:
             unknown = "module __getattr__ may supply __all__"
     if unknown is not None:
-        return SourceAllExports("unknown", reason=unknown)
+        return SourceAllExports(
+            "unknown", reason=unknown
+        ), facts.opaque_activation_reads
     return (
         SourceAllExports("absent")
         if exports is None
-        else SourceAllExports("known", exports)
+        else SourceAllExports("known", exports),
+        facts.opaque_activation_reads,
     )
 
 

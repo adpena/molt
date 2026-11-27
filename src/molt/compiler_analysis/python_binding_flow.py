@@ -96,6 +96,7 @@ from molt.compiler_analysis.python_source_keys import (
 
 from molt.compiler_analysis.python_binding_facts import (
     EscapingException,
+    PythonOpaqueActivationReads,
     MODULE_IMPORT_METADATA_NAMES,
     PythonBindingFacts,
     PythonSourceArgument,
@@ -535,17 +536,6 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
 
 
 @dataclass(frozen=True, slots=True)
-class _OpaqueActivationReads:
-    present: tuple[frozenset[PythonSourceKey], ...]
-    absent: frozenset[PythonSourceKey]
-
-    def unchanged_under(self, opaque: frozenset[PythonSourceKey]) -> bool:
-        return self.absent.isdisjoint(opaque) and all(
-            not group.isdisjoint(opaque) for group in self.present
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class _ForeignNamespaceReads:
     names: frozenset[str]
     foreign_only_slots: frozenset[str]
@@ -582,7 +572,6 @@ class _BindingAnalysis:
     facts: PythonBindingFacts
     assignment_effects: Mapping[PythonSourceKey, EffectMask]
     module_import_flow_required: bool
-    opaque_activation_reads: _OpaqueActivationReads | None
     foreign_namespace_reads: _ForeignNamespaceReads | None
     deferred_binding_path: frozenset[PythonSourceKey] | None
     projections: _BindingCache[PythonBindingIndex] = field(
@@ -10582,6 +10571,23 @@ class _Analyzer:
                 for (source_key, _parent_id, kind), scope in self._source_scopes.items()
                 if kind == "class" and scope.needs_annotation_namespace
             ),
+            opaque_activation_reads=(
+                None
+                if self._opaque_activation_sources is None
+                else PythonOpaqueActivationReads(
+                    tuple(
+                        group
+                        for group, answer in self._opaque_activation_reads.items()
+                        if answer
+                    ),
+                    frozenset(
+                        source
+                        for group, answer in self._opaque_activation_reads.items()
+                        if not answer
+                        for source in group
+                    ),
+                )
+            ),
             state_count=len(self.states),
             telemetry=PythonBindingTelemetry(
                 binding_lookups=self.states.binding_lookups,
@@ -10644,23 +10650,6 @@ class _Analyzer:
             # dropping them would turn harmless stores into unknown callbacks.
             MappingProxyType(dict(self.transfer.assignment_effects)),
             flow_required or import_relevant_assignment_effects,
-            (
-                None
-                if self._opaque_activation_sources is None
-                else _OpaqueActivationReads(
-                    tuple(
-                        group
-                        for group, answer in self._opaque_activation_reads.items()
-                        if answer
-                    ),
-                    frozenset(
-                        source
-                        for group, answer in self._opaque_activation_reads.items()
-                        if not answer
-                        for source in group
-                    ),
-                )
-            ),
             (
                 None
                 if self._foreign_reads is None
@@ -11783,7 +11772,7 @@ def _binding_analysis(
     def reuse(
         prior_key: tuple[object, ...], result: _BindingAnalysis
     ) -> _BindingAnalysis | None:
-        if prior_key[:2] != key[:2] or result.opaque_activation_reads is None:
+        if prior_key[:2] != key[:2] or result.facts.opaque_activation_reads is None:
             return None
         prior = cast(PythonBindingFlowPolicy, prior_key[2])
         opaque = policy.opaque_activation_sources
@@ -11792,7 +11781,7 @@ def _binding_analysis(
         # consumed activation query agrees. Named changes may alter unused
         # namespace slots. All other input families keep their exact identity.
         prior = replace(prior, opaque_activation_sources=opaque)
-        if not result.opaque_activation_reads.unchanged_under(frozenset(opaque)):
+        if not result.facts.opaque_activation_reads.unchanged_under(frozenset(opaque)):
             return None
         if prior == policy:
             return result
