@@ -275,7 +275,7 @@ fn build_scalar_value_map(
 /// Resolve each admitted single-result SSA definition to its terminal source.
 /// Callers select the identity being proved. The sparse map contains exactly
 /// their admitted results, independent of block order or the largest ValueId.
-pub(super) fn build_forwarding_map(
+pub(crate) fn build_forwarding_map(
     func: &TirFunction,
     source: impl Fn(&TirOp) -> Option<ValueId>,
 ) -> HashMap<ValueId, ValueId> {

@@ -90,6 +90,7 @@ fn checked_slot<B: CodegenBuilder>(
     buffer: B::Value,
     row: ValueId,
     col: ValueId,
+    extents: Option<[u64; 2]>,
     cold: B::Block,
 ) -> B::Value {
     let tag = b.load_word(buffer, BUFFER2D_STORAGE_TAG_OFFSET);
@@ -99,8 +100,14 @@ fn checked_slot<B: CodegenBuilder>(
 
     let row = exact_i64(b, operands, row, cold);
     let col = exact_i64(b, operands, col, cold);
-    let rows = b.load_word(buffer, BUFFER2D_ROWS_OFFSET);
-    let cols = b.load_word(buffer, BUFFER2D_COLS_OFFSET);
+    let (rows, cols) = if let Some([rows, cols]) = extents {
+        (b.constant(rows), b.constant(cols))
+    } else {
+        (
+            b.load_word(buffer, BUFFER2D_ROWS_OFFSET),
+            b.load_word(buffer, BUFFER2D_COLS_OFFSET),
+        )
+    };
     let row = normalize(b, row, rows);
     let col = normalize(b, col, cols);
     let row_in = b.compare(WordComparison::UnsignedLessThan, row, rows);
@@ -122,10 +129,19 @@ fn load_packed_i64<B: CodegenBuilder>(
     b: &mut B,
     operands: &Operands<'_, B>,
     op: &TirOp,
+    extents: Option<[u64; 2]>,
     miss: B::Block,
 ) -> B::Word {
     let owner = checked_buffer(b, operands, op.operands[0], miss);
-    let slot = checked_slot(b, operands, owner, op.operands[1], op.operands[2], miss);
+    let slot = checked_slot(
+        b,
+        operands,
+        owner,
+        op.operands[1],
+        op.operands[2],
+        extents,
+        miss,
+    );
     b.load_word(slot, 0)
 }
 
@@ -133,15 +149,28 @@ fn commit_packed_store<B: CodegenBuilder>(
     b: &mut B,
     operands: &Operands<'_, B>,
     op: &TirOp,
+    extents: Option<[u64; 2]>,
     miss: B::Block,
 ) {
     let owner = checked_buffer(b, operands, op.operands[0], miss);
-    let slot = checked_slot(b, operands, owner, op.operands[1], op.operands[2], miss);
+    let slot = checked_slot(
+        b,
+        operands,
+        owner,
+        op.operands[1],
+        op.operands[2],
+        extents,
+        miss,
+    );
     let value = exact_i64(b, operands, op.operands[3], miss);
     b.store_word(slot, 0, value);
 }
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    fn buffer_extents(&self, op: &TirOp) -> Option<[u64; 2]> {
+        self.plan.packed_buffer_extents(self.func, op.operands[0])
+    }
+
     pub(super) fn try_buffer_load(&mut self, b: &mut B, op: &TirOp) {
         let operands = self.operands();
         let zero = b.constant(0);
@@ -151,7 +180,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             let done = b.create_block("buffer_load_done");
             let word = b.append_block_param(done, MachineKind::Word);
             let success = b.append_block_param(done, MachineKind::Bit);
-            let value = load_packed_i64(b, &operands, op, cold);
+            let value = load_packed_i64(b, &operands, op, self.buffer_extents(op), cold);
             let hit = b.bit_constant(true);
             b.jump(done, &[b.word_value(value), b.bit_value(hit)]);
             b.switch_to_block(cold);
@@ -172,7 +201,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             let miss = b.create_block("buffer_store_miss");
             let done = b.create_block("buffer_store_done");
             let result = b.append_block_param(done, MachineKind::Bit);
-            commit_packed_store(b, &operands, op, miss);
+            commit_packed_store(b, &operands, op, self.buffer_extents(op), miss);
             let hit = b.bit_constant(true);
             b.jump(done, &[b.bit_value(hit)]);
             b.switch_to_block(miss);
@@ -198,10 +227,10 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             return false;
         }
         if let Some(raw) = raw {
-            let value = load_packed_i64(b, &operands, op, miss);
+            let value = load_packed_i64(b, &operands, op, self.buffer_extents(op), miss);
             self.bind(raw, b.word_value(value), HeldCarrier::RawI64);
         } else {
-            commit_packed_store(b, &operands, op, miss);
+            commit_packed_store(b, &operands, op, self.buffer_extents(op), miss);
         }
         b.jump(hit, &[]);
         true
