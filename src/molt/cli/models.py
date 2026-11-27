@@ -932,6 +932,7 @@ class _BuildDiagnosticsContext:
     artifacts_root: Path
     entry_module: str
     entry_path: Path
+    module_graph_import_queries: Mapping[str, Mapping[str, object]] | None = None
 
 
 @dataclass(frozen=True)

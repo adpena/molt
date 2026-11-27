@@ -547,6 +547,10 @@ def _build_build_diagnostics_payload(
         ),
         "module_reasons": module_reason_map,
     }
+    if diagnostics_context.module_graph_import_queries is not None:
+        payload["module_graph_import_queries"] = (
+            diagnostics_context.module_graph_import_queries
+        )
     closure_payload = diagnostics_context.binary_image_closure
     if closure_payload is not None:
         payload["binary_image_closure"] = dict(closure_payload)

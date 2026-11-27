@@ -1148,7 +1148,6 @@ def test_call_star_uses_live_all_expansion_without_promoting_discovery(
         import_scan_mode=mode,
         target_python=target,
         ast_digest_admission=_PythonAstDigestAdmission(tree),
-        source=source,
         namespace_premise=WHOLE_PROGRAM,
     )
     assert requests.star_modules == ()

@@ -15177,21 +15177,21 @@ def test_warm_source_requests_resolve_new_higher_priority_module(
     assert first.graph["dependency"] == old_dependency
     new_dependency = higher / "dependency.py"
     new_dependency.write_text("VALUE = 2\n", encoding="utf-8")
-    # Requests are addressed by captured bytes (c494b920b5), so the scan sees
-    # each source's text; the three files here have distinct texts.
-    requested: list[str | None] = []
+    # Requests are addressed by captured bytes, then analysis consumes the
+    # admitted AST. Each provider here has distinct syntax.
+    requested: list[str] = []
     collect = _source_import_scan._collect_import_scan_requests
 
     def record(*args: Any, **kwargs: Any):
-        requested.append(kwargs.get("source"))
+        requested.append(ast.dump(args[1]))
         return collect(*args, **kwargs)
 
     monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", record)
     second = discover()
     assert second.graph["dependency"] == new_dependency
     assert "dependency" in second.explicit_imports
-    assert entry.read_text(encoding="utf-8") not in requested
-    assert new_dependency.read_text(encoding="utf-8") in requested
+    assert ast.dump(ast.parse(entry.read_text(encoding="utf-8"))) not in requested
+    assert ast.dump(ast.parse(new_dependency.read_text(encoding="utf-8"))) in requested
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")

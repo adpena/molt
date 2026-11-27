@@ -430,6 +430,9 @@ class _PythonAstDigestAdmission:
     _argument_plans: dict[ast.Call | ast.ClassDef, CallArgumentPlan] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
+    _name_queries: dict[frozenset[str], bool] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
     _syntax_plan_lock: Lock = field(
         default_factory=Lock, init=False, repr=False, compare=False
     )
@@ -462,6 +465,23 @@ class _PythonAstDigestAdmission:
                 plan = call_argument_plan(node)
                 self._argument_plans[node] = plan
             return plan
+
+    def contains_reference_name(self, names: frozenset[str]) -> bool:
+        """A cheap presence check over parsed, normalized reference spellings."""
+        with self._syntax_plan_lock:
+            result = self._name_queries.get(names)
+            if result is None:
+                result = any(
+                    (isinstance(node, ast.Name) and node.id.rpartition(".")[2] in names)
+                    or (isinstance(node, ast.Attribute) and node.attr in names)
+                    or (
+                        isinstance(node, ast.alias)
+                        and node.name.rpartition(".")[2] in names
+                    )
+                    for node in self._source_keys
+                )
+                self._name_queries[names] = result
+            return result
 
     def canonical_tree(self, tree: ast.Module) -> ast.Module:
         if self.tree is not tree:

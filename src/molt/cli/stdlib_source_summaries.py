@@ -82,7 +82,6 @@ def _write_initializers(
                 ast_digest_admission=admission,
                 namespace_premise=premise,
                 resolution_cache=_ModuleResolutionCache(target_sys_platform=platform),
-                source=captured.text,
             )
         except UnresolvedStaticImportError:
             # A refusal is evaluated in the importing program's actual context.

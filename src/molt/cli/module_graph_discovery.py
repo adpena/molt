@@ -27,6 +27,7 @@ from collections.abc import (
 from pathlib import Path
 from functools import cached_property
 from typing import Final, NamedTuple
+from time import perf_counter_ns
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import module_dependencies as _module_dependency_authority
@@ -2346,6 +2347,8 @@ def _load_module_import_scan(
     record_premise_reads: bool = False,
 ) -> _LoadedModuleImportScan:
     """Admit source-only requests, then resolve filesystem edges in this operation."""
+    scan_diagnostics = resolution_cache.import_scan_diagnostics
+    started_ns = perf_counter_ns() if scan_diagnostics is not None else 0
     if type(purpose) is not _source_import_scan.SourceImportPurpose:
         raise TypeError("source import scan requires a typed purpose")
     if native_support_function_roots:
@@ -2408,6 +2411,13 @@ def _load_module_import_scan(
             runtime_custody=runtime_import_custody,
         )
         resolution_cache.observe_import_scan(query, loaded.scan, admission)
+        if scan_diagnostics is not None:
+            scan_diagnostics.record(
+                module_name,
+                admission,
+                source_parsed=loaded.source_parsed,
+                elapsed_ns=perf_counter_ns() - started_ns,
+            )
         return loaded._replace(query=query)
 
     if source_owner is not None and precomputed_scan is not None:
@@ -2626,7 +2636,6 @@ def _load_module_import_scan(
             purpose=purpose,
             resolution_cache=resolution_cache,
             target_python=target_python,
-            source=source,
         )
     finally:
         SCAN_PREMISE_READS.reset(reads_token)
@@ -2715,7 +2724,6 @@ def _collect_module_import_scan(
     purpose: _source_import_scan.SourceImportPurpose,
     resolution_cache: _module_resolution._ModuleResolutionCache,
     target_python: TargetPythonVersion,
-    source: str | None,
 ) -> tuple[_ImportDiscoveryProjection, _ImportScanRequests]:
     """One source's graph projection and its requests under one premise view."""
     import_projection = resolution_cache.collect_graph_imports(
@@ -2743,7 +2751,6 @@ def _collect_module_import_scan(
         source_arguments=source_arguments,
         target_python=target_python,
         ast_digest_admission=ast_digest_admission,
-        source=source,
         namespace_premise=namespace_premise,
         target_sys_platform=resolution_cache.target_sys_platform,
         purpose=purpose,
