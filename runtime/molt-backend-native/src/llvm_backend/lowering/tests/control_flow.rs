@@ -25,13 +25,25 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
     check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
     let mut service = check.clone();
     service.mark_async_work_poll();
+    let depth = f.fresh_value();
+    f.value_types.insert(depth, TirType::I64);
+    let snapshot =
+        TirOp::new(OpCode::Copy, vec![], vec![depth]).with_origin(OpKind::ExceptionStackDepth);
+    let restore =
+        TirOp::new(OpCode::Copy, vec![depth], vec![]).with_origin(OpKind::ExceptionStackSetDepth);
+    let mut unwind = check.clone();
+    unwind.set_exception_edge_kind(ExceptionEdgeKind::Unwind);
     let entry = f.blocks.get_mut(&f.entry_block).unwrap();
     entry.ops = vec![
+        snapshot,
         level(OpKind::ExceptionPush),
         marker(OpCode::TryStart),
         check,
         service,
         level(OpKind::ExceptionPop),
+        restore.clone(),
+        unwind,
+        restore,
     ];
     entry.terminator = Terminator::Return { values: vec![] };
     f.blocks.insert(
@@ -47,6 +59,12 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
     let compile = |f: &TirFunction, available| {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
+        for entry in [
+            RuntimeFn::ExceptionStackDepth,
+            RuntimeFn::ExceptionStackSetDepth,
+        ] {
+            backend.runtime_callable_symbols.insert(entry);
+        }
         if available {
             backend
                 .runtime_callable_symbols
@@ -57,7 +75,10 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
                 .remove(RuntimeFn::ExceptionPushOrDefer);
         }
         let machine = lower_tir_to_llvm(f, &backend);
-        backend.module.verify().unwrap();
+        backend
+            .module
+            .verify()
+            .unwrap_or_else(|err| panic!("{err}\n{}", machine.print_to_string()));
         machine.print_to_string().to_string()
     };
     let ir = compile(&f, true);
@@ -83,9 +104,17 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
         2,
         "{ir}"
     );
+    assert_eq!(
+        ir.matches_execution("@molt_exception_stack_set_depth(")
+            .count(),
+        2,
+        "{ir}"
+    );
+    assert_eq!(ir.matches("xor i64").count(), 1, "{ir}");
     assert!(!compile(&f, false).contains("@molt_exception_push_or_defer"));
     let mut block = "";
     let mut observers = 0;
+    let mut guarded_restores = 0;
     for line in ir.lines() {
         if !line.starts_with(' ')
             && let Some((label, _)) = line.split_once(':')
@@ -102,8 +131,16 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
             );
             observers += 1;
         }
+        if line.contains("call ") && line.contains("@molt_exception_stack_set_depth") {
+            assert!(
+                block.starts_with("exception_depth_restore"),
+                "{block}: {line}"
+            );
+            guarded_restores += 1;
+        }
     }
     assert_eq!(observers, 3, "{ir}");
+    assert_eq!(guarded_restores, 2, "{ir}");
 
     // The normal and exceptional edges can have the same predecessor block.
     // Its early check reaches the later operations without executing the push.
@@ -111,11 +148,11 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
     let later = bypass.fresh_block();
     bypass.label_id_map.insert(later.0, 11);
     let entry = bypass.blocks.get_mut(&bypass.entry_block).unwrap();
-    let tail = entry.ops.split_off(2);
+    let tail = entry.ops.split_off(3);
     let mut early = marker(OpCode::CheckException);
     early.attrs.insert("value".into(), AttrValue::Int(11));
     early.set_exception_edge_kind(ExceptionEdgeKind::Origin);
-    entry.ops.insert(0, early);
+    entry.ops.insert(1, early);
     let rest = std::mem::replace(
         &mut entry.terminator,
         Terminator::Branch {
@@ -136,7 +173,7 @@ fn a_virtual_lexical_level_materializes_at_service_and_origin_and_keeps_physical
     let result = f.fresh_value();
     f.value_types.insert(result, TirType::DynBox);
     f.blocks.get_mut(&f.entry_block).unwrap().ops.insert(
-        2,
+        3,
         TirOp::new(OpCode::Copy, vec![], vec![result]).with_origin(OpKind::ExceptionActive),
     );
     assert!(

@@ -45,6 +45,11 @@ pub(crate) struct Position<'a, B: CodegenBuilder> {
 impl<B: RecordPlacement> FunctionCx<'_, B> {
     /// Lower one operation, or diagnose a violated terminal TIR invariant.
     pub(crate) fn lower_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) {
+        if let Some((super::exception_levels::Event::Restore { first }, slot)) = at.exception_level
+            && self.restore_virtual_depth(b, op.operands[0], slot, first)
+        {
+            return;
+        }
         if let Some((
             event
             @ (super::exception_levels::Event::Enter | super::exception_levels::Event::Retire),
