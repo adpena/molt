@@ -346,9 +346,9 @@ class PythonSourceDemands:
             set
         )
         self.pending_operands: dict[SourceValue, _OperandDeltas] = {}
-        # Operand transfers read candidate membership and callable shape.
-        # Outcome facts such as a growing return set have their own users.
-        self.candidate_users: defaultdict[SourceValue, set[SourceValue]] = defaultdict(
+        # Binding subscribers want membership deltas and receiver-binding
+        # changes, without unrelated structural wakes.
+        self.binding_users: defaultdict[SourceValue, set[SourceValue]] = defaultdict(
             set
         )
         self.declaration_users: dict[SourceValue, set[SourceValue]] = {}
@@ -471,12 +471,6 @@ class PythonSourceDemands:
         self.value_users[origin].add(user)
         return self._ensure_value(origin)
 
-    def _watch_candidates(
-        self, origin: SourceValue, user: SourceValue
-    ) -> Collection[SourceCandidate]:
-        self.candidate_users[origin].add(user)
-        return self._ensure_value(origin)
-
     def _operand_candidates(
         self, origin: SourceValue, user: SourceValue, deltas: _OperandDeltas | None
     ) -> Collection[SourceCandidate]:
@@ -488,12 +482,13 @@ class PythonSourceDemands:
     def _add_operand_candidates(
         self, origin: SourceValue, added: Collection[SourceCandidate]
     ) -> None:
-        for user in self.operand_users.get(origin, ()):
-            if self.value_jobs.get(user, False):
-                continue
-            pending = self.pending_operands.setdefault(user, {})
-            pending.setdefault(origin, set()).update(added)
-            self.queue_value(user, refresh=False)
+        for subscribers in (self.operand_users, self.binding_users):
+            for user in subscribers.get(origin, ()):
+                if self.value_jobs.get(user, False):
+                    continue
+                pending = self.pending_operands.setdefault(user, {})
+                pending.setdefault(origin, set()).update(added)
+                self.queue_value(user, refresh=False)
 
     def _ensure_value(
         self, origin: SourceValue
@@ -1259,7 +1254,7 @@ class PythonSourceDemands:
                     self.activate(candidate, "escape", consumer=incidence.consumer)
         # The callable can remain the same while it gains a receiver.
         if binding_changed:
-            for dependent in self.candidate_users.get(user, ()):
+            for dependent in self.binding_users.get(user, ()):
                 self.queue_value(dependent)
         return selected
 
@@ -2614,9 +2609,8 @@ class PythonSourceDemands:
         if added:
             if writes := self.attribute_writes.get(value):
                 self._record_attribute_receivers(module_name, writes, added)
-            for users in (self.value_users, self.candidate_users):
-                for user in users.get(value, ()):
-                    self.queue_value(user)
+            for user in self.value_users.get(value, ()):
+                self.queue_value(user)
             self._add_operand_candidates(value, added)
         self._activate_pending(value, known, added)
 
@@ -2652,12 +2646,17 @@ class PythonSourceDemands:
         if site in self.import_bindings:
             return
         call = self.calls[site]
-        seen: set[tuple[SourceValue, bool]] = set()
-        actuals: dict[tuple[int, bool], set[SourceCandidate]] = {}
+        routes: dict[tuple[SourceValue, bool], bool] = {}
+        actuals: dict[tuple[int, bool, bool], set[SourceCandidate]] = {}
         names = tuple(name for name, _, _ in call.arguments)
+        actuals_changed = deltas is not None and any(
+            (module, source) in deltas
+            for _, _, origins in call.arguments
+            for source in origins
+        )
 
-        def values(index: int, packed: bool) -> set[SourceCandidate]:
-            key = (index, packed)
+        def values(index: int, packed: bool, full: bool) -> set[SourceCandidate]:
+            key = (index, packed, full)
             selected = actuals.get(key)
             if selected is not None:
                 return selected
@@ -2668,7 +2667,7 @@ class PythonSourceDemands:
                 candidate._replace(contained=packed or source not in direct)
                 for source in exposed
                 for candidate in self._operand_candidates(
-                    (module, source), user, deltas
+                    (module, source), user, None if full else deltas
                 )
             }
             actuals[key] = selected
@@ -2676,7 +2675,16 @@ class PythonSourceDemands:
 
         for origin in call.callees:
             selection = (module, origin)
-            for candidate in self._watch_candidates(selection, user):
+            added = () if deltas is None else deltas.get(selection, ())
+            callees: Collection[SourceCandidate]
+            if deltas is None:
+                self.binding_users[selection].add(user)
+                callees = self._ensure_value(selection)
+            elif actuals_changed:
+                callees = self.value_candidates[selection]
+            else:
+                callees = added
+            for candidate in callees:
                 if (
                     candidate.contained
                     or candidate.identity is not None
@@ -2697,9 +2705,22 @@ class PythonSourceDemands:
                 )
                 for offset in offsets:
                     route = (candidate.value, offset)
-                    if route not in seen:
-                        seen.add(route)
-                        self._bind_actuals(names, values, candidate.value, user, offset)
+                    # A new route joins prior actuals as well. Existing routes
+                    # receive only the actuals that arrived in this wave.
+                    routes[route] = routes.get(route, False) or (
+                        deltas is None or candidate in added
+                    )
+
+        def full_values(index: int, packed: bool) -> set[SourceCandidate]:
+            return values(index, packed, True)
+
+        def delta_values(index: int, packed: bool) -> set[SourceCandidate]:
+            return values(index, packed, False)
+
+        for (callee, offset), full in routes.items():
+            self._bind_actuals(
+                names, full_values if full else delta_values, callee, user, offset
+            )
 
     def _bind_actuals(
         self,
