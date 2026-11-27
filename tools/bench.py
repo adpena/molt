@@ -76,7 +76,11 @@ from tools import memory_guard  # noqa: E402
 from tools.memory_guard_core import harness_outcomes  # noqa: E402
 from tools import bench_suites  # noqa: E402
 from tools import bench_reporting  # noqa: E402
-from tools.bench_evidence import AdmittedBenchmarkWorkload, admit_benchmark_workload  # noqa: E402
+from tools.bench_evidence import (  # noqa: E402
+    AdmittedBenchmarkWorkload,
+    BenchmarkOracleMismatch,
+    admit_benchmark_workload,
+)
 
 MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 from tools import perf_authority  # noqa: E402
@@ -1828,6 +1832,7 @@ def collect_samples(
     warmup: int = 0,
     *,
     validate_inputs: Callable[[], None] | None = None,
+    validate_output: Callable[[RunSample], MoltFailure | None] | None = None,
 ) -> SampleBatch:
     # Warmup runs are discarded. They prime (1) the page cache for the binary
     # and its shared libs, and (2) on macOS the amfid/provenance cache for the
@@ -1837,29 +1842,25 @@ def collect_samples(
     # shared call site in `_bench_one`, keeping the comparison fair. Cold-start
     # and binary-size live in tools/output_startup_size_audit.py, not here.
     warmup_samples: list[RunSample] = []
-    for _ in range(warmup):
-        if validate_inputs is not None:
-            validate_inputs()
-        sample = measure_fn()
-        if validate_inputs is not None:
-            validate_inputs()
-        if isinstance(sample, MoltFailure):
-            return SampleBatch([], False, warmup_samples, sample)
-        if not isinstance(sample, RunSample):
-            raise TypeError("runtime measurement requires a typed sample or failure")
-        warmup_samples.append(sample)
     measured: list[RunSample] = []
-    for _ in range(samples):
-        if validate_inputs is not None:
-            validate_inputs()
-        sample = measure_fn()
-        if validate_inputs is not None:
-            validate_inputs()
-        if isinstance(sample, MoltFailure):
-            return SampleBatch(measured, False, warmup_samples, sample)
-        if not isinstance(sample, RunSample):
-            raise TypeError("runtime measurement requires a typed sample or failure")
-        measured.append(sample)
+    for batch, count in ((warmup_samples, warmup), (measured, samples)):
+        for _ in range(count):
+            if validate_inputs is not None:
+                validate_inputs()
+            sample = measure_fn()
+            if validate_inputs is not None:
+                validate_inputs()
+            if isinstance(sample, MoltFailure):
+                return SampleBatch(measured, False, warmup_samples, sample)
+            if not isinstance(sample, RunSample):
+                raise TypeError(
+                    "runtime measurement requires a typed sample or failure"
+                )
+            if validate_output is not None:
+                failure = validate_output(sample)
+                if failure is not None:
+                    return SampleBatch(measured, False, warmup_samples, failure)
+            batch.append(sample)
     return SampleBatch(measured, bool(measured), warmup_samples)
 
 
@@ -1923,11 +1924,17 @@ def _output_parity_evidence(
         }
 
     if reference_batch is None or not reference_batch.ok:
+        failure = reference_batch.failure if reference_batch is not None else None
+        mismatch = (
+            failure is not None and failure.detail == "sealed_reference_oracle_mismatch"
+        )
         return {
-            "checked": False,
-            "ok": None,
+            "checked": mismatch,
+            "ok": False if mismatch else None,
             "reference_runtime": reference_runtime,
-            "reason": "reference_unavailable",
+            "reason": "reference_oracle_mismatch"
+            if mismatch
+            else "reference_unavailable",
             "stdout_match": None,
             "stderr_match": None,
             **empty_hashes,
@@ -2396,6 +2403,25 @@ def _bench_one(
         raise ValueError(
             "sealed application measurement requires a qualified CPython reference"
         )
+
+    def validate_reference_output(sample: RunSample) -> MoltFailure | None:
+        try:
+            workload.verify_reference_output(sample.stdout, sample.stderr)
+        except BenchmarkOracleMismatch as exc:
+            return MoltFailure(
+                phase="reference",
+                status="output_mismatch",
+                returncode=0,
+                timed_out=False,
+                elapsed_s=sample.elapsed_s,
+                detail="sealed_reference_oracle_mismatch",
+                message=str(exc),
+                stdout=sample.stdout,
+                stderr=sample.stderr,
+                child_returncode=0,
+            )
+        return None
+
     for rt_name, cmd in runtimes.items():
         if not reference_contract.external_baselines:
             continue
@@ -2420,10 +2446,10 @@ def _bench_one(
             samples,
             warmup=warmup,
             validate_inputs=workload.verify,
+            validate_output=validate_reference_output
+            if sealed and rt_name == "cpython"
+            else None,
         )
-        if rt_name == "cpython" and batch.ok:
-            for sample in (*batch.warmup_samples, *batch.samples):
-                workload.verify_reference_output(sample.stdout, sample.stderr)
         runtime_batches[rt_name] = batch
         sample_times = batch.times_s
         results[rt_name] = statistics.mean(sample_times) if batch.ok else None
