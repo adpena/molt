@@ -1676,6 +1676,103 @@ def test_class_member_query_shares_selection_and_replays_property_origins(
     assert engine._property_results[second] == {member}
 
 
+def test_call_forwards_results_until_its_transfer_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    from molt.compiler_analysis.python_binding_facts import (
+        PythonFunctionResult,
+        PythonSourceCall,
+        PythonSourceCallableDeclaration,
+    )
+    from molt.compiler_analysis.python_function_kind import FunctionKind
+    from molt.compiler_analysis.python_imports import (
+        _ImportScanRequests,
+        _SourceImportBinding,
+        _SourceValueSummary,
+    )
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+    )
+
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    module = "provider"
+    function = (1, 0, 1, 1, "FunctionDef")
+    formal = (1, 2, 1, 3, "arg")
+    site = (2, 0, 2, 1, "Call")
+    call = (module, site)
+    other_site = (2, 2, 2, 3, "Call")
+    other_call = (module, other_site)
+    first, second, third = (
+        SourceCandidate(module, (line, 0, line, 1, "ClassDef")) for line in (3, 4, 5)
+    )
+    engine.accept(
+        module,
+        _ImportScanRequests(
+            (),
+            (),
+            source_values=_SourceValueSummary(
+                calls=tuple(
+                    PythonSourceCall(owner, frozenset({function}), 0, ())
+                    for owner in (site, other_site)
+                ),
+                declarations=(
+                    PythonSourceCallableDeclaration(
+                        function, FunctionKind.SYNC, (formal,)
+                    ),
+                ),
+                functions=(
+                    PythonFunctionResult(
+                        function,
+                        frozenset({formal}),
+                        frozenset(),
+                        frozenset(),
+                        frozenset(),
+                    ),
+                ),
+            ),
+        ),
+    )
+    engine._queue_arguments((module, formal), {first})
+    engine.queue_value(call)
+    engine.queue_value(other_call)
+    engine.drain()
+    assert engine.value_candidates[call] == {first}
+
+    transfer = Mock(wraps=engine._returned_values)
+    monkeypatch.setattr(engine, "_returned_values", transfer)
+    engine._queue_arguments((module, formal), {second})
+    engine.drain()
+    assert engine.value_candidates[call] == {first, second}
+    assert engine.value_candidates[other_call] == {first, second}
+    transfer.assert_not_called()
+
+    engine.accept("alternate", _ImportScanRequests((), ()))
+    engine.accept(
+        module,
+        _ImportScanRequests(
+            ("alternate",),
+            (),
+            source_bindings=(_SourceImportBinding(site, ("alternate",), None),),
+        ),
+    )
+    engine.drain()
+    engine._queue_arguments((module, formal), {third})
+    engine.drain()
+    assert engine.value_candidates[call] == {
+        first,
+        second,
+        SourceCandidate("alternate", None),
+    }
+    assert engine.value_candidates[other_call] == {first, second, third}
+
+
 def test_returned_cache_values_propagate_only_new_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
