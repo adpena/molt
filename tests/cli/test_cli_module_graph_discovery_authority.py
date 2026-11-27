@@ -352,6 +352,52 @@ def test_import_call_result_selects_members_like_an_import_alias(
     assert set(result.graph) == expected
 
 
+@pytest.mark.parametrize(
+    ("result", "operand"),
+    [
+        ("    return value\n", "{callback}"),
+        (
+            "    try:\n        return value[0]\n    except IndexError:\n"
+            "        return None\n",
+            "({callback},)",
+        ),
+    ],
+)
+def test_qualified_return_projects_the_actual_without_losing_body_effects(
+    tmp_path: Path, result: str, operand: str
+) -> None:
+    (tmp_path / "provider.py").write_text(
+        "def forward(value):\n    import body_dependency\n" + result,
+        encoding="utf-8",
+    )
+    (tmp_path / "callbacks.py").write_text(
+        "def reached():\n    import selected_dependency\n"
+        "def unused():\n    import unrelated_dependency\n",
+        encoding="utf-8",
+    )
+    for name in ("body_dependency", "selected_dependency", "unrelated_dependency"):
+        (tmp_path / f"{name}.py").write_text("", encoding="utf-8")
+    entry = tmp_path / "entry.py"
+    entry.write_text(
+        "import provider\nfrom callbacks import reached, unused\n"
+        f"provider.forward({operand.format(callback='unused')})\n"
+        f"provider.forward({operand.format(callback='reached')})()\n",
+        encoding="utf-8",
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    closure = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,), [tmp_path], [tmp_path], stdlib, None, set(), full_scan_roots=True
+    )
+    assert set(closure.graph) == {
+        "entry",
+        "provider",
+        "callbacks",
+        "body_dependency",
+        "selected_dependency",
+    }
+
+
 @pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     ("hook", "entry_source", "expected"),

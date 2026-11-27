@@ -420,6 +420,11 @@ class PythonSourceDemands:
         self.declarations: dict[SourceValue, PythonSourceCallableDeclaration] = {}
         self.pending_arguments: dict[SourceValue, set[SourceCandidate]] = {}
         self.functions: dict[SourceValue, PythonFunctionResult] = {}
+        self._return_projection_users: dict[SourceValue, set[SourceValue]] = {}
+        self._formal_bindings: dict[
+            tuple[PythonSourceCallableDeclaration, tuple[int | str | None, ...], bool],
+            tuple[tuple[PythonSourceKey, int, bool], ...],
+        ] = {}
         self.activation_partitions: dict[
             SourceValue, tuple[frozenset[str] | None, ...]
         ] = {}
@@ -688,7 +693,9 @@ class PythonSourceDemands:
                 element = element._replace(origins=previous.origins | element.origins)
                 if element.key != previous.key:
                     element = element._replace(key=None)
-            self._publish(self.elements, value, element)
+            if self._publish(self.elements, value, element):
+                for user in self._return_projection_users.get(value, ()):
+                    self.queue_value(user)
         for transfer in scan.source_values.call_imports:
             value = (module_name, transfer.site.source)
             self._publish(
@@ -753,6 +760,8 @@ class PythonSourceDemands:
             if self._publish(self.declarations, owner, declaration):
                 for user in self.declaration_users.get(owner, ()):
                     self.queue_value(user)
+                for user in self._return_projection_users.get(owner, ()):
+                    self.queue_value(user)
         for owner, classes in scan.source_values.activation_partitions:
             value = (module_name, owner)
             previous_classes = self.activation_partitions.get(value)
@@ -787,6 +796,8 @@ class PythonSourceDemands:
                     previous.returned != result.returned
                     or previous.returned_exposed != result.returned_exposed
                 ):
+                    for user in self._return_projection_users.get(value, ()):
+                        self.queue_value(user)
                     outcome = (module_name, SourceCallableOutcome(result.owner, False))
                     if outcome in self.value_candidates:
                         self.queue_value(outcome)
@@ -1443,6 +1454,8 @@ class PythonSourceDemands:
         # The callable can remain the same while it gains a receiver.
         if binding_changed:
             for dependent in self.binding_users.get(user, ()):
+                self.queue_value(dependent)
+            for dependent in self._return_projection_users.get(user, ()):
                 self.queue_value(dependent)
         return selected
 
@@ -2834,7 +2847,10 @@ class PythonSourceDemands:
                     else:
                         candidates.update(
                             self._returned_values(
-                                candidate, value, forward_outcome=True
+                                candidate,
+                                value,
+                                forward_outcome=True,
+                                selection=attribute,
                             )
                         )
         elif value in self.attributes:
@@ -2936,6 +2952,101 @@ class PythonSourceDemands:
         for candidate in tuple(candidates):
             self._activate_demand(value, candidate, demand)
 
+    def _receiver_offsets(
+        self, candidate: SourceCandidate, selection: SourceValue
+    ) -> tuple[bool, ...]:
+        bound = candidate in self.receiver_bound_members.get(selection, ())
+        if candidate.kind == "bound_class_method" or (
+            bound and candidate not in self.unbound_members.get(selection, ())
+        ):
+            return (True,)
+        return (False, True) if bound else (False,)
+
+    def _project_call_result(
+        self,
+        candidate: SourceCandidate,
+        selection: SourceValue,
+        user: SourceValue,
+        call: PythonSourceCall,
+    ) -> set[SourceCandidate] | None:
+        if not call.arguments:
+            return None
+        callee = candidate.value
+        parameters = self.declarations.get(callee)
+        result = self.functions.get(callee)
+        if parameters is None or parameters.kind != FunctionKind.SYNC:
+            return None
+        if result is None:
+            # Bodies can publish after their call is admitted.
+            self._return_projection_users.setdefault(callee, set()).add(user)
+            return None
+        if not result.returned and not result.returned_exposed:
+            return None
+        names = tuple(name for name, _, _ in call.arguments)
+        if None in names:
+            return None
+        # Each operand path is expressed in formals until this invocation binds
+        # it. The same transfer still sends actuals to the body for its effects.
+        roots = []
+        for source in result.returned | result.returned_exposed:
+            element = self.elements.get((candidate.module, source))
+            if (
+                element is not None
+                and element.protocol is not PythonElementProtocol.SUBSCRIPT
+            ):
+                return None
+            roots.append((source, element, source not in result.returned))
+        actuals = []
+        for offset in self._receiver_offsets(candidate, selection):
+            bindings = self._argument_bindings(parameters, names, offset)
+            explicit = {}
+            for formal, index, packed in bindings:
+                if not packed:
+                    if formal in explicit:
+                        return None
+                    explicit[formal] = index
+            for source, element, exposed_only in roots:
+                origins = (source,) if element is None else element.origins
+                for formal in origins:
+                    index = explicit.get(formal)
+                    if index is None or not call.arguments[index][2]:
+                        return None
+                    actuals.append((index, element, exposed_only))
+        self.watch(callee, user)
+        for dependency in (callee, selection):
+            self._return_projection_users.setdefault(dependency, set()).add(user)
+        selected: set[SourceCandidate] = set()
+        for index, element, exposed_only in actuals:
+            if element is not None:
+                self._return_projection_users.setdefault(
+                    (candidate.module, element.owner), set()
+                ).add(user)
+            _, direct, exposed = call.arguments[index]
+            for source in exposed:
+                for value in tuple(self.watch((user[0], source), user)):
+                    contained = source not in direct
+                    if value.contained != contained:
+                        value = value._replace(contained=contained)
+                    if element is None:
+                        selected.add(
+                            value._replace(contained=True)
+                            if exposed_only and not value.contained
+                            else value
+                        )
+                        continue
+                    results = self._subscript_values(
+                        value, user, element.key, consumer=candidate.module
+                    )
+                    selected.update(
+                        (
+                            item if item.contained else item._replace(contained=True)
+                            for item in results
+                        )
+                        if exposed_only
+                        else results
+                    )
+        return selected
+
     def _route_call_arguments(
         self,
         module: str,
@@ -2995,18 +3106,7 @@ class PythonSourceDemands:
                     or candidate.kind.startswith("namespace")
                 ):
                     continue
-                bound = candidate in self.receiver_bound_members.get(selection, ())
-                unbound = not bound or candidate in self.unbound_members.get(
-                    selection, ()
-                )
-                offsets = (
-                    (True,)
-                    if candidate.kind == "bound_class_method" or not unbound
-                    else (False, True)
-                    if bound
-                    else (False,)
-                )
-                for offset in offsets:
+                for offset in self._receiver_offsets(candidate, selection):
                     route = (candidate.value, offset)
                     # A new route joins prior actuals as well. Existing routes
                     # receive only the actuals that arrived in this wave.
@@ -3037,7 +3137,23 @@ class PythonSourceDemands:
         parameters = self.declarations.get(callee)
         if parameters is None:
             return
+        for target, index, packed in self._argument_bindings(
+            parameters, names, receiver_bound
+        ):
+            self._queue_arguments((callee[0], target), candidates(index, packed))
+
+    def _argument_bindings(
+        self,
+        parameters: PythonSourceCallableDeclaration,
+        names: tuple[int | str | None, ...],
+        receiver_bound: bool,
+    ) -> tuple[tuple[PythonSourceKey, int, bool], ...]:
+        key = (parameters, names, receiver_bound)
+        previous = self._formal_bindings.get(key)
+        if previous is not None:
+            return previous
         keywords = dict(parameters.keywords)
+        result = []
         for index, name in enumerate(names):
             if isinstance(name, int):
                 if receiver_bound:
@@ -3084,8 +3200,10 @@ class PythonSourceDemands:
                         )
                     )
                 )
-            for target, packed in targets:
-                self._queue_arguments((callee[0], target), candidates(index, packed))
+            result.extend((target, index, packed) for target, packed in targets)
+        bindings = tuple(result)
+        self._formal_bindings[key] = bindings
+        return bindings
 
     def _bind_native_call(self, site: SourceValue, callee: SourceCandidate) -> None:
         uses = self.native_calls.setdefault(callee.value, set())
@@ -3288,6 +3406,7 @@ class PythonSourceDemands:
         key: str | None,
         *,
         key_values: Collection[SourceCandidate] = (),
+        consumer: str | None = None,
     ) -> set[SourceCandidate]:
         if owner.contained:
             # Exposure is transitive, so one selection can still leave a container.
@@ -3296,7 +3415,7 @@ class PythonSourceDemands:
             return self._namespace_values(owner, user, key)
         if owner.kind == "instance":
             member = (owner.module, SourceMember(owner, "__getitem__"))
-            self.demand(member, "call", argument_count=1, consumer=user[0])
+            self.demand(member, "call", argument_count=1, consumer=consumer or user[0])
             if key_values:
                 for getter in self.watch(member, user):
                     self._bind_actuals(
@@ -3507,6 +3626,7 @@ class PythonSourceDemands:
         user: SourceValue,
         *,
         forward_outcome: bool = False,
+        selection: SourceValue | None = None,
     ) -> set[SourceCandidate]:
         if callee.kind == "iterator_next":
             return set(self.watch(self._iterator_contents(callee), user))
@@ -3557,6 +3677,16 @@ class PythonSourceDemands:
             value = callee.value
             self.watch(value, user)
             return {SourceCandidate(*value, "resumable")}
+        if selection is not None and callee.kind in {
+            "value",
+            "bound_class_method",
+            "bound_static_method",
+        }:
+            projection = self._project_call_result(
+                callee, selection, user, self.calls[user]
+            )
+            if projection is not None:
+                return projection
         return self._function_values(callee, user, forward_outcome=forward_outcome)
 
     def _function_values(
