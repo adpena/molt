@@ -110,7 +110,8 @@ mod wrapper_representation_tests;
 pub(crate) use type_ids::*;
 
 use aux_header::{
-    MoltAuxSidecar, alloc_aux_sidecar, aux_sidecar_from_word, aux_sidecar_size, free_aux_sidecar,
+    MoltAuxSidecar, SidecarPlacement, alloc_aux_sidecar, aux_sidecar_from_word, aux_sidecar_size,
+    init_prefix_sidecar, retire_aux_sidecar,
 };
 
 #[cfg(molt_net)]
@@ -1791,45 +1792,34 @@ unsafe fn sidecar_from_snapshot(snapshot: ObjectAuxSnapshot) -> &'static MoltAux
     unsafe { aux_sidecar_from_word(snapshot.word) }
 }
 
-/// Select the initial aux representation before the object becomes visible.
-/// The kind and sidecar address are immutable after publication.
-unsafe fn initialize_header_aux(
-    header: *mut MoltHeader,
-    type_id: u32,
-    size_class: u16,
-    total_size: usize,
-    preselection: ObjectAuxPreselection,
-) -> bool {
+/// Select the initial aux representation before allocation and publication.
+fn initial_aux_kind(type_id: u32, size_class: u16, preselection: ObjectAuxPreselection) -> u16 {
+    if size_class == 0
+        || preselection == ObjectAuxPreselection::Sidecar
+        || (preselection == ObjectAuxPreselection::Default
+            && matches!(type_id, TYPE_ID_GENERATOR | TYPE_ID_ASYNC_GENERATOR))
+    {
+        HEADER_AUX_KIND_SIDECAR
+    } else if preselection == ObjectAuxPreselection::ClassInline {
+        HEADER_AUX_KIND_CLASS_INLINE
+    } else if preselection == ObjectAuxPreselection::StateInline
+        || (preselection == ObjectAuxPreselection::Default
+            && matches!(type_id, TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_BYTEARRAY))
+    {
+        HEADER_AUX_KIND_STATE_INLINE
+    } else {
+        HEADER_AUX_KIND_NONE
+    }
+}
+
+/// Publish the selected representation into a still-private header.
+unsafe fn write_header_aux(header: *mut MoltHeader, kind: u16, word: u64) {
     unsafe {
-        let (kind, word) = if size_class == 0 {
-            let Some(word) = alloc_aux_sidecar(MoltAuxSidecar::new(0, 0, 0, total_size)) else {
-                return false;
-            };
-            (HEADER_AUX_KIND_SIDECAR, word)
-        } else if preselection == ObjectAuxPreselection::Sidecar
-            || (preselection == ObjectAuxPreselection::Default
-                && matches!(type_id, TYPE_ID_GENERATOR | TYPE_ID_ASYNC_GENERATOR))
-        {
-            let Some(word) = alloc_aux_sidecar(MoltAuxSidecar::new(0, 0, 0, 0)) else {
-                return false;
-            };
-            (HEADER_AUX_KIND_SIDECAR, word)
-        } else if preselection == ObjectAuxPreselection::ClassInline {
-            (HEADER_AUX_KIND_CLASS_INLINE, 0)
-        } else if preselection == ObjectAuxPreselection::StateInline
-            || (preselection == ObjectAuxPreselection::Default
-                && matches!(type_id, TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_BYTEARRAY))
-        {
-            (HEADER_AUX_KIND_STATE_INLINE, 0)
-        } else {
-            (HEADER_AUX_KIND_NONE, 0)
-        };
         std::ptr::write(
             std::ptr::addr_of_mut!((*header).aux),
             MoltAuxWord::new(word),
         );
         (*header).aux_kind = kind;
-        true
     }
 }
 
@@ -1854,7 +1844,7 @@ pub(crate) unsafe fn object_init_sidecar_unpublished(data_ptr: *mut u8) -> bool 
             HEADER_AUX_KIND_NONE => (0, 0),
             _ => unreachable!("validated aux kind"),
         };
-        let Some(word) = alloc_aux_sidecar(MoltAuxSidecar::new(class_edge, 0, state, 0)) else {
+        let Some(word) = alloc_aux_sidecar(class_edge, state, 0) else {
             return false;
         };
         (*header).aux.store(word, AtomicOrdering::Release);
@@ -1871,7 +1861,7 @@ fn total_size_from_header_fields(size_class: u16, aux_kind: u16, aux_word: u64) 
     if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
         SIZE_CLASS_TABLE[sc]
     } else if aux_kind == HEADER_AUX_KIND_SIDECAR && aux_word != 0 {
-        unsafe { aux_sidecar_from_word(aux_word) }.extended_size
+        unsafe { aux_sidecar_from_word(aux_word) }.extended_size()
     } else {
         // Class-shaped native frame storage derives its extent from the sealed
         // class. It does not carry an allocator size class.
@@ -1956,16 +1946,21 @@ pub(crate) unsafe fn alloc_scoped_boxed_object(
             HEADER_FLAG_SCOPED | HEADER_FLAG_RAW_ALLOC | GC_HEAD_FLAG,
         );
         (*header).size_class = plan.size_class;
-        if !initialize_header_aux(
-            header,
+        let kind = initial_aux_kind(
             TYPE_ID_OBJECT,
             plan.size_class,
-            plan.object_size,
             ObjectAuxPreselection::Default,
-        ) {
-            crate::record_memory_error_without_allocation(py);
-            return MoltObject::none().bits();
-        }
+        );
+        let word = if kind == HEADER_AUX_KIND_SIDECAR {
+            let Some(word) = alloc_aux_sidecar(0, 0, plan.extended_size()) else {
+                crate::record_memory_error_without_allocation(py);
+                return MoltObject::none().bits();
+            };
+            word
+        } else {
+            0
+        };
+        write_header_aux(header, kind, word);
         let data = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
         gc::gc_track_if_cyclic(py, data, TYPE_ID_OBJECT);
         MoltObject::from_ptr(data).bits()
@@ -1984,8 +1979,7 @@ fn object_allocation_plan(total_size: usize, head_bytes: usize) -> Option<Object
         total_size
     };
     let alloc_size = object_size.checked_add(head_bytes)?;
-    let layout =
-        Layout::from_size_align(alloc_size, molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES).ok()?;
+    let layout = heap_storage_layout(object_size, head_bytes)?;
     Some(ObjectAllocationPlan {
         alloc_size,
         object_size,
@@ -1995,14 +1989,23 @@ fn object_allocation_plan(total_size: usize, head_bytes: usize) -> Option<Object
     })
 }
 
-#[inline]
-fn reserve_object_allocation(plan: ObjectAllocationPlan) -> bool {
-    crate::resource::charge_allocation(plan.alloc_size).is_ok()
+impl ObjectAllocationPlan {
+    fn extended_size(self) -> usize {
+        if self.size_class == 0 {
+            self.object_size
+        } else {
+            0
+        }
+    }
 }
 
 #[inline]
-fn release_object_allocation_reservation(plan: ObjectAllocationPlan) {
-    crate::resource::release_allocation(plan.alloc_size);
+fn heap_storage_layout(object_size: usize, header_offset: usize) -> Option<Layout> {
+    Layout::from_size_align(
+        object_size.checked_add(header_offset)?,
+        molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES,
+    )
+    .ok()
 }
 
 /// Get the poll function from stable sidecar storage.
@@ -2547,14 +2550,39 @@ fn alloc_object_zeroed_with_aux_policy(
         crate::record_memory_error_without_allocation(_py);
         return std::ptr::null_mut();
     };
-    if !reserve_object_allocation(plan) {
+    let aux_kind = initial_aux_kind(type_id, plan.size_class, aux);
+    let prefix_bytes = header_aux_storage_bytes(aux_kind);
+    let header_offset = plan.head_bytes + prefix_bytes;
+    let layout = if prefix_bytes == 0 {
+        plan.layout
+    } else {
+        let Some(combined) = heap_storage_layout(plan.object_size, header_offset) else {
+            crate::record_memory_error_without_allocation(_py);
+            return std::ptr::null_mut();
+        };
+        combined
+    };
+    if crate::resource::charge_allocation(layout.size()).is_err() {
         crate::record_memory_error_without_allocation(_py);
         return std::ptr::null_mut();
     }
     unsafe {
-        let ptr = std::alloc::alloc_zeroed(plan.layout);
-        if ptr.is_null() {
-            release_object_allocation_reservation(plan);
+        let ptr = {
+            #[cfg(all(
+                test,
+                feature = "l7-attestation-probe",
+                not(target_arch = "wasm32"),
+                not(miri)
+            ))]
+            let _scope = (prefix_bytes != 0).then(|| {
+                crate::attestation_probe::AllocationScopeGuard::enter(
+                    crate::attestation_probe::AllocationScope::SidecarObjectAllocate,
+                )
+            });
+            std::alloc::alloc_zeroed(layout)
+        };
+        let Some(storage) = std::ptr::NonNull::new(ptr) else {
+            crate::resource::release_allocation(layout.size());
             if debug_oom() {
                 eprintln!(
                     "molt OOM alloc_object_zeroed type_id={} total_size={}",
@@ -2563,9 +2591,9 @@ fn alloc_object_zeroed_with_aux_policy(
             }
             crate::record_memory_error_without_allocation(_py);
             return std::ptr::null_mut();
-        }
-        // The zeroed GC head, when reserved, reads "untracked".
-        let header = ptr.add(plan.head_bytes) as *mut MoltHeader;
+        };
+        // The zeroed GC head, when reserved, still directly precedes the header.
+        let header = ptr.add(header_offset).cast::<MoltHeader>();
         let head_flag = if gc_head { HEADER_FLAG_GC_HEAD } else { 0 };
         (*header).type_id = type_id;
         MoltHeader::initialize_refcount_before_publication(header, 1);
@@ -2575,14 +2603,14 @@ fn alloc_object_zeroed_with_aux_policy(
             MoltHeader::initialize_flags_before_publication(header, head_flag);
         }
         (*header).size_class = plan.size_class;
-        if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
-            std::alloc::dealloc(ptr, plan.layout);
-            release_object_allocation_reservation(plan);
-            crate::record_memory_error_without_allocation(_py);
-            return std::ptr::null_mut();
-        }
+        let aux_word = if prefix_bytes == 0 {
+            0
+        } else {
+            init_prefix_sidecar(storage.cast(), plan.extended_size())
+        };
+        write_header_aux(header, aux_kind, aux_word);
         if crate::profile_enabled(_py) {
-            record_allocation_profile(_py, header, type_id, plan.alloc_size);
+            record_allocation_profile(_py, header, type_id, layout.size());
         }
         let data_ptr = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
         // Only a head-bearing allocation can be a member; a kind without a
@@ -4065,12 +4093,11 @@ fn record_allocation_profile(
     alloc_size: usize,
 ) {
     let aux_kind = unsafe { header_aux_snapshot(header) }.kind;
-    let tracked_bytes = alloc_size.saturating_add(header_aux_storage_bytes(aux_kind));
     profile_hit(py, &ALLOC_COUNT);
-    profile_hit_bytes(py, &ALLOC_BYTES_TOTAL, tracked_bytes as u64);
+    profile_hit_bytes(py, &ALLOC_BYTES_TOTAL, alloc_size as u64);
     profile_alloc_aux_kind(py, aux_kind);
     profile_alloc_type(py, type_id);
-    profile_alloc_type_bytes(py, type_id, tracked_bytes);
+    profile_alloc_type_bytes(py, type_id, alloc_size);
 }
 
 /// The boxed allocation shape owns all words, including the payload tail. No
@@ -4973,18 +5000,21 @@ unsafe fn dec_ref_ptr_terminal_body(
             molt_obj_model::release_ptr(ptr);
             // Arena chunks account their own bytes; frame storage is not a
             // heap allocation. Both still retire all typed owned edges.
-            // A head-bearing allocation begins at its GC head.
-            let head_bytes = gc_head_bytes_for_flags(header_flags);
+            // A sidecar prefix, if present, precedes the GC head and header.
+            let placement = if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
+                retire_aux_sidecar(header_aux.word)
+            } else {
+                SidecarPlacement::Separate
+            };
             if (header_flags & HEADER_FLAG_SCOPED) == 0 {
-                crate::resource::release_allocation(total_size + head_bytes);
-            }
-            if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
-                free_aux_sidecar(header_aux.word);
-            }
-            if total_size != 0 && (header_flags & HEADER_FLAG_SCOPED) == 0 {
-                let layout = std::alloc::Layout::from_size_align(total_size + head_bytes, 8)
-                    .unwrap_or_else(|_| std::process::abort());
-                std::alloc::dealloc(header_ptr.cast::<u8>().sub(head_bytes), layout);
+                let header_offset =
+                    gc_head_bytes_for_flags(header_flags) + placement.prefix_bytes();
+                let layout = heap_storage_layout(total_size, header_offset)
+                    .unwrap_or_else(|| std::process::abort());
+                crate::resource::release_allocation(layout.size());
+                if total_size != 0 {
+                    std::alloc::dealloc(header_ptr.cast::<u8>().sub(header_offset), layout);
+                }
             }
         });
         if (header_flags & HEADER_FLAG_SCOPED) == 0 && crate::profile_enabled(py) {
@@ -5257,7 +5287,7 @@ mod tests {
     }
 
     #[test]
-    fn denied_sidecar_allocation_rolls_back_object_charge() {
+    fn denied_sidecar_object_leaves_no_allocation_charge() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let total = std::mem::size_of::<super::MoltHeader>();
@@ -5272,14 +5302,14 @@ mod tests {
             let denied = alloc_object(_py, total, TYPE_ID_GENERATOR);
             assert!(
                 denied.is_null(),
-                "sidecar resource denial must fail the whole object allocation"
+                "the allocation must reserve bytes for both object and sidecar"
             );
             assert!(crate::exception_pending(_py));
 
             let allowed = alloc_object(_py, total, TYPE_ID_OBJECT);
             assert!(
                 !allowed.is_null(),
-                "sidecar denial must roll back the object's resource charge"
+                "failed combined admission must leave no resource charge"
             );
             dec_ref_bits(_py, crate::MoltObject::from_ptr(allowed).bits());
         });

@@ -10,10 +10,10 @@ use crate::{
 /// Stable, per-object metadata used only when the hot header's single aux word
 /// cannot represent the object's complete auxiliary state.
 ///
-/// A sidecar is allocated while the object is still unpublished. Its address
+/// A sidecar is initialized while the object is still unpublished. Its address
 /// never changes and it is reclaimed exactly once, at object death. The
 /// mutable lanes are atomic so readers do not depend on the GIL for memory
-/// safety; `extended_size` is immutable after construction.
+/// safety; the allocation extent is immutable after construction.
 #[repr(C)]
 pub(crate) struct MoltAuxSidecar {
     pub(crate) class_edge: MoltAuxWord,
@@ -51,10 +51,57 @@ pub(crate) struct MoltAuxSidecar {
     /// location word is the activation's location, running or suspended. All
     /// zero for a task without Python code. It owns nothing.
     frame_record: [MoltAuxWord; FRAME_RECORD_HEADER_WORDS],
-    pub(crate) extended_size: usize,
+    extent: SidecarExtent,
     /// Owned raised exception of a task. Its storage exists before the task
     /// can execute, so publishing an emergency exception cannot allocate.
     raised_exception: AtomicPtr<u8>,
+}
+
+/// Backing-allocation custody, fixed before the object is published.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SidecarPlacement {
+    Separate,
+    ObjectPrefix,
+}
+
+impl SidecarPlacement {
+    pub(super) const fn prefix_bytes(self) -> usize {
+        match self {
+            Self::Separate => 0,
+            Self::ObjectPrefix => aux_sidecar_size(),
+        }
+    }
+}
+
+/// Layout bounds object sizes by isize::MAX, so one word can hold both
+/// the oversized object's exact extent and the sidecar's backing placement.
+struct SidecarExtent(usize);
+
+impl SidecarExtent {
+    const PREFIX_BIT: usize = 1 << (usize::BITS - 1);
+
+    fn new(size: usize, placement: SidecarPlacement) -> Self {
+        debug_assert!(size < Self::PREFIX_BIT);
+        Self(
+            size | if placement == SidecarPlacement::ObjectPrefix {
+                Self::PREFIX_BIT
+            } else {
+                0
+            },
+        )
+    }
+
+    fn size(&self) -> usize {
+        self.0 & !Self::PREFIX_BIT
+    }
+
+    fn placement(&self) -> SidecarPlacement {
+        if self.0 & Self::PREFIX_BIT == 0 {
+            SidecarPlacement::Separate
+        } else {
+            SidecarPlacement::ObjectPrefix
+        }
+    }
 }
 
 const FRAME_RECORD_HEADER_WORDS: usize =
@@ -69,10 +116,10 @@ const _: () = assert!(
 
 impl MoltAuxSidecar {
     #[inline]
-    pub(crate) fn new(class_edge: u64, poll_fn: u64, state: i64, extended_size: usize) -> Self {
+    fn new(class_edge: u64, state: i64, extended_size: usize, placement: SidecarPlacement) -> Self {
         Self {
             class_edge: MoltAuxWord::new(class_edge),
-            poll_fn: MoltAuxWord::new(poll_fn),
+            poll_fn: MoltAuxWord::new(0),
             state: MoltAuxWord::new(state as u64),
             shape: MoltAuxWord::new(0),
             frame_globals: MoltAuxWord::new(0),
@@ -83,9 +130,14 @@ impl MoltAuxSidecar {
             frame_bindings: MoltAuxWord::new(0),
             frame_exceptions: MoltAuxWord::new(0),
             frame_record: std::array::from_fn(|_| MoltAuxWord::new(0)),
-            extended_size,
+            extent: SidecarExtent::new(extended_size, placement),
             raised_exception: AtomicPtr::new(std::ptr::null_mut()),
         }
+    }
+
+    #[inline]
+    pub(super) fn extended_size(&self) -> usize {
+        self.extent.size()
     }
 
     #[inline]
@@ -480,40 +532,54 @@ pub(crate) unsafe fn object_take_frame_context_bits(ptr: *mut u8) -> [u64; 3] {
     ]
 }
 
-/// Allocate a sidecar and return its stable address as the header aux word.
+/// Construct a sidecar in the prefix of a live heap allocation.
+///
+/// # Safety
+/// The prefix must be aligned writable storage reserved for exactly one
+/// sidecar and share the owning object's backing allocation.
+pub(super) unsafe fn init_prefix_sidecar(
+    prefix: std::ptr::NonNull<MoltAuxSidecar>,
+    extended_size: usize,
+) -> u64 {
+    unsafe {
+        write_sidecar(
+            prefix.as_ptr(),
+            MoltAuxSidecar::new(0, 0, extended_size, SidecarPlacement::ObjectPrefix),
+        )
+    }
+}
+
+/// Allocate standalone metadata for storage the object allocator cannot extend.
 #[inline]
-pub(crate) fn alloc_aux_sidecar(sidecar: MoltAuxSidecar) -> Option<u64> {
+pub(super) fn alloc_aux_sidecar(class: u64, state: i64, extended_size: usize) -> Option<u64> {
     let layout = std::alloc::Layout::new::<MoltAuxSidecar>();
     if crate::resource::charge_allocation(layout.size()).is_err() {
         profile_hit_unchecked(&AUX_SIDECAR_ALLOC_FAILURE_COUNT);
         return None;
     }
-    let ptr = {
-        #[cfg(all(
-            test,
-            feature = "l7-attestation-probe",
-            not(target_arch = "wasm32"),
-            not(miri)
-        ))]
-        let _scope = crate::attestation_probe::AllocationScopeGuard::enter(
-            crate::attestation_probe::AllocationScope::AuxSidecarAllocate,
-        );
-        unsafe { std::alloc::alloc(layout) as *mut MoltAuxSidecar }
-    };
+    let ptr = unsafe { std::alloc::alloc(layout).cast::<MoltAuxSidecar>() };
     if ptr.is_null() {
         crate::resource::release_allocation(layout.size());
         profile_hit_unchecked(&AUX_SIDECAR_ALLOC_FAILURE_COUNT);
         return None;
     }
-    unsafe {
-        ptr.write(sidecar);
-    }
-    profile_hit_unchecked(&AUX_SIDECAR_COUNT);
-    profile_hit_bytes_unchecked(&AUX_SIDECAR_BYTES, layout.size() as u64);
-    Some(ptr.expose_provenance() as u64)
+    Some(unsafe {
+        write_sidecar(
+            ptr,
+            MoltAuxSidecar::new(class, state, extended_size, SidecarPlacement::Separate),
+        )
+    })
 }
 
-/// Resolve a sidecar address previously returned by `alloc_aux_sidecar`.
+#[inline]
+unsafe fn write_sidecar(ptr: *mut MoltAuxSidecar, sidecar: MoltAuxSidecar) -> u64 {
+    unsafe { ptr.write(sidecar) };
+    profile_hit_unchecked(&AUX_SIDECAR_COUNT);
+    profile_hit_bytes_unchecked(&AUX_SIDECAR_BYTES, aux_sidecar_size() as u64);
+    ptr.expose_provenance() as u64
+}
+
+/// Resolve the address of initialized auxiliary storage.
 ///
 /// # Safety
 /// `word` must be the live aux word of a header whose kind is SIDECAR.
@@ -525,20 +591,24 @@ pub(crate) unsafe fn aux_sidecar_from_word(word: u64) -> &'static MoltAuxSidecar
     unsafe { &*std::ptr::with_exposed_provenance::<MoltAuxSidecar>(address) }
 }
 
-/// Reclaim a sidecar at object death.
+/// Retire the initialized sidecar and return its backing-allocation custody.
+///
+/// The object allocator releases a coallocated prefix together with the body.
 ///
 /// # Safety
 /// The owning object must be terminally unreachable, and `word` must not have
 /// been freed previously. Object lifetime/RC is the reclamation authority: no
 /// independent sidecar references may outlive the object.
 #[inline]
-pub(crate) unsafe fn free_aux_sidecar(word: u64) {
-    if word != 0 {
+pub(super) unsafe fn retire_aux_sidecar(word: u64) -> SidecarPlacement {
+    debug_assert_ne!(word, 0);
+    unsafe {
         let layout = std::alloc::Layout::new::<MoltAuxSidecar>();
         let address = usize::try_from(word)
             .expect("runtime-owned sidecar address must fit the active address space");
         let ptr = std::ptr::with_exposed_provenance_mut::<MoltAuxSidecar>(address);
-        unsafe {
+        let placement = (*ptr).extent.placement();
+        {
             debug_assert!(
                 (*ptr).raised_exception.load(Ordering::Acquire).is_null(),
                 "a task died holding its raised exception",
@@ -555,11 +625,14 @@ pub(crate) unsafe fn free_aux_sidecar(word: u64) {
             // A dead activation is not executing, so its record, which owns
             // nothing, is unlinked.
             ptr.drop_in_place();
-            std::alloc::dealloc(ptr.cast::<u8>(), layout);
         }
-        crate::resource::release_allocation(layout.size());
+        if placement == SidecarPlacement::Separate {
+            std::alloc::dealloc(ptr.cast::<u8>(), layout);
+            crate::resource::release_allocation(layout.size());
+        }
         profile_hit_unchecked(&AUX_SIDECAR_FREE_COUNT);
         profile_hit_bytes_unchecked(&AUX_SIDECAR_FREE_BYTES, layout.size() as u64);
+        placement
     }
 }
 
@@ -569,7 +642,8 @@ pub(crate) const fn aux_sidecar_size() -> usize {
 }
 
 const _: () = {
-    assert!(std::mem::align_of::<MoltAuxSidecar>() >= std::mem::align_of::<MoltAuxWord>());
+    assert!(std::mem::align_of::<MoltAuxSidecar>() <= molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES);
+    assert!(aux_sidecar_size().is_multiple_of(molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES));
 };
 
 #[cfg(test)]
