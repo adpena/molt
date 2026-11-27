@@ -237,8 +237,9 @@ def test_prepare_wasm_binary_owns_every_failed_preparation(
         if failure in {"build", "interrupt"}:
             raise primary
         if failure == "refusal":
-            bench_wasm._LAST_BUILD_FAILURE_DETAIL = "independent build refusal"
-            return None
+            return bench_wasm.WasmBuildFailure(
+                0.01, 1, "build_error", "independent build refusal"
+            )
         if failure == "missing":
             output.write_bytes(b"\0asm\x01\0\0\0")
         else:
@@ -281,14 +282,16 @@ def test_prepare_wasm_binary_owns_every_failed_preparation(
         )
 
     try:
-        if failure == "refusal" and not cleanup_fails:
-            assert prepare() is None
+        if failure in {"refusal", "missing", "manifest"} and not cleanup_fails:
+            result = prepare()
+            assert isinstance(result, bench_wasm.WasmBuildFailure)
+            assert result.classification == (
+                "build_error" if failure == "refusal" else "build_manifest_error"
+            )
         else:
             expected_type = (
                 OSError
-                if failure == "refusal"
-                else RuntimeError
-                if failure in {"missing", "manifest"}
+                if failure in {"refusal", "missing", "manifest"}
                 else FileNotFoundError
                 if failure == "stat"
                 else type(primary)
@@ -297,14 +300,14 @@ def test_prepare_wasm_binary_owns_every_failed_preparation(
                 prepare()
             if failure in {"build", "interrupt", "metrics"}:
                 assert caught.value is primary
-            elif failure in {"missing", "manifest"}:
-                assert str(caught.value) == "linked wasm required"
             if cleanup_fails:
                 assert caught.value.benchmark_temporary_directories == tuple(owners)
                 assert any(
                     (
                         "independent build refusal"
                         if failure == "refusal"
+                        else "linked_wasm_required_unavailable"
+                        if failure in {"missing", "manifest"}
                         else "independent cleanup refusal"
                     )
                     in note

@@ -125,7 +125,7 @@ def main() -> None:
         keep_temp=False,
         limits=limits,
     )
-    if wasm_binary is None:
+    if isinstance(wasm_binary, bench_wasm.WasmBuildFailure):
         sys.exit(1)
 
     profiles: list[str] = []
