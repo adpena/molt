@@ -545,6 +545,7 @@ class _OpaqueActivationReads:
 @dataclass(frozen=True, slots=True)
 class _ForeignNamespaceReads:
     names: frozenset[str]
+    foreign_only_slots: frozenset[str]
     declaration_end: int
     callback_end: int
     tainted_at_exit: bool
@@ -555,12 +556,15 @@ def _project_binding_slots(
     facts: PythonBindingFacts,
     slots: tuple[str, ...],
     module_additions: Mapping[str, str] | None = None,
+    module_removals: frozenset[str] = frozenset(),
 ) -> PythonBindingFacts:
     indices = {name: index for index, name in enumerate(slots)}
     scopes = []
     for scope in facts.scopes:
         bindings = {
-            name: indices[facts.slot_names[slot]] for name, slot in scope.binding_slots
+            name: indices[facts.slot_names[slot]]
+            for name, slot in scope.binding_slots
+            if scope.scope_id != 0 or name not in module_removals
         }
         if scope.scope_id == 0 and module_additions is not None:
             bindings.update(
@@ -581,19 +585,22 @@ class _BindingAnalysis:
         default_factory=lambda: _BindingCache(max_entries=8), compare=False, repr=False
     )
 
-    def with_added_foreign_slots(
-        self, names: frozenset[str]
+    def with_revised_foreign_slots(
+        self, added: frozenset[str], removed: frozenset[str]
     ) -> _BindingAnalysis | None:
         """Project slots the transfer never looked up into their revised layout."""
         reads = self.foreign_namespace_reads
         if (
             reads is None
             or reads.has_empty_module_expiry
-            or not reads.names.isdisjoint(names)
+            or not reads.names.isdisjoint(added | removed)
+            or not removed <= reads.foreign_only_slots
+            or "__getattr__" in removed
         ):
             return None
         slots = self.facts.slot_names
-        additions = {name: f"0:{name}" for name in names}
+        additions = {name: f"0:{name}" for name in added}
+        retired = {f"0:{name}" for name in removed}
         if not set(additions.values()).isdisjoint(slots):
             return None
         # Source declarations came first, followed by sorted callback slots.
@@ -601,7 +608,11 @@ class _BindingAnalysis:
         callback_layout = tuple(
             sorted(
                 (
-                    *slots[reads.declaration_end : reads.callback_end],
+                    *(
+                        slot
+                        for slot in slots[reads.declaration_end : reads.callback_end]
+                        if slot not in retired
+                    ),
                     *additions.values(),
                 )
             )
@@ -611,16 +622,18 @@ class _BindingAnalysis:
             *callback_layout,
             *slots[reads.callback_end :],
         )
-        facts = _project_binding_slots(self.facts, new_slots, additions)
+        facts = _project_binding_slots(self.facts, new_slots, additions, removed)
         # A callback may install a module export hook even when the incoming
         # value has no source origin.
-        if reads.tainted_at_exit and "__getattr__" in names:
+        if reads.tainted_at_exit and "__getattr__" in added:
             facts = replace(facts, module_getattr_may_be_bound=True)
         return replace(
             self,
             facts=facts,
             foreign_namespace_reads=replace(
-                reads, callback_end=reads.callback_end + len(names)
+                reads,
+                foreign_only_slots=(reads.foreign_only_slots - removed) | added,
+                callback_end=reads.declaration_end + len(callback_layout),
             ),
             projections=_BindingCache(max_entries=8),
         )
@@ -3191,6 +3204,7 @@ class _Analyzer:
         self._foreign_universe = policy.foreign_namespace_universe
         self._foreign_reads: set[str] | None = None
         self._foreign_slot_bounds = (0, 0)
+        self._source_callback_names: frozenset[str] = frozenset()
         self._appended_foreign_slots: tuple[int, ...] = ()
         self._foreign_tainted_at_exit = False
         self._module_getattr_may_be_bound = False
@@ -3678,6 +3692,7 @@ class _Analyzer:
         )
         if foreign is None or own is None:
             return
+        self._source_callback_names = own
         names = own | frozenset(foreign)
         self._callback_module_names = names
         for name in sorted(names):
@@ -10437,7 +10452,16 @@ class _Analyzer:
                         for name in (
                             set(scope.slots) | set(scope.globals) | set(scope.nonlocals)
                         )
-                        if (slot := self._slot_for_name(scope, name)) is not None
+                        # Listing the module's storage is a projection, not a
+                        # transfer read of the foreign writer premise.
+                        if (
+                            slot := (
+                                scope.slots.get(name)
+                                if scope.parent is None
+                                else self._slot_for_name(scope, name)
+                            )
+                        )
+                        is not None
                     )
                 ),
                 scope.activation_namespace_stable,
@@ -10607,6 +10631,11 @@ class _Analyzer:
                 if self._foreign_reads is None
                 else _ForeignNamespaceReads(
                     frozenset(self._foreign_reads),
+                    frozenset(
+                        slot[2:]
+                        for slot in facts.slot_names[declaration_end:callback_end]
+                    )
+                    - self._source_callback_names,
                     declaration_end,
                     callback_end,
                     self._foreign_tainted_at_exit,
@@ -11703,7 +11732,7 @@ def _binding_analysis(
         opaque = policy.opaque_activation_sources
         assert opaque is not None
         # A deterministic transfer observes the same branches while every
-        # consumed activation query agrees. Named additions may alter unused
+        # consumed activation query agrees. Named changes may alter unused
         # namespace slots. All other input families keep their exact identity.
         prior = replace(prior, opaque_activation_sources=opaque)
         if not result.opaque_activation_reads.unchanged_under(frozenset(opaque)):
@@ -11718,11 +11747,18 @@ def _binding_analysis(
             policy.foreign_namespace_universe is None
             or former is None
             or current is None
-            or not frozenset(former).issubset(current)
             or replace(prior, foreign_namespace_writes=current) != policy
         ):
             return None
-        return result.with_added_foreign_slots(frozenset(current).difference(former))
+        current_names = frozenset(current)
+        removed = frozenset(former) - current_names
+        # Removing the last named writer could empty the callback domain and
+        # change epoch transitions even when the slot itself was never read.
+        if removed and not current_names:
+            return None
+        return result.with_revised_foreign_slots(
+            current_names.difference(former), removed
+        )
 
     return _CORE_CACHE.get_or_compute(
         key,

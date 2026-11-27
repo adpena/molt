@@ -90,7 +90,7 @@ use crate::tir::passes::ip_summary::ModuleSummaries;
 use crate::tir::target_info::TargetInfo;
 
 use super::activation::Activations;
-use super::call_sites::{InlineSiteUses, collect_call_sites};
+use super::call_sites::InlineSiteUses;
 use super::eligibility::{
     callee_op_count, classify_with_wrapper, is_inline_safe, is_numeric_raw_lane_return_type,
 };
@@ -196,10 +196,9 @@ pub fn run_inliner(
                 continue;
             };
 
-            // Collect this caller's inlinable call sites ONCE, then splice them
-            // in **reverse** order (descending block id, then descending op
-            // index). `collect_call_sites` yields ascending order, so `.rev()`
-            // gives the splice-safe order: a splice at `(B, i)` keeps the
+            // The call graph indexed this caller before the traversal.
+            // Its body is still unchanged. Reverse the indexed order so a
+            // splice at `(B, i)` keeps the
             // pre-call half at the *same* block id `B` with ops `0..i`, so every
             // not-yet-processed site at `(B, j<i)` or in an earlier block keeps
             // its `(block, op_index)` identity. Processing highest-index-first
@@ -240,7 +239,7 @@ pub fn run_inliner(
                 continue;
             }
             let caller = &module.functions[caller_idx];
-            let sites = collect_call_sites(caller, call_graph);
+            let sites = call_graph.static_call_sites(caller_id);
             let mut uses = None;
             let admitted: Vec<_> = sites
                 .iter()
@@ -306,7 +305,9 @@ pub fn run_inliner(
                 |(site, &admitted)| (admitted && site.callee != caller_id).then_some(site),
             ));
             let mut inlined_call_polls = Vec::new();
-            for ((site, poll), admitted) in sites.into_iter().zip(site_polls).zip(admitted).rev() {
+            for ((site, poll), admitted) in
+                sites.iter().copied().zip(site_polls).zip(admitted).rev()
+            {
                 if !admitted || site.callee == caller_id {
                     continue; // self-call (recursive) - never inline.
                 }

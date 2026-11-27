@@ -2,56 +2,12 @@ use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::escape_analysis::{EscapeState, ParameterCapture};
 use super::super::value_identity::{build_copy_map, resolve_copy};
-use crate::tir::blocks::{BlockId, TirBlock};
-use crate::tir::call_graph::CallGraph;
-use crate::tir::call_targets::{gpu_runtime_result_type_for_op, static_call};
+use crate::tir::blocks::TirBlock;
+use crate::tir::call_targets::static_call;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_is_inliner_numeric_raw_lane_consumer_table;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
-
-/// One statically-resolvable, inlinable call site inside a caller block.
-pub(super) struct CallSite {
-    /// The caller block containing the `Call`.
-    pub(super) block: BlockId,
-    /// The op index of the `Call` within that block's `ops`.
-    pub(super) op_index: usize,
-    /// The callee, a function with a body in this module.
-    pub(super) callee: molt_ir::FunctionId,
-}
-
-/// Collect every static `Call` op in `caller` ([`static_call`]: a direct call
-/// or a proven guarded call) whose target is a function with a body in this
-/// module, in deterministic order (blocks sorted by id, ops in index order).
-/// Opaque calls, method dispatch, builtin calls, gpu intrinsics, and
-/// copy-fallback calls are NOT collected.
-pub(super) fn collect_call_sites(caller: &TirFunction, call_graph: &CallGraph) -> Vec<CallSite> {
-    let mut sites = Vec::new();
-    let mut block_ids: Vec<BlockId> = caller.blocks.keys().copied().collect();
-    block_ids.sort_by_key(|b| b.0);
-    for bid in block_ids {
-        let block = &caller.blocks[&bid];
-        for (op_index, op) in block.ops.iter().enumerate() {
-            // A legacy direct Copy transport can retain a call-graph edge,
-            // but only first-class calls are supported splice sites.
-            if op.opcode != OpCode::Call {
-                continue;
-            }
-            let Some(callee) = static_call(op).map(|call| call.callee) else {
-                continue;
-            };
-            if gpu_runtime_result_type_for_op(op).is_some() || !call_graph.has_body(callee) {
-                continue;
-            }
-            sites.push(CallSite {
-                block: bid,
-                op_index,
-                callee,
-            });
-        }
-    }
-    sites
-}
 
 /// SSA witnesses for profitable inlining beyond the ordinary cost budget.
 #[derive(Default)]

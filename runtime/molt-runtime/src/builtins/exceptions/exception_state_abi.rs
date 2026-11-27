@@ -612,8 +612,10 @@ mod diagnostic_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let tls = py.execution_tls();
-            let old_depth = tls.exception_handler_depth.replace(0);
-            let old_baseline = tls.exception_stack_baseline.replace(0);
+            let old_depth = tls.exception_handler_depth.get();
+            let old_baseline = tls.exception_stack_baseline.get();
+            tls.exception_handler_depth.set(0);
+            tls.exception_stack_baseline.set(0);
             let old_active = tls.active_exception_stack.replace(Vec::new());
 
             assert_eq!(

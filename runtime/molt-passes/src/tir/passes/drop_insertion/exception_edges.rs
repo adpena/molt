@@ -84,6 +84,24 @@ fn intern_tail(
     index
 }
 
+fn release_prefix<'a>(
+    tails: &[CleanupTail],
+    materialized: &'a [Option<MaterializedTail>],
+    mut tail: usize,
+) -> (Vec<ValueId>, &'a MaterializedTail) {
+    let mut releases = Vec::new();
+    loop {
+        if let Some(continuation) = &materialized[tail] {
+            return (releases, continuation);
+        }
+        let TailKey::Release { value, next } = tails[tail].key else {
+            unreachable!("every handler continuation is materialized");
+        };
+        releases.push(value);
+        tail = next;
+    }
+}
+
 pub(super) fn insert_exception_edge_releases(
     func: &mut TirFunction,
     eligibility: &DropEligibility<'_>,
@@ -152,6 +170,20 @@ pub(super) fn insert_exception_edge_releases(
         return 0;
     }
 
+    // An observation or a second distinct predecessor needs an entry. A
+    // shared tail's other nodes form straight-line chains. Since each such
+    // node has one incoming edge, materialization walks its releases once.
+    let mut entries = vec![false; tails.len()];
+    let mut has_predecessor = vec![false; tails.len()];
+    for &(_, _, _, _, tail) in &plans {
+        entries[tail] = true;
+    }
+    for tail in &tails {
+        if let TailKey::Release { next, .. } = tail.key {
+            entries[next] |= std::mem::replace(&mut has_predecessor[next], true);
+        }
+    }
+
     let mut labels = LabelAllocator::for_function(func);
     let mut inserted = 0;
     let mut materialized: Vec<Option<MaterializedTail>> = (0..tails.len()).map(|_| None).collect();
@@ -166,14 +198,13 @@ pub(super) fn insert_exception_edge_releases(
                     types: types.clone(),
                 });
             }
-            TailKey::Release { value, next } if tail.observations > 1 => {
-                let continuation = materialized[*next]
-                    .as_ref()
-                    .expect("shared release suffix must have a materialized continuation");
+            TailKey::Release { .. } if tail.observations > 1 && entries[index] => {
+                let (releases, continuation) = release_prefix(&tails, &materialized, index);
                 let target = continuation.block;
                 let types = continuation.types.clone();
                 let args = parameters(func, &types);
                 let forwarded = args.iter().map(|value| value.id).collect();
+                inserted += releases.len();
                 let block = func.fresh_block();
                 let label = labels.fresh();
                 func.label_id_map.insert(block.0, label);
@@ -182,7 +213,10 @@ pub(super) fn insert_exception_edge_releases(
                     TirBlock {
                         id: block,
                         args,
-                        ops: vec![make_op(OpCode::DecRef, vec![*value])],
+                        ops: releases
+                            .into_iter()
+                            .map(|value| make_op(OpCode::DecRef, vec![value]))
+                            .collect(),
                         terminator: Terminator::Branch {
                             target,
                             args: forwarded,
@@ -194,23 +228,14 @@ pub(super) fn insert_exception_edge_releases(
                     label: Some(label),
                     types,
                 });
-                inserted += 1;
             }
             TailKey::Release { .. } => {}
         }
     }
 
     let mut landings: HashMap<LandingSignature, i64> = HashMap::default();
-    for (source, index, args, retained, mut tail) in plans {
-        let mut releases = Vec::new();
-        while materialized[tail].is_none() {
-            let TailKey::Release { value, next } = tails[tail].key else {
-                unreachable!("every handler continuation is materialized");
-            };
-            releases.push(value);
-            tail = next;
-        }
-        let continuation = materialized[tail].as_ref().unwrap();
+    for (source, index, args, retained, tail) in plans {
+        let (releases, continuation) = release_prefix(&tails, &materialized, tail);
         if releases.is_empty() && retained.is_empty() {
             // Only handler arguments cross this edge. Availability established
             // each captured release at every observation reaching this suffix.

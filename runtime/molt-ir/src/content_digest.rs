@@ -17,6 +17,7 @@ pub fn bytes_to_lower_hex(bytes: &[u8]) -> String {
 /// Durable, ambiguity-resistant SHA-256 identity for persistent compiler cache
 /// artifacts. Every field is tagged and length-delimited; large semantic
 /// contracts can be streamed through a nested digest without an O(IR) buffer.
+#[derive(Clone)]
 pub struct CompilationCacheKey {
     digest: Sha256,
 }

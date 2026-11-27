@@ -7,11 +7,101 @@ use crate::tir::dominators::{build_pred_map, exception_transfer_target};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{ExceptionEdgeKind, copy_kind_mints_owned_alias_ref_table};
 use crate::tir::ops::{OpCode, TirOp};
+use molt_codegen_abi::boxed_word::{generate_box_inline_int, generate_inline_int_fits};
+use molt_codegen_abi::{
+    QNAN, TAG_INT, TAG_NONE, THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET,
+    THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET,
+};
 use molt_ir::OpKind;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
 use super::builder::{CodegenBuilder, IntComparison};
+use super::function::FunctionCx;
+
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    /// The scalar coordinates are independent of the active exception stack's
+    /// owned objects. SetDepth, Push and Pop still use the physical stack.
+    pub(super) fn exception_coordinate_call(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        entry: RuntimeFn,
+    ) -> bool {
+        let result = match entry {
+            RuntimeFn::ExceptionStackDepth | RuntimeFn::ExceptionStackEnter => {
+                let enter = entry == RuntimeFn::ExceptionStackEnter;
+                let offset = if enter {
+                    THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET
+                } else {
+                    THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET
+                };
+                let thread = b.thread_record_word();
+                let record = b.word_to_address(thread);
+                let previous = b.load_word(record, offset);
+                let fits = generate_inline_int_fits(b, previous);
+                b.choose(
+                    fits,
+                    |b| {
+                        if enter {
+                            let depth =
+                                b.load_word(record, THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET);
+                            b.store_word(
+                                record,
+                                THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET,
+                                depth,
+                            );
+                        }
+                        generate_box_inline_int(b, previous)
+                    },
+                    |b| cold_coordinate(b, entry, &[]),
+                )
+            }
+            RuntimeFn::ExceptionStackExit => {
+                self.operands()
+                    .with_words(b, &op.operands, "exception_baseline", |b, words, _| {
+                        let previous = words[0];
+                        // A nonnegative u32 payload fits both native usize and wasm32.
+                        // The runtime decodes all other values, including None on
+                        // cleanup paths with no saved baseline.
+                        let header = b.and(previous, !u64::from(u32::MAX));
+                        let tag = b.constant(QNAN | TAG_INT);
+                        let inline = b.int_compare(IntComparison::Equal, header, tag);
+                        b.choose(
+                            inline,
+                            |b| {
+                                let raw = b.and(previous, u64::from(u32::MAX));
+                                let thread = b.thread_record_word();
+                                let record = b.word_to_address(thread);
+                                b.store_word(
+                                    record,
+                                    THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET,
+                                    raw,
+                                );
+                                b.constant(QNAN | TAG_NONE)
+                            },
+                            |b| {
+                                let previous = b.word_value(previous);
+                                cold_coordinate(b, entry, &[previous])
+                            },
+                        )
+                    })
+            }
+            _ => return false,
+        };
+        let value = b.word_value(result);
+        self.bind_owned(b, op, value);
+        true
+    }
+}
+
+fn cold_coordinate<B: CodegenBuilder>(b: &mut B, entry: RuntimeFn, args: &[B::Value]) -> B::Word {
+    let callee = b.runtime_callee(entry);
+    let result = b
+        .call_cold(callee, args)
+        .expect("exception stack coordinate returns a word");
+    b.expect_word(result)
+}
 
 type Point = (BlockId, usize);
 

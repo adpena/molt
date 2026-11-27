@@ -331,7 +331,10 @@ fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
 fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    // The stack-exit restore is an exact boxed-ABI kind on the admitted route.
+    // Both coordinate operations retain an admitted cold runtime path.
+    backend
+        .runtime_callable_symbols
+        .insert(RuntimeFn::ExceptionStackEnter);
     backend
         .runtime_callable_symbols
         .insert(RuntimeFn::ExceptionStackExit);

@@ -498,28 +498,24 @@ fn merge_identical(
             new_index[rep.index() - base_rows].expect("a representative is kept")
         }
     };
-    for func in &mut module.functions {
-        for block in func.blocks.values_mut() {
-            for op in &mut block.ops {
-                if let Some(callee) = op.callee {
-                    op.callee = Some(remap(callee));
-                }
-            }
-        }
-    }
     for (offset, keep) in kept.iter().enumerate().rev() {
         if !*keep {
-            let index = first_clone + offset;
-            let removed = module.functions.remove(index);
-            module.ids.remove(index);
-            outcome
-                .changed
-                .remove(&FunctionId::from_index(base_rows + offset));
             report.push(format!(
                 "[type-flow] merged {} into {}",
-                removed.name,
+                module.functions[first_clone + offset].name,
                 table.symbol(representative[offset])
             ));
+        }
+    }
+    let mut retained = std::iter::repeat_n(true, first_clone).chain(kept.iter().copied());
+    module
+        .functions
+        .retain(|_| retained.next().expect("one decision per body"));
+    for func in &mut module.functions {
+        for op in func.blocks.values_mut().flat_map(|block| &mut block.ops) {
+            if let Some(callee) = op.callee {
+                op.callee = Some(remap(callee));
+            }
         }
     }
     let rows = (0..base_rows)
@@ -532,9 +528,10 @@ fn merge_identical(
         )
         .map(|id| (table.symbol(id), table.kind(id)));
     module.table = molt_ir::FunctionTable::from_rows(rows);
-    for (position, id) in module.ids.iter_mut().enumerate().skip(first_clone) {
-        *id = FunctionId::from_index(base_rows + position - first_clone);
-    }
+    module.ids.truncate(first_clone);
+    module
+        .ids
+        .extend((base_rows..next).map(FunctionId::from_index));
     let changed: BTreeSet<FunctionId> = outcome
         .changed
         .iter()

@@ -48,7 +48,7 @@ use crate::tir::passes::ownership_lattice_min::{OwnershipRootFacts, owned_alias}
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::call_sites::CallSite;
+use crate::tir::call_graph::StaticCallSite;
 
 /// How a call argument binds its callee parameter in the activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,7 +91,7 @@ struct CallerFacts {
 
 impl Activations {
     /// Begins a caller's sites: its facts are read before its first splice.
-    pub(super) fn enter_caller<'a>(&mut self, sites: impl IntoIterator<Item = &'a CallSite>) {
+    pub(super) fn enter_caller<'a>(&mut self, sites: impl IntoIterator<Item = &'a StaticCallSite>) {
         self.caller = None;
         self.rewritten_reads.clear();
         self.rewritten_reads
@@ -104,7 +104,7 @@ impl Activations {
         &mut self,
         caller: &TirFunction,
         callee: &TirFunction,
-        site: &CallSite,
+        site: &StaticCallSite,
         arguments: &[ValueId],
         first_parameter: usize,
     ) -> Vec<Binding> {
@@ -144,7 +144,7 @@ impl Activations {
 
     /// Whether a stable owner independently keeps this value alive until
     /// the rewritten invocation exits. `bindings` records the original body.
-    pub(super) fn caller_keeps_alive(&self, site: &CallSite, value: ValueId) -> bool {
+    pub(super) fn caller_keeps_alive(&self, site: &StaticCallSite, value: ValueId) -> bool {
         self.caller
             .as_ref()
             .is_some_and(|facts| facts.kept_alive_at(site, value))
@@ -159,7 +159,7 @@ impl Activations {
     }
 
     /// Only reference-bearing homes need a runtime owner during the splice.
-    pub(super) fn frame_parameter_outlives(&self, site: &CallSite, value: ValueId) -> bool {
+    pub(super) fn frame_parameter_outlives(&self, site: &StaticCallSite, value: ValueId) -> bool {
         self.caller.as_ref().is_some_and(|facts| {
             // A raw full-range int has no carrier refcount, but boxing
             // it for a Python home can create a separate heap object.
@@ -289,7 +289,7 @@ impl CallerFacts {
         }
     }
 
-    fn physical_frame_holds(&self, site: &CallSite, value: ValueId) -> bool {
+    fn physical_frame_holds(&self, site: &StaticCallSite, value: ValueId) -> bool {
         self.physical_home_arguments.contains(&(
             site.block,
             site.op_index,
@@ -299,7 +299,7 @@ impl CallerFacts {
 
     /// A later read must survive every admitted splice. Original coordinates
     /// remain usable even when a prior splice moves the read to a continuation.
-    fn kept_alive_at(&self, site: &CallSite, value: ValueId) -> bool {
+    fn kept_alive_at(&self, site: &StaticCallSite, value: ValueId) -> bool {
         let root = self.aliases.root(value);
         self.parameters.contains(&root)
             || self

@@ -272,7 +272,7 @@ fn id_of(m: &TirModule, name: &str) -> molt_ir::FunctionId {
 fn sites_in(
     caller: TirFunction,
     defined: &[&str],
-) -> (TirFunction, Vec<super::call_sites::CallSite>) {
+) -> (TirFunction, Vec<crate::tir::call_graph::StaticCallSite>) {
     let mut functions = vec![caller];
     functions.extend(defined.iter().map(|name| {
         TirFunction::new(
@@ -284,7 +284,7 @@ fn sites_in(
     }));
     let mut m = module(functions);
     let cg = CallGraph::build(&m);
-    let sites = super::call_sites::collect_call_sites(&m.functions[0], &cg);
+    let sites = cg.static_call_sites(m.ids[0]).to_vec();
     (m.functions.swap_remove(0), sites)
 }
 
