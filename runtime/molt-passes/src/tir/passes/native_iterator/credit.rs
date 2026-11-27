@@ -217,7 +217,7 @@ impl Read {
                     || !poll.operands.is_empty()
                     || single_forward(cold) != Some(*else_block)
                     || !cold.ops.iter().any(|o| {
-                        o.runtime == Some(RuntimeFn::SplicedFrameBind)
+                        o.runtime == Some(RuntimeFn::SplicedFrameBindHome)
                             && o.operands.get(2) == Some(&saved)
                     })
                 {
