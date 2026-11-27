@@ -3454,6 +3454,81 @@ def test_call_argument_transfer_observes_actuals_without_replaying_return_wakes(
     assert site not in routed
 
 
+def test_call_argument_routing_joins_both_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.compiler_analysis.python_binding_facts import (
+        PythonSourceCall,
+        PythonSourceCallableDeclaration,
+    )
+    from molt.compiler_analysis.python_function_kind import FunctionKind
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCallArguments,
+        SourceCandidate,
+        SourceValue,
+    )
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    tree = ast.parse(
+        "def first(callback): pass\n"
+        "def second(callback): pass\n"
+        "def previous(): pass\n"
+        "def added(): pass\n"
+        "def invoke(callee, actual): callee(actual)\n"
+    )
+    first, second, previous, added, invoke = tree.body
+    assert isinstance(first, ast.FunctionDef) and isinstance(second, ast.FunctionDef)
+    assert isinstance(invoke, ast.FunctionDef) and isinstance(invoke.body[0], ast.Expr)
+    module = "entry"
+    key = python_node_source_key
+    site = key(invoke.body[0].value)
+    selection, actual = map(key, invoke.args.args)
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    engine.modules.add(module)
+    for definition in (first, second):
+        owner = key(definition)
+        engine.declarations[(module, owner)] = PythonSourceCallableDeclaration(
+            owner, FunctionKind.SYNC, (key(definition.args.args[0]),)
+        )
+    engine.calls[(module, site)] = PythonSourceCall(
+        site,
+        frozenset({selection}),
+        0,
+        ((0, frozenset({actual}), frozenset({actual})),),
+    )
+    engine._ensure_value((module, SourceCallArguments(site)))
+    old_payload = SourceCandidate(module, key(previous))
+    added_payload = SourceCandidate(module, key(added))
+    engine._queue_arguments((module, selection), {SourceCandidate(module, key(first))})
+    engine._queue_arguments((module, actual), {old_payload})
+    engine.drain()
+
+    routed: dict[SourceValue, set[SourceCandidate]] = {}
+    enqueue = engine._queue_arguments
+
+    def observe(formal: SourceValue, values: set[SourceCandidate]) -> None:
+        routed.setdefault(formal, set()).update(values)
+        enqueue(formal, values)
+
+    monkeypatch.setattr(engine, "_queue_arguments", observe)
+    enqueue((module, selection), {SourceCandidate(module, key(second))})
+    enqueue((module, actual), {added_payload})
+    engine.drain()
+    first_formal = (module, key(first.args.args[0]))
+    second_formal = (module, key(second.args.args[0]))
+    assert routed == {
+        first_formal: {added_payload},
+        second_formal: {old_payload, added_payload},
+    }
+    assert engine.value_candidates[first_formal] == {old_payload, added_payload}
+    assert engine.value_candidates[second_formal] == {old_payload, added_payload}
+
+
 def test_late_canonical_provider_activation_retains_application_consumer():
     from molt.compiler_analysis.python_imports import _ImportScanRequests
     from molt.compiler_analysis.python_source_demands import PythonSourceDemands
