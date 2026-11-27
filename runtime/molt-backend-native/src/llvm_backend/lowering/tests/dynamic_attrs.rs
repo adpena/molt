@@ -236,7 +236,7 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
 }
 
 #[test]
-fn lower_generic_attribute_sites_carry_source_identity() {
+fn lower_generic_attribute_sites_follow_executable_order() {
     for (kind, opcode, operand_count, runtime_name) in [
         (
             OpKind::GetAttrGenericObj,
@@ -290,27 +290,32 @@ fn lower_generic_attribute_sites_carry_source_identity() {
             source_span: None,
         };
         access.set_source_op_index(17);
+        let mut inlined_access = access.clone();
+        let inlined_result = func.fresh_value();
+        inlined_access.results[0] = inlined_result;
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(access);
+        entry.ops.extend([access, inlined_access]);
         entry.terminator = Terminator::Return {
-            values: vec![result],
+            values: vec![inlined_result],
         };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
-        let site_bits = molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
-            func_name,
-            17,
-            kind.as_str(),
-        ));
         assert!(
             ir.contains_execution(&format!("@{runtime_name}(")),
             "{kind}: {ir}"
         );
-        assert!(
-            ir.contains_execution(&format!("i64 {site_bits})")),
-            "{kind} must pass its source site id last: {ir}"
-        );
+        for ordinal in 0..2 {
+            let site_bits = molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
+                func_name,
+                ordinal,
+                kind.as_str(),
+            ));
+            assert!(
+                ir.contains_execution(&format!("i64 {site_bits})")),
+                "{kind} must have distinct sites even with equal source indices: {ir}"
+            );
+        }
         // A site call takes the literal name bytes; no per-call name string.
         assert!(!ir.contains_execution("molt_set_attr_name"), "{kind}: {ir}");
         assert!(!ir.contains_execution("molt_get_attr_name"), "{kind}: {ir}");
