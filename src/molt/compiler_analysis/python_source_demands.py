@@ -205,6 +205,12 @@ class SourceReturn:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceCallableOutcome:
+    owner: PythonSourceKey
+    yielded: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SourceCallArguments:
     site: PythonSourceKey
 
@@ -238,6 +244,7 @@ SourceValue = tuple[
     | SourceCacheItem
     | SourceReturn
     | SourceCallArguments
+    | SourceCallableOutcome
     | SourceIteratorItems
     | SourceAwait
     | SourceGeneratorCompletion
@@ -715,7 +722,22 @@ class PythonSourceDemands:
                         previous.returns_calls_only and result.returns_calls_only
                     ),
                 )
-            if self._publish(self.functions, value, result):
+            if previous != result:
+                self.functions[value] = result
+                if previous is None or (
+                    previous.returned != result.returned
+                    or previous.returned_exposed != result.returned_exposed
+                ):
+                    outcome = (module_name, SourceCallableOutcome(result.owner, False))
+                    if outcome in self.value_candidates:
+                        self.queue_value(outcome)
+                if previous is None or (
+                    previous.yielded != result.yielded
+                    or previous.yielded_exposed != result.yielded_exposed
+                ):
+                    outcome = (module_name, SourceCallableOutcome(result.owner, True))
+                    if outcome in self.value_candidates:
+                        self.queue_value(outcome)
                 old = (
                     frozenset()
                     if previous is None
@@ -2201,6 +2223,21 @@ class PythonSourceDemands:
                         item._replace(contained=True)
                         for item in self.watch((module_name, default), value)
                     )
+        elif isinstance(source, SourceCallableOutcome):
+            function = self.functions.get((module_name, source.owner))
+            if function is not None:
+                direct, exposed = (
+                    (function.yielded, function.yielded_exposed)
+                    if source.yielded
+                    else (function.returned, function.returned_exposed)
+                )
+                for origin in direct:
+                    candidates.update(self.watch((module_name, origin), value))
+                for origin in exposed - direct:
+                    candidates.update(
+                        candidate._replace(contained=True)
+                        for candidate in self.watch((module_name, origin), value)
+                    )
         elif isinstance(source, SourceCallArguments):
             self._route_call_arguments(module_name, source, value, deltas)
         elif isinstance(source, SourceIteratorItems):
@@ -3257,23 +3294,10 @@ class PythonSourceDemands:
     ) -> set[SourceCandidate]:
         value = callee.value
         self.watch(value, user)
-        function = self.functions.get(value)
-        if function is None:
+        if callee.source is None:
             return set()
-        returned, exposed = (
-            (function.yielded, function.yielded_exposed)
-            if yielded
-            else (function.returned, function.returned_exposed)
-        )
-        result: set[SourceCandidate] = set()
-        for source in returned:
-            result.update(self.watch((callee.module, source), user))
-        for source in exposed - returned:
-            result.update(
-                candidate._replace(contained=True)
-                for candidate in self.watch((callee.module, source), user)
-            )
-        return result
+        outcome = (callee.module, SourceCallableOutcome(callee.source, yielded))
+        return set(self.watch(outcome, user))
 
     def _awaited_values(
         self, awaited: SourceCandidate, user: SourceValue

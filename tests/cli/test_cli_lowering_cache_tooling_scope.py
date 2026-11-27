@@ -45,7 +45,6 @@ ROOT = MOLT.parents[1]
 def test_import_scan_producer_is_closed_within_its_fingerprint() -> None:
     from molt.cli.python_import_resolution import PythonImportPolicy
     from molt.cli.python_source_closure import local_python_import_closure
-    from molt.source_admission import admitted_source_files
 
     source = MOLT.parent
     reached = local_python_import_closure(
@@ -61,13 +60,9 @@ def test_import_scan_producer_is_closed_within_its_fingerprint() -> None:
         search_roots=(source,),
         source_roots=(source,),
     )
-    inputs = frozenset(
-        admitted_source_files(
-            tuple(MOLT / name for name in CF._IMPORT_SCAN_PRODUCER_ROOTS),
-            follow_file_symlinks=True,
-        )
+    assert {path.relative_to(MOLT).as_posix() for path in reached.paths} == set(
+        CF._IMPORT_SCAN_PRODUCER_SOURCES
     )
-    assert not {path.relative_to(MOLT) for path in reached.paths if path not in inputs}
     assert all(
         path.relative_to(MOLT).parts[0] not in {"cli", "frontend"}
         for path in reached.paths

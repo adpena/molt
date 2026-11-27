@@ -285,20 +285,46 @@ _FRONTEND_REFERENCE_SOURCES: tuple[str, ...] = tuple(
     if role is _FrontendInputRole.REFERENCE
 )
 
-# The scan producer is the compiler analysis package. Validate its imports at
-# development time so builds can identify the producer by bytes without running
-# an import analysis of the compiler before analyzing the user's program.
-_IMPORT_SCAN_PRODUCER_ROOTS = (
-    "compiler_analysis",
+# Validated by the source scan producer closure check in presubmit.
+# A consumer of these records can change without making the scan bytes stale.
+_IMPORT_SCAN_PRODUCER_SOURCES = (
     "__init__.py",
     "_python_release_generated.py",
     "_version.py",
+    "compiler_analysis/__init__.py",
+    "compiler_analysis/builtin_binding_guards_generated.py",
+    "compiler_analysis/literal_identity.py",
+    "compiler_analysis/native_support_slice.py",
+    "compiler_analysis/python_binding_facts.py",
+    "compiler_analysis/python_binding_flow.py",
+    "compiler_analysis/python_body_materialization.py",
+    "compiler_analysis/python_builtin_shapes.py",
+    "compiler_analysis/python_call_arguments.py",
+    "compiler_analysis/python_effects.py",
+    "compiler_analysis/python_effects_generated.py",
+    "compiler_analysis/python_function_kind.py",
+    "compiler_analysis/python_identity_catalog_generated.py",
+    "compiler_analysis/python_import_redirects.py",
+    "compiler_analysis/python_import_scan.py",
+    "compiler_analysis/python_imports.py",
+    "compiler_analysis/python_lexical_scope.py",
+    "compiler_analysis/python_namespace_graph.py",
+    "compiler_analysis/python_namespace_writes.py",
+    "compiler_analysis/python_parameter_classes.py",
+    "compiler_analysis/python_source_keys.py",
+    "compiler_analysis/python_string_facts.py",
+    "compiler_analysis/python_syntax.py",
+    "compiler_analysis/python_value_identity.py",
+    "compiler_analysis/static_truth.py",
     "host_python.py",
     "python_canonical_ast.py",
     "python_private_names.py",
     "target_python.py",
     "target_python_policy.py",
     "typed_cache.py",
+)
+_IMPORT_SCAN_RECORD_SOURCES = (
+    *_IMPORT_SCAN_PRODUCER_SOURCES,
     "exact_json.py",
     "cli/module_graph_cache.py",
     "cli/module_source.py",
@@ -808,7 +834,7 @@ def _import_scan_tooling_fingerprint() -> str:
     source_root = _operation_resolved(_compiler_python_source_root(root))
     package = source_root / "molt"
     files = admitted_source_files(
-        tuple(package / name for name in _IMPORT_SCAN_PRODUCER_ROOTS),
+        tuple(package / name for name in _IMPORT_SCAN_RECORD_SOURCES),
         follow_file_symlinks=True,
     )
     hashes = {

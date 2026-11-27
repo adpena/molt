@@ -89,10 +89,11 @@ carry the scan mode and the namespace premise.
 
 Disk-backed stdlib import scans use the shared source-record store even when
 the caller has no application project root (HF-633). Their tooling identity
-digests the compiler analysis package, its declared external dependencies,
-and the source decoder and record codec (HF-938). Source and installed builds
-use the same content identity. The compiler checks the producer's import
-closure in presubmit, including function-local imports and parent packages.
+covers the scan producer's transitive source inputs, the source decoder,
+and the record codec (HF-938). Source and installed builds use the same content
+identity. Presubmit checks that the declared producer inputs match the actual
+import closure, including function-local imports and parent packages. An edit
+to the graph solver retains scan records for all unchanged input premises.
 This check rejects dependencies on `cli/` or `frontend/` and imports that
 cannot be represented in the declared boundary. The per-record key still covers source bytes, scan
 purpose, namespace premise, target and demanded bodies. Filesystem edges are
