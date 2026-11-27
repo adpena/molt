@@ -13075,7 +13075,7 @@ def _write_shared_stdlib_test_contract(stdlib_obj: Path, cache_key: str) -> str:
         cache_key=cache_key,
         cache_variant="test",
         target_triple=None,
-        compiler_fingerprint="test",
+        fingerprints=CACHE_KEYS.ObjectCacheFingerprints("test", "tooling"),
     )
     assert manifest is not None
     cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_obj).write_text(
@@ -14118,6 +14118,11 @@ def test_windows_native_object_output_rejects_archive_masquerading_as_object(
     assert output_obj.read_bytes() == b"!<arch>\n"
 
 
+_PAYLOAD_KEY_FINGERPRINTS = CACHE_KEYS.ObjectCacheFingerprints(
+    compiler="compiler-fixture", tooling="tooling-fixture"
+)
+
+
 def _payload_digest_cache_key(
     payload_digest: str,
     *,
@@ -14136,11 +14141,9 @@ def _payload_digest_cache_key(
     digest.update(b"|")
     digest.update(suffix.encode("utf-8"))
     digest.update(b"|")
-    digest.update(
-        CACHE_KEYS._cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE).encode("utf-8")
-    )
+    digest.update(b"compiler-fixture")
     digest.update(b"|")
-    digest.update(CACHE_KEYS._cache_tooling_fingerprint().encode("utf-8"))
+    digest.update(b"tooling-fixture")
     digest.update(b"|")
     digest.update(schema_version.encode("utf-8"))
     return digest.hexdigest()
@@ -14175,7 +14178,11 @@ def test_cache_keys_use_payload_digest_authority() -> None:
     module_payload_digest = CACHE_KEYS._cache_payload_digest(module_payload_ir)
     backend_payload_digest = CACHE_KEYS._cache_payload_digest(backend_payload_ir)
     assert CACHE_KEYS._cache_key(
-        ir, admit_target("native"), None, "variant"
+        ir,
+        admit_target("native"),
+        None,
+        "variant",
+        fingerprints=_PAYLOAD_KEY_FINGERPRINTS,
     ) == _payload_digest_cache_key(
         module_payload_digest,
         target="native",
@@ -14184,7 +14191,11 @@ def test_cache_keys_use_payload_digest_authority() -> None:
         schema_version=CACHE_KEYS._CACHE_KEY_SCHEMA_VERSION,
     )
     assert CACHE_KEYS._function_cache_key(
-        ir, admit_target("native"), None, "variant"
+        ir,
+        admit_target("native"),
+        None,
+        "variant",
+        fingerprints=_PAYLOAD_KEY_FINGERPRINTS,
     ) == _payload_digest_cache_key(
         backend_payload_digest,
         target="native",
@@ -29886,13 +29897,25 @@ def test_function_cache_key_tracks_top_level_ir_extras() -> None:
         "profile": None,
     }
     key_base = CACHE_KEYS._function_cache_key(
-        ir_base, admit_target("native"), None, "variant"
+        ir_base,
+        admit_target("native"),
+        None,
+        "variant",
+        fingerprints=_PAYLOAD_KEY_FINGERPRINTS,
     )
     key_extra_a = CACHE_KEYS._function_cache_key(
-        ir_extra_a, admit_target("native"), None, "variant"
+        ir_extra_a,
+        admit_target("native"),
+        None,
+        "variant",
+        fingerprints=_PAYLOAD_KEY_FINGERPRINTS,
     )
     key_extra_b = CACHE_KEYS._function_cache_key(
-        ir_extra_b, admit_target("native"), None, "variant"
+        ir_extra_b,
+        admit_target("native"),
+        None,
+        "variant",
+        fingerprints=_PAYLOAD_KEY_FINGERPRINTS,
     )
     assert key_extra_a != key_base
     assert key_extra_a == key_extra_b

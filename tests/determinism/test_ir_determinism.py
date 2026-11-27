@@ -81,8 +81,9 @@ def _executable_ir_record(ir: dict) -> dict:
             target_triple=None,
             variant="dev",
             schema_version=cache_keys._CACHE_KEY_SCHEMA_VERSION,
-            compiler_fingerprint="same-admitted-compiler",
-            tooling_fingerprint="same-tooling",
+            fingerprints=cache_keys.ObjectCacheFingerprints(
+                "same-admitted-compiler", "same-tooling"
+            ),
         ),
     }
 

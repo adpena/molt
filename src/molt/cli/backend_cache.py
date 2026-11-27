@@ -51,9 +51,12 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactValidationError,
     stdlib_archive_contract,
 )
-from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
-from molt.cli.rust_cpu_policy import RustCpuPolicy
-from molt.cli.cache_keys import FunctionDigests, _cache_key, _sorted_ir_functions
+from molt.cli.cache_keys import (
+    ObjectCacheFingerprints,
+    FunctionDigests,
+    _cache_key,
+    _sorted_ir_functions,
+)
 from molt.cli.link_input_observation import CompilationCacheRecord
 from molt.cli.models import (
     _ModuleGraphMetadata,
@@ -1364,18 +1367,16 @@ def _shared_stdlib_manifest(
     cache_key: str | None,
     cache_variant: str,
     target_triple: str | None,
-    compiler_fingerprint: str | None = None,
+    fingerprints: ObjectCacheFingerprints,
 ) -> str | None:
     if not cache_key:
         return None
-    if compiler_fingerprint is None:
-        compiler_fingerprint = _shared_stdlib_compiler_fingerprint()
     payload = {
         "schema": _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION,
         "artifact_kind": "archive",
         "cache_key": cache_key,
         "cache_variant": cache_variant,
-        "compiler_fingerprint": compiler_fingerprint,
+        "compiler_fingerprint": fingerprints.shared_stdlib,
         "target_triple": target_triple,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -1977,7 +1978,7 @@ def _shared_stdlib_cache_payload_ir(
     *,
     entry_module: str,
     stdlib_modules: Collection[str],
-    compiler_fingerprint: str | None = None,
+    fingerprints: ObjectCacheFingerprints,
 ) -> dict[str, Any]:
     """Build a cache payload for the stdlib shared object.
 
@@ -2015,11 +2016,9 @@ def _shared_stdlib_cache_payload_ir(
                 continue
             stdlib_functions.append(func)
     stdlib_functions = _sorted_ir_functions(stdlib_functions)
-    if compiler_fingerprint is None:
-        compiler_fingerprint = _shared_stdlib_compiler_fingerprint()
     return {
         "cache_schema": _SHARED_STDLIB_CACHE_SCHEMA_VERSION,
-        "compiler_fingerprint": compiler_fingerprint,
+        "compiler_fingerprint": fingerprints.shared_stdlib,
         "functions": stdlib_functions,
         "profile": ir.get("profile"),
         "stdlib_modules": sorted(set(stdlib_modules)),
@@ -2033,21 +2032,14 @@ def _shared_stdlib_cache_key(
     stdlib_modules: Collection[str],
     target_triple: str | None,
     cache_variant: str,
-    compiler_fingerprint: str | None = None,
-    cache_compiler_fingerprint: str | None = None,
-    cache_tooling_fingerprint: str | None = None,
+    fingerprints: ObjectCacheFingerprints,
     function_digests: FunctionDigests | None = None,
 ) -> str:
-    if compiler_fingerprint is None:
-        compiler_fingerprint = _shared_stdlib_compiler_fingerprint(
-            cache_compiler_fingerprint=cache_compiler_fingerprint,
-            cache_tooling_fingerprint=cache_tooling_fingerprint,
-        )
     payload_ir = _shared_stdlib_cache_payload_ir(
         ir,
         entry_module=entry_module,
         stdlib_modules=stdlib_modules,
-        compiler_fingerprint=compiler_fingerprint,
+        fingerprints=fingerprints,
     )
     return _cache_key(
         cast(dict[str, Any], ir),
@@ -2055,28 +2047,9 @@ def _shared_stdlib_cache_key(
         target_triple,
         f"native-stdlib:{cache_variant}",
         payload_ir=payload_ir,
-        compiler_fingerprint=cache_compiler_fingerprint,
-        tooling_fingerprint=cache_tooling_fingerprint,
+        fingerprints=fingerprints,
         function_digests=function_digests,
     )
-
-
-def _shared_stdlib_compiler_fingerprint(
-    *,
-    cache_compiler_fingerprint: str | None = None,
-    cache_tooling_fingerprint: str | None = None,
-) -> str:
-    if cache_compiler_fingerprint is None:
-        # No admitted compiler means no build request: the baseline compiler.
-        cache_compiler_fingerprint = _cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE)
-    if cache_tooling_fingerprint is None:
-        cache_tooling_fingerprint = _cache_tooling_fingerprint()
-    payload = {
-        "runtime_backend": cache_compiler_fingerprint,
-        "tooling": cache_tooling_fingerprint,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _read_stdlib_cache_key(stdlib_path: Path) -> str | None:

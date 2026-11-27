@@ -19,7 +19,6 @@ from molt.cli.backend_cache import (
     _native_stdlib_object_split_enabled,
     _SHARED_STDLIB_CACHE_SCHEMA_VERSION,
     _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION,
-    _shared_stdlib_compiler_fingerprint,
     _shared_stdlib_cache_key,
     _shared_stdlib_cache_validation_token,
     _shared_stdlib_manifest,
@@ -43,6 +42,7 @@ from molt.cli.backend_artifact_contract import (
 )
 from molt.cli.cache_keys import (
     FunctionDigests,
+    ObjectCacheFingerprints,
     _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT,
     _cache_ir_payload_ir,
     _cache_key,
@@ -101,9 +101,7 @@ def _stdlib_cache_key_material_authority_hash(
     stdlib_modules_json: str | None,
     target_triple: str | None,
     cache_variant: str,
-    stdlib_compiler_fingerprint: str,
-    cache_compiler_fingerprint: str,
-    cache_tooling_fingerprint: str,
+    fingerprints: ObjectCacheFingerprints,
 ) -> str:
     payload = {
         "schema_version": _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION,
@@ -114,9 +112,9 @@ def _stdlib_cache_key_material_authority_hash(
         "stdlib_modules_json": stdlib_modules_json,
         "target_triple": target_triple,
         "cache_variant": cache_variant,
-        "stdlib_compiler_fingerprint": stdlib_compiler_fingerprint,
-        "cache_compiler_fingerprint": cache_compiler_fingerprint,
-        "cache_tooling_fingerprint": cache_tooling_fingerprint,
+        "stdlib_compiler_fingerprint": fingerprints.shared_stdlib,
+        "cache_compiler_fingerprint": fingerprints.compiler,
+        "cache_tooling_fingerprint": fingerprints.tooling,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -142,9 +140,7 @@ def _cached_stdlib_cache_key_material(
     target_triple: str | None,
     cache_variant: str,
     stdlib_object_variant: str,
-    stdlib_compiler_fingerprint: str,
-    cache_compiler_fingerprint: str,
-    cache_tooling_fingerprint: str,
+    fingerprints: ObjectCacheFingerprints,
     function_digests: FunctionDigests,
 ) -> _StdlibCacheKeyMaterial:
     authority_hash = _stdlib_cache_key_material_authority_hash(
@@ -153,9 +149,7 @@ def _cached_stdlib_cache_key_material(
         stdlib_modules_json=stdlib_modules_json,
         target_triple=target_triple,
         cache_variant=cache_variant,
-        stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
-        cache_compiler_fingerprint=cache_compiler_fingerprint,
-        cache_tooling_fingerprint=cache_tooling_fingerprint,
+        fingerprints=fingerprints,
     )
     cache_path = _stdlib_cache_key_material_path(project_root, authority_hash)
     cached = _read_cached_json_object(cache_path)
@@ -177,9 +171,7 @@ def _cached_stdlib_cache_key_material(
             stdlib_modules=stdlib_modules,
             target_triple=target_triple,
             cache_variant=cache_variant,
-            compiler_fingerprint=stdlib_compiler_fingerprint,
-            cache_compiler_fingerprint=cache_compiler_fingerprint,
-            cache_tooling_fingerprint=cache_tooling_fingerprint,
+            fingerprints=fingerprints,
             function_digests=function_digests,
         )
         try:
@@ -203,7 +195,7 @@ def _cached_stdlib_cache_key_material(
         cache_key=cache_key,
         cache_variant=stdlib_object_variant,
         target_triple=target_triple,
-        compiler_fingerprint=stdlib_compiler_fingerprint,
+        fingerprints=fingerprints,
     )
     return _StdlibCacheKeyMaterial(
         cache_key=cache_key,
@@ -407,9 +399,9 @@ def _prepare_backend_cache_setup(
         stage_start,
     )
 
-    cache_fingerprint_inputs: tuple[str, str, str] | None = None
+    cache_fingerprint_inputs: ObjectCacheFingerprints | None = None
 
-    def backend_cache_fingerprint_inputs() -> tuple[str, str, str]:
+    def backend_cache_fingerprint_inputs() -> ObjectCacheFingerprints:
         nonlocal cache_fingerprint_inputs
         if cache_fingerprint_inputs is None:
             fingerprint_start = time.perf_counter()
@@ -424,15 +416,9 @@ def _prepare_backend_cache_setup(
                     cargo_profile=backend_cargo_profile,
                     rust_cpu=rust_cpu,
                 )
-            tooling_fingerprint = _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT
-            stdlib_compiler_fingerprint = _shared_stdlib_compiler_fingerprint(
-                cache_compiler_fingerprint=compiler_fingerprint,
-                cache_tooling_fingerprint=tooling_fingerprint,
-            )
-            cache_fingerprint_inputs = (
-                compiler_fingerprint,
-                tooling_fingerprint,
-                stdlib_compiler_fingerprint,
+            cache_fingerprint_inputs = ObjectCacheFingerprints(
+                compiler=compiler_fingerprint,
+                tooling=_BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT,
             )
             _record_backend_cache_stage_ms(
                 stage_timings_ms,
@@ -537,11 +523,7 @@ def _prepare_backend_cache_setup(
         _nocache_stdlib_manifest = None
         _nocache_stdlib_contract_validation_token = None
         if split_stdlib_object:
-            (
-                compiler_fingerprint,
-                tooling_fingerprint,
-                stdlib_compiler_fingerprint,
-            ) = backend_cache_fingerprint_inputs()
+            fingerprints = backend_cache_fingerprint_inputs()
             _module_payload_ir, _module_payload_digest = module_cache_payload_inputs()
             del _module_payload_ir
             stdlib_key_material = _cached_stdlib_cache_key_material(
@@ -554,9 +536,7 @@ def _prepare_backend_cache_setup(
                 target_triple=target_triple,
                 cache_variant=cache_variant,
                 stdlib_object_variant=stdlib_object_variant,
-                stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
-                cache_compiler_fingerprint=compiler_fingerprint,
-                cache_tooling_fingerprint=tooling_fingerprint,
+                fingerprints=fingerprints,
                 function_digests=function_digests,
             )
             _nocache_stdlib_key = stdlib_key_material.cache_key
@@ -588,11 +568,7 @@ def _prepare_backend_cache_setup(
             ),
         )
     module_cache_payload_ir, module_cache_payload_digest = module_cache_payload_inputs()
-    (
-        compiler_fingerprint,
-        tooling_fingerprint,
-        stdlib_compiler_fingerprint,
-    ) = backend_cache_fingerprint_inputs()
+    fingerprints = backend_cache_fingerprint_inputs()
     stage_start = time.perf_counter()
     cache_key = _cache_key(
         ir,
@@ -601,8 +577,7 @@ def _prepare_backend_cache_setup(
         cache_variant,
         payload_ir=module_cache_payload_ir,
         payload_digest=module_cache_payload_digest,
-        compiler_fingerprint=compiler_fingerprint,
-        tooling_fingerprint=tooling_fingerprint,
+        fingerprints=fingerprints,
     )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
@@ -617,8 +592,7 @@ def _prepare_backend_cache_setup(
         target_triple,
         cache_variant,
         payload_digest=module_cache_payload_digest,
-        compiler_fingerprint=compiler_fingerprint,
-        tooling_fingerprint=tooling_fingerprint,
+        fingerprints=fingerprints,
     )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
@@ -676,9 +650,7 @@ def _prepare_backend_cache_setup(
             target_triple=target_triple,
             cache_variant=cache_variant,
             stdlib_object_variant=stdlib_object_variant,
-            stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
-            cache_compiler_fingerprint=compiler_fingerprint,
-            cache_tooling_fingerprint=tooling_fingerprint,
+            fingerprints=fingerprints,
             function_digests=function_digests,
         )
         stdlib_object_cache_key = stdlib_key_material.cache_key

@@ -133,23 +133,30 @@ def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setattr(
         RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", lambda root, **_kwargs: []
     )
-    monkeypatch.setattr(
-        CACHE_KEYS, "_cache_tooling_fingerprint", lambda: "tooling-test"
-    )
     return source
+
+
+def _source_bound_key() -> str:
+    fingerprints = CACHE_KEYS.ObjectCacheFingerprints(
+        CACHE_FINGERPRINTS._cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE),
+        "tooling-test",
+    )
+    return CACHE_KEYS._cache_key(
+        _tiny_ir(), admit_target("native"), None, "variant", fingerprints=fingerprints
+    )
 
 
 def test_cache_key_changes_when_compiler_source_content_changes_in_process(
     isolated_compiler_source: Path,
 ) -> None:
-    first = CACHE_KEYS._cache_key(_tiny_ir(), admit_target("native"), None, "variant")
+    first = _source_bound_key()
 
     isolated_compiler_source.write_text(
         "pub fn marker() -> u8 { 2 }\n",
         encoding="utf-8",
     )
 
-    second = CACHE_KEYS._cache_key(_tiny_ir(), admit_target("native"), None, "variant")
+    second = _source_bound_key()
 
     assert second != first
 
@@ -157,13 +164,13 @@ def test_cache_key_changes_when_compiler_source_content_changes_in_process(
 def test_cache_key_ignores_compiler_source_mtime_only_changes_in_process(
     isolated_compiler_source: Path,
 ) -> None:
-    first = CACHE_KEYS._cache_key(_tiny_ir(), admit_target("native"), None, "variant")
+    first = _source_bound_key()
 
     stat = isolated_compiler_source.stat()
     next_mtime_ns = stat.st_mtime_ns + 5_000_000
     os.utime(isolated_compiler_source, ns=(next_mtime_ns, next_mtime_ns))
 
-    second = CACHE_KEYS._cache_key(_tiny_ir(), admit_target("native"), None, "variant")
+    second = _source_bound_key()
 
     assert second == first
 
