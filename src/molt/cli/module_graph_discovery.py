@@ -54,6 +54,10 @@ from molt.compiler_analysis.python_binding_facts import (
 )
 from molt.compiler_analysis.python_binding_flow import python_binding_revision_scope
 from molt.compiler_analysis.python_function_kind import FunctionKind
+from molt.compiler_analysis.python_parameter_classes import (
+    ParameterLiteralClass,
+    representative_arguments,
+)
 from molt.compiler_analysis.python_imports import (
     ImportScanMode,
     _ImportDiscoveryProjection,
@@ -117,6 +121,12 @@ class _SourceScanJob(NamedTuple):
     module_name: str
     source: PythonSourceKey | None
     arguments: tuple[str, ...] = ()
+
+
+class _SourceArgumentClasses(NamedTuple):
+    generation: str
+    premise: PythonNamespacePremise | None
+    classes: tuple[ParameterLiteralClass, ...] | None
 
 
 def _graph_import_scan_purpose(
@@ -214,6 +224,9 @@ class _ModuleGraphDiscovery:
         ] = {}
         self.scanned_bodies: dict[
             str, set[tuple[PythonSourceKey, tuple[str, ...]]]
+        ] = {}
+        self.argument_classes: dict[
+            str, dict[PythonSourceKey, _SourceArgumentClasses]
         ] = {}
         self.scan_receipts: dict[
             _SourceScanJob,
@@ -1213,6 +1226,18 @@ def _discovery_pass(
         scan_views[module] = ((premise, universe, projection), *recent[:1])
         return projection
 
+    def requeue_module_bodies(module: str) -> None:
+        assert demands is not None
+        classified = state.argument_classes.get(module, {})
+        for owner, arguments in sorted(scanned_bodies.get(module, ())):
+            if owner not in classified:
+                queue_scan(module, owner, arguments)
+        for owner in sorted(classified):
+            # A representative is valid only under its proof's namespace
+            # view. Replay the original demand when that view changes.
+            for arguments in sorted(demands.body_activations.get((module, owner), ())):
+                queue_scan(module, owner, arguments)
+
     def refresh_namespace_premises(affected):
         for module in sorted(set(affected).intersection(scan_sources)):
             prior = scan_sources[module]
@@ -1228,8 +1253,7 @@ def _discovery_pass(
             revised.add(module)
             if _SourceScanJob(module, None) in scan_receipts:
                 queue_scan(module)
-            for owner, arguments in sorted(scanned_bodies.get(module, ())):
-                queue_scan(module, owner, arguments)
+            requeue_module_bodies(module)
 
     def merge_namespace_writes(batch):
         changed = namespace_index.merge(batch)
@@ -1388,8 +1412,8 @@ def _discovery_pass(
             authority.validate_generation(generation)
             if authority.source_sha256 != generation:
                 scan_sources[module_name] = replace(authority, source_sha256=generation)
+        summary = scan.source_requests.namespace_summary
         if source_owner is None:
-            summary = scan.source_requests.namespace_summary
             if summary is None:
                 merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
             else:
@@ -1409,6 +1433,11 @@ def _discovery_pass(
                 known = state.namespace_writes.setdefault(module_name, set())
                 pending = pending_namespace_writes.setdefault(module_name, {})
                 for write in summary.foreign_writes:
+                    if (
+                        write.source_owner is not None
+                        and write.needs_binding_refinement
+                    ):
+                        continue
                     if write not in known:
                         known.add(write)
                         pending.setdefault(write.source_owner, []).append(write)
@@ -1432,11 +1461,29 @@ def _discovery_pass(
                 # that same activation twice, so publish these deltas now.
                 for owner in tuple(state.active_owners.get(module_name, ())):
                     activate_namespace_writes(module_name, owner)
+        elif summary is not None:
+            # These rows depend on the executing body's key and borrow facts.
+            # Merging them here also invalidates any scan that observed a
+            # narrower namespace premise before the write was recognized.
+            known = state.namespace_writes.setdefault(module_name, set())
+            fresh = [write for write in summary.foreign_writes if write not in known]
+            if fresh:
+                known.update(fresh)
+                pending_namespace_writes.setdefault(module_name, {}).setdefault(
+                    source_owner, []
+                ).extend(fresh)
         activate_namespace_writes(module_name, source_owner)
-        demands.accept(
-            module_name,
-            scan.source_requests,
-        )
+        requests = scan.source_requests
+        if (
+            requests.source_values.activation_partitions
+            and scan_sources[module_name].body_selection.kind == "complete_source"
+        ):
+            # The graph qualifies representatives at dispatch, after the
+            # initializer's premise settles. Keep its worklist on real inputs.
+            requests = requests._replace(
+                source_values=requests.source_values._replace(activation_partitions=())
+            )
+        demands.accept(module_name, requests)
         drain_source_demands()
         for requested_name, execution_path in scan.source_executions:
             execution_name = requested_name or resolution_cache.module_name_from_path(
@@ -1681,6 +1728,67 @@ def _discovery_pass(
             return False
         return demands.binds_positional_arguments(user, site, module, definition)
 
+    def classify_body_arguments(
+        job: _SourceScanJob,
+        authority: _ModuleSourceScanAuthority,
+        premise: PythonNamespacePremise | None,
+    ) -> _SourceScanJob:
+        if job.source is None or not job.arguments:
+            return job
+        snapshot = source_generations.get(job.module_name, (None, None))[1]
+        if snapshot is None or authority.body_selection.kind != "complete_source":
+            return job
+        view = scan_view(job.module_name, premise)
+        by_owner = state.argument_classes.setdefault(job.module_name, {})
+        known = by_owner.get(job.source)
+        if (
+            known is None
+            or known.generation != snapshot.sha256
+            or known.premise != view
+        ):
+            owner = job.source
+
+            def compute_classes() -> tuple[ParameterLiteralClass, ...] | None:
+                parsed = resolution_cache.parse_module_ast(
+                    snapshot.path,
+                    snapshot.text,
+                    filename=str(snapshot.path),
+                    target_python=target_python,
+                )
+                return _source_import_scan.source_body_argument_classes(
+                    parsed.tree,
+                    parsed.admission,
+                    owner,
+                    module_name=job.module_name,
+                    is_package=bool(authority.is_package),
+                    namespace_premise=view,
+                    target_sys_platform=resolution_cache.target_sys_platform,
+                    target_python=target_python,
+                )
+
+            revised = _SourceArgumentClasses(
+                snapshot.sha256,
+                view,
+                _module_graph_cache._cached_source_argument_classes(
+                    snapshot,
+                    owner,
+                    module_name=job.module_name,
+                    is_package=bool(authority.is_package),
+                    namespace_premise=view,
+                    target_sys_platform=resolution_cache.target_sys_platform,
+                    target_python=target_python,
+                    compute=compute_classes,
+                ),
+            )
+            if known is not None and known.classes != revised.classes:
+                state.superseded_scans = True
+            known = by_owner[job.source] = revised
+        if known.classes is None:
+            return job
+        return job._replace(
+            arguments=representative_arguments(job.arguments, known.classes)
+        )
+
     while True:
         if not queue and not scan_revisions and not deferred_bodies:
             current_return_dispatch.cache_clear()
@@ -1754,6 +1862,7 @@ def _discovery_pass(
                     # its module's scan to settle and adds nothing meanwhile.
                     deferred_bodies.setdefault(module_name, set()).add(job)
                     continue
+            job = classify_body_arguments(job, authority, premise)
             receipt = (
                 scan_view(module_name, premise),
                 authority.body_selection.roots,
@@ -2082,8 +2191,7 @@ def _discovery_pass(
             previous is not None
             and previous.body_selection.roots != authority.body_selection.roots
         ):
-            for owner, arguments in sorted(scanned_bodies.get(module_name, ())):
-                queue_scan(module_name, owner, arguments)
+            requeue_module_bodies(module_name)
     state.validate_sources(touched | projected)
     for module_name in projected:
         authority = scan_sources[module_name]

@@ -13,6 +13,7 @@ import os
 import posixpath
 import sys
 from pathlib import Path
+from typing import Callable, cast
 
 import pytest
 
@@ -23,7 +24,7 @@ from molt.cli import module_import_scanner as scanner
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.models import ImportScanAdmission
-from molt.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
 from tests.source_record_test_support import replace_source_record, source_records
 
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
@@ -58,6 +59,46 @@ def load(path: Path, **kwargs):
     )
     options.update(kwargs)
     return discovery._load_module_import_scan(path, **options)
+
+
+def test_deferred_writer_refines_only_the_selected_namespace_key(
+    tmp_path: Path,
+) -> None:
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+    from molt.compiler_analysis.python_string_facts import PythonStringBound
+
+    path = write(
+        tmp_path / "entry.py",
+        "import sys\n"
+        "def publish(name, value):\n"
+        "    key = f'plugins.{name}'\n"
+        "    sys.modules[key] = value\n"
+        "def unused(name, value):\n"
+        "    key = f'other.{name}'\n"
+        "    sys.modules[key] = value\n",
+    )
+    _, publish, unused = ast.parse(path.read_text(encoding="utf-8")).body
+    owner = python_node_source_key(publish)
+    options = dict(import_scan_mode="module_init", namespace_premise=WHOLE_PROGRAM)
+    initializer = load(path, **options).scan.source_requests.namespace_summary
+    assert initializer is not None
+    assert tuple(row.source_owner for row in initializer.foreign_writes) == (
+        owner,
+        python_node_source_key(unused),
+    )
+    assert all(row.needs_binding_refinement for row in initializer.foreign_writes)
+
+    selected = load(path, source_owner=owner, **options)
+    summary = selected.scan.source_requests.namespace_summary
+    assert summary is not None
+    (write_fact,) = summary.foreign_writes
+    assert write_fact.source_owner == owner
+    assert write_fact.key_bound == PythonStringBound("plugins.", "", 8)
+    assert not write_fact.needs_binding_refinement
+    warm = load(path, source_owner=owner, **options)
+    assert warm.query is not None and warm.query.source_owner == owner
+    assert warm.scan == selected.scan
+    assert warm.cache_hit and not warm.source_parsed
 
 
 def test_execution_scan_publishes_only_the_activated_body_result(
@@ -1163,12 +1204,16 @@ def closed_source_imports(paths, *, protocol_modules=None, scanned=None):
         graph_python_namespace_writes,
     )
     from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
+    from molt.compiler_analysis.python_parameter_classes import representative_arguments
     from molt.compiler_analysis.python_source_demands import PythonSourceDemands
     from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 
     trees = {
         name: ast.parse(path.read_text(encoding="utf-8"))
         for name, path in paths.items()
+    }
+    admissions = {
+        name: _PythonAstDigestAdmission.for_tree(tree) for name, tree in trees.items()
     }
     writes = graph_python_namespace_writes(
         (
@@ -1190,7 +1235,7 @@ def closed_source_imports(paths, *, protocol_modules=None, scanned=None):
 
     def scan(module, owner=None, arguments=()):
         tree, path = trees[module], paths[module]
-        admission = _PythonAstDigestAdmission.for_tree(tree)
+        admission = admissions[module]
         projection = _source_import_scan._collect_imports_for_graph(
             tree,
             module,
@@ -1208,11 +1253,34 @@ def closed_source_imports(paths, *, protocol_modules=None, scanned=None):
 
     for module in paths:
         scan(module)
+    completed = set()
+    classes_by_owner = {}
     while True:
         engine.drain()
         if not bodies:
             return imports
-        job = bodies.pop()
+        module, owner, arguments = bodies.pop()
+        if arguments:
+            key = (module, owner)
+            if key not in classes_by_owner:
+                classes_by_owner[key] = (
+                    _source_import_scan.source_body_argument_classes(
+                        trees[module],
+                        admissions[module],
+                        owner,
+                        module_name=module,
+                        is_package=False,
+                        namespace_premise=writes.premise(paths[module], frozenset()),
+                        target_sys_platform=None,
+                        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+                    )
+                )
+            if (classes := classes_by_owner[key]) is not None:
+                arguments = representative_arguments(arguments, classes)
+        job = (module, owner, arguments)
+        if job in completed:
+            continue
+        completed.add(job)
         if scanned is not None:
             scanned.append(job)
         scan(*job)
@@ -2775,6 +2843,12 @@ def test_typed_element_value_matches_actual_cpython_protocol_selection(
 
         actual = asyncio.run(first())
         source = "from carrier import Items\nasync def consume():\n    async for value in Items(): pass\n"
+    entry_tree = ast.parse(source)
+    owner = (
+        _source_import_scan.python_node_source_key(entry_tree.body[-1])
+        if operation == "async_iterate"
+        else None
+    )
     projections = {
         "carrier": _source_import_scan._collect_imports_for_graph(
             ast.parse(provider_source),
@@ -2783,7 +2857,7 @@ def test_typed_element_value_matches_actual_cpython_protocol_selection(
             purpose=SourceImportPurpose.INVENTORY,
         ),
         "entry": _source_import_scan._collect_imports_for_graph(
-            ast.parse(source), "entry", import_scan_mode="module_init"
+            entry_tree, "entry", import_scan_mode="module_init"
         ),
     }
     protocol = (
@@ -2791,17 +2865,24 @@ def test_typed_element_value_matches_actual_cpython_protocol_selection(
         if operation == "sequence"
         else PythonElementProtocol(operation)
     )
+    active = projections["entry"]
+    if owner is not None:
+        assert all(item.protocol != protocol for item in active.source_values.elements)
+        active = _source_import_scan._collect_imports_for_graph(
+            entry_tree, "entry", source_owner=owner, import_scan_mode="module_init"
+        )
     element = next(
-        item
-        for item in projections["entry"].source_values.elements
-        if item.protocol == protocol
+        item for item in active.source_values.elements if item.protocol == protocol
     )
     engine = PythonSourceDemands(
         require_runtime_import_protocol=lambda _module: None,
         admit_imports=lambda *_: None,
         queue_body=lambda *_: None,
     )
-    for module, projection in projections.items():
+    publications = list(projections.items())
+    if owner is not None:
+        publications.append(("entry", active))
+    for module, projection in publications:
         engine.accept(
             module,
             _ImportScanRequests(
@@ -3460,8 +3541,14 @@ def test_canonical_callable_cache_preserves_strict_new_rows(tmp_path):
     warm = load(entry)
     assert warm.cache_hit
     assert warm.scan.source_values == cold.scan.source_values
-    assert cold.scan.source_values.callables
+    factory = _source_import_scan.python_node_source_key(
+        ast.parse(entry.read_text(encoding="utf-8")).body[1]
+    )
+    active = load(entry, source_owner=factory, import_scan_mode="module_init")
+    assert active.scan.source_values.callables
     assert cold.scan.source_values.call_imports
+    leaf = write(tmp_path / "leaf.py")
+    assert "leaf" in closed_source_imports({"entry": entry, "leaf": leaf})
     key = records._import_scan_cache_key(
         entry, module_name="entry", is_package=False, import_scan_mode="full"
     )
@@ -4225,7 +4312,10 @@ def test_argument_class_representative_scans_like_every_member(
     (parameters,) = [
         item
         for item in load(
-            source, import_scan_mode="module_init", namespace_premise=WHOLE_PROGRAM
+            source,
+            source_owner=hook,
+            import_scan_mode="module_init",
+            namespace_premise=WHOLE_PROGRAM,
         ).scan.source_values.activation_partitions
         if item.owner == hook
     ]
@@ -4257,7 +4347,9 @@ def test_argument_class_representative_scans_like_every_member(
         assert any(argument in name for name in exact[argument].imports)
 
 
-def test_member_reads_share_one_hook_scan_per_argument_class(tmp_path):
+def test_member_reads_share_one_hook_scan_per_argument_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Four named reads of a PEP 562 module cost two body scans: one for the
     literal read and one for every other name (exact arguments cost four).
     The argument-free scan is the hook's unknown-name activation, present
@@ -4283,6 +4375,22 @@ def test_member_reads_share_one_hook_scan_per_argument_class(tmp_path):
     assert hook_jobs == [(), (UNMATCHED_ARGUMENT,), ("tasks",)]
     assert "tasks_leaf" in imports
     assert "futures_leaf" not in imports
+    body_loads = set()
+    original = discovery._load_module_import_scan
+
+    def observe(path: Path, **kwargs: object) -> discovery._LoadedModuleImportScan:
+        if kwargs["module_name"] == "hooked" and kwargs.get("source_owner") == hook:
+            body_loads.add(cast(tuple[str, ...], kwargs["source_arguments"]))
+        load_scan = cast(Callable[..., discovery._LoadedModuleImportScan], original)
+        return load_scan(path, **kwargs)
+
+    monkeypatch.setattr(discovery, "_load_module_import_scan", observe)
+    graph = discovery._discover_module_graph(
+        paths["entry"], [tmp_path], [tmp_path], tmp_path / "stdlib", tmp_path, set()
+    )
+    assert set(body_loads) == set(hook_jobs)
+    assert graph.graph["tasks_leaf"] == paths["tasks_leaf"]
+    assert "futures_leaf" not in graph.graph
 
 
 def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
@@ -4308,6 +4416,7 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
     projection = _source_import_scan._collect_imports_for_graph(
         tree,
         "hooked",
+        source_owner=hook,
         import_scan_mode="module_init",
         namespace_premise=writes.premise(path, frozenset()),
         ast_digest_admission=_PythonAstDigestAdmission.for_tree(tree),
@@ -4354,12 +4463,16 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
 @pytest.mark.parametrize("corruption", [None, "length", "unsorted", "type"])
 def test_persisted_literal_classes_round_trip_or_regenerate(tmp_path, corruption):
     source = write(tmp_path / "hooked.py", _CLASSED_HOOK)
-    cold = load(source)
+    owner = _source_import_scan.python_node_source_key(
+        ast.parse(_CLASSED_HOOK).body[-1]
+    )
+    selection = dict(import_scan_mode="module_init", source_owner=owner)
+    cold = load(source, **selection)
     classes = [item.classes for item in cold.scan.source_values.activation_partitions]
     assert (frozenset({"tasks", "futures", "events"}),) in classes
     if corruption is not None:
         key = records._import_scan_cache_key(
-            source, module_name="entry", is_package=False, import_scan_mode="full"
+            source, module_name="entry", is_package=False, **selection
         )
         payload = source_records("import-scan")[key]
         row = next(
@@ -4373,7 +4486,7 @@ def test_persisted_literal_classes_round_trip_or_regenerate(tmp_path, corruption
             "type": [[1]],
         }[corruption]
         replace_source_record("import-scan", key, payload)
-    warm = load(source)
+    warm = load(source, **selection)
     assert warm.cache_hit is (corruption is None)
     assert warm.scan.source_values == cold.scan.source_values
 
