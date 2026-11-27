@@ -16,11 +16,11 @@ use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::passes::alias_analysis::AliasUnionFind;
 use crate::tir::passes::liveness::visit_exception_liveness;
-use crate::tir::passes::ownership_lattice_min::{DropEligibility, OwnershipRootFacts};
+use crate::tir::passes::ownership_lattice_min::DropEligibility;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
-use super::availability::PointAvailability;
+use super::availability::DefinitionAvailability;
 use super::util::make_op;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -105,29 +105,24 @@ fn release_prefix<'a>(
 pub(super) fn insert_exception_edge_releases(
     func: &mut TirFunction,
     eligibility: &DropEligibility<'_>,
-    root_facts: &OwnershipRootFacts,
+    definitions: &DefinitionAvailability<'_>,
     aliases: &AliasUnionFind,
     raw: &HashSet<ValueId>,
-    retains: &HashMap<(BlockId, usize), Vec<usize>>,
+    mut retains: HashMap<(BlockId, usize), Vec<usize>>,
 ) -> usize {
-    let points = std::cell::OnceCell::new();
     let mut plans = Vec::new();
     let mut tails = Vec::new();
     let mut tail_identities = HashMap::default();
-    let mut retaining_observations = 0;
     visit_exception_liveness(func, aliases, raw, |block, index, target, demand| {
         let op = &func.blocks[&block].ops[index];
-        let retained = retains.get(&(block, index)).cloned().unwrap_or_default();
-        if !retained.is_empty() {
-            retaining_observations += 1;
-        }
+        let retained = retains.remove(&(block, index)).unwrap_or_default();
+        let original_index =
+            definitions.transfer_position_from_end(block, demand.transfer_from_end);
         let mut releases: Vec<_> = demand
             .abandoned()
             .filter(|&root| {
                 eligibility.is_droppable(root)
-                    && points
-                        .get_or_init(|| PointAvailability::compute(func, root_facts))
-                        .available_before(root, block, index)
+                    && definitions.available_before(root, block, original_index)
             })
             .collect();
         releases.sort_unstable_by_key(|value| std::cmp::Reverse(value.0));
@@ -161,9 +156,8 @@ pub(super) fn insert_exception_edge_releases(
         }
         plans.push((block, index, op.operands.clone(), retained, tail));
     });
-    assert_eq!(
-        retaining_observations,
-        retains.len(),
+    assert!(
+        retains.is_empty(),
         "DropInsertion planned landing retains for an observation it did not visit"
     );
     if plans.is_empty() {
