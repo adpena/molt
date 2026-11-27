@@ -36,6 +36,12 @@ def test_unknown_split_captures_tagged_target_before_arguments(
     )
     assert sum(op.kind == "TYPE_OF" for op in ops) == 1
     assert sum(op.kind == "IS" for op in ops) == 3
+    # Literal arguments need no target discriminator between the class
+    # checks and the invocation. Effectful arguments still suspend that
+    # dispatch while they evaluate exactly once.
+    assert sum(op.kind == "EQ" for op in ops) == (
+        3 if arguments.startswith("maxsplit") else 0
+    )
     suffix = "_MAX" if arguments.startswith("maxsplit") else ""
     for family in ("STRING", "BYTES", "BYTEARRAY"):
         intrinsic = next(op for op in ops if op.kind == family + "_SPLIT" + suffix)

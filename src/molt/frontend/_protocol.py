@@ -402,14 +402,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         class_scope: _ClassNsScope | None = ...,
     ) -> tuple[list[str], dict[str, TypeHint], MoltValue | None, bool]: ...
 
-    def _capture_split_target(
-        self,
-        attribute: ast.Attribute,
-        receiver: MoltValue,
-        actual_type: MoltValue,
-        index: int = ...,
-    ) -> tuple[MoltValue, MoltValue]: ...
-
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]: ...
 
     def _claim_function_symbol(
@@ -1104,6 +1096,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         *,
         method_load: bool,
         type_hint: TypeHint = ...,
+    ) -> MoltValue: ...
+
+    def _emit_generic_split_call(
+        self, node: ast.Call, target: MoltValue, values: list[MoltValue]
     ) -> MoltValue: ...
 
     def _emit_getattr_name(
@@ -2355,6 +2351,16 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> PythonCellStoragePlan: ...
 
     def _seal_stateful_frame(self, frame_plan: StatefulFunctionFramePlan) -> int: ...
+
+    def _select_split_target(
+        self,
+        attribute: ast.Attribute,
+        receiver: MoltValue,
+        actual_type: MoltValue,
+        select: Callable[[int, MoltValue], tuple[MoltValue, ...]],
+        result_count: int,
+        index: int = ...,
+    ) -> tuple[MoltValue, ...]: ...
 
     @staticmethod
     def _serialization_control_value(op: MoltOp) -> int: ...
