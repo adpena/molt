@@ -288,6 +288,7 @@ def load(name, path, *, register=True):
 public = load("socket", {str(STDLIB_ROOT / "socket.py")!r})
 private = load("_molt_resolver_socket", {str(STDLIB_ROOT / "_socket.py")!r})
 assert lookups == ["gaierror", "herror"]
+assert public.sys is oracle.sys is sys
 assert public.gaierror is private.gaierror is oracle.gaierror
 assert public.herror is private.herror is oracle.herror
 

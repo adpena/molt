@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import errno
 import io
+import sys as sys
 from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
