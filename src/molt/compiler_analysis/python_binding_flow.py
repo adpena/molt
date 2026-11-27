@@ -206,6 +206,7 @@ from molt.compiler_analysis.python_effects import (
 )
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
+    _ImportInitializerCache,
     import_metadata_target_name,
     import_call_fallback_operand,
     is_compiler_intrinsics_module,
@@ -11342,6 +11343,7 @@ class _BindingRevisions:
             tuple[str, PythonBindingFlowPolicy], tuple[_RebasableInitializer, ...]
         ] = OrderedDict()
         self._initializer_extent = 0
+        self.import_initializers = _ImportInitializerCache()
 
     def analyze(
         self,
@@ -11573,6 +11575,8 @@ def _project_binding_index(
     )
 
     facts = analysis.facts
+    revisions = _BINDING_REVISIONS.get()
+    initializer_cache = None if revisions is None else revisions.import_initializers
     argument_plan = (
         call_argument_plan
         if ast_digest_admission is None
@@ -11611,6 +11615,7 @@ def _project_binding_index(
             ast_digest_admission=ast_digest_admission,
             callback_metadata_writes=facts.callback_metadata_writes,
             deferred_binding_path=analysis.deferred_binding_path,
+            initializer_cache=initializer_cache,
         )
     else:
         state = context_import_state(context)
@@ -11635,6 +11640,7 @@ def _project_binding_index(
             source_discovery=True,
             callback_metadata_writes=facts.callback_metadata_writes,
             deferred_binding_path=analysis.deferred_binding_path,
+            initializer_cache=initializer_cache,
         )
         flow = replace(
             flow,
