@@ -382,6 +382,11 @@ class PythonSourceDemands:
             set
         )
         self.pending_operands: dict[SourceValue, _OperandDeltas] = {}
+        # A call can publish plain function outcomes without rerunning its
+        # callee/effect transfer. A structural refresh replaces these routes.
+        self.call_outcome_inputs: dict[SourceValue, set[SourceValue]] = {}
+        self.call_outcome_users: dict[SourceValue, set[SourceValue]] = {}
+        self.pending_call_outcomes: set[SourceValue] = set()
         # Binding subscribers want membership deltas and receiver-binding
         # changes, without unrelated structural wakes.
         self.binding_users: defaultdict[SourceValue, set[SourceValue]] = defaultdict(
@@ -2372,13 +2377,33 @@ class PythonSourceDemands:
             if refresh:
                 self._refresh_class_members(source, value)
             return
-        if not refresh and deltas is None:
+        outcomes_pending = value in self.pending_call_outcomes
+        if outcomes_pending:
+            self.pending_call_outcomes.remove(value)
+        if not refresh and deltas is None and not outcomes_pending:
             self._activate_pending(
                 value, self.value_candidates[value], _EMPTY_CANDIDATES
             )
             return
         if module_name not in self.modules and not isinstance(source, SourceCacheItem):
             self.pending_modules.setdefault(module_name, set()).add(value)
+            return
+        if refresh:
+            for origin in self.call_outcome_inputs.pop(value, ()):
+                self.call_outcome_users[origin].discard(value)
+        elif outcomes_pending:
+            assert deltas is None
+            outcomes = self.call_outcome_inputs[value]
+            # Each producer already owns the current answer. Coalesce wakeups
+            # without copying candidate waves into every caller's inbox.
+            candidates = (
+                self.value_candidates[next(iter(outcomes))]
+                if len(outcomes) == 1
+                else set().union(
+                    *(self.value_candidates[origin] for origin in outcomes)
+                )
+            )
+            self._publish_candidates(value, candidates)
             return
         candidates: set[SourceCandidate] = set()
         if isinstance(source, tuple) and (identities := self.callables.get(value)):
@@ -2390,21 +2415,25 @@ class PythonSourceDemands:
             for origin, contained in tuple(self.cache_origins.get(source, ())):
                 candidates.update(
                     item._replace(contained=item.contained or contained)
-                    for item in self.watch(origin, value)
+                    for item in self._operand_candidates(origin, value, deltas)
                 )
         elif value in self.cache_reads:
             for keys, defaults, default_contents, contained in self.cache_reads[value]:
                 for item in _import_cache_items(keys):
                     candidates.update(
                         item._replace(contained=contained or item.contained)
-                        for item in self.watch(("", item), value)
+                        for item in self._operand_candidates(("", item), value, deltas)
                     )
                 for default in defaults:
-                    candidates.update(self.watch((module_name, default), value))
+                    candidates.update(
+                        self._operand_candidates((module_name, default), value, deltas)
+                    )
                 for default in default_contents:
                     candidates.update(
                         item._replace(contained=True)
-                        for item in self.watch((module_name, default), value)
+                        for item in self._operand_candidates(
+                            (module_name, default), value, deltas
+                        )
                     )
         elif isinstance(source, SourceCallableOutcome):
             function = self.functions.get((module_name, source.owner))
@@ -2415,11 +2444,15 @@ class PythonSourceDemands:
                     else (function.returned, function.returned_exposed)
                 )
                 for origin in direct:
-                    candidates.update(self.watch((module_name, origin), value))
+                    candidates.update(
+                        self._operand_candidates((module_name, origin), value, deltas)
+                    )
                 for origin in exposed - direct:
                     candidates.update(
                         candidate._replace(contained=True)
-                        for candidate in self.watch((module_name, origin), value)
+                        for candidate in self._operand_candidates(
+                            (module_name, origin), value, deltas
+                        )
                     )
         elif isinstance(source, SourceCallArguments):
             self._route_call_arguments(module_name, source, value, deltas)
@@ -2636,7 +2669,9 @@ class PythonSourceDemands:
                     SourceAwait if source[-1] == "Await" else SourceGeneratorCompletion
                 )
                 candidates.update(
-                    self.watch((module_name, operation((module_name, owner))), value)
+                    self._operand_candidates(
+                        (module_name, operation((module_name, owner))), value, deltas
+                    )
                 )
         elif value in self.calls and value not in self.import_bindings:
             call = self.calls[value]
@@ -2648,7 +2683,11 @@ class PythonSourceDemands:
                         continue
                     if candidate.kind.startswith("namespace"):
                         self._record_mapping_call(value, call, candidate)
-                        candidates.update(self._returned_values(candidate, value))
+                        candidates.update(
+                            self._returned_values(
+                                candidate, value, forward_outcome=True
+                            )
+                        )
                         continue
                     if candidate.identity is not None:
                         if candidate.kind == "native_selector":
@@ -2769,19 +2808,35 @@ class PythonSourceDemands:
                             for member in self._select_class_members(
                                 candidate, "__new__", value, strict=False
                             ):
-                                candidates.update(self._returned_values(member, value))
+                                candidates.update(
+                                    self._returned_values(
+                                        member, value, forward_outcome=True
+                                    )
+                                )
                         elif candidate.kind == "instance":
                             for member in self._select_class_members(
                                 candidate, "__call__", value, strict=False
                             ):
-                                candidates.update(self._returned_values(member, value))
+                                candidates.update(
+                                    self._returned_values(
+                                        member, value, forward_outcome=True
+                                    )
+                                )
                         else:
                             for member in self.select_member(
                                 candidate, "__call__", value
                             ):
-                                candidates.update(self._returned_values(member, value))
+                                candidates.update(
+                                    self._returned_values(
+                                        member, value, forward_outcome=True
+                                    )
+                                )
                     else:
-                        candidates.update(self._returned_values(candidate, value))
+                        candidates.update(
+                            self._returned_values(
+                                candidate, value, forward_outcome=True
+                            )
+                        )
         elif value in self.attributes:
             for name, owners in self.attributes[value].items():
                 if name in {"__builtins__", "f_builtins"}:
@@ -2813,6 +2868,13 @@ class PythonSourceDemands:
                                 candidate, binding.attribute, value, from_import=True
                             )
                         )
+        self._publish_candidates(value, candidates)
+
+    def _publish_candidates(
+        self,
+        value: SourceValue,
+        candidates: set[SourceCandidate] | frozenset[SourceCandidate],
+    ) -> None:
         known = self.value_candidates.setdefault(value, _EMPTY_CANDIDATES)
         if not candidates:
             self._activate_pending(value, known, _EMPTY_CANDIDATES)
@@ -2820,7 +2882,7 @@ class PythonSourceDemands:
         if isinstance(known, frozenset):
             # Demand creates a graph node, but its lattice stays empty until
             # a producer publishes the first candidate.
-            known = candidates.copy()
+            known = set(candidates)
             self.value_candidates[value] = known
             added = candidates
         else:
@@ -2834,10 +2896,14 @@ class PythonSourceDemands:
                     for user in inherited.users:
                         self.queue_value(user)
             if writes := self.attribute_writes.get(value):
-                self._record_attribute_receivers(module_name, writes, added)
+                self._record_attribute_receivers(value[0], writes, added)
             for user in self.value_users.get(value, ()):
                 self.queue_value(user)
             self._add_operand_candidates(value, added)
+            for user in self.call_outcome_users.get(value, ()):
+                if not self.value_jobs.get(user, False):
+                    self.pending_call_outcomes.add(user)
+                    self.queue_value(user, refresh=False)
         self._activate_pending(value, known, added)
 
     def _activate_pending(
@@ -3436,7 +3502,11 @@ class PythonSourceDemands:
             self.activate(owner, "escape", consumer=owner.module)
 
     def _returned_values(
-        self, callee: SourceCandidate, user: SourceValue
+        self,
+        callee: SourceCandidate,
+        user: SourceValue,
+        *,
+        forward_outcome: bool = False,
     ) -> set[SourceCandidate]:
         if callee.kind == "iterator_next":
             return set(self.watch(self._iterator_contents(callee), user))
@@ -3487,16 +3557,25 @@ class PythonSourceDemands:
             value = callee.value
             self.watch(value, user)
             return {SourceCandidate(*value, "resumable")}
-        return self._function_values(callee, user)
+        return self._function_values(callee, user, forward_outcome=forward_outcome)
 
     def _function_values(
-        self, callee: SourceCandidate, user: SourceValue, *, yielded: bool = False
+        self,
+        callee: SourceCandidate,
+        user: SourceValue,
+        *,
+        yielded: bool = False,
+        forward_outcome: bool = False,
     ) -> set[SourceCandidate]:
         value = callee.value
         self.watch(value, user)
         if callee.source is None:
             return set()
         outcome = (callee.module, SourceCallableOutcome(callee.source, yielded))
+        if forward_outcome:
+            self.call_outcome_inputs.setdefault(user, set()).add(outcome)
+            self.call_outcome_users.setdefault(outcome, set()).add(user)
+            return set(self._ensure_value(outcome))
         return set(self.watch(outcome, user))
 
     def _awaited_values(
