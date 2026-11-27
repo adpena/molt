@@ -530,7 +530,11 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             # retires every binding the frame still holds; no compiled release
             # precedes it.
             value = self._capture_expression_reference(value)
-            self._emit_restore_exception_stack_depth(exit_baseline=True)
+            self._emit_restore_exception_stack_depth(
+                check_pending=(
+                    self.in_generator or self.exception_stack_depth_baseline is not None
+                )
+            )
             self._emit_normal_return_terminator(value)
 
     def _emit_implicit_return(self, source_node: ast.AST) -> None:
@@ -600,7 +604,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         )
 
     def _emit_restore_exception_stack_depth(
-        self, *, exit_baseline: bool = True
+        self, *, check_pending: bool = False
     ) -> None:
         baseline = self.exception_stack_depth_baseline
         if baseline is not None:
@@ -611,8 +615,10 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                     result=MoltValue("none"),
                 )
             )
-        if not exit_baseline:
-            return
+        # Depth restoration can release handled exceptions. Route any
+        # failure from a normal exit with the function baseline still active.
+        if check_pending:
+            self._emit_raise_if_pending()
         prev_baseline = self.exception_stack_prev_baseline
         if prev_baseline is None:
             return
