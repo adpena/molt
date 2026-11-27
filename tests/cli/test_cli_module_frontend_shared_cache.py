@@ -7,6 +7,7 @@ source, semantic context and typed body ownership remain independently qualified
 from __future__ import annotations
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
 import os
 import ast
@@ -796,6 +797,38 @@ def test_lowering_context_digest_is_independent_of_mtime(tmp_path: Path) -> None
         namespace_premise=None,
     )
     assert digest_before is not None and digest_before == digest_after
+
+
+def test_lowering_reuse_survives_relocation_of_an_escaped_writer(tmp_path: Path) -> None:
+    path = _write_module(tmp_path, "m", "def g():\n    return value\n")
+    lease = _ModuleSourceLease.path_backed(path)
+
+    def digest(premise: PythonNamespacePremise) -> str | None:
+        return MC._module_lowering_context_digest_for_module(
+            "m",
+            path,
+            source_lease=lease,
+            logical_source_path=str(path),
+            is_package=False,
+            **_LOWERING_CTX,
+            module_source_role="user",
+            namespace_premise=premise,
+        )
+
+    def escaped_write(name: str, location: str) -> PythonNamespacePremise:
+        return PythonNamespacePremise(
+            foreign_writes=(name,),
+            member_writes=0,
+            entry_member_writes=0,
+            noncanonical_imports=(),
+            escape_writes=((name, location),),
+        )
+
+    original = digest(escaped_write("value", "writer:8"))
+    relocated = digest(escaped_write("value", "writer:12"))
+    differently_bound = digest(escaped_write("other", "writer:12"))
+    assert original is not None and original == relocated
+    assert differently_bound is not None and differently_bound != original
 
 
 def test_mtime_only_change_still_reuses_lowering_from_shared(

@@ -5,7 +5,7 @@ from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import ast
 import contextlib
@@ -727,6 +727,17 @@ def _frontend_lowering_cache_disabled() -> bool:
     }
 
 
+def _namespace_lowering_identity(
+    premise: PythonNamespacePremise | None,
+) -> dict[str, object] | None:
+    # The graph folds the names of escaped writes into foreign_writes. Their
+    # source locations are used by later closed-world diagnostics, which read
+    # the live graph premise. They never participate in Python-to-TIR lowering.
+    if premise is not None and premise.escape_writes:
+        premise = replace(premise, escape_writes=())
+    return _namespace_premise_cache_identity(premise)
+
+
 # The typed dataclass projection reserves a new JSON tag. Old name maps did not
 # escape it, so do not decode those records under the extended codec.
 # 15: module function defaults carry their definer's symbol base.
@@ -1335,7 +1346,7 @@ def _module_lowering_context_payload(
         "is_package": is_package,
         "module_execution_kind": module_execution_kind,
         "module_source_role": module_source_role,
-        "namespace_premise": _namespace_premise_cache_identity(namespace_premise),
+        "namespace_premise": _namespace_lowering_identity(namespace_premise),
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "target_python": target_python.tag,
         "target_sys_platform": target_sys_platform,
