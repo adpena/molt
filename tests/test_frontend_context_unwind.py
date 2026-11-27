@@ -196,8 +196,27 @@ def test_async_context_nonlocal_exit_uses_captured_exit_before_transfer(
         op.kind == "CHECK_EXCEPTION" and op.args == [body_label]
         for op in exit_ops[close + 1 :]
     )
-    # Every nonlocal source transfer has an explicit lexical destination.
-    assert any(op.kind == "JUMP" for op in exit_ops[await_exit + 1 :])
+    if exit_statement == "return value":
+        transfer = exit_ops[-1]
+        assert transfer.kind == "ret"
+        (returned,) = transfer.args
+        assert any(op.result == returned for op in exit_ops[:close])
+        after_resume = exit_ops[await_exit + 1 :]
+        (restore,) = (
+            i
+            for i, op in enumerate(after_resume)
+            if op.kind == "EXCEPTION_STACK_SET_DEPTH"
+        )
+        baseline_exit = next(
+            i for i, op in enumerate(after_resume) if op.kind == "EXCEPTION_STACK_EXIT"
+        )
+        assert [op.kind for op in after_resume[restore + 1 : baseline_exit]] == [
+            "CHECK_EXCEPTION"
+        ]
+    else:
+        transfer = exit_ops[-1]
+        assert transfer.kind == "JUMP"
+        assert any(op.kind == "LABEL" and op.args == transfer.args for op in ops)
 
 
 def test_async_context_captures_special_exit_before_entering() -> None:
