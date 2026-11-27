@@ -302,13 +302,14 @@ impl DefinitionAvailability<'_> {
 
     fn valid_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
         !self.root_facts.is_conditionally_valid_result_root(root)
-            || self
-                .root_facts
-                .conditionally_valid_region(root)
-                .is_some_and(|region| {
-                    self.dominance
-                        .definition_available(region, None, block, op_index)
-                })
+            || self.initialized_in(root).is_some_and(|region| {
+                self.dominance
+                    .definition_available(region, None, block, op_index)
+            })
+    }
+
+    fn initialized_in(&self, root: ValueId) -> Option<BlockId> {
+        self.root_facts.conditionally_valid_region(root)
     }
 
     pub(super) fn available_before(&self, root: ValueId, block: BlockId, op_index: usize) -> bool {
@@ -461,7 +462,7 @@ impl<'a> PointAvailability<'a> {
     /// arc's source has initialized it, or the arc is the edge that does.
     pub(super) fn valid_on_arc(&self, root: ValueId, pred: BlockId, target: BlockId) -> bool {
         self.definitions.valid_before(root, pred, usize::MAX)
-            || self.definitions.root_facts.conditionally_valid_region(root) == Some(target)
+            || self.definitions.initialized_in(root) == Some(target)
     }
 
     /// The block that defines `value`: the block it is an argument of, or the
