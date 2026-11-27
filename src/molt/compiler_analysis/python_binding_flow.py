@@ -206,6 +206,7 @@ from molt.compiler_analysis.python_effects import (
 )
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
+    _ImportInitializerCache,
     import_metadata_target_name,
     import_call_fallback_operand,
     is_compiler_intrinsics_module,
@@ -11112,6 +11113,53 @@ class _RebasableInitializer:
             ),
         )
 
+    @classmethod
+    def prepare(
+        cls,
+        analyzer: _Analyzer,
+        tree: ast.Module,
+        initializers: tuple[_RebasableInitializer, ...],
+        *,
+        ast_digest_admission: _PythonAstDigestAdmission | None,
+    ) -> tuple[_Analyzer, tuple[_RebasableInitializer, ...]]:
+        for initializer in reversed(initializers):
+            rebased = initializer.revise(analyzer)
+            if rebased is None:
+                continue
+            if initializer.continuation is not None:
+                # The suffix just finished under this writer premise. Its
+                # completed state can serve the next selected body directly.
+                completed = cls.capture(rebased, None)
+                if completed is not None:
+                    return rebased, (initializer, completed)
+            return rebased, ()
+
+        reads = (
+            None if analyzer._foreign_universe is None else _InitializerPremiseReads()
+        )
+        first = next(
+            (item for item in initializers if item.continuation is not None), None
+        )
+
+        def capture_initializer(completion: PythonCompletionFlow[int]) -> None:
+            nonlocal first
+            assert reads is not None
+            first = cls.capture(analyzer, reads, completion)
+
+        analyzer._initializer_premise_reads = reads
+        if reads is not None and first is None:
+            analyzer._capture_initializer = capture_initializer
+        try:
+            analyzer._analyze_module(tree, ast_digest_admission=ast_digest_admission)
+        finally:
+            analyzer._initializer_premise_reads = None
+            analyzer._capture_initializer = None
+        if reads is not None or analyzer.policy.deferred_binding_path is not None:
+            completed = cls.capture(analyzer, reads)
+            if completed is not None:
+                return analyzer, (completed,) if first is None else (first, completed)
+        return analyzer, ()
+
     def revise(self, requested: _Analyzer) -> _Analyzer | None:
         work = _rebase_binding_namespace(self.prefix, requested, self.reads)
         if work is None:
@@ -11295,6 +11343,7 @@ class _BindingRevisions:
             tuple[str, PythonBindingFlowPolicy], tuple[_RebasableInitializer, ...]
         ] = OrderedDict()
         self._initializer_extent = 0
+        self.import_initializers = _ImportInitializerCache()
 
     def analyze(
         self,
@@ -11388,46 +11437,11 @@ class _BindingRevisions:
                     )
                     break
         if cursor == 0 and accepted is None:
-            for initializer in reversed(initializers):
-                rebased = initializer.revise(analyzer)
-                if rebased is not None:
-                    analyzer = rebased
-                    break
-            else:
-                reads = (
-                    None
-                    if analyzer._foreign_universe is None
-                    else _InitializerPremiseReads()
-                )
-                first = next(
-                    (item for item in initializers if item.continuation is not None),
-                    None,
-                )
-
-                def capture_initializer(
-                    completion: PythonCompletionFlow[int],
-                ) -> None:
-                    nonlocal first
-                    assert reads is not None
-                    first = _RebasableInitializer.capture(analyzer, reads, completion)
-
-                analyzer._initializer_premise_reads = reads
-                if reads is not None and first is None:
-                    analyzer._capture_initializer = capture_initializer
-                try:
-                    analyzer._analyze_module(
-                        tree, ast_digest_admission=ast_digest_admission
-                    )
-                finally:
-                    analyzer._initializer_premise_reads = None
-                    analyzer._capture_initializer = None
-                if reads is not None or policy.deferred_binding_path is not None:
-                    completed = _RebasableInitializer.capture(analyzer, reads)
-                    if completed is not None:
-                        self._retain_initializers(
-                            initializer_key,
-                            (completed,) if first is None else (first, completed),
-                        )
+            analyzer, retained = _RebasableInitializer.prepare(
+                analyzer, tree, initializers, ast_digest_admission=ast_digest_admission
+            )
+            if retained:
+                self._retain_initializers(initializer_key, retained)
 
         def capture(owner: _Analyzer, completed_jobs: int) -> None:
             if checkpoints and checkpoints[-1].completed_jobs == completed_jobs:
@@ -11561,6 +11575,8 @@ def _project_binding_index(
     )
 
     facts = analysis.facts
+    revisions = _BINDING_REVISIONS.get()
+    initializer_cache = None if revisions is None else revisions.import_initializers
     argument_plan = (
         call_argument_plan
         if ast_digest_admission is None
@@ -11599,6 +11615,7 @@ def _project_binding_index(
             ast_digest_admission=ast_digest_admission,
             callback_metadata_writes=facts.callback_metadata_writes,
             deferred_binding_path=analysis.deferred_binding_path,
+            initializer_cache=initializer_cache,
         )
     else:
         state = context_import_state(context)
@@ -11623,6 +11640,7 @@ def _project_binding_index(
             source_discovery=True,
             callback_metadata_writes=facts.callback_metadata_writes,
             deferred_binding_path=analysis.deferred_binding_path,
+            initializer_cache=initializer_cache,
         )
         flow = replace(
             flow,
