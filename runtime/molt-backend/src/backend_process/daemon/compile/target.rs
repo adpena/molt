@@ -134,14 +134,8 @@ impl ResolvedJobTarget {
                     compile_options,
                 )
                 .map_err(|err| format!("failed to compile native application artifact: {err}"))?;
-                let codegen = match emitted.workers {
-                    None => crate::backend_process::origin::CodegenOrigin::in_process(),
-                    Some(workers) => {
-                        crate::backend_process::origin::CodegenOrigin::NativeWorkers { workers }
-                    }
-                };
                 Ok(DaemonCompiledOutput::WrittenToPath {
-                    codegen,
+                    codegen: emitted.codegen,
                     output: emitted.output,
                 })
             }

@@ -96,7 +96,7 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
     Ok(NativeApplicationArtifactResult {
         function_count,
         batch_count: total_batches,
-        workers: Some(workers),
+        codegen: crate::backend_process::origin::CodegenOrigin::NativeWorkers { workers },
         output,
     })
 }

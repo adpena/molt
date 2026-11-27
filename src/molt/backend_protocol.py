@@ -74,6 +74,7 @@ class BackendNativeWorkerOrigin:
 class BackendCodegenOrigin:
     process_id: int | None
     workers: tuple[BackendNativeWorkerOrigin, ...]
+    cached_object_key: str | None = None
 
     @classmethod
     def from_payload(cls, value: object, *, producer_pid: int) -> BackendCodegenOrigin:
@@ -102,11 +103,21 @@ class BackendCodegenOrigin:
                     for row in value["workers"]
                 ),
             )
+        if (
+            isinstance(value, dict)
+            and set(value) == {"kind", "cache_key"}
+            and value["kind"] == "cached-object"
+            and isinstance(value["cache_key"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", value["cache_key"]) is not None
+        ):
+            return cls(None, (), value["cache_key"])
         raise ValueError("backend codegen origin schema is invalid")
 
     def payload(self) -> dict[str, object]:
         if self.process_id is not None:
             return {"kind": "in-process", "process_id": self.process_id}
+        if self.cached_object_key is not None:
+            return {"kind": "cached-object", "cache_key": self.cached_object_key}
         return {
             "kind": "native-workers",
             "workers": [worker.payload() for worker in self.workers],
@@ -214,6 +225,8 @@ class BackendEmissionOrigin:
         codegen = BackendCodegenOrigin.from_payload(
             value["codegen"], producer_pid=producer.process_id
         )
+        if producer.scope is not None and codegen.cached_object_key is not None:
+            raise ValueError("supervised emission requires fresh object codegen")
         if any(worker.scope != producer.scope for worker in codegen.workers):
             raise ValueError(
                 "application worker origin belongs to another emission scope"

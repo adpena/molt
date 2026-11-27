@@ -4,7 +4,10 @@ use std::path::Path;
 use molt_backend::{SimpleBackend, SimpleIR};
 
 use super::super::{NativeApplicationArtifactOptions, NativeApplicationArtifactResult};
-use crate::backend_process::io_limits::write_output_path;
+use crate::backend_process::{
+    io_limits::write_output_path,
+    origin::{self, CodegenOrigin},
+};
 
 pub(crate) fn compile_single_native_application_artifact_to_path(
     ir: SimpleIR,
@@ -13,6 +16,7 @@ pub(crate) fn compile_single_native_application_artifact_to_path(
     function_count: usize,
 ) -> io::Result<NativeApplicationArtifactResult> {
     let mut backend = SimpleBackend::new_with_target(options.target_triple);
+    backend.require_fresh_emission = origin::current_scope().is_some();
     if options.stdlib_split_enabled {
         backend.skip_shared_stdlib_partition = true;
     }
@@ -40,7 +44,10 @@ pub(crate) fn compile_single_native_application_artifact_to_path(
     Ok(NativeApplicationArtifactResult {
         function_count,
         batch_count: 1,
-        workers: None,
+        codegen: match obj_output.reused_object_key {
+            Some(cache_key) => CodegenOrigin::CachedObject { cache_key },
+            None => CodegenOrigin::in_process(),
+        },
         output,
     })
 }

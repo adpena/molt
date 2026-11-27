@@ -444,6 +444,30 @@ def _native_record_fixture(tmp_path: Path):
     return result, data
 
 
+def test_cached_object_origin_preserves_its_condition_without_claiming_codegen(
+    tmp_path: Path,
+) -> None:
+    from molt.backend_protocol import BackendEmissionOrigin
+
+    result, _ = _native_record_fixture(tmp_path)
+    assert result.emission_origin is not None
+    payload = result.emission_origin.payload()
+    payload["codegen"] = {"kind": "cached-object", "cache_key": "a" * 64}
+    restored = BackendEmissionOrigin.from_payload(payload)
+    assert restored.codegen.cached_object_key == "a" * 64
+    assert restored.codegen.process_id is None
+    assert restored.payload() == payload
+    restored.verify_output(result.inputs.archive.path)
+
+    payload["codegen"] = {"kind": "cached-object", "cache_key": "A" * 64}
+    with pytest.raises(ValueError, match="codegen origin schema"):
+        BackendEmissionOrigin.from_payload(payload)
+    payload["codegen"] = {"kind": "cached-object", "cache_key": "a" * 64}
+    payload["producer"] = {"kind": "daemon", "process_id": 12345, "scope": "b" * 64}
+    with pytest.raises(ValueError, match="supervised emission requires fresh"):
+        BackendEmissionOrigin.from_payload(payload)
+
+
 def test_native_reuse_projects_current_facts_through_actual_consumers(
     tmp_path: Path, capsys
 ) -> None:

@@ -54,13 +54,19 @@ fn application_body_edit_reuses_independent_objects_and_matches_fresh_archive() 
     let (warm, warm_bytes) = run(source.clone(), "warm.a", &directory, "changed-stdlib");
     assert_eq!(cold_bytes, warm_bytes);
     assert_eq!(
-        cold.workers, warm.workers,
+        cold.codegen, warm.codegen,
         "a hit retains the actual original worker emission"
     );
     source.functions[1].ops[0].value = Some(42);
     let (edited, edited_bytes) = run(source.clone(), "edited.a", &directory, "changed-stdlib");
-    let old = cold.workers.as_ref().unwrap();
-    let new = edited.workers.as_ref().unwrap();
+    use crate::backend_process::origin::CodegenOrigin;
+    let (
+        CodegenOrigin::NativeWorkers { workers: old },
+        CodegenOrigin::NativeWorkers { workers: new },
+    ) = (&cold.codegen, &edited.codegen)
+    else {
+        panic!("partitioned archives must retain their worker emissions");
+    };
     assert_eq!(
         old[0], new[0],
         "unchanged entry object retains its emission"
