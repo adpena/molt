@@ -33,6 +33,25 @@ def _join_events(left: frozenset[str], right: frozenset[str]) -> frozenset[str]:
     return left | right
 
 
+def test_escaping_exception_preserves_completion_without_folding_bindings() -> None:
+    source = "assigned = callback()\nraise RuntimeError(assigned)\n"
+    assignment, raising = ast.parse(source).body
+    index = analyze_python_source_bindings(source)
+    assert (
+        index.statement_completions(assignment) == Completion.NORMAL | Completion.RAISE
+    )
+    assert index.statement_completions(raising) == Completion.RAISE
+    assert index.telemetry is not None
+    assert index.telemetry.observation_fold_calls == 0
+
+    escaping = Flow(raised=frozenset({"binding"})).discard_exception_state()
+    assert escaping.completions == Completion.RAISE
+    with pytest.raises(ValueError, match="requires its incoming state"):
+        escaping.apply_finally(
+            lambda state: Flow(normal=state), join_states=_join_events
+        )
+
+
 @pytest.mark.parametrize(
     "left,right",
     [

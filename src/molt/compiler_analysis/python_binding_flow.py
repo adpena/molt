@@ -95,6 +95,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 from molt.compiler_analysis.python_binding_facts import (
+    EscapingException,
     MODULE_IMPORT_METADATA_NAMES,
     PythonBindingFacts,
     PythonSourceArgument,
@@ -3255,6 +3256,7 @@ class _Analyzer:
         self.callback_module_slot_mask = 0
         self.callback_slot_mask = 0
         self._observed_stack: list[_ObservedStateFrame] = []
+        self._observes_exception_state = False
         self._module_history: list[int] = [0]
         self._active_module_states: tuple[int, ...] | None = None
         self._module_import_flow_required = False
@@ -7556,21 +7558,22 @@ class _Analyzer:
                 )
                 return self._normal_flow(self._apply_effects(current, effects), effects)
 
-            loop = PythonCompletionFlow.loop(
-                entry,
-                advance,
-                lambda exhausted: PythonCompletionFlow(normal=exhausted),
-                join_states=self.states.join,
-                equivalent_states=lambda left, right: (
-                    self.states.equivalent(left, right)
-                    and self.states.owner_tokens_equal(left, right)
-                ),
-                widen_state=lambda header: self.states.invalidate_members(
-                    self._widen_exposed_bindings(header),
-                    self.policy.callback_member_writes,
-                ),
-                finalize=finalize,
-            )
+            with self._observe_exception_state():
+                loop = PythonCompletionFlow.loop(
+                    entry,
+                    advance,
+                    lambda exhausted: PythonCompletionFlow(normal=exhausted),
+                    join_states=self.states.join,
+                    equivalent_states=lambda left, right: (
+                        self.states.equivalent(left, right)
+                        and self.states.owner_tokens_equal(left, right)
+                    ),
+                    widen_state=lambda header: self.states.invalidate_members(
+                        self._widen_exposed_bindings(header),
+                        self.policy.callback_member_writes,
+                    ),
+                    finalize=finalize,
+                )
             iteration = replace(
                 iteration,
                 release_effects=release_effects(),
@@ -8224,11 +8227,29 @@ class _Analyzer:
             scope.module_metadata_effects |= WRITES_MODULE_METADATA
         return state_id, effects
 
+    @contextmanager
+    def _observe_exception_state(self) -> Generator[None]:
+        # Consumers process any raising input before restoring the outer
+        # region's demand. Terminal raises only need their completion bit.
+        outer = self._observes_exception_state
+        self._observes_exception_state = True
+        try:
+            yield
+        finally:
+            self._observes_exception_state = outer
+
+    def _exception_exit(self) -> int | EscapingException:
+        if self._observes_exception_state:
+            return self._observed_stack[-1].exceptional_state(self.states)
+        return EscapingException.PRESENT
+
     def _merge_flows(
         self, *flows: PythonCompletionFlow[int]
     ) -> PythonCompletionFlow[int]:
         result: PythonCompletionFlow[int] = PythonCompletionFlow()
         for flow in flows:
+            if not self._observes_exception_state:
+                flow = flow.discard_exception_state()
             result = result.merge(flow, join_states=self.states.join)
         return result
 
@@ -8240,19 +8261,17 @@ class _Analyzer:
         # intermediate expression states, not only its successful exit state.
         if effects & ALLOCATES:
             effects |= RAISES
-        exceptional = (
-            self._observed_stack[-1].exceptional_state(self.states)
-            if effects & RAISES
-            else None
-        )
+        exceptional = self._exception_exit() if effects & RAISES else None
         failed_store = self._take_failed_store()
         if failed_store is not None:
             effects |= RAISES
-            exceptional = (
-                failed_store
-                if exceptional is None
-                else self.states.join(exceptional, failed_store)
-            )
+            if not self._observes_exception_state:
+                exceptional = EscapingException.PRESENT
+            elif exceptional is None:
+                exceptional = failed_store
+            else:
+                assert exceptional is not EscapingException.PRESENT
+                exceptional = self.states.join(exceptional, failed_store)
         return PythonCompletionFlow(
             normal=state_id, raised=exceptional, effects=effects
         )
@@ -8748,12 +8767,17 @@ class _Analyzer:
                     ),
                 )
                 effects |= bind_effects
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+        elif isinstance(node, ast.While):
             return self._exec_loop(node, state_id, scope)
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            return self._exec_with(node, state_id, scope)
-        elif isinstance(node, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-            return self._exec_try(node, state_id, scope)
+        elif isinstance(
+            node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.Try, ast.TryStar)
+        ):
+            with self._observe_exception_state():
+                if isinstance(node, (ast.For, ast.AsyncFor)):
+                    return self._exec_loop(node, state_id, scope)
+                if isinstance(node, (ast.With, ast.AsyncWith)):
+                    return self._exec_with(node, state_id, scope)
+                return self._exec_try(node, state_id, scope)
         elif isinstance(node, ast.Match):
             subject = self.eval_expr(node.subject, state_id, scope)
             flow = self._normal_flow(subject.state_id, subject.effects).without_normal()
@@ -9377,7 +9401,7 @@ class _Analyzer:
                 )
             self._record_state(state_id)
             return PythonCompletionFlow(
-                raised=self._observed_stack[-1].exceptional_state(self.states),
+                raised=self._exception_exit(),
                 effects=effects,
             )
         elif isinstance(node, ast.Assert):
@@ -9710,14 +9734,15 @@ class _Analyzer:
             flow = self._merge_flows(
                 flow, self.exec_statements(node.orelse, body.normal, scope)
             )
-        if body.raised is not None:
+        raised_state = body.exception_state()
+        if raised_state is not None:
             if isinstance(node, ast.TryStar):
                 handled = self._exec_try_star_handlers(
-                    node.handlers, body.raised, scope
+                    node.handlers, raised_state, scope
                 )
                 flow = self._merge_flows(flow, handled)
             else:
-                unmatched: int | None = body.raised
+                unmatched: int | None = raised_state
                 for handler in node.handlers:
                     if unmatched is None:
                         break
