@@ -122,8 +122,11 @@ pub fn run_generator_fusion(
                 {
                     Some(PollRefusal::MutableFrame)
                 } else if tti.supports_pending_call_eval_breaker_poll()
-                    && !super::super::async_work_poll::is_materialized(caller)
+                    && let Err(boundary) = super::super::async_work_poll::check_coverage(caller)
                 {
+                    if crate::tir::pass_manager::trace_func_enabled(&caller.name) {
+                        eprintln!("[generator-fusion] {}: uncovered {boundary:?}", caller.name);
+                    }
                     Some(PollRefusal::MissingObservation)
                 } else {
                     None

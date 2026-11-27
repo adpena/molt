@@ -63,7 +63,7 @@ pub(super) fn materialize_native_application_batch_jobs(
             .transpose()?;
         batch_specs.push(NativeBatchJobSpec {
             input_key,
-            job_name: format!("batch_{batch_idx}.json"),
+            job_name: format!("batch_{batch_idx}.msgpack"),
             job,
             object_path: batch_path,
         });

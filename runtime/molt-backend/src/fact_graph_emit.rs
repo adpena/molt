@@ -47,7 +47,6 @@ pub(crate) fn emit_fact_graph_for_ir(
         &mut tir_run.cached_tir,
         molt_backend::tir::pipeline_cache::TirOwnedModulePipelineOptions {
             cell_registry: None,
-            target_info: request.target_info,
             module_name: "fact_graph_module",
             non_inlinable: &non_inlinable,
             missing_tir_context: "fact graph TIR cache runner",

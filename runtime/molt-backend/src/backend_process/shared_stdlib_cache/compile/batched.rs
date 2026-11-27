@@ -154,7 +154,7 @@ impl PlannedStdlibArchive {
                     index + 1,
                     total
                 );
-                let origin = worker(&job, &format!("batch_{index}.json"), &object_path)?;
+                let origin = worker(&job, &format!("batch_{index}.msgpack"), &object_path)?;
                 // A constituent is independently closed and verified. Publish
                 // it before waiting for sibling jobs, so a failed or cancelled
                 // archive build retains completed work for the next request.

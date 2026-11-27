@@ -1010,7 +1010,6 @@ fn finalize_through_tir(mut functions: Vec<FunctionIR>) -> NativeFinalFunctions 
         &mut cached,
         crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
             cell_registry: None,
-            target_info: &target_info,
             module_name: "native_module",
             non_inlinable: &non_inlinable,
             missing_tir_context: "native final function custody",

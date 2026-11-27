@@ -75,7 +75,7 @@ pub struct NativeTerminalObject {
     target: Vec<u8>,
     pub declarations: Vec<FunctionIR>,
     checked: Vec<(FunctionId, CheckedProvider)>,
-    bodies: Vec<Option<Vec<u8>>>,
+    bodies: Vec<Option<serde_bytes::ByteBuf>>,
 }
 
 impl NativeTerminalArchive {
@@ -128,7 +128,7 @@ impl NativeTerminalArchive {
             let body = self.bodies[row.id.index()]
                 .take()
                 .expect("validated terminal body");
-            bodies.push(Some(body.wire));
+            bodies.push(Some(body.wire.into()));
         }
         bodies.resize_with(declarations.len(), || None);
         Ok(NativeTerminalObject {
