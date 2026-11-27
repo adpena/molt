@@ -3,7 +3,7 @@
 //! payloads, source location and eventual retirement remain authoritative.
 
 use crate::tir::blocks::{BlockId, Terminator};
-use crate::tir::dominators::{build_pred_map, exception_transfer_target};
+use crate::tir::dominators::exception_transfer_target;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{ExceptionEdgeKind, copy_kind_mints_owned_alias_ref_table};
 use crate::tir::ops::{OpCode, TirOp};
@@ -241,10 +241,6 @@ fn region(
     entry: Point,
 ) -> Option<Vec<Point>> {
     let (mut id, start) = entry;
-    let marker = func.blocks[&id].ops.get(start + 1)?;
-    if marker.opcode != OpCode::TryStart {
-        return None;
-    }
     let mut visited = HashSet::default();
     let mut at = start + 2;
     let mut observations = Vec::new();
@@ -281,20 +277,25 @@ fn region(
     }
 }
 
-pub(super) fn slots<B: CodegenBuilder>(
+pub(super) fn slots<'cfg, B: CodegenBuilder>(
     b: &mut B,
     func: &TirFunction,
     labels: &HashMap<i64, BlockId>,
+    predecessors: impl Fn() -> &'cfg HashMap<BlockId, Vec<BlockId>>,
 ) -> HashMap<Point, (Event, B::Slot)> {
     let mut slots = HashMap::default();
-    let preds = std::cell::OnceCell::new();
     for block in func.blocks.values() {
         for (index, op) in block.ops.iter().enumerate() {
-            if !nullary(op, OpKind::ExceptionPush) {
+            if !nullary(op, OpKind::ExceptionPush)
+                || block
+                    .ops
+                    .get(index + 1)
+                    .is_none_or(|op| op.opcode != OpCode::TryStart)
+            {
                 continue;
             }
             let entry = (block.id, index);
-            let preds = preds.get_or_init(|| build_pred_map(func));
+            let preds = predecessors();
             let Some(mut points) = region(func, preds, labels, entry) else {
                 continue;
             };

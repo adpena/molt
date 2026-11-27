@@ -375,6 +375,15 @@ pub fn compute_dominator_tree_with(
     policy: CfgEdgePolicy,
 ) -> DominatorTree {
     let rpo_order = reverse_postorder_with(func, policy);
+    compute_dominators_in_order(rpo_order, pred_map)
+}
+
+/// Build dominance from an existing executable reverse postorder. The order
+/// and predecessor map must describe the same CFG and edge policy.
+pub fn compute_dominators_in_order(
+    rpo_order: Vec<BlockId>,
+    pred_map: &HashMap<BlockId, Vec<BlockId>>,
+) -> DominatorTree {
     let positions: HashMap<BlockId, usize> = rpo_order
         .iter()
         .enumerate()

@@ -4,7 +4,7 @@
 use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
-use crate::tir::dominators::{build_pred_map, compute_dominator_tree, exception_transfer_target};
+use crate::tir::dominators::{compute_dominators_in_order, exception_transfer_target};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
@@ -26,10 +26,11 @@ impl CheckedBranch {
     /// Index just the checked producers that can consume an existing pair of
     /// edges. A single use census validates them after rewrites and includes
     /// operands on exceptional edges.
-    pub(super) fn packed(
+    pub(super) fn packed<'cfg>(
         func: &TirFunction,
         order: &[BlockId],
         exception_targets: &HashMap<i64, BlockId>,
+        predecessors: impl FnOnce() -> &'cfg HashMap<BlockId, Vec<BlockId>>,
     ) -> HashMap<BlockId, Self> {
         let mut candidates: HashMap<_, _> = order
             .iter()
@@ -83,7 +84,7 @@ impl CheckedBranch {
             return HashMap::default();
         }
 
-        let predecessors = build_pred_map(func);
+        let predecessors = predecessors();
         // The predecessor map deduplicates edges. A transfer from an earlier
         // exception observer in the same block would bypass the load as well.
         candidates.retain(|source, (branch, _)| {
@@ -97,7 +98,9 @@ impl CheckedBranch {
             return HashMap::default();
         }
 
-        let dominators = compute_dominator_tree(func, &predecessors);
+        // Stores and loads consumed wholly in the hit block need no tree.
+        let dominators =
+            std::cell::LazyCell::new(|| compute_dominators_in_order(order.to_vec(), predecessors));
         let uses: HashMap<ValueId, _> = candidates
             .iter()
             .flat_map(|(&source, &(branch, flag))| {
@@ -114,7 +117,9 @@ impl CheckedBranch {
                 if let Some((source, scope)) = uses.get(&value) {
                     let allowed = match *scope {
                         UseScope::BranchFlag => terminal && *source == reader,
-                        UseScope::Success(hit) => dominators.dominates(hit, reader),
+                        UseScope::Success(hit) => {
+                            hit == reader || dominators.dominates(hit, reader)
+                        }
                     };
                     if !allowed {
                         candidates.remove(source);
@@ -139,7 +144,9 @@ impl CheckedBranch {
 mod tests {
     use super::*;
     use crate::tir::blocks::TirBlock;
-    use crate::tir::dominators::{exception_label_to_block, executable_reverse_postorder};
+    use crate::tir::dominators::{
+        build_pred_map, exception_label_to_block, executable_reverse_postorder,
+    };
     use crate::tir::ops::{AttrValue, TirOp};
     use crate::tir::types::TirType;
 
@@ -190,10 +197,12 @@ mod tests {
         );
 
         let admitted = |func: &TirFunction| {
+            let predecessors = std::cell::LazyCell::new(|| build_pred_map(func));
             CheckedBranch::packed(
                 func,
                 &executable_reverse_postorder(func),
                 &exception_label_to_block(func),
+                || &predecessors,
             )
             .contains_key(&source)
         };

@@ -717,11 +717,13 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         runtime,
     } = input;
     use crate::tir::dominators::{
-        exception_labels_to_blocks, exception_transfer_target, executable_reverse_postorder,
+        build_pred_map, exception_labels_to_blocks, exception_transfer_target,
+        executable_reverse_postorder,
     };
     let entry_id = func.entry_block;
     let rpo = executable_reverse_postorder(func);
     let exception_targets = exception_labels_to_blocks(&func.label_id_map);
+    let predecessors = std::cell::LazyCell::new(|| build_pred_map(func));
     let exceptional_entry = exception_targets.values().any(|&target| target == entry_id);
     let entry_has_predecessor = rpo.iter().any(|id| {
         let block = &func.blocks[id];
@@ -838,7 +840,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         && runtime.contains(RuntimeFn::ExceptionPush)
         && runtime.contains(RuntimeFn::ExceptionPop)
     {
-        super::exception_levels::slots(b, func, &exception_targets)
+        super::exception_levels::slots(b, func, &exception_targets, || &predecessors)
     } else {
         HashMap::default()
     };
@@ -847,7 +849,9 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         b.jump(blocks[&entry_id], &entry_args);
     }
     let packed_branches =
-        super::checked_control::CheckedBranch::packed(func, &rpo, &exception_targets);
+        super::checked_control::CheckedBranch::packed(func, &rpo, &exception_targets, || {
+            &predecessors
+        });
     'block: for &id in &rpo {
         if id != entry_id || entry_has_predecessor {
             b.switch_to_block(blocks[&id]);
