@@ -53,8 +53,11 @@ class Methodology:
 
 
 def load(path: Path = AUTHORITY) -> Methodology:
-    with path.open("rb") as stream:
-        document = tomllib.load(stream)
+    return parse(path.read_text(encoding="utf-8"), label=str(path))
+
+
+def parse(text: str, *, label: str) -> Methodology:
+    document = tomllib.loads(text)
     if set(document) != {
         "schema",
         "version",
@@ -62,7 +65,7 @@ def load(path: Path = AUTHORITY) -> Methodology:
         "methodology",
         "mechanics",
     }:
-        raise ValueError(f"perf methodology authority keys are not exact: {path}")
+        raise ValueError(f"perf methodology authority keys are not exact: {label}")
     if document["schema"] != SCHEMA:
         raise ValueError(f"perf methodology schema is not {SCHEMA}")
     version = document["version"]
@@ -71,17 +74,29 @@ def load(path: Path = AUTHORITY) -> Methodology:
     locked = document["content_sha256"]
     if not isinstance(locked, str) or _SHA256.fullmatch(locked) is None:
         raise ValueError("perf methodology content_sha256 must be lowercase SHA-256")
+    if not isinstance(document["methodology"], list) or not isinstance(
+        document["mechanics"], list
+    ):
+        raise ValueError("perf methodology and mechanics must contain rows")
     paths: list[str] = []
     for row in document["methodology"]:
-        if set(row) != {"path", "role"} or not all(
-            isinstance(row[key], str) and row[key] for key in ("path", "role")
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"path", "role"}
+            or not all(
+                isinstance(row[key], str) and row[key] for key in ("path", "role")
+            )
         ):
             raise ValueError(f"invalid perf methodology row: {row!r}")
         paths.append(row["path"])
     mechanics: dict[str, str] = {}
     for row in document["mechanics"]:
-        if set(row) != {"path", "reason"} or not all(
-            isinstance(row[key], str) and row[key] for key in ("path", "reason")
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"path", "reason"}
+            or not all(
+                isinstance(row[key], str) and row[key] for key in ("path", "reason")
+            )
         ):
             raise ValueError(f"invalid perf mechanics row: {row!r}")
         mechanics[row["path"]] = row["reason"]
@@ -119,8 +134,23 @@ def identity(*, root: Path = REPO_ROOT) -> dict[str, object]:
     }
 
 
-def _rewrite_lock(path: Path, *, version: int, digest: str) -> None:
-    text = path.read_text(encoding="utf-8")
+def merged_version(
+    baseline: Methodology, current: Methodology, incoming: Methodology
+) -> int:
+    """Preserve explicit compatibility decisions on both sides of a merge."""
+    version = max(current.version, incoming.version)
+    if (
+        min(current.version, incoming.version) > baseline.version
+        and current.locked_sha256 != incoming.locked_sha256
+    ):
+        # Both sides declared an incompatible change starting at the same
+        # baseline. Neither side's version denotes the combined contract.
+        version += 1
+    return version
+
+
+def render_lock(text: str, *, version: int, digest: str) -> str:
+    """Change only the lock fields, preserving the authored scope and comments."""
     for pattern, value in (
         (r"^version = \d+$", f"version = {version}"),
         (r'^content_sha256 = "[0-9a-f]{64}"$', f'content_sha256 = "{digest}"'),
@@ -128,7 +158,18 @@ def _rewrite_lock(path: Path, *, version: int, digest: str) -> None:
         text, count = re.subn(pattern, value, text, count=1, flags=re.MULTILINE)
         if count != 1:
             raise ValueError(f"perf methodology authority lacks {pattern!r}")
-    path.write_text(text, encoding="utf-8")
+    return text
+
+
+def publish_lock(path: Path, text: str, *, version: int, digest: str) -> None:
+    from molt.file_publication import atomic_write_bytes
+
+    atomic_write_bytes(
+        path,
+        render_lock(text, version=version, digest=digest).encode("utf-8"),
+        purpose="methodology-lock",
+        create_parent=False,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,7 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     version = methodology.version + 1 if args.bump else methodology.version
-    _rewrite_lock(AUTHORITY, version=version, digest=digest)
+    text = AUTHORITY.read_text(encoding="utf-8")
+    publish_lock(AUTHORITY, text, version=version, digest=digest)
     print(f"perf methodology v{version}: locked at {digest[:12]}")
     return 0
 

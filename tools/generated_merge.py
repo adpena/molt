@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 import sys
 import tempfile
 import tomllib
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -28,6 +28,9 @@ bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.generator_io import generator_main, merge_eligible  # noqa: E402
+
+if TYPE_CHECKING:
+    from tools.perf_methodology import Methodology
 
 ROOT = _REPO_ROOT
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
@@ -177,11 +180,59 @@ def regenerate(root: Path, tools: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(paths)
 
 
-def resolve_generated_merge(run_git: GitRunner) -> bool:
-    """Resolve only an all-generated conflict set, then create the merge commit.
+_METHODOLOGY_LOCK = "config/perf_methodology.toml"
 
-    The caller invokes this only after a failed merge. Source conflicts return
-    False without writes; generator failures raise and leave the merge pending.
+
+def _merged_methodology_scope(
+    run_git: GitRunner,
+) -> tuple[str, int, Methodology] | None:
+    """Resolve the authored scope and compatibility decisions before writes."""
+    from tools import perf_methodology as method
+
+    entries = _git(run_git, "ls-files", "-u", "-z", "--", _METHODOLOGY_LOCK).stdout
+    stages = [entry.split("\t", 1)[0].split() for entry in entries.split("\0") if entry]
+    if [(mode, stage) for mode, _digest, stage in stages] != [
+        ("100644", str(stage)) for stage in (1, 2, 3)
+    ]:
+        return None
+    base, ours, theirs = (
+        _git(run_git, "show", f":{stage}:{_METHODOLOGY_LOCK}").stdout
+        for stage in (1, 2, 3)
+    )
+    baseline = method.parse(base, label="merge base")
+    current = method.parse(ours, label="current")
+    incoming = method.parse(theirs, label="incoming")
+    if min(current.version, incoming.version) < baseline.version:
+        return None
+    # Keep lock projections out of the authored merge. Valid placeholders
+    # keep even a mixed-file merge subject to the canonical TOML reader.
+    base, ours, theirs = (
+        method.render_lock(text, version=1, digest="0" * 64)
+        for text in (base, ours, theirs)
+    )
+    if ours == theirs or theirs == base:
+        merged = ours
+    elif ours == base:
+        merged = theirs
+    else:
+        with tempfile.TemporaryDirectory(prefix="molt-methodology-merge-") as raw:
+            paths = [Path(raw) / name for name in ("current", "base", "incoming")]
+            for path, text in zip(paths, (ours, base, theirs), strict=True):
+                path.write_text(text, encoding="utf-8")
+            result = run_git(("merge-file", "-p", *map(os.fspath, paths)))
+        if result.returncode:
+            # Only a real merge of authored text may authorize its scope.
+            return None
+        merged = result.stdout
+    scope = method.parse(merged, label="merged methodology")
+    return merged, method.merged_version(baseline, current, incoming), scope
+
+
+def resolve_generated_merge(run_git: GitRunner) -> bool:
+    """Resolve verified projections and commit the fully merged source tree.
+
+    Source conflicts return False without writes. Projection failures leave
+    the merge pending.
     """
     pending = _git(run_git, "diff", "--name-only", "--diff-filter=U", "-z").stdout
     paths = tuple(p for p in pending.split("\0") if p)
@@ -192,9 +243,10 @@ def resolve_generated_merge(run_git: GitRunner) -> bool:
     if "tools/generator_manifest.toml" in paths:
         return False
     owners = output_owners(root)
-    if any(path not in owners for path in paths):
+    generated = tuple(path for path in paths if path != _METHODOLOGY_LOCK)
+    if any(path not in owners for path in generated):
         return False
-    excluded = [path for path in paths if not owners[path].eligible]
+    excluded = [path for path in generated if not owners[path].eligible]
     if excluded:
         raise GeneratedMergeError(
             "\n".join(
@@ -209,12 +261,27 @@ def resolve_generated_merge(run_git: GitRunner) -> bool:
             "unstaged changes outside generated conflicts; merge left pending"
         )
     _git(run_git, "rev-parse", "--verify", "MERGE_HEAD")
-    tools = tuple(sorted({owners[path].tool for path in paths}))
-    outputs = regenerate(root, tools)
-    if not set(paths).issubset(outputs):
+    methodology = None
+    if _METHODOLOGY_LOCK in paths:
+        methodology = _merged_methodology_scope(run_git)
+        if methodology is None:
+            return False
+    tools = tuple(sorted({owners[path].tool for path in generated}))
+    outputs = regenerate(root, tools) if tools else ()
+    if not set(generated).issubset(outputs):
         raise GeneratedMergeError(
             "generator no longer produces every conflicted output"
         )
+    if methodology is not None:
+        from tools import perf_methodology as method
+
+        merged, version, scope = methodology
+        # Generators may own files in the methodology scope.
+        digest = method.content_sha256(scope, root=root)
+        method.publish_lock(
+            root / _METHODOLOGY_LOCK, merged, version=version, digest=digest
+        )
+        outputs = (*outputs, _METHODOLOGY_LOCK)
     # Literal, NUL-framed pathspecs preserve unusual filenames and stay below
     # Windows' command-line limit even for large generated families.
     with tempfile.TemporaryDirectory(prefix="molt-generated-stage-") as raw:
