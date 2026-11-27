@@ -6,10 +6,10 @@ over stale prose or precedent.
 
 ## Work as an early-stage, world-class AOT compiler project
 
-- Before each design, dispatch, review, landing or report, ask what an early-stage, world-class AOT
-  compiler project (early Bun, Zig, Go and LLVM; GraalVM Native Image, Codon, mypyc) would do; act
-  on it unprompted. Process only keeps trunk green and moving: short presubmit, revert within an
-  hour, few lanes, differential tests over implementation pins, gates apart from development load.
+- Start with the limiting user outcome and trace it across the pipeline. Pick the shared invariant
+  or missing fact whose correction removes the most work. Use a failing case or benchmark to
+  expose the mechanism and check a distinct case for the same mechanism. Keep presubmit short,
+  revert within an hour, and keep release gates apart from development load.
 
 ## Own the outcome
 
@@ -89,8 +89,9 @@ over stale prose or precedent.
   analysis prunes, specializes and inlines across it; cached per-module summaries keep rebuilds
   fast; pure module bodies run at build time into an immortal image heap; target facts
   (`sys.platform`, version) are constants. Plan: `stdlib_lowering_plan.md` "Closed-world stdlib".
-- Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
-  runtime memory management and every shipped backend/profile are first-class optimization surfaces.
+- Cranelift is the primary development and JIT backend. LLVM is the primary release backend and
+  emits WASM. Native and WASM name targets. Share optimization and ABI semantics across both
+  backends, and keep target-specific choices in lowering. GPU work is experimental.
 - Preserve deterministic CPython behavior by default while designing for free-threaded and GIL-less execution.
 - Support claims are explicit matrices over target OS, architecture, ABI, Python version,
   concurrency mode, backend, profile, and optimization level. Gate only on demonstrated capability,
@@ -102,9 +103,10 @@ over stale prose or precedent.
 
 - User-code compile/edit/rebuild latency outweighs compiler self-build time. Accept slower compiler
   builds for measured user-facing gains, preserving correctness, conformance and generated-code speed.
-- Account for hot/cold costs: syscalls, flushes, locks, I/O, spawns, allocations, peak memory,
-  serialization and unchanged-input work. Choose a simple coherent design; measure trades.
-  Cargo, Go and uv set the millisecond no-change rebuild bar.
+- Treat preparation as a dependency graph. Carry verified product identities through compiler,
+  runtime, object and link admission. Key reuse and invalidation on actual dependencies, including
+  typed bindings, effects, layouts and bodies across edits. Schedule independent misses under the
+  shared Cargo slots and memory budget. Measure waits, admission and execution separately.
 - Measure changed contracts before/after: latency/throughput, startup, allocation/I/O, peak live
   and process-tree memory, caches/atomics/contention, code/artifact size, link time, failure atomicity.
 - Time CPython with the uv-managed interpreter in isolated mode (`python3.X -I`); the dev
@@ -129,6 +131,9 @@ over stale prose or precedent.
   across it, not re-derived from shape. A lost fact must not fall to the generic runtime in
   silence: the pass that refuses says why in a build diagnostic. Compiled code carries the execution context,
   inlines common fast paths, and leaves the runtime as a cold fallback, not the operation.
+- Prove storage, bounds and ownership at the widest valid region in shared IR. Identify edges that
+  invalidate those facts and preserve the exact continuation, including committed effects and
+  observable frame state. Measure the emitted hot path before moving a check into a backend.
 - Closed world (`call_anatomy.md` 4.5a): Molt compiles the whole program, so a fact no code in it can
   change is a compile-time constant. A proven site emits the operation itself (an instruction, a
   fixed-offset load, a direct call of compiled code) and makes no runtime call to find, check or bind
@@ -139,14 +144,16 @@ over stale prose or precedent.
 
 ## Work with the live repository
 
-- Start with `uv run --no-project python -B tools/venv_exec.py python
-  tools/agent_coordination.py context` (plain `uv run` makes a checkout `.venv`: HF-522), `git status`,
-  nested instructions and proof state; for Pact work read only relevant `docs/agent/ORCHESTRATION.md`.
+- Start with the named checkout's Git identity, scoped status, nested instructions and relevant
+  claim or proof receipt. For unassigned work or repository-wide reconciliation, use
+  `uv run --no-project python -B tools/venv_exec.py python tools/agent_coordination.py context`.
+  That command inspects every registered worktree. Plain `uv run` creates a checkout `.venv` (HF-522).
 - `.python-version` and `uv.lock` are the one environment authority (`docs/design/one_environment.md`);
   never pass `--python` or call a bare `python3`, which override or bypass the pin.
 - Harvest and land signal; do not hoard it. A lane, worktree or WIP without a live worker and with
   unlanded commits is merged with main, proven and landed (or folded into main and retired) the
-  same day; preserve before moving, but preservation is never the end state.
+  same day. Check queue publication and managed retirement separately. Keep the remaining claim,
+  exact commit and proof receipt discoverable in the existing coordination record.
 - Preserve live user and parallel-agent work; never reset, clean, overwrite, revert or stage unrelated edits.
   Bind Git mutations to an explicit checkout (`git -C` or a bound Git object), assert its branch/HEAD
   and exact owned path set, and review the scoped diff before staging, committing or landing.
@@ -168,9 +175,9 @@ over stale prose or precedent.
 
 - Reconcile canonical authorities, history, handoffs and WIP before replacement/deletion; identify
   reuse, donors and custody. Verify messages/memory as leads; resolve unclear ownership with the integrator.
-- Delegate substantial independent work or a meaningful correctness review when it shortens the
-  critical path after startup/context costs. Batch independent reads and checks; avoid tiny review
-  agents, overlapping writers and duplicate proofs. The parent owns architecture and integration.
+- Keep an owner on the highest-impact compiler path. Delegate independent work or a load-bearing
+  review when it shortens that path after startup, build-slot and memory costs. Batch reads and
+  proofs. The parent owns architecture and integration.
 - One owner implements each ledger family across lanes; no other lane copies its facts. Dispatch
   with validated `DispatchBounds` via `tools/dispatch_prompt.py`; record ownership and handoffs in
   coordination records. `docs/ops/MULTI_AGENT_COORDINATION.md` owns brief review, budgets,
@@ -190,10 +197,11 @@ over stale prose or precedent.
   for load-bearing changes; recurse on new findings, not review quotas. With one proof owner, stop at
   sufficient evidence. Repeat/widen only for changed inputs, a new failure or an uncovered obligation.
   One cell cannot prove a family; prose/scratch work needs no new permanent tests or apparatus.
-- Separate development feedback from integration/release qualification. Run selected landing gates
-  once; CI arbitrates release candidates. Review matching receipts; avoid duplicate prechecks and
-  reflexive rechecks. Hand off a lane only after `tools/molt_dev.py land --repo <checkout>
-  --precheck-only` and its changed tests pass in the runner's plain environment, not a lane env.sh.
+- Separate development feedback from integration and release qualification. A worker handoff uses
+  `tools/molt_dev.py land --repo <checkout> --precheck-only` and changed tests in the runner's plain
+  environment. The integrator reuses matching receipts where admitted and lets the landing runner
+  execute required gates on the actual merge candidate. Queue submission and publication are
+  separate states. CI arbitrates release candidates.
 - Before each commit, `tools/consumer_gate.py run -- PATHS` runs the static gates, the reached
   Rust lib tests and first-hop importers as presubmit does (`-n auto --skip-slow`). Mark a test whose median is 60 s or more
   `@pytest.mark.slow`; postsubmit runs it (`docs/ops/INTEGRATION.md`).
@@ -202,8 +210,9 @@ over stale prose or precedent.
   Cargo writers. Measure the actual critical path before changing concurrency or coverage.
 - Preflight selected toolchain/target/runtime prerequisites with the actual child environment before
   expensive work; parser acceptance is not readiness. Validate mutations at their canonical boundary.
-- Stop dependent batches at the first failure and keep its receipts; classify product, harness,
-  artifact drift or unknown before retrying. Reuse phases only on matching source/tool/env/artifacts.
+- Stop dependent batches at the first failure and keep its receipts. Classify the failure before
+  retrying. Reuse a phase from its completed receipt only when source, toolchain, environment,
+  workload and artifact identities match. A log or existing file alone establishes none of these.
 - Every test file belongs to a proof cell; a test that no cell runs rots without notice.
 - Treat silent or frozen processes as unknown until logs, artifacts, guard state or live process evidence establish a result.
 - Before completion, review the owned diff, generated synchronization, docs, diagnostics, failure
