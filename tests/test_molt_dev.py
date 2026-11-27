@@ -104,11 +104,21 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 @pytest.fixture(autouse=True)
 def _private_host_work_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A landing under test takes a slot of its own, not this host's (HF-623)."""
+    """Isolate the synthetic landing scheduler from the running presubmit."""
     from molt import host_capacity
 
     monkeypatch.setattr(
         host_capacity, "host_work_dir", lambda _repo: tmp_path / "host-work"
+    )
+    gib = 1 << 30
+    monkeypatch.setattr(
+        host_capacity.HostWorkBudget,
+        "observe",
+        classmethod(
+            lambda _cls: host_capacity.HostWorkBudget(
+                host_capacity.cpu_count(), 32 * gib, 24 * gib
+            )
+        ),
     )
 
 
