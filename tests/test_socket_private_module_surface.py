@@ -275,11 +275,12 @@ behavior.update({{
 install_registry(behavior)
 
 
-def load(name, path):
+def load(name, path, *, register=True):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
+    if register:
+        sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -323,6 +324,20 @@ for supplied in (oracle.gaierror(9, "resolver"), OSError(9, "system")):
         assert caught is supplied
     else:
         raise AssertionError("getfqdn swallowed intrinsic error")
+# Execute the source against a caller-owned module object while its registry
+# entry names another object. CPython installs the constants into the
+# executing globals even in this case.
+for name, path in (
+    ("_cpython_socket_initialization", oracle.__file__),
+    ("_molt_socket_initialization", {str(STDLIB_ROOT / "socket.py")!r}),
+):
+    occupant = type(oracle)(name)
+    sys.modules[name] = occupant
+    module = load(name, path, register=False)
+    assert int(module.AF_INET) == int(oracle.AF_INET)
+    assert sys.modules[name] is occupant
+    assert "AF_INET" not in vars(occupant)
+
 print("canonical resolver identities and domains preserved")
 """
 
