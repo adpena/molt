@@ -425,7 +425,11 @@ suspension, for every backend.
   lift records both (`stateful_spill_base`, `stateful_frame_size`) and `lower_to_simple` re-emits
   them, so a relift never splits again. Type refinement types a reload of a spill slot as the join
   of what the split stores there (the split owns that area): an int loop index stays an int
-  across a suspension, so a counted range loop in a generator keeps its unchecked int machinery. The object that compiles the poll
+  across a suspension, so a counted range loop in a generator keeps its unchecked int machinery.
+  Exact SSA provenance follows the same edges, including stores after the reload in analysis
+  order. Only matching store types prove an exact reload. A conflicting store keeps the
+  Python operation dynamic. The slot continues to carry the original boxed Python value.
+  The object that compiles the poll
   defines the size as a data symbol (`molt_ir::code_slots::stateful_frame_size_symbol`), and
   each task trampoline (Cranelift and LLVM) loads it. No constructor needs the poll's body, and
   separately compiled objects (batches, the shared stdlib archive) agree through the linker. This

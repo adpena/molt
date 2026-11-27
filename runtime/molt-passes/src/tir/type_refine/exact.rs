@@ -111,14 +111,10 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
 }
 
 pub(crate) fn exact_scalar_map_from_plan(plan: ExactScalarPlan<'_>) -> HashMap<ValueId, TirType> {
-    let seeds = ExactSeeds {
-        params: &plan.func.exact_param_types,
-        call_results: None,
-    };
-    let mut facts = plan.solve_once(seeds);
-    facts.retain(|_, ty| comparison_scalar_domain(ty).is_some());
-    facts
+    plan.solve_scalars_and_spills().0
 }
+
+type SpillSources = HashMap<ValueId, Vec<ValueId>>;
 
 /// Every value of `func` the exact solver proves an instance of exactly one
 /// class statement (`TirType::Class`), from its own seeds and allocations.
@@ -149,6 +145,7 @@ pub(crate) struct ExactScalarPlan<'a> {
     incoming: HashMap<BlockId, Vec<Vec<ValueId>>>,
     initial: HashMap<ValueId, TirType>,
     has_feedback: bool,
+    spill_sources: SpillSources,
     users: OnceCell<ValueEdges<ValueId, usize>>,
     successful_integers: HashSet<ValueId>,
     checked: Cow<'a, CheckedResults>,
@@ -286,7 +283,10 @@ impl<'a> ExactScalarPlan<'a> {
             })
             .collect();
         let mut seen = HashSet::default();
-        let mut has_feedback = false;
+        let spill_sources = super::spill_slot_sources(func);
+        // A resume load can depend on a definition visited later in RPO,
+        // including a definition after that load in the very same block.
+        let mut has_feedback = !spill_sources.is_empty();
         for id in order.iter() {
             seen.insert(*id);
             let block = &func.blocks[id];
@@ -327,6 +327,7 @@ impl<'a> ExactScalarPlan<'a> {
             handlers,
             incoming,
             initial,
+            spill_sources,
             has_feedback,
             users: OnceCell::new(),
             returns,
@@ -382,6 +383,17 @@ impl<'a> ExactScalarPlan<'a> {
 
     pub(crate) fn solve(&self, seeds: ExactSeeds<'_>) -> HashMap<ValueId, TirType> {
         self.solve_from(self.initial.clone(), seeds)
+    }
+
+    pub(super) fn solve_scalars_and_spills(mut self) -> (HashMap<ValueId, TirType>, SpillSources) {
+        let seeds = ExactSeeds {
+            params: &self.func.exact_param_types,
+            call_results: None,
+        };
+        let initial = std::mem::take(&mut self.initial);
+        let mut facts = self.solve_from(initial, seeds);
+        facts.retain(|_, ty| comparison_scalar_domain(ty).is_some());
+        (facts, self.spill_sources)
     }
 
     fn solve_once(mut self, seeds: ExactSeeds<'_>) -> HashMap<ValueId, TirType> {
@@ -462,6 +474,11 @@ impl<'a> ExactScalarPlan<'a> {
             for op in &block.ops {
                 if op.results.is_empty() {
                     continue;
+                }
+                if let Some(sources) = self.spill_sources.get(&op.results[0]) {
+                    for &source in sources {
+                        users.add(source, rank);
+                    }
                 }
                 for &value in &op.operands {
                     if owners.get(&value).is_some_and(|&owner| owner != rank) {
@@ -556,6 +573,12 @@ impl<'a> ExactScalarPlan<'a> {
             {
                 // The late stage replaced an op whose result was exact.
                 vec![proven; op.results.len()]
+            } else if let Some(sources) = self.spill_sources.get(&first_result) {
+                // The physical reload restores a Python value. It can carry
+                // exact identity without changing the slot's boxed ABI.
+                vec![sources.iter().fold(TirType::Never, |ty, source| {
+                    ty.meet(facts.get(source).unwrap_or(&TirType::DynBox))
+                })]
             } else if self.successful_integers.contains(&first_result) {
                 // Semantic Python int, including a heap-backed BigInt.
                 vec![TirType::I64]

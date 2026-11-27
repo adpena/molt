@@ -122,7 +122,7 @@ fn extract_type_map_with_exact(
 /// Propagates changed facts to their users until the worklist is empty.
 /// Returns the number of values refined from DynBox to concrete types.
 pub fn refine_types(func: &mut TirFunction) -> usize {
-    let exact = extract_exact_scalar_map(func);
+    let (exact, spill_sources) = ExactScalarPlan::new(func).solve_scalars_and_spills();
     let mut all_value_ids: HashSet<ValueId> = HashSet::default();
     let mut defined_values: HashSet<ValueId> = HashSet::default();
     let mut produced_values: HashSet<ValueId> = HashSet::default();
@@ -288,10 +288,6 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             })
             .collect();
 
-    // A coroutine frame's spill slot holds only what the frame split stores
-    // there, so a reload has the type of those stores.
-    let spill_sources = spill_slot_sources(func);
-
     // Match exact provenance's exceptional-entry admission. Normal loop labels
     // and blocks beginning with an exception poll still have ordinary inputs.
     let has_eh = func.has_exception_handling;
@@ -445,9 +441,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // users keep scheduling deterministic without repeatedly queuing a block.
     let mut users: HashMap<ValueId, Vec<BlockId>> = HashMap::default();
     for &block_id in &block_order {
-        for (_, operands, _, _) in &ops_by_block[&block_id] {
+        for (_, operands, results, _) in &ops_by_block[&block_id] {
             for &operand in operands {
                 users.entry(operand).or_default().push(block_id);
+            }
+            if let Some(sources) = results.first().and_then(|result| spill_sources.get(result)) {
+                for &source in sources {
+                    users.entry(source).or_default().push(block_id);
+                }
             }
         }
         if reachable_blocks.contains(&block_id)
@@ -458,15 +459,6 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     for &argument in arguments {
                         users.entry(argument).or_default().push(block_id);
                     }
-                }
-            }
-        }
-    }
-    for &block_id in &block_order {
-        for (_, _, results, _) in &ops_by_block[&block_id] {
-            if let Some(sources) = results.first().and_then(|result| spill_sources.get(result)) {
-                for &source in sources {
-                    users.entry(source).or_default().push(block_id);
                 }
             }
         }
