@@ -8,7 +8,7 @@ use super::super::super::{
 
 pub(super) fn run_native_application_batches(
     output_path: &Path,
-    batch_specs: &[NativeBatchJobSpec],
+    batch_specs: Vec<NativeBatchJobSpec>,
     log_prefix: &str,
     cache: Option<&crate::backend_process::shared_stdlib_cache::NativeObjectCache>,
 ) -> io::Result<(
@@ -19,21 +19,23 @@ pub(super) fn run_native_application_batches(
 
     // Batches compile in parallel worker processes on the request's pool; the
     // archive keeps batch order.
-    let constituents = molt_backend::tir::pipeline_cache::request_parallel_map(
-        0..batch_specs.len(),
-        |batch_idx| {
-            let spec = &batch_specs[batch_idx];
+    let total = batch_specs.len();
+    let jobs: Vec<_> = batch_specs.into_iter().enumerate().collect();
+    let constituents =
+        molt_backend::tir::pipeline_cache::request_parallel_map(jobs, |(batch_idx, spec)| {
             if let (Some(cache), Some(key)) = (cache, spec.input_key.as_ref())
                 && let Some((object, origin)) = cache.admit(key)?
             {
                 return Ok((object, origin, true));
             }
             eprintln!(
-                "{log_prefix}: compiling materialized batch {}/{}",
-                batch_idx + 1,
-                batch_specs.len()
+                "{log_prefix}: compiling materialized batch {}/{total}",
+                batch_idx + 1
             );
             let job = spec.job.encode()?;
+            // The byte stream owns this input now. Later jobs need neither
+            // its terminal bodies nor its projected declarations.
+            drop(spec.job);
             let origin = run_native_batch_worker_with_failure_artifacts(
                 "native application batch worker",
                 &job,
@@ -46,10 +48,9 @@ pub(super) fn run_native_application_batches(
                 origin
             };
             Ok::<_, io::Error>((MappedObject::file(&spec.object_path)?, origin, false))
-        },
-    )
-    .into_iter()
-    .collect::<io::Result<Vec<_>>>()?;
+        })
+        .into_iter()
+        .collect::<io::Result<Vec<_>>>()?;
     release_native_backend_batch_memory_to_os();
 
     let hits = constituents.iter().filter(|(_, _, hit)| *hit).count();
@@ -60,7 +61,7 @@ pub(super) fn run_native_application_batches(
     let output = write_native_archive_objects(output_path, &objects)?;
     eprintln!(
         "{log_prefix}: application object reuse: {hits} hits, {} misses",
-        batch_specs.len() - hits
+        total - hits
     );
     Ok((output, origins))
 }
@@ -73,32 +74,35 @@ mod tests {
     fn the_lowest_index_failure_is_reported_whatever_the_schedule() {
         let dir = std::env::temp_dir().join(format!("molt-batch-workers-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let specs: Vec<_> = (0..8)
-            .map(|index| NativeBatchJobSpec {
-                input_key: None,
-                job_name: format!("invalid-job-{index}.json"),
-                job: crate::NativeBatchObjectJob {
-                    ir: molt_backend::SimpleIR {
-                        functions: Vec::new(),
-                        profile: None,
-                    }
-                    .into(),
-                    // A reusable object cannot own the application's slots.
-                    code_slots: Some(Default::default()),
-                    module_context: Default::default(),
-                    codegen_environment:
-                        molt_ir::backend_environment::NativeCodegenEnvironment::capture().unwrap(),
-                    target_triple: None,
-                    emit_app_callable_resolver: false,
-                    app_callable_manifest: None,
-                    external_function_names: Default::default(),
-                    module_registry: None,
-                },
-                object_path: dir.join(format!("object-{index}.o")),
-            })
-            .collect();
+        let specs = || {
+            (0..8)
+                .map(|index| NativeBatchJobSpec {
+                    input_key: None,
+                    job_name: format!("invalid-job-{index}.json"),
+                    job: crate::NativeBatchObjectJob {
+                        ir: molt_backend::SimpleIR {
+                            functions: Vec::new(),
+                            profile: None,
+                        }
+                        .into(),
+                        // A reusable object cannot own the application's slots.
+                        code_slots: Some(Default::default()),
+                        module_context: Default::default(),
+                        codegen_environment:
+                            molt_ir::backend_environment::NativeCodegenEnvironment::capture()
+                                .unwrap(),
+                        target_triple: None,
+                        emit_app_callable_resolver: false,
+                        app_callable_manifest: None,
+                        external_function_names: Default::default(),
+                        module_registry: None,
+                    },
+                    object_path: dir.join(format!("object-{index}.o")),
+                })
+                .collect()
+        };
         for _ in 0..4 {
-            let error = run_native_application_batches(&dir.join("out.a"), &specs, "test", None)
+            let error = run_native_application_batches(&dir.join("out.a"), specs(), "test", None)
                 .expect_err("every job is invalid");
             assert!(
                 error.to_string().contains("invalid-job-0.json"),
