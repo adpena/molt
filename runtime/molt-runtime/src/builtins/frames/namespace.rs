@@ -35,6 +35,46 @@ pub(crate) fn globals_namespace_storage_ptr(
         .and_then(|bits| obj_from_bits(bits).as_ptr()))
 }
 
+/// A Python activation's owned globals, builtins and code. The handoff
+/// owns each edge once and transfers it to a frame or task, or drops it if
+/// entry fails before publication.
+pub(crate) struct OwnedFrameNamespace<'a, 'py> {
+    py: &'a PyToken<'py>,
+    bits: [u64; 3],
+}
+
+impl<'a, 'py> OwnedFrameNamespace<'a, 'py> {
+    /// Adopt one already-owned reference to each nonzero word.
+    pub(crate) fn adopt(py: &'a PyToken<'py>, bits: [u64; 3]) -> Self {
+        Self { py, bits }
+    }
+
+    pub(crate) fn retain(py: &'a PyToken<'py>, bits: [u64; 3]) -> Self {
+        for word in bits {
+            inc_ref_bits(py, word);
+        }
+        Self::adopt(py, bits)
+    }
+
+    pub(crate) fn bits(&self) -> [u64; 3] {
+        self.bits
+    }
+
+    pub(crate) fn into_bits(mut self) -> [u64; 3] {
+        std::mem::take(&mut self.bits)
+    }
+}
+
+impl Drop for OwnedFrameNamespace<'_, '_> {
+    fn drop(&mut self) {
+        for word in self.bits {
+            if word != 0 {
+                dec_ref_bits(self.py, word);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct CodeNamespace {
     pub(crate) code_bits: u64,
@@ -50,6 +90,16 @@ impl CodeNamespace {
     pub(crate) fn release(self, py: &PyToken<'_>) {
         dec_ref_bits(py, self.code_bits);
         dec_ref_bits(py, self.globals_bits);
+    }
+
+    /// Move this acquired slot's references into the activation.
+    pub(crate) fn with_builtins<'a, 'py>(
+        self,
+        py: &'a PyToken<'py>,
+        builtins: u64,
+    ) -> OwnedFrameNamespace<'a, 'py> {
+        inc_ref_bits(py, builtins);
+        OwnedFrameNamespace::adopt(py, [self.globals_bits, builtins, self.code_bits])
     }
 }
 
@@ -180,10 +230,10 @@ pub(crate) fn pending_invocation(py: &PyToken<'_>) -> Option<*mut u8> {
 
 /// Retains the pending context for a task constructor that precedes frame entry.
 /// The eventual compiled entry still takes the original handoff exactly once.
-pub(crate) fn acquire_pending_invocation_context(
-    py: &PyToken<'_>,
+pub(crate) fn acquire_pending_invocation_context<'a, 'py>(
+    py: &'a PyToken<'py>,
     target: u64,
-) -> Option<[u64; 3]> {
+) -> Option<OwnedFrameNamespace<'a, 'py>> {
     acquire_function_context(py, pending_invocation(py)?, target)
 }
 
@@ -191,20 +241,13 @@ pub(crate) fn acquire_pending_invocation_context(
 /// target is `target`: the frame context of a task whose poll is that target.
 /// A compiled task constructor names its function directly; a trampoline names
 /// it through the pending invocation.
-pub(crate) fn acquire_function_context(
-    py: &PyToken<'_>,
+pub(crate) fn acquire_function_context<'a, 'py>(
+    py: &'a PyToken<'py>,
     function: *mut u8,
     target: u64,
-) -> Option<[u64; 3]> {
-    let [globals, builtins, code] = pending_namespace(function)?;
-    if !code_targets_callable(code, target) {
-        return None;
-    }
-    let context = [globals, builtins, code];
-    for bits in context {
-        inc_ref_bits(py, bits);
-    }
-    Some(context)
+) -> Option<OwnedFrameNamespace<'a, 'py>> {
+    let namespace = pending_namespace(function)?;
+    code_targets_callable(namespace[2], target).then(|| OwnedFrameNamespace::retain(py, namespace))
 }
 
 /// Publishes the invoker's callable for the compiled frame entry it calls, as
@@ -264,10 +307,10 @@ impl Drop for FrameInvocationGuard<'_, '_> {
 /// `Ok(None)`: no invoker handed this slot a namespace, and the entry takes its
 /// code slot's defaults. `Err`: the handed namespace has no globals mapping;
 /// the error is pending.
-pub(crate) fn take_invocation_namespace(
-    py: &PyToken<'_>,
+pub(crate) fn take_invocation_namespace<'a, 'py>(
+    py: &'a PyToken<'py>,
     slot: u64,
-) -> Result<Option<[u64; 3]>, ()> {
+) -> Result<Option<OwnedFrameNamespace<'a, 'py>>, ()> {
     let Some(namespace) = pending_invocation(py).and_then(pending_namespace) else {
         return Ok(None);
     };
@@ -286,8 +329,5 @@ pub(crate) fn take_invocation_namespace(
         }
         return Err(());
     }
-    for bits in namespace {
-        inc_ref_bits(py, bits);
-    }
-    Ok(Some(namespace))
+    Ok(Some(OwnedFrameNamespace::retain(py, namespace)))
 }

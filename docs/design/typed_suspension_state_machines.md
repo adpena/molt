@@ -512,3 +512,12 @@ standalone sidecar is used for caller-managed storage or an unpublished inline-t
 transition. Resource admission and rollback count a combined block as one allocation.
 CPython also embeds its activation in the generator allocation
 ([genobject.c](https://github.com/python/cpython/blob/main/Objects/genobject.c)).
+
+**Activation namespace custody (2026-11-27, HF-855).** A runtime entry acquires the exact
+globals, builtins and code once. The acquisition owns those words until the task's
+persistent frame or the synchronous record takes them. Refusal before that transfer
+releases the acquisition, and a linked record owns its namespace even on the
+out-of-memory path that preserves a traceback. The runtime dataclass body reads from
+that same owned snapshot. This follows the ownership-transfer pattern in CPython's
+[frame initialization](https://github.com/python/cpython/blob/main/Include/internal/pycore_interpframe.h),
+which consumes its function reference and reads the namespaces from the retained function.

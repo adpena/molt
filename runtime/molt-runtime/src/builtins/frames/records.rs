@@ -701,9 +701,7 @@ mod tests {
             // Homes taken with a record must not disturb the chain.
             assert!(frame_stack_enter(
                 py,
-                0,
-                0,
-                0,
+                crate::builtins::frames::OwnedFrameNamespace::adopt(py, [0, 0, 0]),
                 FramePlan {
                     homes: 3,
                     ..FramePlan::default()
@@ -747,9 +745,7 @@ mod tests {
             for _ in 0..40 {
                 assert!(frame_stack_enter(
                     py,
-                    0,
-                    0,
-                    0,
+                    crate::builtins::frames::OwnedFrameNamespace::adopt(py, [0, 0, 0]),
                     FramePlan {
                         homes: 1000,
                         ..FramePlan::default()

@@ -64,13 +64,14 @@ pub(crate) fn molt_spliced_frame_link_attached_body(
         let plan = context.and_then(|(_, _, code)| FramePlan::for_code(py, code).ok());
         match (context, plan) {
             (Some((globals, builtins, code)), Some(plan)) => {
-                for bits in [globals, builtins, code] {
-                    inc_ref_bits(py, bits);
-                }
                 // A record without room for its homes is still linked: the
                 // frame keeps its code and line, as a `MemoryError`
                 // traceback keeps it.
-                let entered = super::frame_stack_enter(py, code, globals, builtins, plan);
+                let entered = super::frame_stack_enter(
+                    py,
+                    super::OwnedFrameNamespace::retain(py, [globals, builtins, code]),
+                    plan,
+                );
                 let location = int(location_bits)
                     .and_then(|location| u64::try_from(location).ok())
                     .map_or(LocationId::from_word(0), LocationId::from_word);

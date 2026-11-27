@@ -450,16 +450,15 @@ pub(crate) fn object_frame_builtins_bits(ptr: *mut u8) -> u64 {
     object_frame_context_bits(ptr)[1]
 }
 
-/// Capture borrowed activation context before task publication. An unavailable
+/// Install an acquired activation namespace before task publication. An unavailable
 /// namespace stays unavailable rather than being recomputed on resume.
 pub(crate) unsafe fn object_init_frame_context_unpublished(
     py: &crate::PyToken<'_>,
     ptr: *mut u8,
-    globals_bits: u64,
-    builtins_bits: u64,
-    code_bits: u64,
+    namespace: crate::builtins::frames::OwnedFrameNamespace<'_, '_>,
 ) -> bool {
-    if [globals_bits, builtins_bits, code_bits] == [0; 3] {
+    let [globals_bits, _, code_bits] = namespace.bits();
+    if namespace.bits() == [0; 3] {
         return true;
     }
     unsafe {
@@ -491,11 +490,7 @@ pub(crate) unsafe fn object_init_frame_context_unpublished(
         debug_assert_eq!(sidecar.frame_globals.load(Ordering::Acquire), 0);
         debug_assert_eq!(sidecar.frame_builtins.load(Ordering::Acquire), 0);
         debug_assert_eq!(sidecar.frame_code.load(Ordering::Acquire), 0);
-        for bits in [globals_bits, builtins_bits, code_bits] {
-            if bits != 0 {
-                crate::inc_ref_bits(py, bits);
-            }
-        }
+        let [globals_bits, builtins_bits, code_bits] = namespace.into_bits();
         sidecar.frame_globals.store(globals_bits, Ordering::Release);
         sidecar
             .frame_builtins
@@ -741,7 +736,14 @@ mod tests {
                     let ptr = crate::obj_from_bits(task).as_ptr().unwrap();
                     assert_eq!(super::object_frame_context_bits(ptr), [0; 3]);
                     assert!(unsafe {
-                        super::object_init_frame_context_unpublished(py, ptr, bits, bits, code_bits)
+                        super::object_init_frame_context_unpublished(
+                            py,
+                            ptr,
+                            crate::builtins::frames::OwnedFrameNamespace::retain(
+                                py,
+                                [bits, bits, code_bits],
+                            ),
+                        )
                     });
                     assert_eq!(refcount(), baseline + 2);
                     assert_eq!(code_refcount(), code_baseline + 1);
