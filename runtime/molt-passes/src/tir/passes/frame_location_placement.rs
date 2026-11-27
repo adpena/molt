@@ -681,20 +681,17 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         let block = &func.blocks[&bid];
         let mut definition = Publication::Entry(bid);
         for (index, op) in block.ops.iter().enumerate() {
-            match op.opcode {
-                OpCode::FrameSetLocation => definition = Publication::Store(bid, index),
-                OpCode::CheckException => {
-                    let (materializes, reads) = check_uses(op);
-                    if reads {
-                        pending.push(definition);
-                    } else if !materializes && let Some(handler) = check_handler(op, &labels) {
-                        incoming.entry(handler).or_default().push(definition);
-                    }
-                }
-                _ if operation_reads(op, &types, releases.get(&(bid, index)).copied()) => {
+            if op.opcode == OpCode::FrameSetLocation {
+                definition = Publication::Store(bid, index);
+            } else if op.opcode == OpCode::CheckException {
+                let (materializes, reads) = check_uses(op);
+                if reads {
                     pending.push(definition);
+                } else if !materializes && let Some(handler) = check_handler(op, &labels) {
+                    incoming.entry(handler).or_default().push(definition);
                 }
-                _ => {}
+            } else if operation_reads(op, &types, releases.get(&(bid, index)).copied()) {
+                pending.push(definition);
             }
         }
         match &block.terminator {
