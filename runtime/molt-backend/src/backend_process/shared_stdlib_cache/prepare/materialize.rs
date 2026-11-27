@@ -18,11 +18,10 @@ pub(crate) static MATERIALIZED: std::sync::Mutex<std::collections::BTreeMap<Stri
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 pub(crate) fn materialize_stdlib_cache(
-    ir: &mut SimpleIR,
+    ir: &SimpleIR,
     stdlib_path: &Path,
     request: &NativeStdlibCachePrepare<'_>,
     current_partition_manifest: &str,
-    user_remaining: &mut Vec<molt_backend::FunctionIR>,
     stdlib_funcs: &mut Vec<molt_backend::FunctionIR>,
     module_context: &molt_backend::NativeBackendModuleContext,
 ) -> io::Result<()> {
@@ -132,12 +131,6 @@ pub(crate) fn materialize_stdlib_cache(
         }
     }
 
-    ir.functions = std::mem::take(user_remaining);
-    eprintln!(
-        "{}: compiling {} user functions",
-        request.log_prefix,
-        ir.functions.len()
-    );
     Ok(())
 }
 

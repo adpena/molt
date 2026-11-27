@@ -10,7 +10,6 @@ mod materialize;
 pub(crate) use materialize::MATERIALIZED;
 mod partition;
 mod request;
-mod reuse;
 
 pub(crate) use request::NativeStdlibCachePrepare;
 
@@ -51,44 +50,70 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         let mut prepared =
             partition::prepare_stdlib_partition(ir, &request, &module_registry_roots, stdlib_path)?;
         module_context = Some(prepared.module_context.clone());
-        let reuse = |ir: &mut SimpleIR, prepared: &mut partition::PreparedStdlibPartition| {
-            reuse::try_reuse_existing_stdlib_cache(
-                ir,
+        let stdlib_count = prepared.stdlib_funcs.len();
+        let can_reuse = request.can_reuse_stdlib_cache();
+        let reuse = || {
+            if !can_reuse {
+                return Ok(false);
+            }
+            super::admit_or_invalidate_shared_stdlib_cache(
                 stdlib_path,
-                &request,
+                request.expected_cache_key,
+                request.expected_cache_manifest,
                 &prepared.current_partition_manifest,
-                &mut prepared.user_remaining,
-                &mut prepared.stdlib_funcs,
+                stdlib_count,
+                request.log_prefix,
             )
         };
         // Warm builds reuse without waiting. On a miss, builds that need the
         // same shared entry take its producer lock and check again: one
         // compiles, and the rest hydrate the archive it published.
-        if !reuse(ir, &mut prepared)? {
-            let mut produce = || -> io::Result<()> {
-                if reuse(ir, &mut prepared)? {
-                    return Ok(());
+        let mut reused = reuse()?;
+        if !reused {
+            let mut produce = || -> io::Result<bool> {
+                if reuse()? {
+                    return Ok(true);
                 }
                 materialize::materialize_stdlib_cache(
                     ir,
                     stdlib_path,
                     &request,
                     &prepared.current_partition_manifest,
-                    &mut prepared.user_remaining,
                     &mut prepared.stdlib_funcs,
                     &prepared.module_context,
-                )
+                )?;
+                Ok(false)
             };
             // Only a build that could reuse the entry waits for its producer;
             // the others compile in parallel, as they must compile anyway.
-            if request.can_reuse_stdlib_cache() {
+            reused = if can_reuse {
                 super::with_shared_stdlib_cache_producer_lock(
                     &super::resolved_archive_path(stdlib_path)?,
                     produce,
                 )?
             } else {
                 produce()?
-            }
+            };
+        }
+        // Partitioning owns the application document, including its referenced
+        // extern rows. Whether the stdlib archive needed production cannot add
+        // declarations to that document or change its action identity.
+        ir.functions = prepared.user_remaining;
+        let extern_count = ir
+            .functions
+            .iter()
+            .filter(|function| function.is_extern)
+            .count();
+        let user_count = ir.functions.len() - extern_count;
+        let log_prefix = request.log_prefix;
+        if reused {
+            eprintln!(
+                "{log_prefix}: incremental -- compiling {user_count} user functions \
+                 ({extern_count} stdlib extern from {})",
+                stdlib_path.display()
+            );
+        } else {
+            eprintln!("{log_prefix}: compiling {user_count} user functions");
         }
         app_callable_manifest = Some(prepared.app_callable_manifest);
     }

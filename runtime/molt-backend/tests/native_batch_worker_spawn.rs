@@ -553,7 +553,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     );
     assert!(
         warm_stderr.contains("incremental -- compiling")
-            && warm_stderr.contains("2 stdlib extern from")
+            && warm_stderr.contains("1 stdlib extern from")
             && warm_stderr.contains(
                 "application archive plan reuse (6 objects, no terminal TIR preparation)"
             )
