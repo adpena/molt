@@ -106,6 +106,8 @@
 //! Truthiness keeps the original `Bool` as its slow arm until `CallRuntime` can
 //! carry a raw-bits result through type refinement.
 
+use std::cell::OnceCell;
+
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 use molt_ir::ir::CodeTemperature;
 
@@ -954,6 +956,144 @@ fn expansion_of(
     }
 }
 
+pub(crate) fn prepare_scalar_edges(func: &mut TirFunction) -> usize {
+    let mut representations = OnceCell::new();
+    let threaded = thread_inline_int_edges(func, &representations);
+    if threaded != 0 {
+        representations.take();
+    }
+    threaded + box_raw_edge_args(func, &representations)
+}
+
+/// Bypass an inline-int test and decode on incoming edges that already carry
+/// the raw payload. Other edges keep the original test and its boxed failure
+/// arguments. In particular, a composed packed read can pass its hit directly
+/// to arithmetic after its observers, while the ordinary getter result is
+/// still checked and may leave for the wide-integer loop.
+fn thread_inline_int_edges(
+    func: &mut TirFunction,
+    representations: &OnceCell<HashMap<ValueId, Repr>>,
+) -> usize {
+    let mut projections: Vec<_> = func
+        .blocks
+        .values()
+        .filter_map(|dispatch| {
+            let [word] = dispatch.args.as_slice() else {
+                return None;
+            };
+            let [test] = dispatch.ops.as_slice() else {
+                return None;
+            };
+            let Terminator::CondBranch {
+                cond,
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+            } = &dispatch.terminator
+            else {
+                return None;
+            };
+            if test.opcode != OpCode::IsInlineInt
+                || test.operands.as_slice() != [word.id]
+                || test.results.as_slice() != [*cond]
+                || !then_args.is_empty()
+                || then_block == else_block
+                || *then_block == func.entry_block
+                || func.loop_roles.contains_key(then_block)
+            {
+                return None;
+            }
+            let decode = func.blocks.get(then_block)?;
+            let unbox = decode.ops.first()?;
+            let [payload] = unbox.results.as_slice() else {
+                return None;
+            };
+            (decode.args.is_empty()
+                && unbox.opcode == OpCode::UnboxInlineInt
+                && unbox.operands.as_slice() == [word.id])
+            .then(|| {
+                let boxed_uses = 2 + else_args.iter().filter(|&&v| v == word.id).count();
+                (
+                    dispatch.id,
+                    word.id,
+                    *cond,
+                    *then_block,
+                    *payload,
+                    boxed_uses,
+                )
+            })
+        })
+        .collect();
+    if projections.is_empty() {
+        return 0;
+    }
+    projections.sort_unstable();
+    let uses = super::dce::build_use_counts(func);
+    let preds = crate::tir::dominators::build_pred_map(func);
+    let repr =
+        representations.get_or_init(|| crate::representation_facts::analyze_representations(func));
+    let mut threaded = 0;
+    for (dispatch, word, test, success, payload, boxed_uses) in projections {
+        // Once the success block has another entry, the original phi word no
+        // longer dominates it. Leave its remaining uses in the tested arm.
+        if preds[&success] != [dispatch]
+            || uses.get(&word) != Some(&boxed_uses)
+            || uses.get(&test) != Some(&1)
+        {
+            continue;
+        }
+        if !is_boxed_word(repr, word) {
+            continue;
+        }
+        let incoming: Vec<_> = preds[&dispatch]
+            .iter()
+            .filter_map(|&from| {
+                let Terminator::Branch { target, args } = &func.blocks[&from].terminator else {
+                    return None;
+                };
+                let [value] = args.as_slice() else {
+                    return None;
+                };
+                (*target == dispatch && repr.get(value) == Some(&Repr::RawI64Safe)).then_some(from)
+            })
+            .collect();
+        if incoming.is_empty() {
+            continue;
+        }
+        let decode = func.fresh_block();
+        let decoded = func.fresh_value();
+        func.value_types.insert(decoded, TirType::I64);
+        let success_body = func.blocks.get_mut(&success).unwrap();
+        let mut unbox = success_body.ops.remove(0);
+        unbox.results[0] = decoded;
+        success_body.args.push(TirValue {
+            id: payload,
+            ty: TirType::I64,
+        });
+        func.blocks.insert(
+            decode,
+            new_block(decode, vec![unbox], branch(success, decoded)),
+        );
+        let Terminator::CondBranch { then_block, .. } =
+            &mut func.blocks.get_mut(&dispatch).unwrap().terminator
+        else {
+            unreachable!("inline-int dispatch");
+        };
+        *then_block = decode;
+        for from in incoming {
+            let Terminator::Branch { target, .. } =
+                &mut func.blocks.get_mut(&from).unwrap().terminator
+            else {
+                unreachable!("admitted branch");
+            };
+            *target = success;
+            threaded += 1;
+        }
+    }
+    threaded
+}
+
 /// Split each conditional edge that passes a raw scalar to a boxed block
 /// argument.
 ///
@@ -966,7 +1106,10 @@ fn expansion_of(
 /// leaves. The block holds no op: an explicit `BoxVal` would be a boxed
 /// observation of the binding, and the representation plan would then box
 /// the whole loop carrier. Returns the edges it split.
-pub fn box_raw_edge_args(func: &mut TirFunction) -> usize {
+fn box_raw_edge_args(
+    func: &mut TirFunction,
+    representations: &OnceCell<HashMap<ValueId, Repr>>,
+) -> usize {
     let mut blocks: Vec<_> = func
         .blocks
         .iter()
@@ -984,7 +1127,8 @@ pub fn box_raw_edge_args(func: &mut TirFunction) -> usize {
     }
     blocks.sort_unstable();
 
-    let repr = crate::representation_facts::analyze_representations(func);
+    let repr =
+        representations.get_or_init(|| crate::representation_facts::analyze_representations(func));
     let raw_scalar = |value: ValueId| {
         matches!(
             repr.get(&value),
@@ -1008,7 +1152,7 @@ pub fn box_raw_edge_args(func: &mut TirFunction) -> usize {
                 && args
                     .iter()
                     .zip(&func.blocks[&target].args)
-                    .any(|(&arg, param)| raw_scalar(arg) && is_boxed_word(&repr, param.id)))
+                    .any(|(&arg, param)| raw_scalar(arg) && is_boxed_word(repr, param.id)))
             .then(|| (target, args.to_vec()))
         };
         let edges = [

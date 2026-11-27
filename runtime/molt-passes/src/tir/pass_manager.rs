@@ -648,11 +648,9 @@ pub(crate) fn run_late_lowering_with_targets(
     if expanded == 0 && !molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths() {
         return native != 0 || identity;
     }
-    // After the expansion, whose joins are plain branches: a raw scalar that
-    // meets a boxed block argument is boxed on its own edge.
-    let boxed_edges = passes::fast_path_expansion::box_raw_edge_args(func);
+    let scalar_edges = passes::fast_path_expansion::prepare_scalar_edges(func);
     if expanded == 0 {
-        return native != 0 || identity || boxed_edges != 0;
+        return native != 0 || identity || scalar_edges != 0;
     }
     let mut cleanup: Vec<Box<dyn TirPass>> =
         vec![pass("gvn", OpsOnly, |f, am, _tti| passes::gvn::run(f, am))];
