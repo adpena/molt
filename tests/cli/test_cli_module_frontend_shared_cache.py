@@ -441,9 +441,70 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
     assert blob.stat().st_mtime > stale + 3600
 
 
+def test_lowered_body_reports_the_changed_input_before_decoding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    path = _write_module(tmp_path, "m", "value = 1\n")
+    lease = _ModuleSourceLease.path_backed(path)
+    ctx = MC._module_lowering_context(
+        {"target_python": "3.12", "source": lease.source_sha256}
+    )
+    assert ctx is not None
+    changed = MC._module_lowering_context(
+        {"target_python": "3.13", "source": lease.source_sha256}
+    )
+    assert changed is not None
+    header = {
+        "version": MC._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
+        "context_digest": ctx.digest,
+        "consumed_inputs": dict(changed.facts),
+        "source_sha256": lease.source_sha256,
+        "size": lease.source_size,
+        "source_kind": lease.source_kind,
+        "result": {"body_selection": ModuleBodySelection("complete_source").payload()},
+    }
+    record, _ = MC.encode_lowering_record(json.dumps(header).encode(), [])
+    monkeypatch.setattr(
+        SourceRecordStore, "get", lambda *_a, **_k: SimpleNamespace(payload=record)
+    )
+    monkeypatch.setattr(
+        MC,
+        "decode_function_records",
+        lambda *_: pytest.fail("invalid conditions reached body decoding"),
+    )
+    trace = tmp_path / "lowering.jsonl"
+    monkeypatch.setenv("MOLT_TRACE_LOWERING_CTX", str(trace))
+    assert (
+        MC._read_persisted_module_lowering(
+            path,
+            source_lease=lease,
+            body_selection=ModuleBodySelection("complete_source"),
+            module_name="m",
+            context_digest=ctx,
+        )
+        is None
+    )
+    [row] = [
+        json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    assert row["disposition"] == "conditions"
+    assert row["changed_inputs"] == ["target_python"]
+
+
 def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
     path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
-    digest = "ab" * 32
+    context = MC._module_lowering_context(
+        {
+            "target_python": "3.12",
+            "body_selection": {"kind": "complete_source", "roots": []},
+        }
+    )
+    assert context is not None
+    digest = context.digest
+    trace = tmp_path / "lowering-trace.jsonl"
+    monkeypatch.setenv("MOLT_TRACE_LOWERING_CTX", str(trace))
     function = {"name": "py.m.g", "module": "m", "params": [], "return_abi": "value"}
     result = {
         "body_selection": {"kind": "complete_source", "roots": []},
@@ -455,7 +516,7 @@ def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
     writer_seeds = MC._write_persisted_module_lowering(
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
-        context_digest=digest,
+        context_digest=context,
         result=result,
     )
     assert len(writer_seeds) == 1 and writer_seeds[0].function is function
@@ -463,7 +524,9 @@ def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
     from molt.cli.function_records import decode_lowering_record
 
     frame = decode_lowering_record(before.payload)
-    metadata_result = json.loads(frame.metadata)["result"]
+    metadata = json.loads(frame.metadata)
+    assert metadata["consumed_inputs"] == dict(context.facts)
+    metadata_result = metadata["result"]
     assert "functions" not in metadata_result
     assert "function_digest_seeds" not in metadata_result
     _use_session(monkeypatch, "B")
@@ -477,10 +540,41 @@ def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
         body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
-        context_digest=digest,
+        context_digest=context,
     )
     assert loaded is not None and loaded["profile"] == "release"
     assert loaded["functions"] == [function]
+    assert loaded["lowering_context"] is context
+    specific_demand = ModuleBodySelection("native_support", ("g",))
+    specific_context = MC._module_lowering_context(
+        {"target_python": "3.12", "body_selection": specific_demand.payload()}
+    )
+    assert specific_context is not None
+    assert specific_context.changed_inputs(dict(context.facts)) == ("body_selection",)
+    assert (
+        MC._read_persisted_module_lowering(
+            path,
+            body_selection=specific_demand,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            module_name="m",
+            context_digest=specific_context,
+        )
+        is None
+    )
+    with pytest.raises(ValueError, match="differs from its recorded request"):
+        MC._write_persisted_module_lowering(
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            context_digest=specific_context,
+            result=result,
+        )
+    row, miss = [
+        json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()
+    ]
+    assert row["hit"] and row["disposition"] == "hit"
+    assert row["field_digests"] == dict(context.facts)
+    assert not miss["hit"] and miss["disposition"] == "absent"
+    assert miss["field_digests"] == dict(specific_context.facts)
     (seed,) = loaded["function_digest_seeds"]
     assert seed.function is loaded["functions"][0] and seed.function is not function
     assert seed.digest == writer_seeds[0].digest and len(seed.digest) == 32

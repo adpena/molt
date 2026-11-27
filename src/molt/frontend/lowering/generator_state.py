@@ -313,6 +313,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         module_execution_kind: ModuleExecutionKind | None = None,
         module_source_role: ModuleSourceRole = "user",
         namespace_premise: PythonNamespacePremise | None = None,
+        binding_namespace_view: PythonNamespacePremise | None = None,
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
         direct_call_modules: set[str] | None = None,
@@ -444,6 +445,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
             raise ValueError(f"invalid source provider role: {module_source_role!r}")
         self.module_source_role: ModuleSourceRole = module_source_role
         self.namespace_premise: PythonNamespacePremise | None = namespace_premise
+        self.binding_namespace_view = binding_namespace_view
         # A bundled stdlib module is identified by its logical source path,
         # which only the CLI's toolchain-root mapping assigns (HF-372).
         self.stdlib_hint_trust = source_path is not None and is_stdlib_logical_path(

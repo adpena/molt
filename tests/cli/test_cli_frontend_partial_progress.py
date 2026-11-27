@@ -126,9 +126,9 @@ def test_completed_module_is_persisted_before_consume_loop(tmp_path: Path) -> No
     assert layer_state.results["good"]["ok"] is True
     # Persisted THE MOMENT it succeeded -- no consume loop was run.
     records = source_records("module-lowering")
-    assert list(records) == [layer_state.context_digests["good"]]
+    assert list(records) == [layer_state.context_digests["good"].digest]
     assert (
-        records[layer_state.context_digests["good"]]["result"]["functions"]
+        records[layer_state.context_digests["good"].digest]["result"]["functions"]
         == layer_state.results["good"]["functions"]
     )
 
@@ -155,14 +155,14 @@ def test_sibling_failure_does_not_forfeit_completed_module(tmp_path: Path) -> No
 
     # Completed module persisted; failed module did not (nothing to reuse).
     records = source_records("module-lowering")
-    assert list(records) == [layer_state.context_digests["good"]]
+    assert list(records) == [layer_state.context_digests["good"].digest]
     assert (
-        records[layer_state.context_digests["good"]]["result"]["functions"]
+        records[layer_state.context_digests["good"].digest]["result"]["functions"]
         == layer_state.results["good"]["functions"]
     )
     assert (
         "boom" not in layer_state.context_digests
-        or layer_state.context_digests["boom"] not in records
+        or layer_state.context_digests["boom"].digest not in records
     )
 
 
@@ -173,7 +173,7 @@ def test_persisted_completed_module_reused_on_retry(tmp_path, monkeypatch):
     good.write_text("value = 7\nsquared = value * value\n", encoding="utf-8")
     first, error, detail, broken = _run_batch(project_root, {"good": good})
     assert error is None and detail is None and not broken
-    assert first.context_digests["good"] in source_records("module-lowering")
+    assert first.context_digests["good"].digest in source_records("module-lowering")
     monkeypatch.setenv("MOLT_SESSION_ID", "partial-progress-retry")
     _clear_path_caches()
     monkeypatch.setattr(

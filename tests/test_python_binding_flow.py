@@ -7730,6 +7730,73 @@ def test_local_literal_call_coverage_revisions_match_fresh_transfer(
             )
 
 
+def test_body_selections_share_only_their_unchanged_job_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    tree = ast.parse(
+        "def earlier(): return 0\n"
+        "def root(value):\n"
+        "    def first(): return value\n"
+        "    def second(): return value + 1\n"
+        "    return first\n"
+    )
+    earlier, root = tree.body
+    assert isinstance(root, ast.FunctionDef)
+    first, second = root.body[:2]
+    admission = _PythonAstDigestAdmission.for_tree(tree)
+    policies = [
+        PythonBindingFlowPolicy(
+            target_python=(3, 15),
+            foreign_namespace_writes=(),
+            foreign_namespace_universe=frozenset(),
+            opaque_activation_sources=(),
+            callback_member_writes=0,
+            deferred_binding_path=frozenset(map(admission.source_key, nodes)),
+        )
+        for nodes in ((root, first), (root, second), (earlier, root, second))
+    ]
+
+    def analyze(
+        policy: PythonBindingFlowPolicy,
+    ) -> python_binding_flow.PythonBindingFacts:
+        return flow.analyze_python_binding_facts(
+            tree,
+            source_digest=admission.digest,
+            ast_digest_admission=admission,
+            policy=policy,
+        )
+
+    fresh = [analyze(policy) for policy in policies]
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    jobs: list[PythonSourceKey] = []
+    analyze_job = flow._Analyzer._analyze_function_job
+
+    def observe(
+        analyzer: python_binding_flow._Analyzer,
+        job: python_binding_flow._FunctionJob,
+        state: int,
+    ) -> None:
+        jobs.append(admission.source_key(job.node))
+        analyze_job(analyzer, job, state)
+
+    monkeypatch.setattr(flow._Analyzer, "_analyze_function_job", observe)
+    expected_jobs = ((root, first), (second,), (earlier, root, second))
+    with flow.python_binding_revision_scope():
+        for policy, expected, nodes in zip(policies, fresh, expected_jobs, strict=True):
+            jobs.clear()
+            actual = analyze(policy)
+            assert (
+                replace(
+                    actual,
+                    state_count=expected.state_count,
+                    telemetry=expected.telemetry,
+                )
+                == expected
+            )
+            assert jobs == list(map(admission.source_key, nodes))
+
+
 def test_selected_bodies_share_completed_initializer_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

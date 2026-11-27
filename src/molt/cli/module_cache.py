@@ -6,6 +6,7 @@ from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from dataclasses import dataclass, replace
+from enum import StrEnum
 
 import ast
 import contextlib
@@ -1297,6 +1298,7 @@ def _module_lowering_context_payload(
     is_package: bool | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
+    binding_namespace_view: PythonNamespacePremise | None = None,
 ) -> dict[str, Any] | None:
     source_lease.validate_path(module_path)
     if scoped_inputs is None:
@@ -1347,6 +1349,7 @@ def _module_lowering_context_payload(
         "module_execution_kind": module_execution_kind,
         "module_source_role": module_source_role,
         "namespace_premise": _namespace_lowering_identity(namespace_premise),
+        "binding_namespace_view": _namespace_lowering_identity(binding_namespace_view),
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "target_python": target_python.tag,
         "target_sys_platform": target_sys_platform,
@@ -1427,48 +1430,97 @@ def _known_classes_digest(classes: Mapping[ClassId, ClassModel]) -> str:
     return hasher.hexdigest()
 
 
-def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
+@dataclass(frozen=True, slots=True)
+class _ModuleLoweringContext:
+    """The certified source, target and scoped semantic inputs to a body."""
+
+    digest: str
+    facts: tuple[tuple[str, str], ...]
+    body_selection: ModuleBodySelection | None
+
+    def admits(self, value: object) -> bool:
+        return isinstance(value, dict) and value == dict(self.facts)
+
+    def changed_inputs(self, prior: object) -> tuple[str, ...]:
+        if not isinstance(prior, dict):
+            return tuple(name for name, _ in self.facts)
+        expected = dict(self.facts)
+        return tuple(
+            name
+            for name in sorted(
+                expected.keys() | {key for key in prior if isinstance(key, str)}
+            )
+            if name not in prior
+            or name not in expected
+            or prior[name] != expected[name]
+        )
+
+
+class _LoweringCacheDisposition(StrEnum):
+    HIT = "hit"
+    DISABLED = "disabled"
+    ABSENT = "absent"
+    ENCODING = "encoding"
+    CONDITIONS = "conditions"
+    BODIES = "bodies"
+
+
+def _module_lowering_context(payload: dict[str, Any]) -> _ModuleLoweringContext | None:
     try:
+        body_selection = (
+            ModuleBodySelection.from_payload(payload["body_selection"])
+            if "body_selection" in payload
+            else None
+        )
         if "known_classes" in payload:
             payload = dict(
                 payload, known_classes=_known_classes_digest(payload["known_classes"])
             )
-        encoded = _canonical_json_bytes(payload)
+        facts = tuple(
+            (name, hashlib.sha256(_canonical_json_bytes(payload[name])).hexdigest())
+            for name in sorted(payload)
+        )
+        digest = hashlib.sha256(
+            b"molt.module-lowering-inputs.v1\0" + _canonical_json_bytes(dict(facts))
+        ).hexdigest()
     except (TypeError, ValueError):
         return None
-    digest = hashlib.sha256(encoded).hexdigest()
-    _trace_lowering_context_digest(payload, digest)
-    return digest
+    return _ModuleLoweringContext(digest, facts, body_selection)
 
 
-def _trace_lowering_context_digest(payload: dict[str, Any], digest: str) -> None:
-    """Append this module's context digest + per-field digests when tracing.
+def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
+    context = _module_lowering_context(payload)
+    return None if context is None else context.digest
 
-    Gated on ``MOLT_TRACE_LOWERING_CTX=<path>``: emits one JSON line per module
-    (module name, full context digest, and a sha256 per top-level payload field).
-    This is the standing profiler for the frontend-lowering-cache hit rate: the
-    shared per-module lowering tier hits a fresh session only when this digest is
-    identical to the one a prior session wrote, so diffing two runs' traces
-    localizes any run-varying context input to a specific field. No-op (a single
-    ``os.environ`` read) unless the env var is set, so it never affects a build.
-    ``tools/witness_iter.py`` sets it for the warm witness attestation.
-    """
+
+def _lowering_cache_key(context: _ModuleLoweringContext | str) -> str:
+    return context.digest if isinstance(context, _ModuleLoweringContext) else context
+
+
+def _trace_lowering_cache_lookup(
+    module_name: str,
+    context: _ModuleLoweringContext | str,
+    disposition: _LoweringCacheDisposition,
+    *,
+    changed_inputs: tuple[str, ...] = (),
+) -> None:
+    """One trace row per lookup, with the proven inputs and its disposition."""
     dump_path = os.environ.get("MOLT_TRACE_LOWERING_CTX")
     if not dump_path:
         return
     try:
-        field_digests: dict[str, str] = {}
-        for key, value in payload.items():
-            try:
-                blob = _canonical_json_bytes(value)
-            except (TypeError, ValueError):
-                blob = repr(_cache_json_value(value)).encode("utf-8", "replace")
-            field_digests[key] = hashlib.sha256(blob).hexdigest()[:16]
         line = json.dumps(
             {
-                "module_name": payload.get("module_name"),
-                "digest": digest,
-                "field_digests": field_digests,
+                "module_name": module_name,
+                "digest": _lowering_cache_key(context),
+                "field_digests": (
+                    dict(context.facts)
+                    if isinstance(context, _ModuleLoweringContext)
+                    else {}
+                ),
+                "hit": disposition is _LoweringCacheDisposition.HIT,
+                "disposition": disposition,
+                "changed_inputs": changed_inputs,
             },
             sort_keys=True,
         )
@@ -1526,7 +1578,8 @@ def _module_lowering_context_digest_for_module(
     is_package: bool | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
-) -> str | None:
+    binding_namespace_view: PythonNamespacePremise | None = None,
+) -> _ModuleLoweringContext | None:
     context_payload = _module_lowering_context_payload(
         module_name,
         module_path,
@@ -1563,10 +1616,11 @@ def _module_lowering_context_digest_for_module(
         is_package=is_package,
         target_python=target_python,
         target_sys_platform=target_sys_platform,
+        binding_namespace_view=binding_namespace_view,
     )
     if context_payload is None:
         return None
-    return _module_lowering_context_digest(context_payload)
+    return _module_lowering_context(context_payload)
 
 
 def _module_lowering_payload_identity_matches(
@@ -1574,11 +1628,14 @@ def _module_lowering_payload_identity_matches(
     path: Path,
     *,
     source_lease: _ModuleSourceLease,
-    context_digest: str,
+    context_digest: _ModuleLoweringContext | str,
 ) -> bool:
-    if (
-        payload.get("version") != _MODULE_LOWERING_CACHE_SCHEMA_VERSION
-        or payload.get("context_digest") != context_digest
+    if payload.get("version") != _MODULE_LOWERING_CACHE_SCHEMA_VERSION or payload.get(
+        "context_digest"
+    ) != _lowering_cache_key(context_digest):
+        return False
+    if isinstance(context_digest, _ModuleLoweringContext) and not context_digest.admits(
+        payload.get("consumed_inputs")
     ):
         return False
     source_lease.validate_path(path)
@@ -1589,17 +1646,15 @@ def _module_lowering_payload_identity_matches(
     )
 
 
-def _validate_persisted_module_lowering_payload(
-    payload: Mapping[str, Any] | None,
+def _admit_module_lowering_header(
+    payload: object,
     path: Path,
     *,
     source_lease: _ModuleSourceLease,
-    module_name: str,
-    context_digest: str,
+    context_digest: _ModuleLoweringContext | str,
     body_selection: ModuleBodySelection,
-    known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
-    """Admit schema/context, source custody and local reference closure."""
+    """Admit the source and exact body demand before decoding any function."""
     if not isinstance(payload, dict) or not _module_lowering_payload_identity_matches(
         payload, path, source_lease=source_lease, context_digest=context_digest
     ):
@@ -1615,7 +1670,17 @@ def _validate_persisted_module_lowering_payload(
             return None
     except ValueError:
         return None
-    raw_functions = raw_result.get("functions")
+    return raw_result
+
+
+def _admit_module_lowering_bodies(
+    raw_result: dict[str, Any],
+    raw_functions: object,
+    *,
+    source_lease: _ModuleSourceLease,
+    module_name: str,
+) -> dict[str, Any] | None:
+    """Validate the reference closure of the admitted header's functions."""
     if not isinstance(raw_functions, list):
         return None
     try:
@@ -1657,65 +1722,103 @@ def _validate_persisted_module_lowering_payload(
     return result
 
 
+def _validate_persisted_module_lowering_payload(
+    payload: Mapping[str, Any] | None,
+    path: Path,
+    *,
+    source_lease: _ModuleSourceLease,
+    module_name: str,
+    context_digest: _ModuleLoweringContext | str,
+    body_selection: ModuleBodySelection,
+    known_modules: Iterable[str] = (),
+) -> dict[str, Any] | None:
+    raw_result = _admit_module_lowering_header(
+        payload,
+        path,
+        source_lease=source_lease,
+        context_digest=context_digest,
+        body_selection=body_selection,
+    )
+    if raw_result is None:
+        return None
+    return _admit_module_lowering_bodies(
+        raw_result,
+        raw_result.get("functions"),
+        source_lease=source_lease,
+        module_name=module_name,
+    )
+
+
 def _read_persisted_module_lowering(
     path: Path,
     *,
     source_lease: _ModuleSourceLease,
     module_name: str,
-    context_digest: str,
+    context_digest: _ModuleLoweringContext | str,
     body_selection: ModuleBodySelection,
     known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
+    def miss(reason: _LoweringCacheDisposition) -> None:
+        _trace_lowering_cache_lookup(module_name, context_digest, reason)
+
     if _frontend_lowering_cache_disabled():
-        return None
+        return miss(_LoweringCacheDisposition.DISABLED)
     record = shared_source_records().get(
         "module-lowering",
-        context_digest,
+        _lowering_cache_key(context_digest),
         generation=_frontend_semantic_tooling_fingerprint(),
         max_bytes=None,
     )
     if record is None:
-        return None
+        return miss(_LoweringCacheDisposition.ABSENT)
     try:
         view = decode_lowering_record(record.payload)
         payload = decode_frontend_payload(view.metadata)
     except (ValueError, TypeError, RecursionError):
-        return None
+        return miss(_LoweringCacheDisposition.ENCODING)
     # Source custody failures are hard errors, outside optional codec rejection.
-    if not isinstance(payload, dict) or not _module_lowering_payload_identity_matches(
-        payload, path, source_lease=source_lease, context_digest=context_digest
-    ):
-        return None
-    raw_result = payload.get("result")
-    if not isinstance(raw_result, dict) or (
-        "functions" in raw_result or "function_digest_seeds" in raw_result
-    ):
-        return None
-    try:
-        if (
-            ModuleBodySelection.from_payload(raw_result.get("body_selection"))
-            != body_selection
-        ):
-            return None
-    except ValueError:
-        return None
-    try:
-        functions, seeds = decode_function_records(view)
-    except (ValueError, TypeError, RecursionError):
-        return None
-    payload["result"] = {**raw_result, "functions": functions}
-    result = _validate_persisted_module_lowering_payload(
+    raw_result = _admit_module_lowering_header(
         payload,
         path,
         source_lease=source_lease,
-        module_name=module_name,
         context_digest=context_digest,
         body_selection=body_selection,
-        known_modules=known_modules,
     )
-    if result is not None:
-        result["function_digest_seeds"] = seeds
-        record.refresh()
+    if raw_result is None or (
+        "functions" in raw_result or "function_digest_seeds" in raw_result
+    ):
+        if isinstance(context_digest, _ModuleLoweringContext) and isinstance(
+            payload, dict
+        ):
+            _trace_lowering_cache_lookup(
+                module_name,
+                context_digest,
+                _LoweringCacheDisposition.CONDITIONS,
+                changed_inputs=context_digest.changed_inputs(
+                    payload.get("consumed_inputs")
+                ),
+            )
+            return None
+        return miss(_LoweringCacheDisposition.CONDITIONS)
+    try:
+        functions, seeds = decode_function_records(view)
+    except (ValueError, TypeError, RecursionError):
+        return miss(_LoweringCacheDisposition.BODIES)
+    result = _admit_module_lowering_bodies(
+        raw_result,
+        functions,
+        source_lease=source_lease,
+        module_name=module_name,
+    )
+    if result is None:
+        return miss(_LoweringCacheDisposition.BODIES)
+    result["function_digest_seeds"] = seeds
+    if isinstance(context_digest, _ModuleLoweringContext):
+        result["lowering_context"] = context_digest
+    _trace_lowering_cache_lookup(
+        module_name, context_digest, _LoweringCacheDisposition.HIT
+    )
+    record.refresh()
     return result
 
 
@@ -1723,7 +1826,7 @@ def _write_persisted_module_lowering(
     path: Path,
     *,
     source_lease: _ModuleSourceLease,
-    context_digest: str,
+    context_digest: _ModuleLoweringContext | str,
     result: dict[str, Any],
 ) -> tuple[FunctionDigestSeed, ...]:
     if _frontend_lowering_cache_disabled():
@@ -1732,18 +1835,30 @@ def _write_persisted_module_lowering(
     source_lease.validate()
     # A producer must state which source body it lowered. Missing selection is
     # not evidence of complete source and cannot be written as a current record.
-    ModuleBodySelection.from_payload(result.get("body_selection"))
+    body_selection = ModuleBodySelection.from_payload(result.get("body_selection"))
+    if (
+        isinstance(context_digest, _ModuleLoweringContext)
+        and context_digest.body_selection is not None
+        and body_selection != context_digest.body_selection
+    ):
+        raise ValueError("Lowered body selection differs from its recorded request")
     functions = result["functions"]
     metadata = {
         "version": _MODULE_LOWERING_CACHE_SCHEMA_VERSION,
-        "context_digest": context_digest,
+        "context_digest": _lowering_cache_key(context_digest),
+        "consumed_inputs": (
+            dict(context_digest.facts)
+            if isinstance(context_digest, _ModuleLoweringContext)
+            else {}
+        ),
         "size": source_lease.source_size,
         "source_sha256": source_lease.source_sha256,
         "source_kind": source_lease.source_kind,
         "result": {
             key: value
             for key, value in result.items()
-            if key not in {"functions", "function_digest_seeds", "ok"}
+            if key
+            not in {"functions", "function_digest_seeds", "lowering_context", "ok"}
         },
     }
     encoded, seeds = encode_lowering_record(
@@ -1752,7 +1867,7 @@ def _write_persisted_module_lowering(
     )
     shared_source_records().put(
         "module-lowering",
-        context_digest,
+        _lowering_cache_key(context_digest),
         encoded,
         generation=_frontend_semantic_tooling_fingerprint(),
     )
@@ -1794,10 +1909,11 @@ def _load_cached_module_lowering_result(
     scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassModel]]
     | None = None,
     scoped_known_classes: dict[ClassId, ClassModel] | None = None,
-    context_digest: str | None = None,
+    context_digest: _ModuleLoweringContext | str | None = None,
     source_modules: Collection[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
+    binding_namespace_view: PythonNamespacePremise | None = None,
 ) -> dict[str, Any] | None:
     if project_root is None:
         return None
@@ -1838,6 +1954,7 @@ def _load_cached_module_lowering_result(
             is_package=is_package,
             target_python=target_python,
             target_sys_platform=target_sys_platform,
+            binding_namespace_view=binding_namespace_view,
         )
         if context_digest is None:
             return None
@@ -1906,6 +2023,7 @@ def _module_worker_payload(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
     frontend_phase_timeout: float | None = None,
+    binding_namespace_view: PythonNamespacePremise | None = None,
 ) -> dict[str, Any]:
     source_lease.validate_path(module_path)
     if scoped_inputs is None:
@@ -1946,6 +2064,9 @@ def _module_worker_payload(
         "module_execution_kind": module_execution_kind,
         "module_source_role": module_source_role,
         "namespace_premise": _namespace_premise_cache_identity(namespace_premise),
+        "binding_namespace_view": _namespace_premise_cache_identity(
+            binding_namespace_view
+        ),
         "enable_phi": enable_phi,
         "known_modules": scoped_inputs.known_modules_payload,
         "direct_call_modules": scoped_inputs.direct_call_modules_payload,

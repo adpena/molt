@@ -17662,16 +17662,15 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     monkeypatch.setattr(
         cli_module_cache, "_module_lowering_context_payload", fake_context_payload
     )
-    monkeypatch.setattr(
-        cli_module_cache, "_module_lowering_context_digest", lambda payload: "digest"
-    )
+    expected_context = cli_module_cache._module_lowering_context({"module": "alpha"})
+    assert expected_context is not None
 
     def fake_read(
         path: Path,
         *,
         source_lease: cli_module_source._ModuleSourceLease,
         module_name: str,
-        context_digest: str,
+        context_digest: cli_module_cache._ModuleLoweringContext,
         body_selection: ModuleBodySelection,
         known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
@@ -17682,7 +17681,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         source_lease.validate_path(path)
         source_lease.validate()
         assert module_name == "alpha"
-        assert context_digest == "digest"
+        assert context_digest == expected_context
         assert known_modules == {"alpha"}
         return {
             "body_selection": {"kind": "complete_source", "roots": []},
@@ -17743,7 +17742,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             "source_sha256": hashlib.sha256(module_path.read_bytes()).hexdigest(),
         }
     }
-    assert context_digest_by_module == {"alpha": "digest"}
+    assert context_digest_by_module == {"alpha": expected_context}
     assert context_payload_calls == 1
 
 
@@ -17760,16 +17759,15 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         "_module_lowering_context_payload",
         lambda *args, **kwargs: {"module": "alpha"},
     )
-    monkeypatch.setattr(
-        cli_module_cache, "_module_lowering_context_digest", lambda payload: "digest"
-    )
+    expected_context = cli_module_cache._module_lowering_context({"module": "alpha"})
+    assert expected_context is not None
 
     def fake_read(
         path: Path,
         *,
         source_lease: cli_module_source._ModuleSourceLease,
         module_name: str,
-        context_digest: str,
+        context_digest: cli_module_cache._ModuleLoweringContext,
         body_selection: ModuleBodySelection,
         known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
@@ -17780,7 +17778,7 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         source_lease.validate_path(path)
         source_lease.validate()
         assert module_name == "alpha"
-        assert context_digest == "digest"
+        assert context_digest == expected_context
         assert known_modules == {"alpha"}
         reads.append(module_name)
         return {
@@ -17842,7 +17840,7 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
             "source_sha256": hashlib.sha256(module_path.read_bytes()).hexdigest(),
         }
     }
-    assert context_digest_by_module == {"alpha": "digest"}
+    assert context_digest_by_module == {"alpha": expected_context}
     assert reads == ["alpha"]
 
 
@@ -19103,8 +19101,9 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
         namespace_premise=None,
     )
 
-    assert isinstance(digest, str)
-    assert digest
+    assert digest is not None
+    assert digest.body_selection == ModuleBodySelection("complete_source")
+    assert len(digest.digest) == 64
 
 
 def test_module_lowering_context_digest_includes_native_callable_exports(
@@ -19189,7 +19188,7 @@ def test_module_lowering_context_digest_includes_native_callable_exports(
         for role in roles
     }
     assert role_digests["user"] == digest_a
-    assert all(isinstance(digest, str) and digest for digest in role_digests.values())
+    assert all(digest is not None for digest in role_digests.values())
     assert len(set(role_digests.values())) == len(roles)
 
 
@@ -19431,8 +19430,8 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         namespace_premise=None,
     )
 
-    assert isinstance(digest_a, str)
-    assert digest_a
+    assert digest_a is not None
+    assert len(digest_a.digest) == 64
     assert digest_a == digest_b
 
 

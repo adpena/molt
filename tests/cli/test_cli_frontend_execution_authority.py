@@ -184,13 +184,19 @@ def test_parallel_persistence_seeds_follow_parent_received_body_owners(
             result["functions"], worker_result["functions"], strict=True
         )
     )
-    digest = "ad" * 32
+    context = module_cache._module_lowering_context(
+        {
+            "source_sha256": lease.source_sha256,
+            "body_selection": result["body_selection"],
+        }
+    )
+    assert context is not None
     seeds = frontend_execution._write_parallel_persisted_module_lowering(
         project_root=tmp_path,
         module_path=path,
         source_lease=lease,
         worker_mode="parallel",
-        context_digest=digest,
+        context_digest=context,
         result=result,
     )
     assert isinstance(seeds, tuple) and len(seeds) == len(result["functions"])
@@ -203,7 +209,7 @@ def test_parallel_persistence_seeds_follow_parent_received_body_owners(
         body_selection=ModuleBodySelection("complete_source"),
         source_lease=lease,
         module_name="m",
-        context_digest=digest,
+        context_digest=context,
     )
     assert loaded is not None
     assert loaded["functions"] == result["functions"]
@@ -218,6 +224,7 @@ def test_parallel_persistence_seeds_follow_parent_received_body_owners(
     )
 
     result["function_digest_seeds"] = seeds
+    result["lowering_context"] = loaded["lowering_context"]
     state = _FrontendIntegrationState(functions=[], known_classes={})
     issue = frontend_execution._consume_frontend_module_result(
         "m",
@@ -232,6 +239,7 @@ def test_parallel_persistence_seeds_follow_parent_received_body_owners(
         json_output=True,
     )
     assert issue is None
+    assert state.module_lowering_inputs == {"m": context}
     assert all(
         integrated is seed and integrated.function is function
         for integrated, seed, function in zip(
@@ -249,7 +257,7 @@ def test_parallel_persistence_seeds_follow_parent_received_body_owners(
         module_path=path,
         source_lease=lease,
         worker_mode="parallel_cache_hit",
-        context_digest=digest,
+        context_digest=context,
         result=result,
     )
     assert isinstance(reused, tuple)

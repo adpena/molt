@@ -58,6 +58,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.cli.module_cache import _ModuleLoweringContext
     from molt.durable_file_identity import StatToken
     from molt.cli.closed_world_bindings import ModuleNamespaceFacts
     from molt.compiler_analysis.python_import_scan import SourceImportPurpose
@@ -742,7 +743,7 @@ class _FrontendModuleResultTimings:
 @dataclass
 class _FrontendParallelLayerState:
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
-    context_digests: dict[str, str] = field(default_factory=dict)
+    context_digests: dict[str, _ModuleLoweringContext] = field(default_factory=dict)
     worker_timings_by_module: dict[str, dict[str, Any]] = field(default_factory=dict)
     recorded_worker_timings: list[dict[str, Any]] = field(default_factory=list)
     fallback_reason: str | None = None
@@ -813,6 +814,9 @@ class _FrontendIntegrationState:
     functions: list[dict[str, Any]]
     known_classes: dict[ClassId, ClassModel]
     function_digest_seeds: list[FunctionDigestSeed] = field(default_factory=list)
+    module_lowering_inputs: dict[str, _ModuleLoweringContext] = field(
+        default_factory=dict
+    )
     global_code_ids: dict[str, int] = field(default_factory=dict)
     function_metadata: dict[str, FunctionAssemblyMetadata] = field(default_factory=dict)
     # Class calls that keep the runtime class protocol, one line per site

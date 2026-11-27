@@ -80,10 +80,10 @@ schema = "molt-perf-methodology-v1"
 # Tool source closure keys use the selected per-file content digests.
 # v159: measured builds share public configuration/option normalization;
 # sealed recipe inputs and explicit deployment ownership replace batch defaults.
-# v160: exact managed isolated CPython, shared workload custody and parity,
+# v162: exact managed isolated CPython, shared workload custody and parity,
 # complete baseline samples, and matching observed oracle identities for comparisons.
-version = 160
-content_sha256 = "aff6980975ab6826e2f68bcd35a9db68e4958734931dda91a719b6011ae0bb36"
+version = 162
+content_sha256 = "f091453536960c18c3da7f0873b250e9fa1360a93751f38ce53cac14c4f316bc"
 
 [[methodology]]
 path = "tools/safe_run.py"

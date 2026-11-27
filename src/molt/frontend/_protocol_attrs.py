@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from molt.frontend.lowering.builtin_guards import GuardArmKind
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.compiler_analysis.python_source_keys import PythonSourceKey
     from molt.frontend.sema import SemaResult
 
@@ -83,6 +84,7 @@ class _GeneratorProtocolAttrs(Protocol):
     async_locals: dict[str, AsyncFrameSlot]
     async_locals_base: int
     async_public_hints: dict[str, TypeHint]
+    binding_namespace_view: PythonNamespacePremise | None
     block_terminated: Any
     boxed_local_hints: dict[str, TypeHint]
     boxed_locals: dict[str, MoltValue]
@@ -144,4 +146,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_attr_names: dict[str, str]
     global_imported_module_attr_mutations: set[tuple[str, str]]
     global_imported_module_provenance: dict[str, frozenset[str]]
-    global_imported_modules: dict[str, str]

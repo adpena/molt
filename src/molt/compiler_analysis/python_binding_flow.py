@@ -11307,6 +11307,19 @@ class _BindingCheckpoint:
             for parameter in function_parameter_nodes(owner.args)
         )
 
+    def agrees_with_selected_prefix(self, requested: _Analyzer) -> bool:
+        prefix = self.prefix
+        before = prefix.policy.deferred_binding_path
+        after = requested.policy.deferred_binding_path
+        assert before is not None and after is not None
+        changed = before ^ after
+        # Only jobs already examined in this prefix could have run under the
+        # old selection. The continuation reads the new selection from cursor.
+        return not any(
+            not job.annotation_scope and prefix._node_key(job.node) in changed
+            for job in prefix.function_jobs[: self.completed_jobs]
+        )
+
     def rebase_namespace(self, requested: _Analyzer) -> _Analyzer | None:
         names = self.prefix._foreign_reads
         if names is None or not self.agrees_with_activations(requested):
@@ -11317,6 +11330,37 @@ class _BindingCheckpoint:
         return _rebase_binding_namespace(
             self.prefix, requested, _InitializerPremiseReads(names=frozenset(names))
         )
+
+
+def _shared_selection_prefix(
+    retained: Sequence[
+        tuple[tuple[str, PythonBindingFlowPolicy], tuple[_BindingCheckpoint, ...]]
+    ],
+    key: tuple[str, PythonBindingFlowPolicy],
+    requested: _Analyzer,
+    minimum_jobs: int,
+) -> _BindingCheckpoint | None:
+    source, policy = key
+    cohort = replace(policy, deferred_binding_path=None)
+    siblings = (
+        item
+        for (digest, former), checkpoints in retained
+        if digest == source
+        and former != policy
+        and former.deferred_binding_path is not None
+        and replace(former, deferred_binding_path=None) == cohort
+        for item in checkpoints
+        if item.completed_jobs > minimum_jobs
+    )
+    return next(
+        (
+            candidate
+            for candidate in sorted(siblings, key=lambda item: -item.completed_jobs)
+            if candidate.agrees_with_selected_prefix(requested)
+            and candidate.agrees_with_activations(requested)
+        ),
+        None,
+    )
 
 
 def _binding_checkpoint_size(analyzer: _Analyzer) -> int:
@@ -11387,6 +11431,18 @@ class _BindingRevisions:
             ),
             None,
         )
+        if policy.deferred_binding_path is not None:
+            with self._lock:
+                retained = tuple(self._recent.items())
+            shared = _shared_selection_prefix(
+                retained,
+                key,
+                analyzer,
+                0 if accepted is None else accepted.completed_jobs,
+            )
+            if shared is not None:
+                accepted = shared
+                prior = (shared,)
         if recorded is not None:
             # Compare the recorded leaves with the newest proven prefix before
             # either strategy forks an analyzer. Ties keep the contiguous suffix.

@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from molt.cli.function_records import FunctionDigestSeed
     from molt.cli.frontend_pipeline import _PreparedFrontendPipelineBundle
     from molt.cli.models import PgoProfileSummary, RuntimeFeedbackSummary
+    from molt.cli.module_cache import _ModuleLoweringContext
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,11 @@ class _PreparedBackendIR:
     static_cell_diagnostics: dict[str, object] = field(default_factory=dict)
     declarations: FrontendDeclarationTable | None = None
     plan_seal: str | None = None
+    # Provenance of the input module bodies, including ones rewritten or
+    # pruned during assembly. Their conditions certify the source lowering.
+    module_lowering_inputs: Mapping[str, _ModuleLoweringContext] = field(
+        default_factory=dict
+    )
 
 
 def _build_version_info_ops(
@@ -2881,6 +2887,7 @@ def _prepare_backend_ir(
             declaration_only=declaration_only,
         ),
         function_digest_seeds=surviving_seeds,
+        module_lowering_inputs=dict(integration_state.module_lowering_inputs),
         function_metadata={
             symbol: {"app_callable_bindings": row["app_callable_bindings"]}
             for symbol, row in integration_state.function_metadata.items()

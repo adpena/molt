@@ -142,6 +142,20 @@ def _run_backend_pipeline(
         prepared_frontend_run_ticket.frontend_parallel_details[
             "static_module_cells"
         ] = prepared_backend_ir.static_cell_diagnostics
+        prepared_frontend_run_ticket.frontend_parallel_details[
+            "module_lowering_inputs"
+        ] = {
+            module: {
+                "digest": inputs.digest,
+                "facts": dict(inputs.facts),
+                "body_selection": (
+                    inputs.body_selection.payload()
+                    if inputs.body_selection is not None
+                    else None
+                ),
+            }
+            for module, inputs in prepared_backend_ir.module_lowering_inputs.items()
+        }
     ir = prepared_backend_ir.ir
     function_digests = FunctionDigests(prepared_backend_ir.function_digest_seeds)
     # The one addressed form of this IR every backend transport writes (HF-516).

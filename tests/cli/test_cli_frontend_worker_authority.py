@@ -123,6 +123,63 @@ def test_serial_lowering_mutation_does_not_change_discovery_tree(
     )
 
 
+def test_lowering_reuses_inventory_binding_facts_for_the_same_source(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_graph_discovery import _load_module_import_scan
+    from molt.compiler_analysis.python_binding_flow import (
+        python_binding_core_computations,
+    )
+    from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+    from molt.compiler_analysis.python_namespace_graph import (
+        PythonNamespacePremise,
+        python_source_module_names,
+    )
+
+    path = tmp_path / "app.py"
+    source = "base = (1, 2, 3)\ndef total():\n    return len(base)\n"
+    path.write_text(source, encoding="utf-8")
+    target = TargetPythonVersion(3, 12, 0)
+    premise = PythonNamespacePremise(("unspelled_writer",), 0, 0, ())
+    names = python_source_module_names(source)
+    assert names is not None
+    catalog = _ModuleSourceCatalog(
+        {"app": _ModuleSourceLease.path_backed(path)},
+        namespace_declarations={"app": names},
+    )
+    _load_module_import_scan(
+        path,
+        module_name="app",
+        is_package=False,
+        import_scan_mode="full",
+        purpose=SourceImportPurpose.INVENTORY,
+        resolution_cache=_ModuleResolutionCache(),
+        project_root=None,
+        source=source,
+        target_python=target,
+        namespace_premise=premise,
+    )
+    before = python_binding_core_computations()
+    projected = SimpleTIRGenerator(
+        source_path=str(path),
+        module_name="app",
+        target_python=target.feature_version,
+        namespace_premise=premise,
+        binding_namespace_view=catalog.binding_namespace_view("app", premise),
+    )
+    projected.visit(ast.parse(source))
+    assert python_binding_core_computations() == before
+
+    original = SimpleTIRGenerator(
+        source_path=str(path),
+        module_name="app",
+        target_python=target.feature_version,
+        namespace_premise=premise,
+    )
+    original.visit(ast.parse(source))
+    assert original.to_json(scope="module") == projected.to_json(scope="module")
+
+
 def _serial_context(
     lease: _ModuleSourceLease, target: TargetPythonVersion
 ) -> _SerialFrontendLoweringContext:

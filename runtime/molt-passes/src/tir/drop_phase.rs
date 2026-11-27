@@ -59,13 +59,129 @@
 use super::function::{TirFunction, TirModule};
 use super::ops::AttrValue;
 use super::passes::drop_insertion::DROP_INSERTED_ATTR;
-use super::passes::fast_path_expansion::{self, GuardedTargets};
+use super::passes::fast_path_expansion::{self, CalleeFacts, GuardedTargets};
 use super::target_info::TargetInfo;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::content_digest::CompilationCacheKey;
+use molt_ir::{FunctionId, FunctionSet, FunctionTable, linkage_abi::FunctionSignatures};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-const FINAL_TIR_CACHE_MAGIC: &[u8] = b"MOLT:FINAL-TIR:v2\0";
+const FINAL_TIR_CACHE_MAGIC: &[u8] = b"MOLT:FINAL-TIR:v3\0";
+
+struct StaticCallFacts {
+    shape: Option<(usize, bool)>,
+    callback_free: bool,
+}
+
+/// The ambient facts of the terminal call rewrites. The same projection is
+/// read by the cache key and the rewrites on a miss.
+#[derive(Default)]
+struct FinalizationCalls {
+    direct: BTreeMap<FunctionId, StaticCallFacts>,
+    guarded: GuardedTargets,
+}
+
+impl FinalizationCalls {
+    fn new(
+        name: &str,
+        direct: BTreeSet<FunctionId>,
+        guarded: BTreeSet<FunctionId>,
+        linkage: Option<&FunctionSignatures>,
+        leaves: &FunctionSet,
+    ) -> Self {
+        Self {
+            direct: direct
+                .into_iter()
+                .map(|id| {
+                    let shape = linkage.map(|rows| {
+                        let signature = rows[id.index()];
+                        (signature.arity, signature.has_closure)
+                    });
+                    let callback_free = leaves.contains(id);
+                    (
+                        id,
+                        StaticCallFacts {
+                            shape,
+                            callback_free,
+                        },
+                    )
+                })
+                .collect(),
+            guarded: fast_path_expansion::resolve_guarded_targets(name, guarded, linkage, leaves),
+        }
+    }
+
+    fn write_key(&self, key: &mut CompilationCacheKey, table: &FunctionTable) {
+        let mut direct: Vec<_> = self
+            .direct
+            .iter()
+            .map(|(&id, facts)| (table.symbol(id), facts))
+            .collect();
+        direct.sort_unstable_by_key(|(symbol, _)| *symbol);
+        for (
+            symbol,
+            StaticCallFacts {
+                shape,
+                callback_free,
+            },
+        ) in direct
+        {
+            key.field(b"static-target", symbol.as_bytes());
+            key.field(b"static-callback-free", &[u8::from(*callback_free)]);
+            if let Some((arity, has_closure)) = shape {
+                key.field(b"static-arity", &(*arity as u64).to_be_bytes());
+                key.field(b"static-closure", &[u8::from(*has_closure)]);
+            }
+        }
+        let mut guarded: Vec<_> = self
+            .guarded
+            .iter()
+            .map(|(&id, facts)| (table.symbol(id), facts))
+            .collect();
+        guarded.sort_unstable_by_key(|(symbol, _)| *symbol);
+        for (
+            symbol,
+            CalleeFacts {
+                arity,
+                has_closure,
+                callback_free,
+            },
+        ) in guarded
+        {
+            key.field(b"guarded-target", symbol.as_bytes());
+            key.field(b"guarded-arity", &(*arity as u64).to_be_bytes());
+            key.field(b"guarded-closure", &[u8::from(*has_closure)]);
+            key.field(b"guarded-callback-free", &[u8::from(*callback_free)]);
+        }
+    }
+
+    fn finalize(&self, func: &mut TirFunction, owner: FunctionId, tti: &TargetInfo) -> bool {
+        let mut changed = false;
+        if !self.direct.is_empty() {
+            // The projection received either a complete linkage table or none.
+            if self
+                .direct
+                .values()
+                .next()
+                .is_some_and(|facts| facts.shape.is_some())
+            {
+                changed |= fast_path_expansion::lower_static_call_arguments_with_shape(
+                    func,
+                    owner,
+                    |id| {
+                        self.direct[&id]
+                            .shape
+                            .expect("static call has admitted linkage")
+                    },
+                );
+            }
+            changed |=
+                fast_path_expansion::charge_static_calls(func, |id| self.direct[&id].callback_free);
+        }
+        changed | finalize_with_guarded_targets(func, tti, &self.guarded)
+    }
+}
 
 /// A request's existing artifact store, borrowed only while its terminal
 /// bodies are mutable. The target digest comes from the shared pipeline's
@@ -77,7 +193,7 @@ pub struct FinalizationCache<'a> {
 
 impl<'a> FinalizationCache<'a> {
     pub fn new(store: &'a mut super::cache::CompilationCache, target_contract: &str) -> Self {
-        let mut key_prefix = CompilationCacheKey::new(b"molt-post-admission-final-tir-v2");
+        let mut key_prefix = CompilationCacheKey::new(b"molt-terminal-tir-v3");
         key_prefix.field(b"target-contract", target_contract.as_bytes());
         let semantic_environment = backend_env::current_semantic_environment()
             .expect("terminal TIR cache requires valid backend settings");
@@ -85,47 +201,26 @@ impl<'a> FinalizationCache<'a> {
         Self { store, key_prefix }
     }
 
-    fn key(
-        &self,
-        func: &TirFunction,
-        table: &molt_ir::FunctionTable,
-        targets: &GuardedTargets,
-        linkage_present: bool,
-    ) -> String {
+    fn key(&self, func: &TirFunction, table: &FunctionTable, calls: &FinalizationCalls) -> String {
         let mut key = self.key_prefix.clone();
         let body = super::serialize::serialize_tir_function(func, table)
             .unwrap_or_else(|error| panic!("final TIR input serialization: {error}"));
-        key.field(b"post-admission-body", &body);
-        key.field(b"linkage-present", &[u8::from(linkage_present)]);
-        // Document ids never enter the durable key.
-        let mut targets: Vec<_> = targets
-            .iter()
-            .map(|(&id, facts)| (table.symbol(id), facts))
-            .collect();
-        targets.sort_unstable_by_key(|(symbol, _)| *symbol);
-        for (symbol, facts) in targets {
-            key.field(b"guarded-target", symbol.as_bytes());
-            key.field(b"guarded-arity", &(facts.arity as u64).to_be_bytes());
-            key.field(b"guarded-closure", &[u8::from(facts.has_closure)]);
-            if facts.callback_free {
-                key.field(b"guarded-callback-free", &[1]);
-            }
-        }
+        key.field(b"preterminal-body", &body);
+        calls.write_key(&mut key, table);
         key.finish_hex()
     }
 
     fn finalize(
         &mut self,
         func: &mut TirFunction,
-        table: &molt_ir::FunctionTable,
-        symbol_ids: &molt_ir::deterministic_hash::HashMap<&str, molt_ir::FunctionId>,
+        owner: FunctionId,
+        table: &FunctionTable,
+        symbol_ids: &molt_ir::deterministic_hash::HashMap<&str, FunctionId>,
         tti: &TargetInfo,
-        linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
-        leaves: &molt_ir::FunctionSet,
+        calls: &FinalizationCalls,
     ) -> bool {
         assert_before_terminal_drops(func);
-        let targets = fast_path_expansion::guarded_targets(func, linkage, leaves);
-        let key = self.key(func, table, &targets, linkage.is_some());
+        let key = self.key(func, table, calls);
         if let Some(bytes) = self.store.get(&key)
             && let Some(payload) = bytes.strip_prefix(FINAL_TIR_CACHE_MAGIC)
             && let Some((&effect, body)) = payload.split_first()
@@ -153,7 +248,7 @@ impl<'a> FinalizationCache<'a> {
             *func = restored;
             return effect != 0;
         }
-        let changed = finalize_with_guarded_targets(func, tti, &targets);
+        let changed = calls.finalize(func, owner, tti);
         let mut bytes = Vec::from(FINAL_TIR_CACHE_MAGIC);
         bytes.push(u8::from(changed));
         bytes.extend(
@@ -790,32 +885,31 @@ pub fn finalize_document_drops<'a>(
             .map(|id| (table.symbol(id), id))
             .collect::<molt_ir::deterministic_hash::HashMap<_, _>>()
     });
-    let mut targets = molt_ir::FunctionSet::default();
+    let mut targets = FunctionSet::default();
     let mut bodies: Vec<_> = bodies
         .map(|(id, f)| {
-            let mut caller = false;
+            let mut direct = BTreeSet::new();
+            let mut guarded = BTreeSet::new();
             if final_tir {
-                for target in f
-                    .blocks
-                    .values()
-                    .flat_map(|block| &block.ops)
-                    .filter_map(|op| {
-                        super::call_targets::direct_callee(op)
-                            .or_else(|| fast_path_expansion::guarded_target(op))
-                    })
-                {
-                    targets.insert(target);
-                    caller = true;
+                for op in f.blocks.values().flat_map(|block| &block.ops) {
+                    if let Some(target) = super::call_targets::direct_callee(op) {
+                        direct.insert(target);
+                        targets.insert(target);
+                    } else if let Some(target) = fast_path_expansion::guarded_target(op) {
+                        guarded.insert(target);
+                        targets.insert(target);
+                    }
                 }
             }
-            (id, f, caller, false)
+            let caller = !direct.is_empty() || !guarded.is_empty();
+            (id, f, caller, false, direct, guarded)
         })
         .collect();
     let total = bodies.len();
-    let mut leaves = molt_ir::FunctionSet::default();
+    let mut leaves = FunctionSet::default();
     let audit_start = Instant::now();
     for callers in [false, true] {
-        for (index, (id, func, caller, changed)) in bodies.iter_mut().enumerate() {
+        for (index, (id, func, caller, changed, direct, guarded)) in bodies.iter_mut().enumerate() {
             if *caller != callers {
                 continue;
             }
@@ -827,28 +921,25 @@ pub fn finalize_document_drops<'a>(
                 None,
                 Some(audit_start.elapsed().as_millis()),
             );
-            if *caller {
-                if let Some(signatures) = linkage {
-                    *changed =
-                        fast_path_expansion::lower_static_call_arguments(func, *id, signatures);
-                }
-                *changed |= fast_path_expansion::charge_static_calls(func, &leaves);
-            }
-            *changed |= match cache.as_deref_mut() {
+            let calls = FinalizationCalls::new(
+                &func.name,
+                std::mem::take(direct),
+                std::mem::take(guarded),
+                linkage,
+                &leaves,
+            );
+            *changed = match cache.as_deref_mut() {
                 Some(cache) => cache.finalize(
                     func,
+                    *id,
                     table,
                     symbol_ids
                         .as_ref()
                         .expect("cache has its decode projection"),
                     tti,
-                    linkage,
-                    &leaves,
+                    &calls,
                 ),
-                None => {
-                    let targets = fast_path_expansion::guarded_targets(func, linkage, &leaves);
-                    finalize_with_guarded_targets(func, tti, &targets)
-                }
+                None => calls.finalize(func, *id, tti),
             };
             if !*caller
                 && targets.contains(*id)
@@ -873,7 +964,7 @@ pub fn finalize_document_drops<'a>(
     bodies
         .into_iter()
         .filter(|row| row.3)
-        .map(|(_, f, _, _)| f.name.clone())
+        .map(|(_, f, ..)| f.name.clone())
         .collect()
 }
 
@@ -949,6 +1040,20 @@ mod tests {
     use super::*;
     use crate::ir::{FunctionIR, OpIR};
 
+    fn guarded_calls_for_test(
+        body: &TirFunction,
+        linkage: &FunctionSignatures,
+    ) -> FinalizationCalls {
+        FinalizationCalls {
+            guarded: fast_path_expansion::guarded_targets(
+                body,
+                Some(linkage),
+                &FunctionSet::default(),
+            ),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn final_cache_distinguishes_terminal_split_field_settings() {
         use molt_ir::OpKind;
@@ -1014,11 +1119,11 @@ mod tests {
                 assert_eq!(
                     cache.finalize(
                         &mut memoized,
+                        FunctionId(0),
                         &table,
                         &symbol_ids,
                         &target,
-                        None,
-                        &Default::default()
+                        &FinalizationCalls::default()
                     ),
                     expected_change,
                 );
@@ -1086,14 +1191,15 @@ mod tests {
                 .any(|op| op.opcode == OpCode::DirectCall)
         );
         let mut seeded = source.clone();
+        let calls = guarded_calls_for_test(&source, &signatures);
         assert_eq!(
             cache.finalize(
                 &mut seeded,
+                FunctionId(1),
                 &table,
                 &symbol_ids,
                 &target,
-                Some(&signatures),
-                &Default::default()
+                &calls,
             ),
             effect
         );
@@ -1109,14 +1215,15 @@ mod tests {
         rebound.blocks.get_mut(&rebound.entry_block).unwrap().ops[0].callee =
             Some(molt_ir::FunctionId(1));
         let hits = cache.store.stats().telemetry.memory_hits;
+        let calls = guarded_calls_for_test(&rebound, &moved_signatures);
         assert_eq!(
             cache.finalize(
                 &mut rebound,
+                FunctionId(0),
                 &moved,
                 &moved_ids,
                 &target,
-                Some(&moved_signatures),
-                &Default::default(),
+                &calls,
             ),
             effect
         );
@@ -1128,13 +1235,14 @@ mod tests {
             let mut expected = source.clone();
             finalize_function_drops(&mut expected, &target, Some(&changed));
             let mut restored = source.clone();
+            let calls = guarded_calls_for_test(&source, &changed);
             cache.finalize(
                 &mut restored,
+                FunctionId(1),
                 &table,
                 &symbol_ids,
                 &target,
-                Some(&changed),
-                &Default::default(),
+                &calls,
             );
             assert!(
                 !restored
@@ -1146,13 +1254,14 @@ mod tests {
             assert_eq!(canonical(&restored, &table), canonical(&expected, &table));
         }
         let missing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let calls = guarded_calls_for_test(&source, &vec![]);
             cache.finalize(
                 &mut source,
+                FunctionId(1),
                 &table,
                 &symbol_ids,
                 &target,
-                Some(&Vec::new()),
-                &Default::default(),
+                &calls,
             );
         }));
         assert!(

@@ -448,21 +448,33 @@ pub fn guarded_targets(
     linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
     leaves: &molt_ir::FunctionSet,
 ) -> GuardedTargets {
+    resolve_guarded_targets(
+        &func.name,
+        func.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .filter_map(guarded_target),
+        linkage,
+        leaves,
+    )
+}
+
+pub(in crate::tir) fn resolve_guarded_targets(
+    owner: &str,
+    callees: impl IntoIterator<Item = molt_ir::FunctionId>,
+    linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+    leaves: &molt_ir::FunctionSet,
+) -> GuardedTargets {
     let Some(linkage) = linkage else {
         return GuardedTargets::new();
     };
-    func.blocks
-        .values()
-        .flat_map(|block| &block.ops)
-        .filter_map(guarded_target)
+    callees
+        .into_iter()
         .map(|callee| {
-            // The driver's table holds every row of the document, so a
-            // missing target is a wiring defect, never a reason to keep the
-            // slow lane in silence.
             let signature = linkage.get(callee.index()).unwrap_or_else(|| {
                 panic!(
-                    "guarded call in `{}` names function #{}, outside its document",
-                    func.name, callee.0
+                    "guarded call in `{owner}` names function #{}, outside its document",
+                    callee.0
                 )
             });
             (
@@ -1326,6 +1338,17 @@ pub fn lower_static_call_arguments(
     owner: molt_ir::FunctionId,
     signatures: &[molt_ir::ir::ExternFunctionSignature],
 ) -> bool {
+    lower_static_call_arguments_with_shape(func, owner, |target| {
+        let signature = signatures[target.index()];
+        (signature.arity, signature.has_closure)
+    })
+}
+
+pub(in crate::tir) fn lower_static_call_arguments_with_shape(
+    func: &mut TirFunction,
+    owner: molt_ir::FunctionId,
+    shape: impl Fn(molt_ir::FunctionId) -> (usize, bool),
+) -> bool {
     use crate::tir::call_targets::direct_callee;
     use crate::tir::ssa_update::{Variable, repair};
     use std::collections::BTreeMap;
@@ -1335,20 +1358,20 @@ pub fn lower_static_call_arguments(
         let Some(target) = direct_callee(op) else {
             continue;
         };
-        let signature = &signatures[target.index()];
+        let (arity, has_closure) = shape(target);
         // First-class TIR may already spell its physical arguments. Source
         // calls omit the lexical environment at the transport boundary.
-        if op.origin.is_none() && op.operands.len() == signature.arity {
+        if op.origin.is_none() && op.operands.len() == arity {
             continue;
         }
         assert_eq!(
-            op.operands.len() + usize::from(signature.has_closure),
-            signature.arity,
+            op.operands.len() + usize::from(has_closure),
+            arity,
             "static call argument ABI mismatch for function #{} in {}",
             target.index(),
             func.name
         );
-        if signature.has_closure {
+        if has_closure {
             environments.entry(target).or_insert_with(|| Variable {
                 names: Vec::new(),
                 ty: TirType::DynBox,
@@ -1398,7 +1421,7 @@ pub fn lower_static_call_arguments(
     }
     for op in func.blocks.values_mut().flat_map(|block| &mut block.ops) {
         if let Some(target) = direct_callee(op)
-            && !(op.origin.is_none() && op.operands.len() == signatures[target.index()].arity)
+            && !(op.origin.is_none() && op.operands.len() == shape(target).0)
             && let Some(variable) = environments.get(&target)
         {
             let seed = variable.names.first().unwrap_or_else(|| {
@@ -1496,14 +1519,18 @@ pub(super) fn recursion_refusal(
 /// Charge ordinary compiled calls whose target can reenter Python. The callee's
 /// finalized body proves when admission can be omitted. An extern has no such
 /// proof. Guarded calls own admission in their guarded expansion.
-pub(crate) fn charge_static_calls(func: &mut TirFunction, leaves: &molt_ir::FunctionSet) -> bool {
+pub(crate) fn charge_static_calls(
+    func: &mut TirFunction,
+    callback_free: impl Fn(molt_ir::FunctionId) -> bool,
+) -> bool {
+    let callback_free = &callback_free;
     let mut sites: Vec<_> = func
         .blocks
         .iter()
         .flat_map(|(&block, body)| {
             body.ops.iter().enumerate().filter_map(move |(index, op)| {
                 crate::tir::call_targets::direct_callee(op)
-                    .filter(|&id| !leaves.contains(id))
+                    .filter(|&id| !callback_free(id))
                     .map(|_| (block, index))
             })
         })
