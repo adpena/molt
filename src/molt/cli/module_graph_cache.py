@@ -3,7 +3,6 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt import compiler_process
-from molt.typed_cache import typed_cache
 from molt import input_report as _input_report
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.compiler_analysis.python_binding_facts import (
@@ -31,10 +30,12 @@ from molt.compiler_analysis.python_imports import (
     SourceAllExports,
     SourceDemandPhase,
 )
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, MutableMapping
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from itertools import pairwise
+from threading import Lock
 from typing import Any, NamedTuple, cast, get_args
 
 from molt.cli.frontend_record_files import FrontendRecord, frontend_record_files
@@ -1123,16 +1124,46 @@ class _ImportScanAdmission(NamedTuple):
 _ImportScanDecoder = Callable[[bytes, _ImportScanAdmission], _ImportScanRequests | None]
 
 
-def _operation_import_scan_decoder(raw: bytes) -> _ImportScanDecoder:
+_IMPORT_SCAN_DECODE_BYTES = 16 * 1024 * 1024
+_IMPORT_SCAN_DECODE_ENTRY_BYTES = 256
+
+
+class _ImportScanDecodeMemo:
+    """Reuse exact admitted records while charging retained bytes by size."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._ready: OrderedDict[
+            tuple[bytes, _ImportScanAdmission], _ImportScanRequests | None
+        ] = OrderedDict()
+        self._bytes = 0
+
+    def __call__(
+        self, raw: bytes, admission: _ImportScanAdmission
+    ) -> _ImportScanRequests | None:
+        weight = len(raw) + _IMPORT_SCAN_DECODE_ENTRY_BYTES
+        if weight > _IMPORT_SCAN_DECODE_BYTES:
+            return _decode_import_scan_payload(raw, admission)
+        key = (raw, admission)
+        with self._lock:
+            if key in self._ready:
+                self._ready.move_to_end(key)
+                return self._ready[key]
+            result = _decode_import_scan_payload(raw, admission)
+            while self._bytes + weight > _IMPORT_SCAN_DECODE_BYTES:
+                (retired, _), _ = self._ready.popitem(last=False)
+                self._bytes -= len(retired) + _IMPORT_SCAN_DECODE_ENTRY_BYTES
+            self._ready[key] = result
+            self._bytes += weight
+            return result
+
+
+def _operation_import_scan_decoder() -> _ImportScanDecoder:
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
-    # Retain at most 16 MiB of encoded records, with decoded objects shared
-    # between the requests that already keep those objects alive.
-    if transaction is None or len(raw) > 32 * 1024:
+    if transaction is None:
         return _decode_import_scan_payload
     if transaction.import_scan_decoder is None:
-        transaction.import_scan_decoder = typed_cache(maxsize=512)(
-            _decode_import_scan_payload
-        )
+        transaction.import_scan_decoder = _ImportScanDecodeMemo()
     return transaction.import_scan_decoder
 
 
@@ -1197,7 +1228,7 @@ def _read_persisted_import_scan_record(
         runtime_catalog_owner,
         purpose,
     )
-    scan = _operation_import_scan_decoder(raw)(raw, admission)
+    scan = _operation_import_scan_decoder()(raw, admission)
     if scan is not None and record is not None:
         record.refresh()
     return scan

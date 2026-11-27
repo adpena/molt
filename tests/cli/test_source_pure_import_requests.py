@@ -1832,18 +1832,19 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
     assert all("namespace_premise" not in payload for payload in payloads)
 
 
+@pytest.mark.parametrize("import_count", [1, 512])
 def test_persisted_import_blobs_reuse_decode_only_under_matching_admission(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, import_count: int
 ) -> None:
     from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 
-    path = write(tmp_path / "entry.py", "import leaf\n")
-    write(tmp_path / "leaf.py")
+    imports = tuple(f"leaf_{number:04d}" for number in range(import_count))
+    path = write(tmp_path / "entry.py", "\n".join(f"import {name}" for name in imports))
     snapshot = PythonSourceSnapshot.capture(path)
     request = load(
         path, project_root=None, source_snapshot=snapshot
     ).scan.source_requests
-    assert request.imports == ("leaf",)
+    assert request.imports == imports
 
     key = records._import_scan_cache_key(
         path,
@@ -1879,6 +1880,11 @@ def test_persisted_import_blobs_reuse_decode_only_under_matching_admission(
     store = records.frontend_record_files()
     assert store.link("import-scan", alias, key)
     assert store.link("import-scan", foreign, key)
+    stored = store.get(
+        "import-scan", key, max_bytes=records.SOURCE_ANALYSIS_CACHE_MAX_BYTES
+    )
+    assert stored is not None
+    assert (len(stored.payload) > 32 * 1024) == (import_count > 1)
 
     decode_count = 0
     original_decode = records._decode_import_scan_payload
@@ -1912,6 +1918,19 @@ def test_persisted_import_blobs_reuse_decode_only_under_matching_admission(
         assert decode_count == 2
     assert read("entry") == request
     assert decode_count == 3
+
+    # Only one admission fits. Reusing the same bytes under a different
+    # admission displaces it, even though the record itself is the same.
+    monkeypatch.setattr(
+        records,
+        "_IMPORT_SCAN_DECODE_BYTES",
+        len(stored.payload) + records._IMPORT_SCAN_DECODE_ENTRY_BYTES,
+    )
+    with _source_tree_fingerprint_transaction():
+        assert read("entry") == request
+        assert read("other") is None
+        assert read("entry", WHOLE_PROGRAM) == request
+        assert decode_count == 6
 
 
 @pytest.mark.parametrize(

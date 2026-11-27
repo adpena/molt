@@ -24,6 +24,12 @@ refreshes the changed query generations in the admitted payload. An unchanged
 replay renews the existing record without encoding or publishing it again. The
 record remains bounded at 16 MiB.
 
+Within one compile, persisted import scans share decoded records by their
+exact bytes and typed admission. The memo charges 16 MiB across all entries,
+including an allowance for each key. It keeps the most recently used records
+within that budget, so large scan records can participate alongside small ones.
+Each read still verifies its published bytes before admitting a decoded result.
+
 Replay currently refuses changes to a source's recorded name universe, missing
 body owners, incomplete source observers, native artifact plans, stale runtime
 custody, changed query outputs, malformed/oversized blobs and changed positive or
