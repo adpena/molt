@@ -58,10 +58,9 @@
 //! a reader cleans the word, and only a deleted write dirties it again. A word
 //! that a reader in a block every iteration runs would need keeps its writes.
 //!
-//! The boundary is the PEP 667 boundary of M2.1: a callback that rebinds a
-//! local through a frame proxy does not clear these facts, so a value injected
-//! that way into a home this pass keeps stale is released at the next write of
-//! that home, not at the compiled rebinding.
+//! The shared binding-release analysis declines to prove a home inert
+//! where the closed program can write the activation through a frame proxy.
+//! Those homes stay current at each compiled rebinding.
 //!
 //! The pass also records the nothrow proof on every `frame_home_store` that
 //! boxes nothing: a home write raises only when it boxes a full-range raw int
