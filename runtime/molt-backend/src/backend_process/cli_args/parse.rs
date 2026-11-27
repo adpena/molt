@@ -466,23 +466,28 @@ mod tests {
     fn native_batch_worker_argv_parses_and_requires_its_output() {
         // native_batch/worker/spawn.rs spawns exactly this shape.
         with_parsed(
-            &["--native-batch-job-file", "job.json", "--output", "job.o"],
+            &[
+                "--native-batch-job-file",
+                "job.msgpack",
+                "--output",
+                "job.o",
+            ],
             |parsed| {
                 assert_eq!(
                     parsed.expect("batch job"),
                     BackendCommand::NativeBatchJob {
-                        job_file: "job.json",
+                        job_file: "job.msgpack",
                         emission_scope: None,
                         output_path: "job.o",
                     }
                 );
             },
         );
-        let (_, message) = rejection(&["--native-batch-job-file", "job.json"]);
+        let (_, message) = rejection(&["--native-batch-job-file", "job.msgpack"]);
         assert!(message.contains("requires --output"), "{message}");
         let (_, message) = rejection(&[
             "--native-batch-job-file",
-            "job.json",
+            "job.msgpack",
             "--output",
             "o",
             "--ir-file",

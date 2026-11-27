@@ -68,7 +68,7 @@ impl SimpleBackend {
         let mut cached = run_cached_tir_pipeline(
             &ir.functions,
             TirPipelineRunOptions {
-                target_info: target.clone(),
+                target_info: target,
                 cache_flavor,
                 cache: self.tir_cache.clone(),
                 process_externs: false,
@@ -94,7 +94,6 @@ impl SimpleBackend {
             partition_cached_functions_before_drops(
                 ir,
                 &mut cached,
-                &target,
                 molt_tir::passes::max_function_ops(),
             );
             if self.skip_shared_stdlib_partition {
@@ -109,7 +108,6 @@ impl SimpleBackend {
             &ir.functions,
             &mut cached,
             TirOwnedModulePipelineOptions {
-                target_info: &target,
                 module_name,
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "final TIR preparation",

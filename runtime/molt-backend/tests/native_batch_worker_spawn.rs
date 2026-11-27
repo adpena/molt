@@ -882,21 +882,39 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
     );
     let manifest_path = artifact_dir.join("manifest.json");
     assert!(manifest_path.exists(), "failure manifest must be preserved");
-    let copied_job_path = artifact_dir.join("batch_1.json");
+    let copied_job_path = artifact_dir.join("batch_1.msgpack");
     assert!(
         copied_job_path.exists(),
         "failing batch job must be copied for replay"
     );
-    let copied_job = std::fs::read_to_string(&copied_job_path).expect("read copied batch job");
-    let copied_job_json: serde_json::Value =
-        serde_json::from_str(&copied_job).expect("parse copied batch job");
+    #[derive(serde::Deserialize)]
+    struct ReplayContext {
+        module_context: serde_json::Value,
+        module_context_path: Option<String>,
+    }
+    let copied_job = std::fs::read(&copied_job_path).expect("read copied batch job");
+    let replay_context: ReplayContext =
+        rmp_serde::from_slice(&copied_job).expect("parse copied batch context");
     assert!(
-        copied_job_json
-            .get("module_context")
-            .is_some_and(serde_json::Value::is_object),
-        "replay must retain the exact projected context inline: {copied_job}"
+        replay_context.module_context.is_object(),
+        "replay must retain the exact projected context inline"
     );
-    assert!(copied_job_json.get("module_context_path").is_none());
+    assert!(replay_context.module_context_path.is_none());
+    let suffixed_job = artifact_dir.join("suffixed.msgpack");
+    let mut suffixed_bytes = copied_job;
+    suffixed_bytes.push(0);
+    std::fs::write(&suffixed_job, suffixed_bytes).expect("write suffixed worker job");
+    let rejected_object = artifact_dir.join("suffixed.o");
+    let rejected = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        .arg("--native-batch-job-file")
+        .arg(&suffixed_job)
+        .arg("--output")
+        .arg(&rejected_object)
+        .output()
+        .expect("run the worker on a job with a suffix");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("trailing bytes"));
+    assert!(!rejected_object.exists());
     let manifest = std::fs::read_to_string(&manifest_path).expect("read failure manifest");
     let manifest_json: serde_json::Value =
         serde_json::from_str(&manifest).expect("parse failure manifest");

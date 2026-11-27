@@ -531,7 +531,7 @@ impl NativeFinalFunctions {
 
     pub(super) fn from_terminal_wire(
         ir: SimpleIR,
-        wires: Vec<Option<Vec<u8>>>,
+        wires: Vec<Option<serde_bytes::ByteBuf>>,
     ) -> Result<Self, String> {
         let mut symbols = BTreeSet::new();
         if ir
