@@ -137,9 +137,6 @@ FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
     "loop_scopes",
     "loop_layout_guards",
     "loop_guard_assumptions",
-    "return_label",
-    "return_slot",
-    "return_slot_offset",
     "block_terminated",
 )
 
@@ -298,9 +295,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.exception_stack_depth_baseline = None
         self.exception_stack_prev_baseline = None
         self.return_unwind_depth = 0
-        self.return_label = None
-        self.return_slot = None
-        self.return_slot_offset = None
         self.block_terminated = False
         self.loop_scopes: list[LoopScope] = []
         self.loop_layout_guards = []

@@ -252,19 +252,21 @@ pub(super) fn split_stateful_frame(
             }
         });
     }
-    let mut releases: BTreeMap<usize, Vec<OpIR>> = slot_releases(&ops, &liveness, &slot_of)
-        .into_iter()
-        .map(|(position, released)| {
-            let site = &ops[position];
-            let mut released: Vec<&str> = released.into_iter().collect();
-            released.sort_by_key(|name| std::cmp::Reverse(last_definition.get(name).copied()));
-            let stores = released
+    let mut releases = BTreeMap::new();
+    for (point, released) in slot_releases(&ops, &liveness, &slot_of) {
+        let (position, destination) = match point {
+            SlotReleasePoint::BeforeReturn(position) => (position, &mut before),
+            SlotReleasePoint::After(position) => (position, &mut releases),
+        };
+        let site = &ops[position];
+        let mut released: Vec<&str> = released.into_iter().collect();
+        released.sort_by_key(|name| std::cmp::Reverse(last_definition.get(name).copied()));
+        destination.entry(position).or_default().extend(
+            released
                 .into_iter()
-                .map(|name| release_slot(site, slot_of[name]))
-                .collect();
-            (position, stores)
-        })
-        .collect();
+                .map(|name| release_slot(site, slot_of[name])),
+        );
+    }
     let mut by_resume: BTreeMap<usize, Vec<Suspension>> = BTreeMap::new();
     for suspension in &suspensions {
         by_resume
@@ -459,17 +461,20 @@ fn live_across_suspensions(
     (live, SourceLiveness { cfg, facts })
 }
 
-/// Where each spilled name dies, by the operation its release follows: the
-/// operation that reads it last, when control falls from it, and the head of
-/// a block the name is dead into although a predecessor holds it live (after
-/// a resume entry's reload anchor, so a resumed frame is published first).
-/// A head that defines the name or does not fall through gets no release;
-/// the slot then keeps the value until it is stored again.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SlotReleasePoint {
+    BeforeReturn(usize),
+    After(usize),
+}
+
+/// Release a spilled name at its last read or where it is dead into a block
+/// with a live predecessor. A return moves its SSA owner out of the frame.
+/// Release the spill's redundant owner before the frame exits.
 fn slot_releases<'a>(
     ops: &[OpIR],
     liveness: &SourceLiveness,
     slot_of: &'a BTreeMap<String, i64>,
-) -> BTreeMap<usize, BTreeSet<&'a str>> {
+) -> BTreeMap<SlotReleasePoint, BTreeSet<&'a str>> {
     let facts = &liveness.facts;
     let spilled: BTreeMap<u32, &'a str> = slot_of
         .keys()
@@ -480,10 +485,11 @@ fn slot_releases<'a>(
         visit_simple_ir_defined_names(op, |defined| found |= defined == name);
         found
     };
-    let mut releases: BTreeMap<usize, BTreeSet<&'a str>> = BTreeMap::new();
+    let mut releases: BTreeMap<SlotReleasePoint, BTreeSet<&'a str>> = BTreeMap::new();
     for block in 0..facts.block_count() {
         facts.visit_block_backward(ops, block, |index, live_after| {
-            if !falls_through(&ops[index]) {
+            let returns = ops[index].kind == OpKind::Ret;
+            if !returns && !falls_through(&ops[index]) {
                 return;
             }
             visit_simple_ir_reads(&ops[index], |read| {
@@ -492,10 +498,17 @@ fn slot_releases<'a>(
                     && !live_after.contains(id)
                     && !defines(&ops[index], name)
                 {
-                    releases
-                        .entry(past_exception_checks(ops, index))
-                        .or_default()
-                        .insert(name);
+                    let point = if returns {
+                        // Keep the frame unlink adjacent to its return.
+                        let insertion = index
+                            .checked_sub(1)
+                            .filter(|&previous| ops[previous].kind == OpKind::TraceExit)
+                            .unwrap_or(index);
+                        SlotReleasePoint::BeforeReturn(insertion)
+                    } else {
+                        SlotReleasePoint::After(past_exception_checks(ops, index))
+                    };
+                    releases.entry(point).or_default().insert(name);
                 }
             });
         });
@@ -521,7 +534,9 @@ fn slot_releases<'a>(
                     continue;
                 };
                 releases
-                    .entry(past_exception_checks(ops, position))
+                    .entry(SlotReleasePoint::After(past_exception_checks(
+                        ops, position,
+                    )))
                     .or_default()
                     .insert(name);
             }
@@ -807,6 +822,7 @@ mod tests {
             add("a", "c", "c"),
             yield_("a", 1),
             label(1),
+            op(OpKind::TraceExit),
             ret("a"),
         ]);
         assert_eq!(out.layout.map(|layout| layout.frame_size), Some(24));
@@ -839,9 +855,18 @@ mod tests {
                     Some(s("a")),
                     None
                 ),
+                (
+                    OpKind::ClosureStore,
+                    vec![s("self"), s("none")],
+                    Some(16),
+                    None,
+                    None
+                ),
+                (OpKind::TraceExit, vec![], None, None, None),
                 (OpKind::Ret, vec![s("a")], None, None, None),
             ]
         );
+        assert!(is_release(&out.ops[out.ops.len() - 3]));
     }
 
     #[test]

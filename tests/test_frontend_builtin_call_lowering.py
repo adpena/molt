@@ -2472,11 +2472,8 @@ def test_stateful_scope_and_alias_hints_use_frame_plan_not_symbol_spelling() -> 
     from molt.compiler_analysis.python_function_kind import FunctionKind
 
     gen = SimpleTIRGenerator(module_name="opaque_scope")
-    gen.start_function(
-        "ordinary_poll", needs_return_slot=True, code_slots=_parameter_slots()
-    )
+    gen.start_function("ordinary_poll", code_slots=_parameter_slots())
     assert not gen.is_async()
-    assert gen.return_slot is None
     for kind in (
         FunctionKind.GENERATOR,
         FunctionKind.ASYNC,
@@ -2495,10 +2492,8 @@ def test_stateful_scope_and_alias_hints_use_frame_plan_not_symbol_spelling() -> 
             params=["self"],
             compiler_params={"self"},
             stateful_frame_plan=plan,
-            needs_return_slot=True,
         )
         assert gen.is_async()
-        assert gen.return_slot is not None
         assert gen.funcs_map[target]["stateful_frame_plan"] is plan
         hint = plan.function_type_hint(64)
         gen.locals["source"] = MoltValue("source", type_hint=hint)

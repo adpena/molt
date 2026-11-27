@@ -466,10 +466,9 @@ suspension, for every backend.
   spill-slot typing skips it, since no reload reads it. CPython drops a frame value at its last
   use, so a finalizer runs at the same point (`condition_flow_truth_custody.py`, the comparison
   operand that crosses a `yield`). A slot is one name's alone, so a release where the name is dead
-  never loses a value a reload needs. Not released: a value whose last read does not fall through
-  (a `return` reads it; the slot keeps it until the task dies, since the terminal transition
-  releases bindings but not scratch slots), and a block head that defines the name again.
-  `generator_finally_return_lifetime.py` fails on main before it reaches these cases.
+  never loses a value a reload needs. A normal return transfers its SSA owner to the caller.
+  The frame split clears that value's redundant spill before the adjacent frame unlink and
+  return. A block head that defines the name again still keeps the slot until the next store.
 - **Measured** (release, macOS arm64, instructions retired, median of 3, e6bac83fe7 against
   8e461d6b13; the table is in `docs/design/foundation/call_anatomy.md` section 4.3): a 10-item
   generator consumed by a `for` loop (`gen_for`) runs 11.3% fewer instructions on LLVM and 14.7%
@@ -488,5 +487,13 @@ suspension, for every backend.
   `comprehensions.py` 2), or turn off loop-hoisted guards and module-scope rebinding because a
   suspension can run any code (`loop_lowering.py` 8, `statement_control_flow.py`,
   `call_reductions.py`, `analysis_patterns.py`). One is a workaround with an owner: a range loop
-  around `async with` keeps the range iterator (HF-862). Two `_new_async_internal_slot()` calls
-  remain: an `await`'s awaitable slot, which the runtime reads, and the return slot.
+  around `async with` keeps the range iterator (HF-862). The frontend still reserves an
+  `await`'s awaitable slot for the runtime's Pending path.
+
+**Completion result ownership (2026-11-27, HF-229 and HF-855).** After lexical cleanup, each
+generator or coroutine return uses the normal function return boundary. This removes the
+heap cell in the task payload and the read and write of that cell for completion. If cleanup
+can suspend, the pending result uses the existing liveness-driven spill, which is cleared
+when the return transfers ownership. The shared poll path stores a completion result only
+for a future that can replay it. Native coroutines and async generator operations reject
+reuse, and coroutine wrappers delegate it. Their completing caller owns the result.

@@ -130,7 +130,6 @@ class ComprehensionMixin(GeneratorMixinBase):
                 params=["self"],
                 compiler_params={"self"},
                 type_facts_name=func_symbol,
-                needs_return_slot=False,
             )
             self.current_method_first_param = None
             self.global_decls = set(module_namedexpr_targets)
@@ -152,7 +151,6 @@ class ComprehensionMixin(GeneratorMixinBase):
                 if keeps_outer_iterable
                 else parameter_slot
             )
-            self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
@@ -169,7 +167,7 @@ class ComprehensionMixin(GeneratorMixinBase):
                     self._visit_for(outer_loop, iterator=iterator)
             finally:
                 self._pop_qualname()
-            self._emit_generator_falloff(node)
+            self._emit_implicit_return(node)
             closure_size = self._seal_stateful_frame(frame_plan)
             locals_layout = self._stateful_locals_layout(
                 frame_plan,

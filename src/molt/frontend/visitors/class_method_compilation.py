@@ -10,9 +10,6 @@ from __future__ import annotations
 
 from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 
-from molt.frontend.lowering.op_kinds_generated import (
-    FrontendKinds,
-)
 
 from molt.compiler_analysis.python_lexical_scope import (
     function_contains_yield,
@@ -328,7 +325,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         )
         cell_plan = self._callable_cell_plan(item)
         cell_vars = cell_plan.cellvars
-        has_return = self._function_contains_return(item)
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.GENERATOR,
             poll_symbol=poll_symbol,
@@ -397,7 +393,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 params=["self"],
                 compiler_params={"self"},
                 type_facts_name=f"{self._class_id_for_definition(class_node).qualname}.{method_name}",
-                needs_return_slot=has_return,
             )
             self.global_decls = self._collect_global_decls(item.body)
             self.nonlocal_decls = self._collect_nonlocal_decls(item.body)
@@ -426,7 +421,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                         hint = explicit
                 if hint is not None:
                     self.async_public_hints[arg.arg] = hint
-            self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
             self._prebox_scope_cell_vars(
@@ -443,7 +437,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                         break
             finally:
                 self._pop_qualname()
-            self._emit_generator_falloff(item.body[-1])
+            self._emit_implicit_return(item.body[-1])
             closure_size = self._seal_stateful_frame(frame_plan)
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
         # Publish the final spilled-frame extent on the defining op.
@@ -567,7 +561,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 python_first_arg=self._python_first_positional_arg(item.args),
                 params=method_params,
                 type_facts_name=f"{self._class_id_for_definition(class_node).qualname}.{method_name}",
-                needs_return_slot=False,
                 has_exception_handlers=self._body_has_exception_handlers(item.body),
                 code_slots=code_slots,
                 source_node=item,
@@ -651,20 +644,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 self._pop_qualname()
                 if nested_id is not None:
                     del self.reserved_func_symbols[nested_id]
-            if self.return_label is not None:
-                if not self._ends_with_return_jump():
-                    res = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res, item.body[-1])
-                self._emit_return_label()
-            elif not (
-                self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret
-            ):
-                # Falling off the end is a return, with the same exception-stack
-                # exit as an explicit one.
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_return_value(res, item.body[-1])
+            self._emit_implicit_return(item.body[-1])
         method_attr = func_val
         # Elide only frames whose entire inline expression is proven unobservable.
         inline_return = None
@@ -752,7 +732,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             )
             cell_plan = self._callable_cell_plan(item)
             cell_vars = cell_plan.cellvars
-            has_return = self._function_contains_return(item)
             frame_plan = stateful_function_frame_plan(
                 kind=FunctionKind.ASYNC_GENERATOR,
                 poll_symbol=poll_symbol,
@@ -770,7 +749,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                     params=["self"],
                     compiler_params={"self"},
                     type_facts_name=f"{self._class_id_for_definition(class_node).qualname}.{method_name}",
-                    needs_return_slot=has_return,
                 )
                 self.global_decls = self._collect_global_decls(item.body)
                 self.nonlocal_decls = self._collect_nonlocal_decls(item.body)
@@ -799,7 +777,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                             hint = explicit
                     if hint is not None:
                         self.async_public_hints[arg.arg] = hint
-                self._store_return_slot_for_stateful()
                 self.emit(
                     MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none"))
                 )
@@ -818,7 +795,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                             break
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff(item.body[-1])
+                self._emit_implicit_return(item.body[-1])
                 closure_size = self._seal_stateful_frame(frame_plan)
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars
@@ -912,7 +889,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         )
         cell_plan = self._callable_cell_plan(item)
         cell_vars = cell_plan.cellvars
-        has_return = self._function_contains_return(item)
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.ASYNC,
             poll_symbol=poll_symbol,
@@ -930,7 +906,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 params=["self"],
                 compiler_params={"self"},
                 type_facts_name=f"{self._class_id_for_definition(class_node).qualname}.{method_name}",
-                needs_return_slot=has_return,
             )
             self.global_decls = self._collect_global_decls(item.body)
             self.nonlocal_decls = self._collect_nonlocal_decls(item.body)
@@ -958,7 +933,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                         hint = explicit
                 if hint is not None:
                     self.async_public_hints[arg.arg] = hint
-            self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
             self._prebox_scope_cell_vars(
@@ -973,16 +947,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                     self.visit(stmt)
             finally:
                 self._pop_qualname()
-            if self.return_label is not None:
-                if not self._ends_with_return_jump():
-                    res = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res, item.body[-1])
-                self._emit_return_label()
-            else:
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_return_value(res, item.body[-1])
+            self._emit_implicit_return(item.body[-1])
             closure_size = self._seal_stateful_frame(frame_plan)
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
 

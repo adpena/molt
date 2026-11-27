@@ -102,6 +102,30 @@ pub(crate) fn molt_future_poll_attached_body(_py: &crate::PyToken<'_>, future_bi
     })
 }
 
+/// Which terminal value, if any, a subsequent poll is allowed to observe.
+enum PollCompletion {
+    Replay,
+    Coroutine,
+    AsyncGeneratorOperation,
+    Delegate,
+}
+
+impl PollCompletion {
+    fn for_awaitable(bits: u64) -> Self {
+        use crate::async_rt::{awaitable, generators};
+
+        if generators::is_native_coroutine_bits(bits) {
+            Self::Coroutine
+        } else if generators::is_asyncgen_awaitable_bits(bits) {
+            Self::AsyncGeneratorOperation
+        } else if awaitable::is_coroutine_wrapper_bits(bits) {
+            Self::Delegate
+        } else {
+            Self::Replay
+        }
+    }
+}
+
 // All completion/cache/error paths return through the caller's continuation
 // publication above. Scheduler wake subscriptions are separate from ownership.
 fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
@@ -141,36 +165,40 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
             raise_exception::<i64>(_py, BuiltinExc::TypeError, "object is not awaitable");
             return 0;
         }
-        if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0
-            && !crate::async_rt::awaitable::is_coroutine_wrapper_bits(future_bits)
-        {
-            if crate::async_rt::generators::is_native_coroutine_bits(future_bits) {
-                return raise_exception::<i64>(
-                    _py,
-                    BuiltinExc::RuntimeError,
-                    "cannot reuse already awaited coroutine",
-                );
+        if ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0 {
+            match PollCompletion::for_awaitable(future_bits) {
+                PollCompletion::Coroutine => {
+                    return raise_exception::<i64>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "cannot reuse already awaited coroutine",
+                    );
+                }
+                PollCompletion::AsyncGeneratorOperation => {
+                    let message =
+                        crate::async_rt::generators::asyncgen_awaitable_reuse_message(_py, ptr);
+                    return raise_exception::<i64>(_py, BuiltinExc::RuntimeError, message);
+                }
+                // A coroutine wrapper delegates reuse to its wrapped coroutine.
+                PollCompletion::Delegate => {}
+                PollCompletion::Replay => {
+                    if let Some(result_bits) = task_result_get(_py, ptr) {
+                        return result_bits as i64;
+                    }
+                    let cached_exception = {
+                        let guard = task_last_exceptions(_py).lock().unwrap();
+                        guard.get(&PtrSlot(ptr)).copied().flatten()
+                    };
+                    if let Some(exc_ptr) = cached_exception {
+                        let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
+                        inc_ref_bits(_py, exc_bits);
+                        let raised = molt_raise_attached_body(_py, exc_bits);
+                        dec_ref_bits(_py, exc_bits);
+                        return raised as i64;
+                    }
+                    return MoltObject::none().bits() as i64;
+                }
             }
-            if crate::async_rt::generators::is_asyncgen_awaitable_bits(future_bits) {
-                let message =
-                    crate::async_rt::generators::asyncgen_awaitable_reuse_message(_py, ptr);
-                return raise_exception::<i64>(_py, BuiltinExc::RuntimeError, message);
-            }
-            if let Some(result_bits) = task_result_get(_py, ptr) {
-                return result_bits as i64;
-            }
-            let cached_exception = {
-                let guard = task_last_exceptions(_py).lock().unwrap();
-                guard.get(&PtrSlot(ptr)).copied().flatten()
-            };
-            if let Some(exc_ptr) = cached_exception {
-                let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
-                inc_ref_bits(_py, exc_bits);
-                let raised = molt_raise_attached_body(_py, exc_bits);
-                dec_ref_bits(_py, exc_bits);
-                return raised as i64;
-            }
-            return MoltObject::none().bits() as i64;
         }
         if ((*header).load_metadata_flags() & HEADER_FLAG_COROUTINE) != 0
             && crate::object::object_state(ptr) == 0
@@ -224,10 +252,18 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
         };
         let poll_pending = exception_pending(_py) || awaited_exception.is_some();
         if res != pending_bits_i64() {
+            let replay = matches!(
+                PollCompletion::for_awaitable(future_bits),
+                PollCompletion::Replay
+            );
             if !poll_pending {
                 crate::task_last_exception_drop(_py, ptr);
-                task_result_store(_py, ptr, res as u64);
-            } else {
+                // The caller owns the returned value. Retain a second owner
+                // only when another poll can actually read it.
+                if replay {
+                    task_result_store(_py, ptr, res as u64);
+                }
+            } else if replay {
                 task_result_drop(_py, ptr);
             }
             task_mark_done(_py, ptr);
