@@ -128,6 +128,8 @@ _CANONICAL_PERF_FORBIDDEN_FLAGS = frozenset(
         "--sample-hot-only",
         "--self-test",
         "--benchmark",
+        "--plan",
+        "--plan-format",
     }
 )
 

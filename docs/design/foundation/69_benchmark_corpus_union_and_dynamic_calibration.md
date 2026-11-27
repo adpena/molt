@@ -13,6 +13,74 @@ oracle); stdlib sourcing/collaboration is recorded in the Monty assessment. -->
 
 # 69 — Benchmark Corpus Union + Dynamic Calibration
 
+## Benchmark-suite delivery roadmap
+
+Scope: suite selection, workload/measurement contracts, result coverage and
+related documentation. Compiler/runtime optimizations and new scheduling or
+dashboard infrastructure are separate work. The
+[V1 findings ledger](../../agent/V1_HANDOFF_FINDINGS.md) alone owns current
+release status; this section defines dependencies and closure evidence.
+
+Use typed metadata from the existing suite, application and friend authorities.
+Discover files to detect inventory drift; never silently admit a new file into
+the release core. Resolve one immutable selection per invocation. Acquisition
+and tool probes are lazy: a metadata plan does neither. Retain each completed
+coordinate in the existing incremental checkpoint instead of replacing missing
+evidence with a timing or a skip reason.
+
+| Order | Outcome and existing owner | Automated contract | Closure evidence |
+|---|---|---|---|
+| 1 | Selection and coverage: `bench_suites`, scoreboard, `perf_schema` | Derive plans from canonical metadata; reject missing/duplicate/unowned files; persist the selected coordinate matrix before building. Derive unrun coordinates and coverage on every checkpoint, rebuild and merge. | Metadata-only plan has no runtime/acquisition/build effects; an interruption before the first cell retains the entire plan; partial + continuation preserves exact coverage and refuses duplicate observations. |
+| 2 | Trustworthy release baseline: scoreboard and `PERF_AUTHORITY` | Pin source, workload, compiler/runtime, oracle, profile and execution host. Reuse admitted products, serialize timing on a quiet host, preserve raw samples and require repeated comparisons. | Complete selected matrix, closed guards, exact output parity, stable repeated results and all current release-eligibility checks. A partial, stale or exploratory run cannot close this outcome. |
+| 3 | Real applications and external suites: corpus recipes and `bench_friends` | Activate one complete existing recipe/lane at a time after source/data/invocation and an independent output oracle are bound. Keep intended catalog, executable script and friend-runner counts separate. | Full application output/state parity and measured native/WASM cells under the declared protocol. Reference-only runs, imports, catalog membership and skips remain missing coverage. Intentional AOT-policy refusals retain no score. |
+| 4 | Discriminating workload coverage: existing benchmark drivers and instruction workloads | Extend declared inputs across small/large scales and semantic boundaries. Exercise direct/cross-module calls, escaping/non-escaping objects, layouts, loops, exceptions, generators and async; use applicable matched C/AOT controls and held-out inputs. | Input-bound identities, complete output parity and comparable results across scales. Inspect instructions/runtime calls separately for attribution. No compiler benchmark-name special cases or weakened Python semantics. |
+| 5 | AOT product dimensions: existing compile-progress, startup, process guard and artifact producers | Select shipping target/profile coordinates from their current authorities. Keep installed application cold/edit/unchanged compilation, first-process latency, startup-to-ready, steady work, memory and artifact size separate. | Actual receipts for each named dimension, cache state and target. No first-minus-repeat startup isolation, fresh-process steady-state claim, estimated tails from a handful of samples or instrumented timing promoted to latency acceptance. |
+| 6 | Continuous regression response: existing instruction signal and trunk loop | Run the existing hourly/nightly families through their declared host/lock/resource admission. Compare only compatible identities; report unmeasured/lost axes and suspected changes. Broader release timing remains a separate quiet-host run. | Repeated collected records arm the comparison; a seeded regression or lost workload is visible and actionable. A configured command or absent record is not operational coverage. |
+
+Outcomes 1–2 establish trustworthy suite evidence. Application and workload
+coverage can progress independently once that evidence contract is available;
+product-dimension producers keep their own prerequisites. Outcome 6 reuses the
+existing execution/retention owners rather than adding another scheduler.
+Each future tranche must be independently executable, parity-qualified and
+measured before it expands a release claim. Acquisition is outside timing;
+reference reuse requires matching complete identities. Do not widen every
+development check into a full platform matrix.
+
+### Agent entry points
+
+From the assigned checkout, inspect the current plan before provisioning:
+
+```bash
+uv run --no-project python tools/venv_exec.py python tools/perf_scoreboard.py --plan
+uv run --no-project python tools/venv_exec.py python tools/perf_scoreboard.py --set applications --plan --plan-format json
+uv run --no-project python tools/venv_exec.py python tools/perf_scoreboard.py --set core --shard 0/4 --plan
+```
+
+The compact plan is for agent decisions; JSON is the complete machine contract.
+Both derive from the same selection that measurement consumes. An explicit
+benchmark list narrows that invocation, not the canonical release denominator.
+Shard coordinates retain the original set/membership contract through merge.
+Do not treat a plan as acquisition, support, a successful run or a measurement.
+
+Run the canonical command in [the performance authority](../../../tools/PERF_AUTHORITY.md)
+for release evidence. Use existing `--rebuild-summary` or `--merge` only on
+compatible current-schema observations; neither operation invents measurements,
+upgrades historical evidence or changes its selected scope. Unrun coordinates
+remain explicit and prevent release qualification.
+Unsharded partial merges require both `--no-gate` and
+`--allow-nonauthoritative` and retain nonauthority. Shard merges still require
+every declared shard and member exactly once; incomplete shard checkpoints
+remain diagnostic observations.
+
+Design references: [LLVM test-suite](https://llvm.org/docs/TestSuiteGuide.html)
+separates small kernels, whole programs, output checking, execution, compilation
+and size; [pyperf](https://pyperf.readthedocs.io/en/stable/run_benchmark.html)
+distinguishes worker processes, discarded warmups and timed values;
+[ASV](https://asv.readthedocs.io/en/stable/writing_benchmarks.html) keeps
+parameterized inputs and setup outside the timed operation. Reuse those
+principles through Molt's existing producers; suite registration alone inherits
+none of their measurement guarantees.
+
 ## Executable portfolio and optimization order
 
 Correctness, deterministic behavior and CPython conformance precede performance.

@@ -254,6 +254,14 @@ def test_canonical_scoreboard_command_accepts_only_release_gate_shape() -> None:
     assert any("uses non-release perf flags: --benchmark" in p for p in problems)
 
 
+@pytest.mark.parametrize("planning", ["--plan", "--plan-format json"])
+def test_metadata_plan_command_cannot_claim_release_measurement(planning: str) -> None:
+    problems = pa.canonical_scoreboard_command_problems(
+        f"{pa.CANONICAL_GATE} {planning}"
+    )
+    assert any("uses non-release perf flags: --plan" in problem for problem in problems)
+
+
 def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> None:
     assert pa.canonical_scoreboard_shape_problems(_canonical_scoreboard_doc()) == []
 

@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Literal, TypedDict, cast
 
 from tools.compat.comparison import (
@@ -24,7 +24,141 @@ from tools.compat.comparison import (
     compare_outputs,
 )
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+
+
+class ProcessTimingScope(TypedDict):
+    sampling_unit: Literal["fresh_process"]
+    first_sample: Literal["first_invocation"]
+    repeated_sample: Literal["fresh_process_after_discarded_launches"]
+    cache_state: Literal["uncontrolled"]
+    delta: Literal["first_minus_repeated_process_latency"]
+
+
+def process_timing_scope() -> ProcessTimingScope:
+    """Describe actual process observations, without inferred startup isolation."""
+    return {
+        "sampling_unit": "fresh_process",
+        "first_sample": "first_invocation",
+        "repeated_sample": "fresh_process_after_discarded_launches",
+        "cache_state": "uncontrolled",
+        "delta": "first_minus_repeated_process_latency",
+    }
+
+
+class PlannedCellRecord(TypedDict):
+    benchmark: str
+    target: Literal["native", "wasm"]
+    backend: Literal["native", "llvm", "wasm"]
+    profile: str
+
+
+@dataclass(frozen=True, order=True)
+class PlannedCell:
+    """One selected coordinate; no execution or workload admission is implied."""
+
+    benchmark: str
+    target: Literal["native", "wasm"]
+    backend: Literal["native", "llvm", "wasm"]
+    profile: str
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, str) or not value
+            for value in (self.benchmark, self.target, self.backend, self.profile)
+        ):
+            raise ValueError("planned cell fields must be nonempty strings")
+        if self.backend not in ("native", "llvm", "wasm"):
+            raise ValueError("planned cell has an unknown backend")
+        if self.target != ("wasm" if self.backend == "wasm" else "native"):
+            raise ValueError("planned cell target differs from backend target")
+
+    def as_record(self) -> PlannedCellRecord:
+        return cast(PlannedCellRecord, asdict(self))
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> PlannedCell:
+        if set(payload) != PlannedCellRecord.__required_keys__:
+            raise ValueError(
+                "planned cell requires exactly benchmark/target/backend/profile"
+            )
+        if any(not isinstance(value, str) or not value for value in payload.values()):
+            raise ValueError("planned cell fields must be nonempty strings")
+        return cls(
+            benchmark=cast(str, payload["benchmark"]),
+            target=cast(Literal["native", "wasm"], payload["target"]),
+            backend=cast(Literal["native", "llvm", "wasm"], payload["backend"]),
+            profile=cast(str, payload["profile"]),
+        )
+
+
+class ScoreboardCoverage(TypedDict):
+    selected: int
+    attempted: int
+    parity_qualified: int
+    measured: int
+    release_qualified: int
+    not_run: list[PlannedCellRecord]
+
+
+def planned_cell_from_observation(cell: Mapping[str, object]) -> PlannedCell:
+    """Read the coordinate only, retaining measurement evidence separately."""
+    return PlannedCell.from_payload(
+        {key: cell.get(key) for key in PlannedCellRecord.__required_keys__}
+    )
+
+
+def scoreboard_coverage(
+    planned_cells: Sequence[PlannedCell],
+    cells: Sequence[Mapping[str, object]],
+    *,
+    authoritative: bool,
+) -> ScoreboardCoverage:
+    """Derive coverage from a declared selection, never from today's inventory."""
+    from tools.perf_authority import release_cell_problems
+
+    planned = set(planned_cells)
+    if not planned or len(planned) != len(planned_cells):
+        raise ValueError("planned cells must be nonempty and unique")
+    observed = [planned_cell_from_observation(cell) for cell in cells]
+    if len(set(observed)) != len(observed):
+        raise ValueError("duplicate measured coordinate")
+    if not set(observed) <= planned:
+        raise ValueError("measured coordinate is outside the declared plan")
+    parity = [
+        cell
+        for cell in cells
+        if cell.get("molt_ok") is True
+        and cell.get("verdict") != VERDICT_FAIL_STALE
+        and output_parity_passes(cell.get("output_parity"))
+    ]
+    measured = [
+        cell
+        for cell in parity
+        if _is_number(cell.get("warm_molt_s"))
+        and cast(float, cell["warm_molt_s"]) > 0
+        and (
+            _mapping(cell.get("output_parity")).get("reference_runtime") == "molt"
+            or (
+                cell.get("cpython_ok") is True
+                and _is_number(cell.get("warm_cpython_s"))
+                and cast(float, cell["warm_cpython_s"]) > 0
+            )
+        )
+    ]
+    return {
+        "selected": len(planned),
+        "attempted": len(observed),
+        "parity_qualified": len(parity),
+        "measured": len(measured),
+        "release_qualified": sum(not release_cell_problems(cell) for cell in measured)
+        if authoritative
+        else 0,
+        "not_run": [
+            coordinate.as_record() for coordinate in sorted(planned - set(observed))
+        ],
+    }
+
 
 # The runtime writes fixed-width microsecond readings to stderr.
 RUNTIME_INIT_TRACE = re.compile(
@@ -196,6 +330,9 @@ REQUIRED_TOP_LEVEL_KEYS = frozenset(
         "summary",
         "benchmarks_run",
         "benchmarks_deferred",
+        "planned_cells",
+        "run_state",
+        "coverage",
         "scoreboard",
     }
 )
@@ -1124,6 +1261,10 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
         problems.extend(_validate_measured_run_cell(cell, verdict))
     if classification == CLASS_RED_STABLE:
         problems.extend(_validate_red_stable_cell(cell))
+    if classification == CLASS_GREEN and cell.get("measured_quiescent") is not True:
+        problems.append(
+            f"cell {cell.get('benchmark')} is GREEN_STABLE without measured_quiescent=true"
+        )
     return problems
 
 
@@ -1149,12 +1290,49 @@ def validate_board(doc: Mapping[str, Any]) -> list[str]:
     smiss = REQUIRED_SUMMARY_FIELDS - set(_mapping(doc.get("summary")))
     if smiss:
         problems.append(f"summary missing 2-D fields: {sorted(smiss)}")
+    if (
+        _mapping(doc.get("methodology")).get("process_timing_scope")
+        != process_timing_scope()
+    ):
+        problems.append("methodology requires the fresh-process timing scope")
+    run_state = doc.get("run_state")
+    if run_state not in ("partial", "complete"):
+        problems.append("run_state must be partial or complete")
+    try:
+        planned = doc.get("planned_cells")
+        if not isinstance(planned, list) or any(
+            not isinstance(c, Mapping) for c in planned
+        ):
+            raise ValueError("planned_cells must be a list of declared coordinates")
+        coordinates = tuple(PlannedCell.from_payload(c) for c in planned)
+        coverage = scoreboard_coverage(
+            coordinates,
+            cells,
+            authoritative=_mapping(doc.get("provenance")).get("authoritative") is True,
+        )
+        declared_coverage = _mapping(doc.get("coverage"))
+        if declared_coverage != coverage or any(
+            type(declared_coverage.get(key)) is not int
+            for key in ScoreboardCoverage.__required_keys__ - {"not_run"}
+        ):
+            problems.append(
+                "coverage differs from declared selection and observed cells"
+            )
+        if run_state == "complete" and coverage["not_run"]:
+            problems.append("complete scoreboard has unrun planned coordinates")
+    except (KeyError, TypeError, ValueError) as exc:
+        problems.append(f"invalid planned coverage: {exc}")
+    if (
+        run_state == "partial"
+        and _mapping(doc.get("provenance")).get("authoritative") is True
+    ):
+        problems.append("partial scoreboard cannot be authoritative")
     try:
         json.loads(json.dumps(doc))
     except (TypeError, ValueError) as exc:
         problems.append(f"doc is not JSON-serializable: {exc}")
     problems.extend(board_execution_host_problems(_mapping(doc.get("host")), cells))
-    if not cells:
+    if not cells and run_state != "partial":
         problems.append("no cells emitted")
     if _mapping(doc.get("provenance")).get("authoritative") is True:
         problems.extend(runtime_board_binding_problems(doc, cells))

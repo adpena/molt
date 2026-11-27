@@ -55,6 +55,7 @@ def _cell(**overrides: object) -> dict[str, object]:
         "output_parity": _matching_output_parity(),
         "log_artifact": "bench/scoreboard/logs/fib.log",
         "classification": schema.CLASS_GREEN,
+        "measured_quiescent": True,
         "fact_class": "repr_tir_type_lattice",
         "suspected_missing_fact": "Repr/TirType numeric lane",
         "pypy_advantage_class": "loop_specialization",
@@ -128,6 +129,7 @@ def _modern_host(**overrides: object) -> dict[str, object]:
 
 
 def _doc(cell: dict[str, object]) -> dict[str, object]:
+    coordinate = schema.planned_cell_from_observation(cell)
     return {
         "schema_version": schema.SCHEMA_VERSION,
         "kind": "cpython_floor_scoreboard",
@@ -150,7 +152,12 @@ def _doc(cell: dict[str, object]) -> dict[str, object]:
         "direction": "speedup = cpython_time / molt_time",
         "red_threshold": 1.0,
         "verdict_legend": {},
-        "methodology": {},
+        "methodology": {"process_timing_scope": schema.process_timing_scope()},
+        "planned_cells": [coordinate.as_record()],
+        "run_state": "complete",
+        "coverage": schema.scoreboard_coverage(
+            (coordinate,), [cell], authoritative=True
+        ),
         "reserved_columns": {},
         "summary": {
             "cells_fail_engine": 0,
@@ -192,6 +199,94 @@ def test_schema_accepts_valid_board_and_materializes_cell() -> None:
     assert perf_cell.warm_speedup == 2.0
     assert perf_cell.fact_class == "repr_tir_type_lattice"
     assert perf_cell.attribution_confidence == 0.8
+
+
+def test_coverage_keeps_failed_stale_and_unrun_coordinates_in_selected_total() -> None:
+    good = _cell()
+    stale = _cell(backend="llvm", verdict=schema.VERDICT_FAIL_STALE)
+    failed = _cell(
+        benchmark="tests/benchmarks/bench_sum.py",
+        build_ok=False,
+        molt_ok=False,
+        verdict=schema.VERDICT_BUILD_FAILED,
+        output_parity=None,
+    )
+    unrun = schema.PlannedCell(
+        "tests/benchmarks/bench_sum.py", "native", "llvm", "release-fast"
+    )
+    planned = tuple(
+        schema.planned_cell_from_observation(c) for c in (good, stale, failed)
+    ) + (unrun,)
+
+    assert schema.scoreboard_coverage(
+        planned, [good, stale, failed], authoritative=False
+    ) == {
+        "selected": 4,
+        "attempted": 3,
+        "parity_qualified": 1,
+        "measured": 1,
+        "release_qualified": 0,
+        "not_run": [unrun.as_record()],
+    }
+
+
+def test_coverage_refuses_duplicate_or_undeclared_observations() -> None:
+    cell = _cell()
+    coordinate = schema.planned_cell_from_observation(cell)
+    with pytest.raises(ValueError, match="unique"):
+        schema.scoreboard_coverage((coordinate, coordinate), [], authoritative=False)
+    with pytest.raises(ValueError, match="duplicate measured"):
+        schema.scoreboard_coverage((coordinate,), [cell, cell], authoritative=False)
+    with pytest.raises(ValueError, match="outside the declared plan"):
+        schema.scoreboard_coverage(
+            (coordinate,), [_cell(backend="llvm")], authoritative=False
+        )
+
+
+def test_schema_preserves_zero_attempt_partial_plan_without_measurements() -> None:
+    cell = _cell()
+    doc = _doc(cell)
+    planned = (schema.planned_cell_from_observation(cell),)
+    doc["run_state"] = "partial"
+    doc["provenance"]["authoritative"] = False
+    doc["scoreboard"] = {}
+    doc["benchmarks_run"] = []
+    doc["coverage"] = schema.scoreboard_coverage(planned, [], authoritative=False)
+
+    assert schema.validate_board(doc) == []
+    assert schema.flatten_cells(doc) == []
+    assert doc["coverage"]["attempted"] == 0
+    assert doc["coverage"]["not_run"] == [planned[0].as_record()]
+    doc["run_state"] = "complete"
+    assert any("unrun planned" in error for error in schema.validate_board(doc))
+
+
+@pytest.mark.parametrize("field", ["planned_cells", "coverage", "run_state"])
+def test_schema_refuses_missing_selection_evidence(field: str) -> None:
+    doc = _doc(_cell())
+    del doc[field]
+    assert schema.validate_board(doc)
+
+
+def test_schema_does_not_accept_forged_coverage_or_startup_scope() -> None:
+    doc = _doc(_cell())
+    doc["coverage"]["attempted"] = True
+    assert any("coverage differs" in error for error in schema.validate_board(doc))
+    doc = _doc(_cell())
+    doc["methodology"]["process_timing_scope"]["cache_state"] = "cold"
+    assert any(
+        "fresh-process timing scope" in error for error in schema.validate_board(doc)
+    )
+
+
+@pytest.mark.parametrize("quiescent", [False, None])
+def test_schema_refuses_stable_win_without_measured_quiescence(
+    quiescent: bool | None,
+) -> None:
+    assert any(
+        "GREEN_STABLE without measured_quiescent=true" in error
+        for error in schema.validate_cell(_cell(measured_quiescent=quiescent))
+    )
 
 
 def test_schema_rejects_historical_board_version() -> None:
