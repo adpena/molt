@@ -750,19 +750,22 @@ class HostWorkAdmission:
 @dataclass(frozen=True, slots=True)
 class HostWorkBudget:
     """What the development class may grant at once: this process's CPUs, and
-    physical memory less the reserve (``headroom_bytes``); None when the host
-    reports no memory size, so memory never refuses."""
+    physical memory less the reserve (``headroom_bytes``). Available memory
+    also caps each new grant independently of the class's committed shares."""
 
     cpus: int
     memory_bytes: int | None
+    available_bytes: int | None = None
 
     @classmethod
     def observe(cls) -> HostWorkBudget:
         capacity = memory_capacity()
-        total, _available = capacity.bounded_bytes
+        total, available = capacity.bounded_bytes
+        reserve = headroom_bytes(capacity)
         return cls(
             cpu_count(),
-            None if total is None else max(0, total - headroom_bytes(capacity)),
+            None if total is None else max(0, total - reserve),
+            None if available is None else max(0, available - reserve),
         )
 
     def grant_for(self, demand: HostWorkDemand) -> HostWorkGrant:
@@ -776,11 +779,21 @@ class HostWorkBudget:
         self, demand: HostWorkDemand, held: Sequence[HostWorkGrant]
     ) -> HostWorkGrant | None:
         maximum = self.grant_for(demand)
-        if (
-            demand.minimum_workers is not None
-            and maximum.workers < demand.minimum_workers
-        ):
+        minimum = demand.minimum_workers or maximum.workers
+        if maximum.workers < minimum:
             raise ValueError("host cannot grant the requested minimum workers")
+        if self.available_bytes is not None:
+            required = minimum * demand.bytes_per_worker
+            if self.memory_bytes is not None and required > self.memory_bytes:
+                raise ValueError(
+                    "host memory cannot grant the requested minimum workers"
+                )
+            workers = min(
+                maximum.workers, self.available_bytes // demand.bytes_per_worker
+            )
+            if workers < minimum:
+                return None
+            maximum = HostWorkGrant(workers, workers * demand.bytes_per_worker)
         if self.fits(maximum, held):
             return maximum
         if demand.minimum_workers is None:
@@ -789,7 +802,7 @@ class HostWorkBudget:
         if self.memory_bytes is not None:
             remaining = self.memory_bytes - sum(item.memory_bytes for item in held)
             workers = min(workers, remaining // demand.bytes_per_worker)
-        if workers < demand.minimum_workers:
+        if workers < minimum:
             return None
         return HostWorkGrant(workers, workers * demand.bytes_per_worker)
 
@@ -983,7 +996,7 @@ def _acquire_share(
     lock: Path,
     label: str,
     demand: HostWorkDemand,
-    budget: HostWorkBudget,
+    budget: HostWorkBudget | None,
     say: Callable[[str], None],
     clock: Callable[[], float],
 ) -> tuple[HostWorkGrant, tuple[Path, BinaryIO]]:
@@ -1000,13 +1013,17 @@ def _acquire_share(
     try:
         started = reported = clock()
         first = True
+        observed = budget
         while True:
             if _first_in_line(queue, ticket):
+                # The queue head owns this attempt. Keep the host probe outside
+                # the lock that serializes the grant ledger and publication.
+                observed = budget or HostWorkBudget.observe()
                 handle = open(lock, "a+b")  # noqa: SIM115 - closed below
                 try:
                     if _try_exclusive(handle):
                         held = [item for _label, item in _live_grants(lock)]
-                        grant = budget.grant_beside(demand, held)
+                        grant = observed.grant_beside(demand, held)
                         if grant is not None:
                             return grant, _publish_grant(lock, label, grant)
                 finally:
@@ -1016,10 +1033,17 @@ def _acquire_share(
                 holders = [name for name, _item in _live_grants(lock)] or [
                     _holder(lock)
                 ]
-                workers = budget.grant_for(demand).workers
-                prefix = "up to " if demand.minimum_workers is not None else ""
+                size = ""
+                if observed is not None:
+                    workers = observed.grant_for(demand).workers
+                    prefix = (
+                        "up to "
+                        if budget is None or demand.minimum_workers is not None
+                        else ""
+                    )
+                    size = f" ({prefix}{workers} workers)"
                 say(
-                    f"host-work: {label} ({prefix}{workers} workers) waits for "
+                    f"host-work: {label}{size} waits for "
                     f"{', '.join(holders)} ({now - started:.0f} s)"
                 )
                 reported, first = now, False
@@ -1124,7 +1148,6 @@ def host_work_slot(
             while not integration and _live_grants(heavy):
                 time.sleep(_POLL_SECONDS)
         else:
-            budget = budget or HostWorkBudget.observe()
             grant, share = _acquire_share(heavy, label, demand, budget, say, clock)
         _HELD_SLOTS.add(slot)
         yield HostWorkAdmission(clock() - started, grant)

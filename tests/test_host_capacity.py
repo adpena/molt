@@ -663,6 +663,14 @@ def test_elastic_host_work_uses_the_available_fraction() -> None:
         budget.grant_beside(flexible, [host_capacity.HostWorkGrant(1, 11 * _GIB_BYTES)])
         is None
     )
+    # Already committed memory and presently available memory constrain the
+    # new share independently. The live sample already reflects resident work.
+    limited = host_capacity.HostWorkBudget(
+        cpus=6, memory_bytes=12 * _GIB_BYTES, available_bytes=4 * _GIB_BYTES
+    )
+    assert limited.grant_beside(flexible, held) == host_capacity.HostWorkGrant(
+        2, 4 * _GIB_BYTES
+    )
 
 
 def _demand(workers: int, gib: float = 2.5) -> host_capacity.HostWorkDemand:
@@ -683,6 +691,63 @@ def test_a_grant_is_the_demand_capped_at_the_class() -> None:
     assert not _BUDGET.fits(host_capacity.HostWorkGrant(1, 92 * _GIB_BYTES), held)
     # A job alone always runs, whatever it asks.
     assert _BUDGET.fits(host_capacity.HostWorkGrant(18, 100 * _GIB_BYTES), [])
+
+
+def test_live_memory_cannot_grant_even_one_worker_when_its_bytes_do_not_fit() -> None:
+    budget = host_capacity.HostWorkBudget(
+        cpus=8, memory_bytes=16 * _GIB_BYTES, available_bytes=_GIB_BYTES
+    )
+    demand = host_capacity.HostWorkDemand(8, 2 * _GIB_BYTES, minimum_workers=1)
+
+    assert budget.grant_beside(demand, ()) is None
+
+
+def test_fixed_development_share_waits_for_all_its_workers() -> None:
+    demand = host_capacity.HostWorkDemand(4, 2 * _GIB_BYTES)
+
+    budget = host_capacity.HostWorkBudget(8, 16 * _GIB_BYTES, 7 * _GIB_BYTES)
+    assert budget.grant_beside(demand, ()) is None
+
+    budget = host_capacity.HostWorkBudget(8, 16 * _GIB_BYTES, 8 * _GIB_BYTES)
+    assert budget.grant_beside(demand, ()) == host_capacity.HostWorkGrant(
+        4, 8 * _GIB_BYTES
+    )
+
+
+def test_impossible_live_memory_admission_refuses_before_waiting() -> None:
+    budget = host_capacity.HostWorkBudget(8, 4 * _GIB_BYTES, 3 * _GIB_BYTES)
+    demand = host_capacity.HostWorkDemand(1, 5 * _GIB_BYTES)
+
+    with pytest.raises(ValueError, match="host memory cannot grant"):
+        budget.grant_beside(demand, ())
+
+
+def test_development_grant_waits_for_live_memory_and_publishes_the_actual_share(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast_poll: None
+) -> None:
+    samples = iter((8 * _GIB_BYTES, 36 * _GIB_BYTES))
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 18)
+    monkeypatch.setattr(
+        host_capacity,
+        "memory_capacity",
+        lambda: host_capacity.MemoryCapacity(128 * _GIB_BYTES, next(samples)),
+    )
+    state = tmp_path / "host-work"
+    waiting: list[str] = []
+    with host_capacity.host_work_slot(
+        state,
+        label="wide consumer gate",
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
+        say=waiting.append,
+        demand=host_capacity.HostWorkDemand(936, 4 * _GIB_BYTES, minimum_workers=2),
+    ) as admission:
+        # 36 GiB live less 7.68 GiB reserve leaves room for seven workers.
+        grant = host_capacity.HostWorkGrant(7, 28 * _GIB_BYTES)
+        assert admission.grant == grant
+        assert waiting and "waits" in waiting[0]
+        assert [
+            item for _, item in host_capacity._live_grants(state / "development.lock")
+        ] == [grant]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
