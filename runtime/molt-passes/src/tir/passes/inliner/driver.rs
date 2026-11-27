@@ -144,6 +144,7 @@ pub fn run_inliner(
     let mut pending_wrappers = HashSet::default();
     let mut scalars = HashMap::default();
     let mut pending_scalars = HashSet::default();
+    let mut packed_writes = HashMap::default();
 
     let budget_for =
         |id, body: &TirFunction, wrapper: Option<&super::packed_wrapper::PackedWrapper>| {
@@ -243,13 +244,18 @@ pub fn run_inliner(
                 }
                 let idx = index_of[id.index()].expect("composed wrapper body");
                 let body = &module.functions[idx];
-                let Some(proof) = super::packed_wrapper::summarize(id, body, |callee| {
+                let resolve = |callee: molt_ir::FunctionId| {
                     index_of
                         .get(callee.index())
                         .copied()
                         .flatten()
                         .map(|index| &module.functions[index])
-                }) else {
+                };
+                let Some(proof) =
+                    super::packed_wrapper::summarize_with_leaf(id, body, resolve, |callee| {
+                        packed_writes.get(&callee)
+                    })
+                else {
                     continue;
                 };
                 if let Some(budget) = budget_for(id, body, Some(&proof)) {
@@ -264,8 +270,30 @@ pub fn run_inliner(
                 continue;
             }
             let caller = &module.functions[caller_idx];
+            // Record the pre-splice leaf before a successful scalar projection
+            // joins its hot and residual control. The exact original operation
+            // positions and observation snapshots still describe that residual.
+            if final_tir
+                && !call_graph.callers(caller_id).is_empty()
+                && caller.param_types.len() == 4
+                && caller
+                    .exact_param_types
+                    .iter()
+                    .any(|ty| matches!(ty, crate::tir::types::TirType::Class(_)))
+                && caller.return_type == crate::tir::types::TirType::None
+                && let Some(plan) = super::packed_read::extract(caller, |callee| {
+                    index_of
+                        .get(callee.index())
+                        .copied()
+                        .flatten()
+                        .map(|index| &module.functions[index])
+                })
+            {
+                packed_writes.insert(caller_id, plan);
+            }
             let sites = call_graph.static_call_sites(caller_id);
             let mut uses = None;
+            let mut loop_blocks = None;
             let admitted: Vec<_> = sites
                 .iter()
                 .map(|site| {
@@ -273,6 +301,16 @@ pub fn run_inliner(
                     let op = &caller.blocks[&site.block].ops[site.op_index];
                     let admitted = match budget {
                         Some(InlineBudget::Ordinary) => true,
+                        // The benefit is a committed store in the caller, even
+                        // when the call's Python result has no numeric use.
+                        Some(InlineBudget::NeedsBenefit { within_hot_cap: true, .. })
+                            if wrappers.get(&site.callee).is_some_and(|proof| proof.write.is_some()) =>
+                        {
+                            use crate::tir::analysis::{Analysis, LoopForest};
+                            loop_blocks.get_or_insert_with(|| {
+                                LoopForest::compute(caller).bodies.into_values().flatten().collect::<HashSet<_>>()
+                            }).contains(&site.block)
+                        }
                         Some(InlineBudget::NeedsBenefit { numeric, within_hot_cap }) => {
                             let uses = uses.get_or_insert_with(|| InlineSiteUses::of(caller));
                             let body = |id| inlinable.get(&id).map(|&(idx, _)| &module.functions[idx]);

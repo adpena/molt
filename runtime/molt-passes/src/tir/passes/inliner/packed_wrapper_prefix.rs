@@ -1,5 +1,5 @@
 //! Guard the successful prefix of a checked packed wrapper. Until the packed
-//! read commits, every operation borrows its inputs and can abandon the attempt
+//! access commits, every operation borrows its inputs and can abandon the attempt
 //! for the original invocation without releasing a credit or servicing work.
 
 use molt_ir::frame_entry::FramePrefix;
@@ -18,7 +18,7 @@ use crate::tir::values::ValueId;
 pub(super) struct Prefix<'p> {
     summary: &'p PackedWrapper,
     wrapper_function: ValueId,
-    arguments: [ValueId; 3],
+    arguments: Vec<ValueId>,
     helper_cell: &'p GlobalSlotRef,
     leaf_cell: &'p GlobalSlotRef,
     literal: &'p [u8],
@@ -44,7 +44,7 @@ struct Observations<'p> {
 pub(super) struct BoundFrame {
     pub function: ValueId,
     /// Physical caller SSA words in this frame's own formal numbering.
-    pub arguments: [ValueId; 3],
+    pub arguments: Vec<ValueId>,
 }
 
 impl BoundFrame {
@@ -71,13 +71,14 @@ impl BoundFrame {
 /// post-read service until the matching retirement. The original method receiver
 /// and callable have independent binding_alias credits at the leaf call. The
 /// field needs its physical owned credit across the leaf's pending-service arm.
-pub(super) struct ReadState<'p> {
+pub(super) struct AccessState<'p> {
     pub wrapper: BoundFrame,
     pub leaf: BoundFrame,
     pub receiver: ValueId,
     pub row: ValueId,
     pub column: ValueId,
     pub offset: i64,
+    pub write: Option<ValueId>,
     pub wrapper_at_leaf: Snapshot<'p>,
     pub leaf_check: &'p Check,
     pub leaf_retire: Snapshot<'p>,
@@ -101,12 +102,15 @@ impl<'p> Prefix<'p> {
             return None;
         }
         let args = call.bind(body)?;
-        let arguments: [ValueId; 3] = args.positional.try_into().ok()?;
+        let arguments = args.positional.to_vec();
         let wrapper_function = call.callable?;
-        let positions = [summary.receiver, summary.row, summary.column];
-        let mut sorted = positions;
+        let mut sorted = vec![summary.receiver, summary.row, summary.column];
+        if let Some((value, _)) = &summary.write {
+            sorted.push(*value);
+        }
         sorted.sort_unstable();
-        if sorted != [0, 1, 2]
+        if arguments.len() != sorted.len()
+            || sorted.into_iter().ne(0..arguments.len())
             || body.exact_param_types.get(summary.receiver) != Some(&TirType::Class(summary.class))
         {
             return None;
@@ -115,7 +119,7 @@ impl<'p> Prefix<'p> {
         // The summary has already proved all these transports and nonservice
         // checks. They cannot raise on this path: all frames are admitted, the
         // only literal is published, identity is exact and both coordinates fit.
-        let actions: Vec<_> = summary
+        let mut actions: Vec<_> = summary
             .events
             .iter()
             .filter(|event| {
@@ -130,6 +134,21 @@ impl<'p> Prefix<'p> {
             })
             .collect();
         use Event::*;
+        if summary.write.is_some() {
+            let returned = actions.len().checked_sub(2)?;
+            if !matches!(
+                actions[returned],
+                OwnedAlias {
+                    site,
+                    source: Source::CallResult(call),
+                    ..
+                } if site.function == summary.wrapper.entry.function
+                     && *call == summary.identity_call.site
+            ) {
+                return None;
+            }
+            actions.remove(returned);
+        }
         let [
             Enter(outer),
             Cell {
@@ -171,7 +190,7 @@ impl<'p> Prefix<'p> {
             Invoke(leaf_call),
             Enter(leaf),
             LoadField(field),
-            ReadPacked(read),
+            AccessPacked(read),
             Check(leaf_check),
             Retire {
                 site: leaf_exit,
@@ -262,7 +281,10 @@ impl<'p> Prefix<'p> {
         // The helper has already retired at leaf entry. Reserve the larger
         // of the two live stacks, not the sum of both transient frames.
         let helper_stack = summary.identity.prefix.enter(summary.identity.shape)?;
-        let leaf_stack = summary.leaf.prefix.enter(summary.leaf.shape)?;
+        let mut leaf_stack = summary.leaf.prefix.enter(summary.leaf.shape)?;
+        if let Some((_, convert)) = &summary.write {
+            leaf_stack = convert.proof.include_in(leaf_stack)?;
+        }
         let reservation = FramePrefix {
             homes: helper_stack.homes.max(leaf_stack.homes),
             depth: helper_stack.depth.max(leaf_stack.depth),
@@ -287,7 +309,7 @@ impl<'p> Prefix<'p> {
         self,
         caller: &mut TirFunction,
         miss: BlockId,
-        continuation: impl FnOnce(&mut TirFunction, ReadState<'p>) -> BlockId,
+        continuation: impl FnOnce(&mut TirFunction, AccessState<'p>) -> BlockId,
     ) -> BlockId {
         let helper = caller.fresh_value();
         let leaf = caller.fresh_value();
@@ -297,14 +319,19 @@ impl<'p> Prefix<'p> {
         let p = self.summary;
         let [receiver, row, column] =
             [p.receiver, p.row, p.column].map(|position| self.arguments[position]);
-        let mut leaf_arguments = self.arguments;
+        let mut leaf_arguments = self.arguments.clone();
+        let write = p.write.as_ref().map(|(formal, conversion)| {
+            let value = self.arguments[*formal];
+            leaf_arguments[conversion.formal] = value;
+            value
+        });
         for (formal, word) in p.leaf_formals.into_iter().zip([receiver, row, column]) {
             leaf_arguments[formal] = word;
         }
         let obs = self.observations;
         let ready = continuation(
             caller,
-            ReadState {
+            AccessState {
                 wrapper: BoundFrame {
                     function: self.wrapper_function,
                     arguments: self.arguments,
@@ -317,6 +344,7 @@ impl<'p> Prefix<'p> {
                 row,
                 column,
                 offset: p.offset,
+                write,
                 wrapper_at_leaf: obs.wrapper_at_leaf,
                 leaf_check: obs.leaf_check,
                 leaf_retire: obs.leaf_retire,
@@ -327,6 +355,24 @@ impl<'p> Prefix<'p> {
         // Allocate blocks backwards; along the hit edge each capture happens
         // at the original position, including the leaf load after the first
         // poll. A ready literal read and these immutable cells mint no credit.
+        let ready = if let Some(((_, conversion), value)) = p.write.as_ref().zip(write) {
+            let function = caller.fresh_value();
+            caller.value_types.insert(function, TirType::DynBox);
+            let next = super::packed_wrapper_resume::branch_on_pending(caller, miss, ready);
+            let next = conversion.proof.admit(caller, function, value, next, miss);
+            let mut load = TirOp::new(OpCode::StaticCellLoad, vec![], vec![function]);
+            load.set_global_slot(Some(&conversion.cell));
+            let literal_ready = caller.fresh_value();
+            let mut literal =
+                TirOp::new(OpCode::StringLiteralCellReady, vec![], vec![literal_ready]);
+            literal.callee = Some(p.leaf.entry.function);
+            literal
+                .attrs
+                .insert("bytes".into(), AttrValue::Bytes(conversion.literal.clone()));
+            test_block(caller, vec![load], literal, next, miss)
+        } else {
+            ready
+        };
         let mut test = |opcode, inputs, attrs: Vec<(&str, AttrValue)>, ops, yes, no| {
             let mut op = TirOp::new(opcode, inputs, vec![caller.fresh_value()]);
             op.source_span = self.span;

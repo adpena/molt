@@ -1,4 +1,4 @@
-//! Continue after a committed packed read at the original observation sites.
+//! Continue after a committed packed access at the original observation sites.
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::clone_support::LabelAllocator;
@@ -13,7 +13,7 @@ use crate::tir::values::{TirValue, ValueId};
 use super::activation::Activations;
 use super::packed_splice::{ordinary_call, test_block};
 use super::packed_wrapper::{Check, PackedWrapper};
-use super::packed_wrapper_prefix::{Prefix, ReadState, Snapshot};
+use super::packed_wrapper_prefix::{AccessState, Prefix, Snapshot};
 use crate::tir::call_graph::StaticCallSite;
 
 fn insert(func: &mut TirFunction, ops: Vec<TirOp>, terminator: Terminator) -> BlockId {
@@ -61,7 +61,11 @@ fn pop() -> TirOp {
     TirOp::new(OpCode::RecursionRelease, vec![], vec![])
 }
 
-fn service_if_pending(func: &mut TirFunction, service: BlockId, next: BlockId) -> BlockId {
+pub(super) fn branch_on_pending(
+    func: &mut TirFunction,
+    service: BlockId,
+    next: BlockId,
+) -> BlockId {
     let flag = word(func, TirType::Bool);
     insert(
         func,
@@ -78,7 +82,7 @@ fn service_if_pending(func: &mut TirFunction, service: BlockId, next: BlockId) -
 
 struct Resume<'a, 'p> {
     func: &'a mut TirFunction,
-    state: ReadState<'p>,
+    state: AccessState<'p>,
     labels: LabelAllocator,
     caller_location: Option<i64>,
     span: Option<(u32, u32)>,
@@ -97,6 +101,11 @@ struct WrapperScope {
     present: ValueId,
     callable: ValueId,
     method: ValueId,
+}
+
+enum ResultWord {
+    Raw(ValueId),
+    ReturnReceiver(ValueId),
 }
 
 impl Resume<'_, '_> {
@@ -209,13 +218,24 @@ impl Resume<'_, '_> {
         (service, next)
     }
 
-    fn emit(mut self, field: ValueId, raw: ValueId, ready: BlockId, mut outward: TirOp) -> BlockId {
+    fn emit(
+        mut self,
+        field: ValueId,
+        result: ResultWord,
+        ready: BlockId,
+        mut outward: TirOp,
+    ) -> BlockId {
+        let mut result_ops = Vec::new();
+        let result = match result {
+            ResultWord::Raw(raw) => raw,
+            ResultWord::ReturnReceiver(receiver) => self.hold(&mut result_ops, receiver),
+        };
         let ready = insert(
             self.func,
-            vec![],
+            result_ops,
             Terminator::Branch {
                 target: ready,
-                args: vec![raw],
+                args: vec![result],
             },
         );
         outward.set_exception_edge_kind(ExceptionEdgeKind::Unwind);
@@ -233,7 +253,7 @@ impl Resume<'_, '_> {
         };
         let (wrapper_service, _) =
             self.wrapper_service(ops, scope, ready, outward, ExceptionEdgeKind::Origin);
-        let without_leaf = service_if_pending(self.func, wrapper_service, ready);
+        let without_leaf = branch_on_pending(self.func, wrapper_service, ready);
 
         let mut ops = Vec::new();
         let wrapper_id = push(self.func, &mut ops);
@@ -267,11 +287,11 @@ impl Resume<'_, '_> {
         let (service, next) =
             self.wrapper_service(vec![], scope, ready, outward, ExceptionEdgeKind::Origin);
         let release = insert(self.func, vec![Self::release(method)], jump(next));
-        let normal = service_if_pending(self.func, service, release);
+        let normal = branch_on_pending(self.func, service, release);
         let (service, next) =
             self.wrapper_service(vec![], scope, ready, outward, ExceptionEdgeKind::Unwind);
         let release = insert(self.func, vec![Self::release(method)], jump(next));
-        let failed = service_if_pending(self.func, service, release);
+        let failed = branch_on_pending(self.func, service, release);
         let normal = self.retire(
             leaf_id,
             Some(&final_leaf),
@@ -296,7 +316,7 @@ impl Resume<'_, '_> {
                 release: field,
             },
         );
-        service_if_pending(self.func, leaf_service, without_leaf)
+        branch_on_pending(self.func, leaf_service, without_leaf)
     }
 }
 
@@ -304,9 +324,9 @@ impl Resume<'_, '_> {
 /// exception observer whose failure payload cannot read the invocation result.
 fn emit(
     func: &mut TirFunction,
-    state: ReadState<'_>,
+    state: AccessState<'_>,
     field: ValueId,
-    raw: ValueId,
+    result: ResultWord,
     ready: BlockId,
     outward: TirOp,
 ) -> BlockId {
@@ -320,7 +340,7 @@ fn emit(
         caller_location,
         span,
     }
-    .emit(field, raw, ready, outward)
+    .emit(field, result, ready, outward)
 }
 
 /// Project the composed wrapper, guarded by the original literal provider's
@@ -383,33 +403,54 @@ pub(super) fn splice(
     let miss = caller.fresh_block();
     let entry = prefix.emit(caller, miss, |caller, state| {
         let field = word(caller, TirType::DynBox);
-        let raw = word(caller, TirType::I64);
-        let inline = word(caller, TirType::I64);
-        let read_args = [field, state.row, state.column];
         let mut probe = TirOp::new(OpCode::ProbeInlineField, vec![state.receiver], vec![field]);
         probe
             .attrs
             .insert("value".into(), AttrValue::Int(state.offset));
         probe.source_span = span;
-        let resume = emit(caller, state, field, inline, ready, observer);
-        let mut scalar = TirOp::new(OpCode::Copy, vec![raw], vec![inline]);
-        scalar.mark_inline_int_proof();
-        let fit = insert(caller, vec![scalar], jump(resume));
+        let packed_args = vec![field, state.row, state.column];
         let flag = caller.fresh_value();
-        let fit = test_block(
-            caller,
-            vec![],
-            TirOp::new(OpCode::IsInlineInt, vec![raw], vec![flag]),
-            fit,
-            miss,
-        );
-        let flag = caller.fresh_value();
-        let load = TirOp::new(
-            OpCode::TryBuffer2dLoadI64,
-            read_args.to_vec(),
-            vec![raw, flag],
-        );
-        test_block(caller, vec![probe], load, fit, miss)
+        if let Some(value) = state.write {
+            let receiver = state.receiver;
+            let resume = emit(
+                caller,
+                state,
+                field,
+                ResultWord::ReturnReceiver(receiver),
+                ready,
+                observer,
+            );
+            let raw = word(caller, TirType::I64);
+            let unbox = TirOp::new(OpCode::UnboxInlineInt, vec![value], vec![raw]);
+            let mut args = packed_args;
+            args.push(raw);
+            let store = TirOp::new(OpCode::TryBuffer2dStoreI64, args, vec![flag]);
+            test_block(caller, vec![unbox, probe], store, resume, miss)
+        } else {
+            let raw = word(caller, TirType::I64);
+            let inline = word(caller, TirType::I64);
+            let resume = emit(
+                caller,
+                state,
+                field,
+                ResultWord::Raw(inline),
+                ready,
+                observer,
+            );
+            let mut scalar = TirOp::new(OpCode::Copy, vec![raw], vec![inline]);
+            scalar.mark_inline_int_proof();
+            let fit = insert(caller, vec![scalar], jump(resume));
+            let fits = caller.fresh_value();
+            let fit = test_block(
+                caller,
+                vec![],
+                TirOp::new(OpCode::IsInlineInt, vec![raw], vec![fits]),
+                fit,
+                miss,
+            );
+            let load = TirOp::new(OpCode::TryBuffer2dLoadI64, packed_args, vec![raw, flag]);
+            test_block(caller, vec![probe], load, fit, miss)
+        }
     });
     original.terminator = jump(entry);
     caller.blocks.insert(site.block, original);
