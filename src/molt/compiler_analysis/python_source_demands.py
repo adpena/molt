@@ -2149,11 +2149,29 @@ class PythonSourceDemands:
                         # an attribute of it selects above the receiver's class.
                         if not candidate.contained:
                             candidates.add(candidate)
-                    elif element.protocol is PythonElementProtocol.MAPPING_WRITE:
-                        if candidate.kind == "namespace":
-                            self._record_namespace_write(
-                                module_name, element.owner, candidate, element.key
-                            )
+                    elif element.protocol in {
+                        PythonElementProtocol.MAPPING_WRITE,
+                        PythonElementProtocol.ENSURE_BUILTINS,
+                    }:
+                        if candidate.kind != "namespace":
+                            continue
+                        if (
+                            element.protocol is PythonElementProtocol.ENSURE_BUILTINS
+                            and candidate.module in self.modules
+                            and candidate != _INTERPRETER_BUILTINS
+                        ):
+                            # Source publication prepares __builtins__ before
+                            # exposing this exact namespace. Any later removal
+                            # already invalidates that key through its own write.
+                            continue
+                        key = (
+                            "__builtins__"
+                            if element.protocol is PythonElementProtocol.ENSURE_BUILTINS
+                            else element.key
+                        )
+                        self._record_namespace_write(
+                            module_name, element.owner, candidate, key
+                        )
                     elif element.protocol is PythonElementProtocol.REFLECTED_GLOBALS:
                         candidates.add(
                             candidate._replace(
@@ -2222,6 +2240,7 @@ class PythonSourceDemands:
                                 | PythonElementProtocol.REFLECTED_BUILTINS
                                 | PythonElementProtocol.REFLECTED_GLOBALS
                                 | PythonElementProtocol.MAPPING_WRITE
+                                | PythonElementProtocol.ENSURE_BUILTINS
                             ):
                                 raise AssertionError(
                                     "descriptor construction is handled before selection"

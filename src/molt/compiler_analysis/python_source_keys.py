@@ -60,6 +60,7 @@ class PythonElementProtocol(StrEnum):
     REFLECTED_BUILTINS = "reflected_builtins"
     REFLECTED_GLOBALS = "reflected_globals"
     MAPPING_WRITE = "mapping_write"
+    ENSURE_BUILTINS = "ensure_builtins"
     # Zero-argument `super()` as an attribute receiver: the origins are the
     # enclosing function's first argument. An attribute of it selects from
     # the strict ancestors of the argument's class and binds the argument.

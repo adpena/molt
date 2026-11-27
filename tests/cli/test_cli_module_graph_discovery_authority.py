@@ -585,6 +585,70 @@ def test_public_stdlib_deferred_demand_graph(
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize("remove_key", [False, True])
+def test_native_initializer_conditions_its_builtins_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remove_key: bool
+) -> None:
+    import dataclasses
+    import sys
+    from types import ModuleType
+
+    from molt.compiler_analysis.python_source_keys import PythonElementProtocol
+
+    # The public CPython transform inserts the key only when absent and
+    # keeps the same mapping as the function's globals.
+    owner = ModuleType("_dataclass_globals_oracle")
+    monkeypatch.setitem(sys.modules, owner.__name__, owner)
+    if not remove_key:
+        owner.__builtins__ = {"sentinel": object()}
+    before = vars(owner).copy()
+    cls = dataclasses.dataclass(type("C", (), {"__module__": owner.__name__}))
+    assert cls.__init__.__globals__ is vars(owner)
+    assert all(vars(owner)[key] is value for key, value in before.items())
+    expected_writes = {"__builtins__"} if remove_key else set()
+    assert vars(owner).keys() - before.keys() == expected_writes
+
+    entry = tmp_path / "entry.py"
+    deletion = "del owner.__builtins__\n" if remove_key else ""
+    entry.write_text(
+        "from _intrinsics import require_intrinsic\n"
+        "import owner\n"
+        "make = require_intrinsic('molt_dataclasses_init')\n"
+        "read = require_intrinsic('molt_dataclasses_init_globals')\n"
+        "class C: pass\n"
+        "spec = (('self',), 1, None, None, (), (), (), (), (-1, -1), "
+        "(-1, -1), {}, read(owner), 'owner')\n"
+        + deletion
+        + "make(C, (False, False, False, (), 'self'), spec)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "owner.py").write_text("unchanged = 1\n", encoding="utf-8")
+    for _ in range(2):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (entry,),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        premise = result.scan_authority.by_module["owner"].namespace_premise
+        assert premise is not None and premise.foreign_writes is not None
+        assert set(premise.foreign_writes) == expected_writes
+
+        # The typed conditional effect survives publication and cache replay,
+        # even when ordinary module initialization makes the insertion inert.
+        assert result.discovery is not None
+        assert any(
+            element.protocol is PythonElementProtocol.ENSURE_BUILTINS
+            for job, scan in result.discovery.scan_outputs.items()
+            if job.module_name == "entry"
+            for element in scan.source_requests.source_values.elements
+        )
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     ("use", "required"),
     [

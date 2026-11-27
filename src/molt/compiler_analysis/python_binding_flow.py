@@ -4157,30 +4157,29 @@ class _Analyzer:
             return any(name.admits(field) for field in fields)
         return True
 
-    def _project_mapping_write(
+    def _mapping_write_execution(
         self,
-        scope: _Scope,
         operation: ast.expr,
         origins: frozenset[PythonSourceKey],
         key: PythonStaticValue,
-    ) -> None:
+        *,
+        protocol: PythonElementProtocol = PythonElementProtocol.MAPPING_WRITE,
+    ) -> frozenset[DeferredExecution]:
         if not origins:
-            return
+            return frozenset()
         write = python_source_projection_key(
             operation, PythonSourceProjection.MAPPING_WRITE
         )
         prior = self.transfer.source_elements.get(write)
         self.transfer.source_elements[write] = PythonSourceElement(
             write,
-            PythonElementProtocol.MAPPING_WRITE,
+            protocol,
             origins | (prior.origins if prior else frozenset()),
             key
             if isinstance(key, str) and (prior is None or prior.key == key)
             else None,
         )
-        self._record_operation_execution(
-            scope, frozenset({DeferredExecution(write, "mutate")})
-        )
+        return frozenset({DeferredExecution(write, "mutate")})
 
     def _publish_source_attribute(
         self, site: PythonSourceKey, name: str, owners: frozenset[PythonSourceKey]
@@ -5245,6 +5244,14 @@ class _Analyzer:
                 node, PythonSourceProjection.CALL_NATIVE_BUILTINS
             )
             global_sources = items[DataclassInitSpecField.GLOBALS].result.source_origins
+            # Construction supplies a missing entry. Capture of the mapping
+            # and possible insertion have distinct source effects.
+            selected_deferred |= self._mapping_write_execution(
+                node,
+                global_sources,
+                None,
+                protocol=PythonElementProtocol.ENSURE_BUILTINS,
+            )
             explicit_builtins = python_source_projection_key(
                 node, PythonSourceProjection.CALL_MAPPING_VALUE
             )
@@ -7773,11 +7780,13 @@ class _Analyzer:
             ):
                 effects |= WRITES_MODULE_METADATA | WRITES_GLOBAL_NAMESPACE
         else:
-            self._project_mapping_write(
+            self._record_operation_execution(
                 scope,
-                target.node,
-                target.owner_result.source_origins,
-                target.static_index,
+                self._mapping_write_execution(
+                    target.node,
+                    target.owner_result.source_origins,
+                    target.static_index,
+                ),
             )
             if (
                 target.owner_identities & int(PythonIdentity.CURRENT_GLOBALS)
@@ -8543,8 +8552,11 @@ class _Analyzer:
                 retained_target, value.result, inplace=True
             )
             if isinstance(node.op, ast.BitOr):
-                self._project_mapping_write(
-                    scope, node.target, target_read.result.source_origins, None
+                self._record_operation_execution(
+                    scope,
+                    self._mapping_write_execution(
+                        node.target, target_read.result.source_origins, None
+                    ),
                 )
             namespace_effects = NO_EFFECTS
             if target_read.result.exposes_module_globals:
