@@ -12,7 +12,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import Literal, TextIO
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 
@@ -78,7 +78,14 @@ def _prune_backend_daemons(env: dict[str, str] | None = None) -> int:
     )
 
 
-_LAST_BUILD_FAILURE_DETAIL: str | None = None
+@dataclass(frozen=True)
+class WasmBuildFailure:
+    build_s: float
+    returncode: int
+    classification: Literal[
+        "build_timeout", "build_error", "build_manifest_error", "build_setup_error"
+    ]
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -407,9 +414,7 @@ def _build_wasm_output(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     use_molt_build_cache: bool = True,
     source_cwd: Path | None = None,
-) -> float | None:
-    global _LAST_BUILD_FAILURE_DETAIL
-    _LAST_BUILD_FAILURE_DETAIL = None
+) -> float | WasmBuildFailure:
     build_timeout_s = _parse_env_float("MOLT_WASM_BUILD_TIMEOUT_SEC", default=90.0)
     build_cmd = [
         *python_cmd,
@@ -452,25 +457,31 @@ def _build_wasm_output(
             f"WASM build timed out for {script} after {build_timeout_s:.1f}s.",
             file=sys.stderr,
         )
-        _LAST_BUILD_FAILURE_DETAIL = f"build_timeout timeout_s={build_timeout_s:.1f}"
-        return None
+        return WasmBuildFailure(
+            build_s,
+            build_res.returncode,
+            "build_timeout",
+            f"build_timeout timeout_s={build_timeout_s:.1f}",
+        )
     if build_res.returncode != 0:
         err = (build_res.stderr or build_res.stdout).strip()
-        _LAST_BUILD_FAILURE_DETAIL = (
-            _summarize_error_text(err) if err else "wasm_build_failed"
-        )
+        detail = _summarize_error_text(err) if err else "wasm_build_failed"
         print(
-            f"WASM build failed for {script}: {_LAST_BUILD_FAILURE_DETAIL}",
+            f"WASM build failed for {script}: {detail}",
             file=sys.stderr,
         )
-        return None
+        return WasmBuildFailure(build_s, build_res.returncode, "build_error", detail)
     if _linked_wasm_output(output_path) is None:
         print(
             f"WASM build produced no valid manifest-bound linked output for {script}.",
             file=sys.stderr,
         )
-        _LAST_BUILD_FAILURE_DETAIL = "wasm_linked_manifest_invalid"
-        return None
+        return WasmBuildFailure(
+            build_s,
+            build_res.returncode,
+            "build_manifest_error",
+            "wasm_linked_manifest_invalid",
+        )
     return build_s
 
 
@@ -484,9 +495,7 @@ def prepare_wasm_binary(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     use_molt_build_cache: bool = True,
     workload: AdmittedBenchmarkWorkload | None = None,
-) -> WasmBinary | None:
-    global _LAST_BUILD_FAILURE_DETAIL
-    _LAST_BUILD_FAILURE_DETAIL = None
+) -> WasmBinary | WasmBuildFailure:
     base_env = _base_env()
     _prune_backend_daemons(base_env)
     resolved_limits = limits or harness_memory_guard.limits_from_env(
@@ -508,9 +517,10 @@ def prepare_wasm_binary(
         temp_dir.retain()
     transferred = False
     primary: BaseException | None = None
+    failure: WasmBuildFailure | None = None
     try:
         output_path = Path(temp_dir.name) / "output.wasm"
-        build_s = _build_wasm_output(
+        build = _build_wasm_output(
             python_cmd,
             env,
             output_path,
@@ -522,10 +532,9 @@ def prepare_wasm_binary(
             use_molt_build_cache=use_molt_build_cache,
             source_cwd=workload.source_cwd if workload is not None else None,
         )
-        if build_s is None:
-            if _LAST_BUILD_FAILURE_DETAIL is None:
-                _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
-            return None
+        if isinstance(build, WasmBuildFailure):
+            failure = build
+            return failure
 
         linked = _linked_wasm_output(output_path)
         if linked is None:
@@ -533,8 +542,10 @@ def prepare_wasm_binary(
                 f"Compiler produced no manifest-bound linked WASM for {script}.",
                 file=sys.stderr,
             )
-            _LAST_BUILD_FAILURE_DETAIL = "linked_wasm_required_unavailable"
-            raise RuntimeError("linked wasm required")
+            failure = WasmBuildFailure(
+                build, 0, "build_manifest_error", "linked_wasm_required_unavailable"
+            )
+            return failure
         wasm_path = linked
         wasm_size = wasm_path.stat().st_size / 1024
         import_metrics = _read_wasm_import_metrics(wasm_path)
@@ -557,7 +568,7 @@ def prepare_wasm_binary(
             run_env=run_env,
             guest_stderr_path=guest_stderr_path,
             temp_dir=temp_dir,
-            build_s=build_s,
+            build_s=build,
             size_kb=wasm_size,
             linked_used=True,
             import_count_total=(
@@ -580,10 +591,9 @@ def prepare_wasm_binary(
             try:
                 bench._cleanup_bench_temp(temp_dir, primary)
             except BaseException as exc:
-                if primary is None and _LAST_BUILD_FAILURE_DETAIL is not None:
+                if primary is None and failure is not None:
                     exc.add_note(
-                        "WASM build failed before scratch cleanup: "
-                        f"{_LAST_BUILD_FAILURE_DETAIL}"
+                        f"WASM build failed before scratch cleanup: {failure.detail}"
                     )
                 raise
 
@@ -1210,7 +1220,7 @@ def bench_results(
             failed_sample: _SampleResult | None = None
             control_sample: _SampleResult | None = None
             try:
-                wasm_binary = prepare_wasm_binary(
+                build = prepare_wasm_binary(
                     script,
                     molt_args=workload.record["molt_args"],
                     tty=tty,
@@ -1229,7 +1239,14 @@ def bench_results(
                     f"WASM benchmark setup failed for {script}: {exc}",
                     file=sys.stderr,
                 )
+                build = WasmBuildFailure(0.0, -1, "build_setup_error", str(exc))
+            if isinstance(build, WasmBuildFailure):
+                build_failure = build
+                wasm_build = build.build_s
                 wasm_binary = None
+            else:
+                build_failure = None
+                wasm_binary = build
             if wasm_binary is not None:
                 primary: BaseException | None = None
                 try:
@@ -1319,10 +1336,10 @@ def bench_results(
                 data[name]["molt_wasm_failure_class"] = failed_sample.error_class
                 data[name]["molt_wasm_failure_returncode"] = failed_sample.returncode
                 data[name]["molt_wasm_failure"] = failed_sample.error
-            elif not ok and _LAST_BUILD_FAILURE_DETAIL:
-                data[name]["molt_wasm_failure_class"] = "build_setup_error"
-                data[name]["molt_wasm_failure_returncode"] = -1
-                data[name]["molt_wasm_failure"] = _LAST_BUILD_FAILURE_DETAIL
+            elif build_failure is not None:
+                data[name]["molt_wasm_failure_class"] = build_failure.classification
+                data[name]["molt_wasm_failure_returncode"] = build_failure.returncode
+                data[name]["molt_wasm_failure"] = build_failure.detail
             if control_runner_name is not None and control_sample is not None:
                 data[name]["molt_wasm_control_runner"] = control_runner_name
                 data[name]["molt_wasm_control_ok"] = (

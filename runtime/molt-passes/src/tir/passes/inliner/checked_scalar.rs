@@ -19,6 +19,7 @@ use crate::tir::values::{TirValue, ValueId};
 use super::activation::Activations;
 use super::packed_splice::{ordinary_call, test_block};
 
+#[derive(Clone, Debug)]
 pub(super) struct CheckedScalar {
     formal: usize,
     owner: String,
@@ -205,6 +206,51 @@ impl CheckedScalar {
         None
     }
 
+    pub(super) fn formal(&self) -> usize {
+        self.formal
+    }
+
+    pub(super) fn include_in(&self, prefix: FramePrefix) -> Option<FramePrefix> {
+        Some(FramePrefix {
+            homes: prefix.homes.checked_add(self.reservation.homes)?,
+            depth: prefix.depth.checked_add(self.reservation.depth)?,
+        })
+    }
+
+    /// The outer region reserves all of its nested frames in one check.
+    pub(super) fn admit(
+        &self,
+        caller: &mut TirFunction,
+        captured: ValueId,
+        actual: ValueId,
+        hit: BlockId,
+        miss: BlockId,
+    ) -> BlockId {
+        let pending = caller.fresh_value();
+        let service = test_block(
+            caller,
+            vec![],
+            TirOp::new(OpCode::AsyncWorkPending, vec![], vec![pending]),
+            miss,
+            hit,
+        );
+        let admitted = caller.fresh_value();
+        let mut frame = TirOp::new(OpCode::FrameEntryAdmits, vec![captured], vec![admitted]);
+        frame
+            .attrs
+            .insert("s_value".into(), AttrValue::Str(self.owner.clone()));
+        frame.attrs.extend(
+            self.reservation
+                .reservation_attrs()
+                .map(|(key, v)| (key.into(), v)),
+        );
+        FramePrefix::require_virtual_level(&mut frame.attrs);
+        let entry = test_block(caller, vec![], frame, service, miss);
+        let inline = caller.fresh_value();
+        let test = TirOp::new(OpCode::IsInlineInt, vec![actual], vec![inline]);
+        test_block(caller, vec![], test, entry, miss)
+    }
+
     pub(super) fn splice(
         &self,
         caller: &mut TirFunction,
@@ -270,29 +316,7 @@ impl CheckedScalar {
             },
         );
         let miss = caller.fresh_block();
-        let pending = caller.fresh_value();
-        let service = test_block(
-            caller,
-            vec![],
-            TirOp::new(OpCode::AsyncWorkPending, vec![], vec![pending]),
-            miss,
-            hit,
-        );
-        let admitted = caller.fresh_value();
-        let mut frame = TirOp::new(OpCode::FrameEntryAdmits, vec![captured], vec![admitted]);
-        frame
-            .attrs
-            .insert("s_value".into(), AttrValue::Str(self.owner.clone()));
-        frame.attrs.extend(
-            self.reservation
-                .reservation_attrs()
-                .map(|(key, v)| (key.into(), v)),
-        );
-        FramePrefix::require_virtual_level(&mut frame.attrs);
-        let entry = test_block(caller, vec![], frame, service, miss);
-        let inline = caller.fresh_value();
-        let test = TirOp::new(OpCode::IsInlineInt, vec![actual], vec![inline]);
-        let entry = test_block(caller, vec![], test, entry, miss);
+        let entry = self.admit(caller, captured, actual, hit, miss);
         original.terminator = Terminator::Branch {
             target: entry,
             args: vec![],

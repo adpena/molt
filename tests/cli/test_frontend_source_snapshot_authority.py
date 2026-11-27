@@ -239,6 +239,7 @@ def test_scan_tooling_identifies_sources_without_compiler_import_analysis(
     analysis = compiler_sources.parents[1] / "compiler_analysis"
     initial = fingerprints._import_scan_tooling_fingerprint()
     (analysis / "python_binding_flow.pyc").write_bytes(b"bytecode cache")
+    (analysis / "python_source_demands.py").write_text("VALUE = 2\n", encoding="utf-8")
     assert fingerprints._import_scan_tooling_fingerprint() == initial
     (analysis / "python_binding_flow.py").write_text("VALUE = 2\n", encoding="utf-8")
     assert fingerprints._import_scan_tooling_fingerprint() != initial

@@ -82,12 +82,22 @@ def test_wasm_benchmark_preserves_one_admitted_build_attempt(
     assert "--wrong-selection" not in calls[0][0]
     assert calls[0][1] == env == original_env
     assert output.read_bytes() == b"preserved failure evidence"
-    assert result == (2.5 if outcome == "pass" else None)
     assert bool(diagnostics) == (outcome == "timeout")
     if outcome == "pass":
-        assert bench_wasm._LAST_BUILD_FAILURE_DETAIL is None
+        assert result == 2.5
     else:
-        assert bench_wasm._LAST_BUILD_FAILURE_DETAIL
+        assert isinstance(result, bench_wasm.WasmBuildFailure)
+        assert result.build_s == 2.5
+        assert result.returncode == (0 if outcome == "manifest" else 1)
+        assert (
+            result.classification
+            == {
+                "timeout": "build_timeout",
+                "lock": "build_error",
+                "compile": "build_error",
+                "manifest": "build_manifest_error",
+            }[outcome]
+        )
 
 
 @contextlib.contextmanager
@@ -119,6 +129,10 @@ def test_prepare_wasm_binary_does_not_retry_failed_build(
     )
     monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["python"])
 
+    failure = bench_wasm.WasmBuildFailure(
+        90.25, 124, "build_timeout", "build_timeout timeout_s=90.0"
+    )
+
     def failed_build(
         _python_cmd,
         env,
@@ -135,16 +149,14 @@ def test_prepare_wasm_binary_does_not_retry_failed_build(
         del tty, log, limits, use_molt_build_cache
         assert molt_args == []
         calls.append((script, dict(env)))
-        bench_wasm._LAST_BUILD_FAILURE_DETAIL = "build_timeout timeout_s=90.0"
-        return None
+        return failure
 
     monkeypatch.setattr(bench_wasm, "_build_wasm_output", failed_build)
     result = bench_wasm.prepare_wasm_binary(
         "case.py", molt_args=[], tty=False, log=None, keep_temp=False, limits=object()
     )
-    assert result is None
+    assert result is failure
     assert len(calls) == len(prunes) == 1
-    assert bench_wasm._LAST_BUILD_FAILURE_DETAIL == "build_timeout timeout_s=90.0"
 
 
 def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
@@ -658,9 +670,10 @@ def test_runtime_target_is_checkout_scoped_unless_a_session_is_pinned(
     assert bench_wasm._cargo_target_root() == (target / "sessions" / "lane-a")
 
 
+@pytest.mark.parametrize("timed_out", [False, True])
 def test_wasm_producer_threads_admitted_molt_args_to_actual_build_argv(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timed_out: bool
+) -> None:
     from tools.bench_evidence import admit_benchmark_workload
     from tests.wasm_execution_manifest import (
         EMPTY_WASM_MODULE,
@@ -684,6 +697,8 @@ def test_wasm_producer_threads_admitted_molt_args_to_actual_build_argv(
 
     def run(command, **kwargs):
         commands.append(command)
+        if timed_out:
+            return bench_wasm._RunResult(124, timed_out=True)
         out = Path(command[command.index("--out-dir") + 1]) / "output.wasm"
         out.write_bytes(EMPTY_WASM_MODULE)
         linked = out.with_name("output_linked.wasm")
@@ -716,7 +731,14 @@ def test_wasm_producer_threads_admitted_molt_args_to_actual_build_argv(
     assert commands[0][:4] == ["selected-python", "-m", "molt.cli", "build"]
     assert commands[0][-3:] == ["--profile", "dev", str(script)]
     assert "--wrong-selection" not in commands[0]
-    assert data[str(script)]["workload"]["molt_args"] == ["--profile", "dev"]
+    row = data[str(script)]
+    assert row["workload"]["molt_args"] == ["--profile", "dev"]
+    if timed_out:
+        assert not row["molt_wasm_ok"]
+        assert row["molt_wasm_build_s"] > 0
+        assert row["molt_wasm_failure_class"] == "build_timeout"
+        assert row["molt_wasm_failure_returncode"] == 124
+        assert row["molt_wasm_samples_s"] == []
 
 
 def test_wasm_producer_preserves_source_drift_when_scratch_cleanup_fails(

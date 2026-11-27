@@ -182,6 +182,12 @@ class _ClassMemberResult:
     property_results: frozenset[SourceCandidate]
 
 
+@dataclass(slots=True)
+class _InheritedSources:
+    owners: set[tuple[str, PythonSourceKey | None]]
+    users: set[SourceValue] = field(default_factory=set)
+
+
 @dataclass(frozen=True, slots=True)
 class SourceCacheItem:
     key: str | None
@@ -202,6 +208,12 @@ def _import_cache_items(keys: tuple[str, ...] | None) -> tuple[SourceCacheItem, 
 @dataclass(frozen=True, slots=True)
 class SourceReturn:
     callee: SourceValue
+
+
+@dataclass(frozen=True, slots=True)
+class SourceCallableOutcome:
+    owner: PythonSourceKey
+    yielded: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +250,7 @@ SourceValue = tuple[
     | SourceCacheItem
     | SourceReturn
     | SourceCallArguments
+    | SourceCallableOutcome
     | SourceIteratorItems
     | SourceAwait
     | SourceGeneratorCompletion
@@ -254,9 +267,7 @@ class SourceDemand(NamedTuple):
     consumer: str
 
 
-type SourceActivation = tuple[
-    SourceCandidate, SourceDemandPhase, tuple[str, ...], int | None, str
-]
+type NativeActivation = tuple[SourceCandidate, SourceDemand]
 
 
 @dataclass(slots=True)
@@ -398,6 +409,7 @@ class PythonSourceDemands:
         # call of one passes the call's own arguments, never the instance.
         self._property_results: dict[SourceValue, set[SourceCandidate]] = {}
         self._class_members: dict[_ClassMemberLookup, _ClassMemberResult] = {}
+        self._inherited_sources: dict[SourceValue, _InheritedSources] = {}
         # Attribute values whose receiver-binding proof read a candidate set
         # still queued; `drain` decides them once the queue empties.
         self._deferred_receiver_proofs: set[SourceValue] = set()
@@ -429,8 +441,15 @@ class PythonSourceDemands:
         # activated each body, so a changed parameter fact re-maps them.
         self.body_jobs: dict[SourceValue, set[tuple[str, ...]]] = {}
         self.body_activations: dict[SourceValue, set[tuple[str, ...]]] = {}
-        self.activated: set[SourceActivation] = set()
-        self.native_activations: dict[SourceValue, set[SourceActivation]] = {}
+        # Incidences with the same demand share their activation frontier,
+        # even when a candidate arrives through multiple source expressions.
+        self.activated: dict[SourceDemand, set[SourceCandidate]] = {}
+        # An escaped namespace also writes at the particular use site.
+        # Those incidences still visit the site after candidate activation.
+        self._site_sensitive_activated: set[tuple[SourceCandidate, SourceDemand]] = (
+            set()
+        )
+        self.native_activations: dict[SourceValue, set[NativeActivation]] = {}
         self.queue: deque[SourceValue] = deque()
         self.exports: dict[str, SourceAllExports] = {}
 
@@ -478,6 +497,19 @@ class PythonSourceDemands:
             return deltas.get(origin, ())
         self.operand_users[origin].add(user)
         return tuple(self._ensure_value(origin))
+
+    def _watch_inherited_sources(
+        self, origin: SourceValue, user: SourceValue
+    ) -> set[tuple[str, PythonSourceKey | None]]:
+        # An inherited selection takes only the source identity from the base
+        # operand. The original class access supplies the receiver.
+        sources = self._inherited_sources.get(origin)
+        if sources is None:
+            sources = self._inherited_sources[origin] = _InheritedSources(
+                {candidate.value for candidate in self._ensure_value(origin)}
+            )
+        sources.users.add(user)
+        return sources.owners
 
     def _add_operand_candidates(
         self, origin: SourceValue, added: Collection[SourceCandidate]
@@ -715,7 +747,22 @@ class PythonSourceDemands:
                         previous.returns_calls_only and result.returns_calls_only
                     ),
                 )
-            if self._publish(self.functions, value, result):
+            if previous != result:
+                self.functions[value] = result
+                if previous is None or (
+                    previous.returned != result.returned
+                    or previous.returned_exposed != result.returned_exposed
+                ):
+                    outcome = (module_name, SourceCallableOutcome(result.owner, False))
+                    if outcome in self.value_candidates:
+                        self.queue_value(outcome)
+                if previous is None or (
+                    previous.yielded != result.yielded
+                    or previous.yielded_exposed != result.yielded_exposed
+                ):
+                    outcome = (module_name, SourceCallableOutcome(result.owner, True))
+                    if outcome in self.value_candidates:
+                        self.queue_value(outcome)
                 old = (
                     frozenset()
                     if previous is None
@@ -1103,7 +1150,7 @@ class PythonSourceDemands:
         owner, name = lookup.owner, lookup.name
         property_results: set[SourceCandidate] = set()
         if lookup.strict:
-            seen: set[SourceCandidate] = set()
+            seen: set[tuple[str, PythonSourceKey | None]] = set()
             members: set[SourceCandidate] = set()
             for ancestor in self._strict_ancestors(owner.value, value):
                 members.update(
@@ -1289,7 +1336,7 @@ class PythonSourceDemands:
         from_import=False,
         from_star=False,
         visiting=frozenset(),
-        member_seen: set[SourceCandidate] | None = None,
+        member_seen: set[tuple[str, PythonSourceKey | None]] | None = None,
         binding_owner=None,
         property_results: set[SourceCandidate] | None = None,
     ):
@@ -1398,9 +1445,9 @@ class PythonSourceDemands:
         if owner.contained:
             return result
         if member_seen is not None:
-            if owner in member_seen:
+            if owner.value in member_seen:
                 return result
-            member_seen.add(owner)
+            member_seen.add(owner.value)
         if (
             owner.kind == "instance"
             and owner_source is not None
@@ -1528,13 +1575,17 @@ class PythonSourceDemands:
         elif owner_source[-1] == "ClassDef":
             # Unknown instance/descriptor use is bounded by this class family.
             bases = self.bases.get(owner.value, ())
-            if bases and member_seen is None:
+            if not bases:
+                return result
+            if member_seen is None:
                 # All paths in this query have the same bound receiver and
                 # contribute a union. A shared ancestor contributes once.
-                member_seen = {owner}
+                member_seen = {owner.value}
             for base in bases:
-                for candidate in tuple(self.watch((owner_module, base), user)):
-                    inherited = SourceCandidate(*candidate.value, owner.kind)
+                for source in self._watch_inherited_sources((owner_module, base), user):
+                    if source in member_seen:
+                        continue
+                    inherited = SourceCandidate(*source, owner.kind)
                     result.update(
                         self.select_member(
                             inherited,
@@ -1627,7 +1678,6 @@ class PythonSourceDemands:
         consumer: str | None = None,
     ) -> None:
         consumer = consumer or self._consumer or origin.module
-        incidence = (origin, phase, arguments, argument_count, consumer)
         if phase in {"read", "factory"}:
             if (
                 origin.identity is None
@@ -1637,14 +1687,28 @@ class PythonSourceDemands:
             ):
                 self.read_callables.setdefault(origin.module, set()).add(origin.source)
             return
-        activated = (
-            self.native_activations.setdefault(origin.value, set())
-            if origin.kind in {"native_initializer", "bound_native_initializer"}
-            else self.activated
-        )
-        if incidence in activated:
-            return
-        activated.add(incidence)
+        demand = SourceDemand(phase, arguments, argument_count, consumer)
+        if origin.kind in {"native_initializer", "bound_native_initializer"}:
+            native = self.native_activations.setdefault(origin.value, set())
+            incidence = (origin, demand)
+            if incidence in native:
+                return
+            native.add(incidence)
+        elif phase in {"escape", "expose"} and (
+            origin.kind == "namespace" or origin.namespace_mutation is not None
+        ):
+            incidence = (origin, demand)
+            if incidence in self._site_sensitive_activated:
+                return
+            self._site_sensitive_activated.add(incidence)
+        else:
+            activated = self.activated.get(demand)
+            if activated is None:
+                self.activated[demand] = {origin}
+            elif origin in activated:
+                return
+            else:
+                activated.add(origin)
         if (
             phase in {"escape", "expose"}
             and origin.identity is None
@@ -2170,7 +2234,9 @@ class PythonSourceDemands:
                 self._refresh_class_members(source, value)
             return
         if not refresh and deltas is None:
-            self._activate_pending(value, self.value_candidates[value], ())
+            self._activate_pending(
+                value, self.value_candidates[value], _EMPTY_CANDIDATES
+            )
             return
         if module_name not in self.modules and not isinstance(source, SourceCacheItem):
             self.pending_modules.setdefault(module_name, set()).add(value)
@@ -2200,6 +2266,21 @@ class PythonSourceDemands:
                     candidates.update(
                         item._replace(contained=True)
                         for item in self.watch((module_name, default), value)
+                    )
+        elif isinstance(source, SourceCallableOutcome):
+            function = self.functions.get((module_name, source.owner))
+            if function is not None:
+                direct, exposed = (
+                    (function.yielded, function.yielded_exposed)
+                    if source.yielded
+                    else (function.returned, function.returned_exposed)
+                )
+                for origin in direct:
+                    candidates.update(self.watch((module_name, origin), value))
+                for origin in exposed - direct:
+                    candidates.update(
+                        candidate._replace(contained=True)
+                        for candidate in self.watch((module_name, origin), value)
                     )
         elif isinstance(source, SourceCallArguments):
             self._route_call_arguments(module_name, source, value, deltas)
@@ -2261,7 +2342,7 @@ class PythonSourceDemands:
             # Member aliases retain receiver and consumer contexts. A late
             # publication replays the actual incidences, even if the alias's
             # candidate set did not change.
-            for candidate, phase, args, count, consumer in tuple(
+            for candidate, (phase, args, count, consumer) in tuple(
                 self.native_activations.get(value, ())
             ):
                 if phase in {"call", "escape", "expose"}:
@@ -2607,6 +2688,12 @@ class PythonSourceDemands:
             added = candidates - known
             known.update(added)
         if added:
+            if inherited := self._inherited_sources.get(value):
+                before = len(inherited.owners)
+                inherited.owners.update(candidate.value for candidate in added)
+                if len(inherited.owners) != before:
+                    for user in inherited.users:
+                        self.queue_value(user)
             if writes := self.attribute_writes.get(value):
                 self._record_attribute_receivers(module_name, writes, added)
             for user in self.value_users.get(value, ()):
@@ -2617,21 +2704,32 @@ class PythonSourceDemands:
     def _activate_pending(
         self,
         value: SourceValue,
-        known: Collection[SourceCandidate],
-        added: Collection[SourceCandidate],
+        known: set[SourceCandidate] | frozenset[SourceCandidate],
+        added: set[SourceCandidate] | frozenset[SourceCandidate],
     ) -> None:
         # A demand-only wake joins existing candidates without evaluating their
         # producer. A changed publication visits only its new incidences.
         new_phases = self.pending_phases.pop(value, None)
         if added and (phases := self.value_phases.get(value)):
-            old_phases = phases.difference(new_phases or ())
-            for candidate in added:
-                for incidence in old_phases:
-                    self._activate_demand(value, candidate, incidence)
-        if new_phases:
-            for candidate in tuple(known):
-                for incidence in new_phases:
-                    self._activate_demand(value, candidate, incidence)
+            for incidence in phases.difference(new_phases or ()):
+                self._activate_new_candidates(value, added, incidence)
+        for incidence in new_phases or ():
+            self._activate_new_candidates(value, known, incidence)
+
+    def _activate_new_candidates(
+        self,
+        value: SourceValue,
+        candidates: set[SourceCandidate] | frozenset[SourceCandidate],
+        demand: SourceDemand,
+    ) -> None:
+        # Subtract effects already executed through aliases before traversing
+        # candidates in Python. Namespace writers and initializer replay keep
+        # their own incidence state. Opaque arguments record effects at a site
+        # before normalizing to an exposure.
+        if activated := self.activated.get(demand):
+            candidates = candidates.difference(activated)
+        for candidate in tuple(candidates):
+            self._activate_demand(value, candidate, demand)
 
     def _route_call_arguments(
         self,
@@ -3169,7 +3267,7 @@ class PythonSourceDemands:
         # Type selection starts above the new class. Namespace construction
         # has already run __set_name__, so reached writes can change this edge.
         self.watch(owner.value, user)
-        member_seen: set[SourceCandidate] = set()
+        member_seen: set[tuple[str, PythonSourceKey | None]] = set()
         for origin in self.bases.get(owner.value, ()):
             for base in self.watch((owner.module, origin), user):
                 if not self._source_class_candidate(base) or base.kind != "value":
@@ -3257,23 +3355,10 @@ class PythonSourceDemands:
     ) -> set[SourceCandidate]:
         value = callee.value
         self.watch(value, user)
-        function = self.functions.get(value)
-        if function is None:
+        if callee.source is None:
             return set()
-        returned, exposed = (
-            (function.yielded, function.yielded_exposed)
-            if yielded
-            else (function.returned, function.returned_exposed)
-        )
-        result: set[SourceCandidate] = set()
-        for source in returned:
-            result.update(self.watch((callee.module, source), user))
-        for source in exposed - returned:
-            result.update(
-                candidate._replace(contained=True)
-                for candidate in self.watch((callee.module, source), user)
-            )
-        return result
+        outcome = (callee.module, SourceCallableOutcome(callee.source, yielded))
+        return set(self.watch(outcome, user))
 
     def _awaited_values(
         self, awaited: SourceCandidate, user: SourceValue
