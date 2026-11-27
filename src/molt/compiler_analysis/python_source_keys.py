@@ -220,7 +220,38 @@ def _ast_schema_header(
     return b"".join(parts)
 
 
-def python_ast_digest(tree: ast.AST) -> str:
+_AST_LINE_FIELDS = frozenset(("lineno", "end_lineno"))
+
+
+@dataclass(frozen=True, slots=True)
+class PythonAstLineIdentity:
+    """AST identity in which source lines are their ordered occupied slots."""
+
+    digest: str
+    lines: tuple[int, ...]
+
+
+def python_ast_line_identity(tree: ast.AST) -> PythonAstLineIdentity:
+    # Keep columns, line sharing, ordering, and every value-bearing AST field.
+    # In particular a moved expression can share a slot only if every node's
+    # start/end line again refers to that same relative slot.
+    lines = tuple(
+        sorted(
+            {
+                line
+                for node in ast.walk(tree)
+                for field in _AST_LINE_FIELDS
+                if type(line := getattr(node, field, None)) is int and line > 0
+            }
+        )
+    )
+    slots = {line: index for index, line in enumerate(lines, start=1)}
+    return PythonAstLineIdentity(python_ast_digest(tree, line_slots=slots), lines)
+
+
+def python_ast_digest(
+    tree: ast.AST, *, line_slots: Mapping[int, int] | None = None
+) -> str:
     """Hash typed AST values and spans with stack-safe, prefix-free framing.
 
     The v3 domain retires per-node Merkle hashing. Only unordered members need
@@ -231,7 +262,11 @@ def python_ast_digest(tree: ast.AST) -> str:
     """
     if not isinstance(tree, ast.AST):
         raise TypeError("Python AST identity requires an AST root")
-    stream = _AstDigestStream(b"molt.python-ast.v3\0")
+    stream = _AstDigestStream(
+        b"molt.python-ast.v3\0"
+        if line_slots is None
+        else b"molt.python-ast.occupied-lines.v1\0"
+    )
     frames: list[_AstDigestFrame] = []
     active: set[int] = set()
     schemas: dict[type[ast.AST], _AstDigestSchema] = {}
@@ -263,10 +298,18 @@ def python_ast_digest(tree: ast.AST) -> str:
                 if len(schemas) < 256:
                     schemas[type(value)] = schema
             stream.write(schema.header)
+            children = python_source_fields(value, schema.names, _AST_MISSING)
+            if line_slots is not None:
+                children = (
+                    line_slots[child]
+                    if name in _AST_LINE_FIELDS and type(child) is int and child > 0
+                    else child
+                    for name, child in zip(schema.names, children, strict=True)
+                )
             frames.append(
                 _AstDigestFrame(
                     value,
-                    python_source_fields(value, schema.names, _AST_MISSING),
+                    children,
                     stream,
                     ast_slots=True,
                 )

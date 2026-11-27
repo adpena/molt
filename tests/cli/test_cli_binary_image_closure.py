@@ -303,8 +303,19 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         assert again is not None
         assert again.closure_payload() == fresh.closure_payload()
 
+    # Move a demanded body and its end position without changing syntax.
+    peer.write_text("\ndef compute():\n\n    return 7\n", encoding="utf-8")
+    moved = import_graph_record.replay_import_graph(context)
+    assert moved is not None
+    fresh_moved = _materialize_plan(
+        tmp_path, entry, "app", image_scope=resolved.image_scope
+    )
+    assert moved.closure_payload() == fresh_moved.closure_payload()
+    assert moved.scan_authority == fresh_moved.scan_authority
+    assert moved.scan_authority != fresh.scan_authority
+
     peer.write_text(
-        "def compute():\n    import new_demand\n    return 7\n", encoding="utf-8"
+        "\ndef compute():\n    import new_demand\n    return 7\n", encoding="utf-8"
     )
     (tmp_path / "new_demand.py").write_text("VALUE = 1\n", encoding="utf-8")
     assert import_graph_record.replay_import_graph(context) is None
