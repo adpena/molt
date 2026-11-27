@@ -161,8 +161,33 @@ def test_the_instrument_is_exactly_the_imported_measurement_path() -> None:
     # The suspect commands run after the record is written; they cannot move
     # a count, and that module's churn would reset every baseline.
     assert imported - {"tools/perf_instructions.py"} == (
-        set(pi.INSTRUMENT) - {"tools/perf_instructions.py"}
+        {path for path in pi.INSTRUMENT if path.startswith("tools/")}
+        - {"tools/perf_instructions.py"}
     ) | {"tools/molt_dev_queue.py"}
+
+
+def test_instruction_identity_changes_with_build_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shutil
+
+    for path in pi.INSTRUMENT:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / path, target)
+    monkeypatch.setattr(pi, "ROOT", tmp_path)
+    before = pi.run_identity(pi.Counter.PERF, pi.Tier.HOURLY)
+    selector = tmp_path / "src/molt/cli/build_request_resolution.py"
+    selector.write_bytes(selector.read_bytes() + b"\n# changed selection protocol\n")
+    after = pi.run_identity(pi.Counter.PERF, pi.Tier.HOURLY)
+    assert pi.identity_digest(before) != pi.identity_digest(after)
+    with pytest.raises(ValueError, match="different run identities"):
+        pi.compare(
+            {**_record("a" * 40, []), "identity_digest": pi.identity_digest(before)},
+            {**_record("b" * 40, []), "identity_digest": pi.identity_digest(after)},
+            {},
+        )
 
 
 def test_declared_primitive_programs_have_independent_cpython_oracles(

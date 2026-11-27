@@ -1061,6 +1061,7 @@ def _discovery_pass(
     explicit_imports: set[str] = set()
     touched: set[str] = set()
     projected: set[str] = set()
+    published_scans: set[_SourceScanJob] = set()
     revised: set[str] = set()
     queued_entries: dict[tuple[Path, str | None], _SourceEntryJob] = {}
 
@@ -1898,6 +1899,9 @@ def _discovery_pass(
             loaded = None if scan_memo is None else scan_memo.get(memo_key)
             previous_load = state.scan_loads.get(job)
             previous_receipt = scan_receipts.get(job)
+            same_authority = (
+                previous_receipt is not None and previous_receipt[1:] == receipt[1:]
+            )
             # Early cutoff: a unit whose every premise answer holds under the
             # new view reads the same things and keeps its output, so it is
             # neither scanned nor published again.
@@ -1905,8 +1909,7 @@ def _discovery_pass(
                 loaded is None
                 and previous_load is not None
                 and previous_load.premise_reads is not None
-                and previous_receipt is not None
-                and previous_receipt[1:] == receipt[1:]
+                and same_authority
                 and previous_load.premise_reads.unchanged_under(premise)
             )
             if unchanged:
@@ -1953,9 +1956,9 @@ def _discovery_pass(
                 )
             if job.source is None:
                 scan_premises[module_name] = premise
-            state.superseded_scans |= state.scan_outputs.get(job, loaded.scan) != (
-                loaded.scan
-            )
+            previous_scan = state.scan_outputs.get(job)
+            output_changed = previous_scan is not None and previous_scan != loaded.scan
+            state.superseded_scans |= output_changed
             state.scan_outputs[job] = loaded.scan
             scan_receipts[job] = (scan_view(module_name, premise), *receipt[1:])
             if scan_view(module_name, premise) != scan_view(
@@ -1974,7 +1977,20 @@ def _discovery_pass(
                 uses_runtime_import_protocol=authority.uses_runtime_import_protocol
                 or loaded.scan.source_requests.uses_runtime_import_protocol,
             )
-            if not unchanged:
+            # Even a necessary rescan can return the same complete output.
+            # Its premise receipt advances, while an identical publication
+            # from the same source and admission context is already in the graph.
+            already_published = (
+                job in published_scans
+                and same_authority
+                and not output_changed
+                and previous_load is not None
+                and loaded.snapshot is not None
+                and loaded.snapshot == previous_load.snapshot
+                and not loaded.scan.source_executions
+                and loaded.scan.source_requests.runtime_catalog is None
+            )
+            if not unchanged and not already_published:
                 accept_source_scan(
                     module_name,
                     path,
@@ -1983,6 +1999,7 @@ def _discovery_pass(
                     loaded.snapshot,
                     source_owner=job.source,
                 )
+                published_scans.add(job)
             if job.source is None:
                 release_deferred_bodies(module_name)
             continue
@@ -2196,6 +2213,7 @@ def _discovery_pass(
             loaded.snapshot.sha256 if loaded.snapshot is not None else None,
             loaded.snapshot,
         )
+        published_scans.add(module_job)
         release_deferred_bodies(module_name)
         if (
             previous is not None

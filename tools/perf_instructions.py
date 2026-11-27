@@ -85,7 +85,8 @@ THRESHOLD_FLOOR = 0.01
 MAX_COMPILE_SLOTS = 8
 COMPILE_GB_PER_SLOT = 2.0
 # The instrument: this file and the tools modules it imports on the
-# measurement path. Their bytes key the run identity (design section 3.3);
+# measurement path, including public build request normalization. Their bytes
+# key the run identity (design section 3.3);
 # tests/tools/test_perf_instructions.py pins this tuple to the import set.
 # tools/molt_dev_queue.py is imported only after the record is written, for
 # suspect restoration commands, and cannot change a count.
@@ -102,6 +103,13 @@ INSTRUMENT = (
     "tools/perf_primitives.py",
     "tools/resource_pressure.py",
     "tools/shard_partition.py",
+    "src/molt/cli/build_request.py",
+    "src/molt/cli/build_request_resolution.py",
+    "src/molt/cli/config_resolution.py",
+    "src/molt/cli/entrypoint_parser.py",
+    "src/molt/cli/build_output_layout.py",
+    "src/molt/cli/run_tier.py",
+    "src/molt/wasm_optimization.py",
 )
 # Tiers (decision 4: an hourly run fits 10 minutes through trunk_loop's real
 # path). Measured on molt-gate, 2026-11-10: the path itself costs 287 s
