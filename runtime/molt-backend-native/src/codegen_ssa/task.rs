@@ -129,15 +129,17 @@ impl<B: TaskPlacement> FunctionCx<'_, B> {
             Some(AttrValue::Int(size)) => *size,
             _ => 0,
         };
-        let kind = match op.attrs.get("task_kind") {
-            Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-            _ => None,
+        let kind = if op.attrs.contains_key("task_kind") {
+            op.task_kind()
+                .unwrap_or_else(|| panic!("invalid task constructor kind in {}", self.func.name))
+        } else {
+            molt_ir::task_kind::TaskKind::Future
         };
         let (function, words) = molt_ir::tir::ops::alloc_task_operands(&op.operands);
         self.construct_task(
             b,
             op,
-            TaskConstructorLayout::for_alloc_kind(kind),
+            crate::task_layout(kind),
             size,
             Some(*function),
             words,

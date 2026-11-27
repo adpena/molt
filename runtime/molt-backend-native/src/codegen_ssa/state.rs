@@ -92,6 +92,24 @@ impl<B: CodegenBuilder> Edges<'_, B> {
         default: (BlockId, &[ValueId]),
         diagnostics: &mut Vec<String>,
     ) {
+        // A completed fusion may remove the last resume case. A poll with
+        // only one distinct continuation has no decision to make, even if
+        // its TIR still carries the stateful activation boundary.
+        if cases
+            .iter()
+            .all(|(_, target, args)| *target == default.0 && args == default.1)
+        {
+            let args = self.arguments(
+                b,
+                source,
+                "state-dispatch",
+                default.0,
+                default.1,
+                diagnostics,
+            );
+            b.jump(self.blocks[&default.0], &args);
+            return;
+        }
         let state = b
             .call_runtime(RuntimeFn::ObjGetState, &[frame])
             .expect("a task's saved state is a word");

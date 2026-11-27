@@ -36,6 +36,7 @@ pub mod runtime_fn_generated;
 pub mod simple_verify;
 pub mod stage_audit;
 pub mod stdlib_modules;
+pub mod task_kind;
 pub mod tir;
 
 pub use crate::call_argument_form::CallArgumentForm;

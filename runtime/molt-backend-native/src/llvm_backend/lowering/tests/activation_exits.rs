@@ -159,6 +159,10 @@ fn activation_ops_save_state_test_the_exact_sentinel_and_register_the_frame() {
     let ir = llvm_fn.print_to_string().to_string();
     let pending = molt_codegen_abi::pending_bits();
 
+    // The resume and initial-entry paths have the same continuation and
+    // carry the same arguments. No state read should execute at this entry.
+    assert!(!ir.contains_execution("@molt_obj_get_state("), "{ir}");
+
     // StateSet saves each constant state through the frame parameter,
     // including a running state that no dispatch case resumes.
     for state in [RESUME_STATE, RUNNING_STATE] {

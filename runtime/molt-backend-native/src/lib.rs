@@ -30,18 +30,19 @@ pub use molt_ir::{
 };
 pub use molt_tir::trampolines::externalize_function_with_signature;
 
-/// The task layout a task trampoline of `kind` constructs
+/// The task layout of the IR constructor kind
 /// (`molt_codegen_abi::task_site`).
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
-pub(crate) const fn trampoline_task_layout(
-    kind: molt_tir::trampolines::TrampolineTaskKind,
+pub(crate) const fn task_layout(
+    kind: molt_ir::task_kind::TaskKind,
 ) -> molt_codegen_abi::task_site::TaskConstructorLayout {
     use molt_codegen_abi::task_site::TaskConstructorLayout;
-    use molt_tir::trampolines::TrampolineTaskKind;
+    use molt_ir::task_kind::TaskKind;
     match kind {
-        TrampolineTaskKind::Generator => TaskConstructorLayout::generator(),
-        TrampolineTaskKind::Coroutine => TaskConstructorLayout::coroutine(),
-        TrampolineTaskKind::AsyncGen => TaskConstructorLayout::async_generator(),
+        TaskKind::Generator => TaskConstructorLayout::generator(),
+        TaskKind::Coroutine => TaskConstructorLayout::coroutine(),
+        TaskKind::AsyncGenerator => TaskConstructorLayout::async_generator(),
+        TaskKind::Future => TaskConstructorLayout::future(),
     }
 }
 pub use molt_tir::{passes, representation_plan, tir};

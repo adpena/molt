@@ -2,8 +2,9 @@
 //! Symbol names in these maps are referenced callable identities, not names
 //! inferred from generated partition spelling.
 
-use super::{TrampolineKind, TrampolineTaskKind};
+use super::TrampolineKind;
 use crate::FunctionIR;
+use molt_ir::task_kind::TaskKind;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
@@ -81,14 +82,13 @@ impl CallableMetadata {
                                     "negative callable task_closure_size for {name} in {} at op {op_index}",
                                     function.name
                                 );
-                                let kind = TrampolineTaskKind::from_constructor_kind(kind)
+                                let kind = TaskKind::parse(kind).and_then(TrampolineKind::for_task)
                                     .unwrap_or_else(|| {
                                         panic!(
                                             "unknown callable task_kind `{kind}` for {name} in {} at op {op_index}",
                                             function.name
                                         )
-                                    })
-                                    .trampoline_kind();
+                                    });
                                 insert_consistent(
                                     &mut metadata.task_kinds,
                                     name.clone(),

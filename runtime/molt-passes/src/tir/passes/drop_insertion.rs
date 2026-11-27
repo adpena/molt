@@ -198,6 +198,7 @@
 //! dump and ownership authority as ordinary functions.
 
 mod activation;
+pub(crate) use activation::expose_ready_await;
 mod arcs;
 mod audit;
 mod availability;

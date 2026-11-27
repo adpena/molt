@@ -9,7 +9,7 @@ use super::super::super::op_kinds_generated::{
 };
 use super::super::super::ops::OpCode;
 use super::super::super::values::ValueId;
-use super::{FusionCandidate, attr_task_kind, is_get_iter_op, poll_callee};
+use super::{FusionCandidate, is_get_iter_op, poll_callee};
 
 /// Whether `poll` is a generator `_poll` body that may be fused (Phase 1).
 ///
@@ -256,7 +256,9 @@ pub(in crate::tir::passes::generator_fusion) fn next_fusion_candidate(
     for &alloc_block in &block_ids {
         let block = &caller.blocks[&alloc_block];
         for (alloc_idx, op) in block.ops.iter().enumerate() {
-            if op.opcode != OpCode::AllocTask || attr_task_kind(op) != Some("generator") {
+            if op.opcode != OpCode::AllocTask
+                || op.task_kind() != Some(molt_ir::task_kind::TaskKind::Generator)
+            {
                 continue;
             }
             let Some(poll) = poll_callee(op) else {

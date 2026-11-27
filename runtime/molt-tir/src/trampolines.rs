@@ -3,31 +3,7 @@ pub use callable_metadata::{CallableMetadata, merge_callable_facts};
 
 use crate::FunctionIR;
 
-#[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
-pub enum TrampolineTaskKind {
-    Generator,
-    Coroutine,
-    AsyncGen,
-}
-
-impl TrampolineTaskKind {
-    pub const fn from_constructor_kind(kind: &str) -> Option<Self> {
-        match kind.as_bytes() {
-            b"generator" => Some(Self::Generator),
-            b"coroutine" => Some(Self::Coroutine),
-            b"async_generator" => Some(Self::AsyncGen),
-            _ => None,
-        }
-    }
-
-    pub const fn trampoline_kind(self) -> TrampolineKind {
-        match self {
-            Self::Generator => TrampolineKind::Generator,
-            Self::Coroutine => TrampolineKind::Coroutine,
-            Self::AsyncGen => TrampolineKind::AsyncGen,
-        }
-    }
-}
+use molt_ir::task_kind::TaskKind;
 
 macro_rules! trampoline_kinds {
     ($( $kind:ident => $suffix:literal ),+ $(,)?) => {
@@ -74,6 +50,17 @@ trampoline_kinds! {
     AsyncGen => "_asyncgen",
 }
 
+impl TrampolineKind {
+    pub const fn for_task(kind: TaskKind) -> Option<Self> {
+        match kind {
+            TaskKind::Future => None,
+            TaskKind::Generator => Some(Self::Generator),
+            TaskKind::Coroutine => Some(Self::Coroutine),
+            TaskKind::AsyncGenerator => Some(Self::AsyncGen),
+        }
+    }
+}
+
 /// A runtime callable's manifest transport selects its trampoline kind once;
 /// Cranelift, LLVM and WASM consume this one mapping.
 impl From<molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi>
@@ -108,8 +95,8 @@ mod tests {
             );
         }
         assert_eq!(
-            TrampolineTaskKind::from_constructor_kind("async_generator"),
-            Some(TrampolineTaskKind::AsyncGen)
+            TrampolineKind::for_task(TaskKind::AsyncGenerator),
+            Some(TrampolineKind::AsyncGen)
         );
     }
 }

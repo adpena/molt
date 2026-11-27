@@ -756,6 +756,13 @@ pub fn alloc_task_operands<T>(operands: &[T]) -> (&T, &[T]) {
 }
 
 impl TirOp {
+    pub fn task_kind(&self) -> Option<crate::task_kind::TaskKind> {
+        let AttrValue::Str(kind) = self.attrs.get("task_kind")? else {
+            return None;
+        };
+        crate::task_kind::TaskKind::parse(kind)
+    }
+
     /// Operand that borrows a spliced activation's identity slot.
     pub fn spliced_frame_identity_operand(&self) -> Option<usize> {
         use crate::runtime_fn_generated::RuntimeFn;
