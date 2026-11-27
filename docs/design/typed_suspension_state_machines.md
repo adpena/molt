@@ -501,3 +501,14 @@ can suspend, the pending result uses the existing liveness-driven spill, which i
 when the return transfers ownership. The shared poll path stores a completion result only
 for a future that can replay it. Native coroutines and async generator operations reject
 reuse, and coroutine wrappers delegate it. Their completing caller owns the result.
+
+**Activation allocation (2026-11-27, HF-855).** A heap object whose auxiliary representation
+is known to be a sidecar reserves one block for the sidecar, GC head when required, header
+and payload. This applies to compiled activations, runtime tasks and other preselected
+sidecars. The header still points to a stable sidecar, and both the GC-head displacement
+and the Python payload extent retain their existing meanings. Terminal release recovers
+the original allocation from the sidecar's typed placement and the object extent. A
+standalone sidecar is used for caller-managed storage or an unpublished inline-to-sidecar
+transition. Resource admission and rollback count a combined block as one allocation.
+CPython also embeds its activation in the generator allocation
+([genobject.c](https://github.com/python/cpython/blob/main/Objects/genobject.c)).

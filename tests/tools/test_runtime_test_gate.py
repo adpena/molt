@@ -1143,7 +1143,7 @@ def test_missing_fresh_semantic_owner_is_refused_before_execution(name):
 # Independent required controls from their Rust owners, not a test-count quota.
 OBSERVER_WITNESSES = {
     "molt_runtime": {
-        "builtins::frames::namespace_tests::task_sidecar_refusal::both_task_producers_rollback_if_sidecar_allocation_fails",
+        "builtins::frames::namespace_tests::task_allocation_refusal::both_task_producers_own_one_allocation_and_roll_back_on_refusal",
         "call::bind::inline_cache::binding_tests::direct_call_ic_hot_path_is_allocation_free_with_slow_path_control",
         "cpython_abi_hooks::pending_cleanup_tests::writable_buffer_lease_preparation_failure_precedes_exporter_dispatch",
         "cpython_abi_hooks::tests::cpython_abi_gil_custody_is_allocation_free_after_warmup",

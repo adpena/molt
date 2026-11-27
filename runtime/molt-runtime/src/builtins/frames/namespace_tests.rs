@@ -1130,7 +1130,7 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
     not(target_arch = "wasm32"),
     not(miri)
 ))]
-mod task_sidecar_refusal {
+mod task_allocation_refusal {
     use super::*;
     use crate::attestation_probe::{
         self as probe, AllocationOutcome, AllocationRequest, AllocationScope, AllocationTrace,
@@ -1161,13 +1161,19 @@ mod task_sidecar_refusal {
         }
     }
 
-    fn assert_budget_empty() {
+    fn assert_budget_usage(allocations: usize, bytes: usize) {
+        let remaining_bytes = RESOURCE_BYTES - bytes;
+        let remaining_allocs = RESOURCE_ALLOCS - allocations;
         with_tracker(|tracker| {
             assert!(
-                tracker.on_allocate(RESOURCE_BYTES).is_ok(),
-                "rollback leaked bytes"
+                tracker.on_allocate(remaining_bytes + 1).is_err(),
+                "the fixture must enforce the exact byte charge"
             );
-            for _ in 1..RESOURCE_ALLOCS {
+            assert!(
+                tracker.on_allocate(remaining_bytes).is_ok(),
+                "unexpected live byte usage"
+            );
+            for _ in 1..remaining_allocs {
                 assert!(
                     tracker.on_allocate(0).is_ok(),
                     "rollback leaked an allocation charge"
@@ -1177,8 +1183,8 @@ mod task_sidecar_refusal {
                 tracker.on_allocate(0).is_err(),
                 "allocation-count oracle is inactive"
             );
-            tracker.on_free(RESOURCE_BYTES);
-            for _ in 1..RESOURCE_ALLOCS {
+            tracker.on_free(remaining_bytes);
+            for _ in 1..remaining_allocs {
                 tracker.on_free(0);
             }
         });
@@ -1191,19 +1197,19 @@ mod task_sidecar_refusal {
         );
         assert!(
             !trace.selector_mismatch,
-            "the scoped sidecar allocation was not exercised"
+            "the task storage allocation was not exercised"
         );
     }
 
-    fn sidecar_request(trace: &AllocationTrace) -> Option<AllocationRequest> {
+    fn object_request(trace: &AllocationTrace) -> Option<AllocationRequest> {
         let mut requests = trace
             .requests()
             .iter()
-            .filter(|request| request.scope == AllocationScope::AuxSidecarAllocate);
+            .filter(|request| request.scope == AllocationScope::SidecarObjectAllocate);
         let first = requests.next().copied();
         assert!(
             requests.next().is_none(),
-            "construction must allocate only its one task sidecar"
+            "construction must make one combined allocation"
         );
         first
     }
@@ -1230,7 +1236,7 @@ mod task_sidecar_refusal {
     /// Run this exact test alone with --test-threads=1. The observer owns the
     /// process allocator and the runtime transaction owns shared runtime state.
     #[test]
-    fn both_task_producers_rollback_if_sidecar_allocation_fails() {
+    fn both_task_producers_own_one_allocation_and_roll_back_on_refusal() {
         let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(py, {
             let (code_ptr, code_bits) = crate::builtins::frames::tests::alloc_test_code(py);
@@ -1334,9 +1340,11 @@ mod task_sidecar_refusal {
                 let granted = observation.finish();
                 assert!(obj_from_bits(ready.bits()).as_ptr().is_some());
                 assert_trace(&granted);
-                let sidecar =
-                    sidecar_request(&granted).expect("constructor allocated task sidecar");
-                assert_eq!(sidecar.outcome, AllocationOutcome::Granted);
+                let allocation =
+                    object_request(&granted).expect("constructor allocated task storage");
+                assert_eq!(allocation.outcome, AllocationOutcome::Granted);
+                assert_eq!(allocation.operation, probe::AllocationOperation::Zeroed);
+                assert_budget_usage(1, allocation.size);
                 let expected_live_refs: [u32; 5] = std::array::from_fn(|index| {
                     baseline_refs[index] + u32::from(if anext { index >= 3 } else { index < 3 })
                 });
@@ -1355,20 +1363,20 @@ mod task_sidecar_refusal {
                 drop(_task);
                 drop(ready);
                 assert_eq!(input_refs(&inputs), baseline_refs);
-                assert_budget_empty();
+                assert_budget_usage(0, 0);
 
-                let observation = probe::trace_allocations(Some(sidecar));
+                let observation = probe::trace_allocations(Some(allocation));
                 let refused = ExceptionValue::adopt(py, construct());
                 let refused_trace = observation.finish();
                 assert_trace(&refused_trace);
                 assert!(obj_from_bits(refused.bits()).is_none());
                 assert_eq!(probe::denied_allocations(), 1);
                 assert_eq!(
-                    sidecar_request(&refused_trace).map(|request| request.outcome),
+                    object_request(&refused_trace).map(|request| request.outcome),
                     Some(AllocationOutcome::Denied),
                 );
                 assert_eq!(input_refs(&inputs), baseline_refs);
-                assert_budget_empty();
+                assert_budget_usage(0, 0);
                 assert!(crate::exception_pending(py));
                 crate::molt_exception_clear_attached_body(py);
 
@@ -1389,7 +1397,7 @@ mod task_sidecar_refusal {
                 assert_eq!(input_refs(&inputs), expected_live_refs);
                 drop(retry);
                 assert_eq!(input_refs(&inputs), baseline_refs);
-                assert_budget_empty();
+                assert_budget_usage(0, 0);
                 drop(budget);
             }
             drop(invocation);
