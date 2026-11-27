@@ -83,7 +83,7 @@ use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
 use crate::tir::call_graph::CallGraph;
-use crate::tir::function::TirModule;
+use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::passes::async_work_poll;
 use crate::tir::passes::check_exception_elim::classify::RaiseFacts;
 use crate::tir::passes::ip_summary::ModuleSummaries;
@@ -141,50 +141,47 @@ pub fn run_inliner(
         (backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1")).then(Vec::new);
     let final_tir = tti.lowering.final_lowering == crate::tir::target_info::FinalLowering::FinalTir;
     let mut wrappers = HashMap::default();
+    let mut pending_wrappers = HashSet::default();
 
-    // Evaluate a callee once, and look for an SSA witness at each site that
-    // requests a larger budget. The body stays module-owned.
-    let inlinable: HashMap<molt_ir::FunctionId, (usize, InlineBudget)> = module
+    let budget_for =
+        |id, body: &TirFunction, wrapper: Option<&super::packed_wrapper::PackedWrapper>| {
+            match classify_with_wrapper(id, body, call_graph, summaries, tti, wrapper) {
+                InlineEligibility::Eligible => Some(InlineBudget::Ordinary),
+                InlineEligibility::WhyNot(InlineWhyNot::OverBudget)
+                    if wrapper.is_some() || is_inline_safe(id, body, call_graph) =>
+                {
+                    Some(InlineBudget::NeedsBenefit {
+                        numeric: is_numeric_raw_lane_return_type(&body.return_type),
+                        within_hot_cap: callee_op_count(id, body, summaries) <= hot_cap,
+                    })
+                }
+                _ => None,
+            }
+        };
+    let mut inlinable: HashMap<_, _> = module
         .functions
         .iter()
         .zip(module.ids.iter().copied())
         .enumerate()
-        .filter(|(_, (f, id))| {
-            !call_graph.callers(*id).is_empty() && !non_inlinable.contains(&f.name)
+        .filter(|(_, (body, id))| {
+            !call_graph.callers(*id).is_empty() && !non_inlinable.contains(&body.name)
         })
-        .filter_map(|(idx, (f, id))| {
+        .filter_map(|(idx, (body, id))| {
             if final_tir
+                && body.execution_context == molt_ir::ExecutionContextPolicy::Local
+                && !call_graph.in_static_cycle(id)
                 && call_graph.callees(id).len() >= 2
-                && f.exact_param_types
+                && body
+                    .exact_param_types
                     .iter()
                     .any(|ty| matches!(ty, crate::tir::types::TirType::Class(_)))
-                && let Some(proof) = super::packed_wrapper::summarize(id, f, |callee| {
-                    index_of
-                        .get(callee.index())
-                        .copied()
-                        .flatten()
-                        .map(|index| &module.functions[index])
-                })
             {
-                wrappers.insert(id, proof);
+                pending_wrappers.insert(id);
             }
-            let wrapper = wrappers.get(&id);
-            let budget = match classify_with_wrapper(id, f, call_graph, summaries, tti, wrapper) {
-                InlineEligibility::Eligible => InlineBudget::Ordinary,
-                InlineEligibility::WhyNot(InlineWhyNot::OverBudget)
-                    if wrapper.is_some() || is_inline_safe(id, f, call_graph) =>
-                {
-                    InlineBudget::NeedsBenefit {
-                        numeric: is_numeric_raw_lane_return_type(&f.return_type),
-                        within_hot_cap: callee_op_count(id, f, summaries) <= hot_cap,
-                    }
-                }
-                InlineEligibility::WhyNot(_) | InlineEligibility::Unknown => return None,
-            };
-            Some((id, (idx, budget)))
+            Some((id, (idx, budget_for(id, body, None)?)))
         })
         .collect();
-    if inlinable.is_empty() && diagnostics.is_none() {
+    if inlinable.is_empty() && pending_wrappers.is_empty() && diagnostics.is_none() {
         return stats;
     }
 
@@ -213,6 +210,30 @@ pub fn run_inliner(
             // (its `Call` survives, conservative-correct) and does NOT block the
             // remaining inlinable sites in the same caller.
             let callees = call_graph.callees(caller_id);
+            // The proof carries operation positions and exceptional transfers
+            // in the wrapper and its dependencies. Bottom-up order makes those
+            // bodies final before their first caller reads the proof.
+            for &id in callees {
+                if !pending_wrappers.remove(&id) {
+                    continue;
+                }
+                let idx = index_of[id.index()].expect("composed wrapper body");
+                let body = &module.functions[idx];
+                let Some(proof) = super::packed_wrapper::summarize(id, body, |callee| {
+                    index_of
+                        .get(callee.index())
+                        .copied()
+                        .flatten()
+                        .map(|index| &module.functions[index])
+                }) else {
+                    continue;
+                };
+                if let Some(budget) = budget_for(id, body, Some(&proof)) {
+                    inlinable.insert(id, (idx, budget));
+                    wrappers.insert(id, proof);
+                }
+            }
+
             if callees.is_empty()
                 || (diagnostics.is_none() && !callees.iter().any(|id| inlinable.contains_key(id)))
             {
