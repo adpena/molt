@@ -1,6 +1,6 @@
 //! Tests for the exception-region ownership analysis and its path-state engine.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use super::path_state::{
     AnonymousHandlerDestinations, ExceptionPathState, ExceptionRegionCustody, ExceptionRegionPhase,
@@ -9,7 +9,6 @@ use super::path_state::{
 use super::*;
 use crate::tir::analysis::AnalysisId;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
-use crate::tir::dominators;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -1620,12 +1619,9 @@ fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
         },
     );
 
-    let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(&func)
-        .into_iter()
-        .collect();
+    let inputs = ExceptionPathInputs::new(&func);
     let stacks =
-        compute_state_resume_stacks(&func, &label_to_block, &AnonymousHandlerDestinations::new())
-            .unwrap();
+        compute_state_resume_stacks(&inputs, &AnonymousHandlerDestinations::new()).unwrap();
 
     assert_eq!(
         stacks.get(&7).cloned().unwrap_or_default(),
@@ -1977,15 +1973,9 @@ fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: 
         Ok(ExceptionBoundaryHandler::DepthZero)
     );
     if suspended {
-        let label_to_block = dominators::exception_label_to_block(&func)
-            .into_iter()
-            .collect();
-        let stacks = compute_state_resume_stacks(
-            &func,
-            &label_to_block,
-            &AnonymousHandlerDestinations::new(),
-        )
-        .unwrap();
+        let inputs = ExceptionPathInputs::new(&func);
+        let stacks =
+            compute_state_resume_stacks(&inputs, &AnonymousHandlerDestinations::new()).unwrap();
         assert_eq!(
             stacks[&7],
             BTreeSet::from([ExceptionPathState {
@@ -2525,10 +2515,8 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
                 },
             );
         }
-        let labels = dominators::exception_label_to_block(&func)
-            .into_iter()
-            .collect();
-        let (stacks, _, anonymous) = exception_region_path_authority(&func, &labels).unwrap();
+        let inputs = ExceptionPathInputs::new(&func);
+        let (stacks, _, anonymous) = exception_region_path_authority(&inputs).unwrap();
         assert!(
             stacks.is_empty(),
             "orphan saves cannot bootstrap their own reachability"
@@ -2537,10 +2525,9 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
             block: observer,
             op_index: 0,
         };
-        let producer_states: Vec<_> =
-            path_states_before(&func, &labels, &stacks, &anonymous, producer)
-                .into_iter()
-                .collect();
+        let producer_states: Vec<_> = path_states_before(&inputs, &stacks, &anonymous, producer)
+            .into_iter()
+            .collect();
         assert_eq!(
             producer_states.len(),
             2,
@@ -2557,8 +2544,7 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
         };
         assert_eq!(
             reachable_region_pops(
-                &func,
-                &labels,
+                &inputs,
                 &stacks,
                 &anonymous,
                 producer,
@@ -2576,7 +2562,7 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
         assert_eq!(facts.match_refs[&exc].releases, vec![release]);
         for block in [orphan, sibling] {
             let position = ExceptionOpPosition { block, op_index: 0 };
-            assert!(path_states_before(&func, &labels, &stacks, &anonymous, position).is_empty());
+            assert!(path_states_before(&inputs, &stacks, &anonymous, position).is_empty());
             assert_eq!(
                 facts.lexical_handler_before(position),
                 Ok(ExceptionBoundaryHandler::Unreachable)
@@ -2639,10 +2625,8 @@ fn reachable_chained_saves_preserve_owned_and_depth_zero_custody() {
                 },
             );
         }
-        let labels = dominators::exception_label_to_block(&func)
-            .into_iter()
-            .collect();
-        let (stacks, _, _) = exception_region_path_authority(&func, &labels).unwrap();
+        let inputs = ExceptionPathInputs::new(&func);
+        let (stacks, _, _) = exception_region_path_authority(&inputs).unwrap();
         assert_eq!(stacks.keys().copied().collect::<Vec<_>>(), vec![7, 8]);
         assert_eq!(stacks[&7], stacks[&8]);
         let facts = compute_exception_region_facts(&func);
@@ -2835,10 +2819,8 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
         crate::tir::passes::run_pipeline(&mut func, &target);
         let facts = compute_exception_region_facts(&func);
         assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
-        let labels = dominators::exception_label_to_block(&func)
-            .into_iter()
-            .collect();
-        let (stacks, _, _) = exception_region_path_authority(&func, &labels).unwrap();
+        let inputs = ExceptionPathInputs::new(&func);
+        let (stacks, _, _) = exception_region_path_authority(&inputs).unwrap();
         assert!(
             !stacks.contains_key(&113),
             "dead repoll must not save its own reachability"
