@@ -1892,6 +1892,7 @@ def _prepare_entry_module_graph(
     include_modules: tuple[str, ...] = (),
     stdlib_allowlist: set[str] | None = None,
     normal_none_intrinsics: int | None = None,
+    scan_diagnostics: _module_resolution._ImportScanDiagnostics | None = None,
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
     """``stdlib_profile`` is the build's resolved intent (resolve_stdlib_profile);
     ``runtime_import_machinery`` is the target fact from
@@ -1905,6 +1906,7 @@ def _prepare_entry_module_graph(
     module_resolution_cache = _module_resolution._ModuleResolutionCache(
         target_sys_platform=target_sys_platform,
         import_topology=import_topology or _module_resolution.PythonImportTopology(),
+        import_scan_diagnostics=scan_diagnostics,
         module_root_aliases=module_root_aliases,
         normal_none_intrinsics=normal_none_intrinsics,
     )

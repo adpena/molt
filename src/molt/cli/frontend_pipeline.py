@@ -59,7 +59,7 @@ from molt.cli.module_dependencies import (
     _analyze_module_schedule,
     _module_dependencies_from_imports,
 )
-from molt.cli.module_resolution import _ModuleResolutionCache
+from molt.cli.module_resolution import _ImportScanDiagnostics, _ModuleResolutionCache
 from molt.cli.module_source import (
     PythonSourceChangedError,
     PythonSourceSnapshot,
@@ -592,6 +592,7 @@ def _prepare_build_callbacks(
     image_scope: _BinaryImageScope | None,
     entry_module: str,
     entry_path: Path,
+    module_graph_import_queries: Mapping[str, Mapping[str, object]] | None = None,
 ) -> _PreparedBuildCallbacks:
     binary_image_closure_payload: Mapping[str, Any] | None = None
     binary_image_analysis_payload: dict[str, Any] = {"schema_version": 1}
@@ -651,6 +652,7 @@ def _prepare_build_callbacks(
                 binary_image_analysis=dict(binary_image_analysis_payload),
                 module_graph=module_graph,
                 module_graph_operation_counts=module_graph_operation_counts,
+                module_graph_import_queries=module_graph_import_queries,
                 module_reasons=module_reasons,
                 frontend_module_timings=frontend_module_timings,
                 allocation_diagnostics_enabled=allocation_diagnostics_enabled,
@@ -753,6 +755,7 @@ def _prepare_frontend_stage_state(
         return None, import_admission_policy_error
     assert import_admission_policy is not None
     _progress.phase("module_graph")
+    scan_diagnostics = _ImportScanDiagnostics() if diagnostics_enabled else None
     if diagnostics_enabled:
         phase_starts["module_graph"] = time.perf_counter()
     graph_context = None
@@ -776,6 +779,7 @@ def _prepare_frontend_stage_state(
             ),
             frozenset(_stdlib_allowlist()),
             runtime_normal_none_intrinsics(target, stdlib_profile),
+            scan_diagnostics=scan_diagnostics,
         )
         replayed_plan = replay_import_graph(graph_context)
     prepared_module_graph: _PreparedEntryModuleGraph | _ImportPlan | None
@@ -817,6 +821,7 @@ def _prepare_frontend_stage_state(
                     if graph_context is None
                     else graph_context.normal_none_intrinsics
                 ),
+                scan_diagnostics=scan_diagnostics,
                 stdlib_allowlist=(
                     None
                     if graph_context is None
@@ -945,6 +950,11 @@ def _prepare_frontend_stage_state(
         phase_starts=phase_starts,
         module_graph=import_plan.module_graph,
         module_graph_operation_counts=import_plan.module_graph_operation_counts,
+        module_graph_import_queries=(
+            None
+            if scan_diagnostics is None
+            else scan_diagnostics.payload(import_plan.import_query_closure)
+        ),
         module_reasons=module_reasons,
         allocation_diagnostics_enabled=allocation_diagnostics_enabled,
         frontend_parallel_details=frontend_parallel_details,

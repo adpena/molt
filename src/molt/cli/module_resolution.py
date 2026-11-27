@@ -3,13 +3,14 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import ast
+from collections import Counter
 from collections.abc import Callable, Sequence, Set as AbstractSet
 import functools
 import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from molt.cli.python_import_resolution import LocalPythonModuleResolver
@@ -378,10 +379,87 @@ _MODULE_AST_DIGEST_LIMIT = 4096
 
 
 @dataclass
+class _ImportScanWork:
+    loads: Counter[ImportScanAdmission] = field(default_factory=Counter)
+    source_parses: int = 0
+    elapsed_ns: int = 0
+
+
+class _ImportScanDiagnosticRow(TypedDict):
+    loads: dict[ImportScanAdmission, int]
+    load_seconds: float
+    source_parses: int
+    observations: int
+    syntax_scopes: int
+    premise_reuse_observations: int
+
+
+class _ImportScanDiagnostics:
+    """One build's import work, including attempts discarded during replay."""
+
+    def __init__(self) -> None:
+        self._modules: dict[str, _ImportScanWork] = {}
+
+    def record(
+        self,
+        module: str,
+        admission: ImportScanAdmission,
+        *,
+        source_parsed: bool,
+        elapsed_ns: int,
+    ) -> None:
+        work = self._modules.get(module)
+        if work is None:
+            work = self._modules[module] = _ImportScanWork()
+        work.loads[admission] += 1
+        work.source_parses += int(source_parsed)
+        work.elapsed_ns += elapsed_ns
+
+    def payload(
+        self, closure: ImportQueryClosure
+    ) -> dict[str, _ImportScanDiagnosticRow]:
+        observations: Counter[str] = Counter()
+        reused_premises: Counter[str] = Counter()
+        scopes: dict[str, set[tuple[object, ...]]] = {}
+        for evidence in closure.observations:
+            query = evidence.query
+            module = query.module_name
+            observations[module] += 1
+            reused_premises[module] += (
+                ImportScanAdmission.PREMISE_REUSE in evidence.admissions
+            )
+            scopes.setdefault(module, set()).add(
+                (
+                    query.source_path,
+                    query.purpose,
+                    query.mode,
+                    query.source_owner,
+                    query.source_arguments,
+                    query.body_selection,
+                )
+            )
+        rows: dict[str, _ImportScanDiagnosticRow] = {}
+        for module in sorted(observations.keys() | self._modules.keys()):
+            work = self._modules.get(module)
+            rows[module] = {
+                "loads": {} if work is None else dict(sorted(work.loads.items())),
+                "load_seconds": 0.0
+                if work is None
+                else work.elapsed_ns / 1_000_000_000,
+                "source_parses": 0 if work is None else work.source_parses,
+                "observations": observations[module],
+                "syntax_scopes": len(scopes.get(module, ())),
+                "premise_reuse_observations": reused_premises[module],
+            }
+        return rows
+
+
+@dataclass
 class _ModuleResolutionCache:
     # One source-analysis operation; None denotes genuinely unknown runtime OS.
     target_sys_platform: str | None = None
     import_topology: PythonImportTopology = field(default_factory=PythonImportTopology)
+    import_scan_diagnostics: _ImportScanDiagnostics | None = None
     import_scan_queries: dict[ImportScanQuery, ImportScanEvidence] = field(
         default_factory=dict, init=False, repr=False
     )

@@ -293,8 +293,14 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
 
     assert files.put("import-graph", key, stored.payload)
     peer.write_text(peer_source.format(7), encoding="utf-8")
-    replayed = import_graph_record.replay_import_graph(context)
+    edit_work = cli_module_resolution._ImportScanDiagnostics()
+    replayed = import_graph_record.replay_import_graph(
+        replace(context, scan_diagnostics=edit_work)
+    )
     assert replayed is not None
+    peer_work = edit_work.payload(replayed.import_query_closure)["peer"]
+    assert peer_work["loads"]
+    assert peer_work["load_seconds"] > 0
     fresh = _materialize_plan(tmp_path, entry, "app", image_scope=resolved.image_scope)
     assert replayed.closure_payload() == fresh.closure_payload()
     assert replayed.scan_authority == fresh.scan_authority
@@ -314,12 +320,18 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
     # Move a demanded body and its end position without changing syntax.
     moved_source = "\n" + peer_source.replace("compute():\n", "compute():\n\n")
     peer.write_text(moved_source.format(7), encoding="utf-8")
+    move_work = cli_module_resolution._ImportScanDiagnostics()
     with monkeypatch.context() as patch:
         patch.setattr(
             module_graph_discovery, "_load_module_import_scan", unexpected_rebuild
         )
-        moved = import_graph_record.replay_import_graph(context)
+        moved = import_graph_record.replay_import_graph(
+            replace(context, scan_diagnostics=move_work)
+        )
     assert moved is not None
+    peer_work = move_work.payload(moved.import_query_closure)["peer"]
+    assert peer_work["loads"] == {}
+    assert peer_work["observations"] > 0
     fresh_moved = _materialize_plan(
         tmp_path, entry, "app", image_scope=resolved.image_scope
     )
