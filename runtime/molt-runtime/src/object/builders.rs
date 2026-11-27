@@ -814,7 +814,10 @@ unsafe fn sequence_from_values(
         return MoltObject::none().bits();
     };
     let ptr = match kind {
-        FixedSequenceKind::List => alloc_list(py, values),
+        // The frontend also starts comprehensions and starred displays with
+        // an empty list, then appends or extends it as inputs arrive.
+        FixedSequenceKind::List if values.is_empty() => alloc_list(py, values),
+        FixedSequenceKind::List => alloc_list_with_capacity(py, values, values.len()),
         FixedSequenceKind::Tuple => alloc_tuple(py, values),
     };
     if ptr.is_null() {
@@ -3978,6 +3981,16 @@ mod sequence_builder_tests {
                 unsafe { molt_list_from_values_attached_body(py, address, words.len() as u64) };
             assert!(!obj_from_bits(list).is_none());
             assert_eq!(refs(item), baseline + 2);
+            // A fixed literal reserves only its words. The first append must grow
+            // its backing, and a denied growth leaves the words and owners intact.
+            let append =
+                || unsafe { crate::object::list_mutation::append(py, ptr_from_bits(list), item) };
+            let budget = deny_allocations();
+            let appended = append();
+            drop(budget);
+            assert!(!appended && exception_pending(py));
+            clear_exception(py);
+            assert_eq!(refs(item), baseline + 2);
             {
                 let snapshot = unsafe {
                     crate::object::seq_access::snapshot(py, ptr_from_bits(list), "test snapshot")
@@ -3985,6 +3998,8 @@ mod sequence_builder_tests {
                 .unwrap();
                 assert_eq!(&*snapshot, &words);
             }
+            assert!(append());
+            assert_eq!(refs(item), baseline + 3);
             dec_ref_bits(py, list);
             assert_eq!(refs(item), baseline);
             let empty = unsafe { molt_list_from_values_attached_body(py, 0, 0) };
@@ -3993,6 +4008,14 @@ mod sequence_builder_tests {
             assert_ne!(
                 empty, another,
                 "mutable empty lists must have independent storage"
+            );
+            let budget = deny_allocations();
+            let appended =
+                unsafe { crate::object::list_mutation::append(py, ptr_from_bits(empty), item) };
+            drop(budget);
+            assert!(
+                appended,
+                "empty construction keeps its initial append reserve"
             );
             dec_ref_bits(py, empty);
             dec_ref_bits(py, another);
