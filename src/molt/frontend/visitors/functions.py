@@ -69,12 +69,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         if self.try_scopes:
             popped_labels = self._emit_control_flow_scope_unwind(self.try_scopes)
         try:
-            # The lexical scope actions above own manager cleanup; restoring
-            # exception depth must not consume managers belonging to callers.
-            if needs_scope_exit:
-                self._emit_restore_exception_stack_depth(exit_baseline=False)
-                self._emit_raise_if_pending()
-            # A generator's return reports completion at the return terminator.
             self._emit_return_value(val)
         finally:
             self._restore_control_flow_unwind_labels(popped_labels)
@@ -801,19 +795,5 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             if val is None:
                 val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-            # Mirror the non-generator `visit_Return` tail: the lambda body is a
-            # single expression whose evaluation may have left a pending exception
-            # (e.g. `lambda: int("x")`).  With every function now carrying an
-            # exception label (needs_exception_stack=True), route any pending
-            # exception to the function handler before returning the value, so the
-            # silent-None-return bug class is un-expressible.  A lambda body never
-            # contains try/with scopes, so `return_unwind_depth == 0` and there are
-            # no `try_scopes` to unwind.
-            self._emit_exception_handler_exit_cleanup()
-            _has_exc_stack = self.exception_stack_prev_baseline is not None
-            if _has_exc_stack:
-                self._emit_raise_if_pending()
-                self._emit_restore_exception_stack_depth(exit_baseline=False)
-                self._emit_raise_if_pending()
             self._emit_return_value(val, node.body)
         return func_val

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.cli.cache_keys import ObjectCacheFingerprints
 from molt._wasm_abi_generated import compiled_execution_symbol
 
 from tests.cli.native_link_test_support import native_codegen_binding
@@ -82,7 +83,7 @@ def _write_complete_stdlib_contract(
         cache_key=cache_key,
         cache_variant="test",
         target_triple=target_triple,
-        compiler_fingerprint="test",
+        fingerprints=ObjectCacheFingerprints("test", "tooling"),
     )
     assert manifest is not None
     cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_obj).write_text(
