@@ -184,7 +184,6 @@ from tools.perf_scoreboard_profile import (  # noqa: E402
 from tools.perf_scoreboard_report import (  # noqa: E402
     _cell_key as _cell_key,
     _checkpoint as _checkpoint,
-    _fastest_next_unlock as _fastest_next_unlock,
     _finalize_with_board_context as _finalize_with_board_context,
     _flatten_cells as _flatten_cells,
     _fmt as _fmt,
@@ -1010,7 +1009,13 @@ def apply_classification(
     """
     baseline_cells: dict[str, dict] = {}
     if baseline_doc:
-        baseline_cells = {_cell_key(c): c for c in _flatten_cells(baseline_doc)}
+        from tools.perf_scoreboard_report import baseline_snapshot_problems
+
+        problems = baseline_snapshot_problems(baseline_doc)
+        if problems:
+            print("[baseline] refused: " + "; ".join(problems), file=sys.stderr)
+        else:
+            baseline_cells = {_cell_key(c): c for c in _flatten_cells(baseline_doc)}
     for cell in cells:
         bkey = f"{cell.benchmark} [{cell.backend}/{cell.profile}]"
         cls, reason = classify_cell(
@@ -1646,7 +1651,7 @@ def _rebuild_summary(
     """
     try:
         prior = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         print(f"--rebuild-summary: cannot read {path}: {exc}", file=sys.stderr)
         return 2
     source_problems = validate_board(prior)
@@ -1809,7 +1814,7 @@ def _merge_boards(
     for src in sources:
         try:
             doc = json.loads(src.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             print(f"--merge: cannot read {src}: {exc}", file=sys.stderr)
             return 2
         source_problems = validate_board(doc)
@@ -2013,7 +2018,11 @@ def _merge_boards(
     doc = build_scoreboard_doc(
         cells,
         planned_cells=tuple(sorted(planned_coordinates)),
-        run_state="partial" if len(cells) < len(planned_coordinates) else "complete",
+        run_state=(
+            "partial"
+            if diagnostic_partial or len(cells) < len(planned_coordinates)
+            else "complete"
+        ),
         benchmarks_run=[b for b in CANONICAL_PERF_BENCHMARKS if b in benchmarks_run]
         + [b for b in benchmarks_run if b not in CANONICAL_PERF_BENCHMARKS],
         benchmarks_deferred=deferred,

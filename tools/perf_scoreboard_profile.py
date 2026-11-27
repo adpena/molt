@@ -180,6 +180,7 @@ def build_profiling_binary(
     target_python_version: str,
     inner_loops: int,
     log_lines: list[str],
+    build_timeout_s: float = bench.DEFAULT_BATCH_BUILD_TIMEOUT_S,
 ) -> "tuple[bench.MoltBinary | None, dict]":
     """Build the LOOPED + SYMBOLICATED profiling variant of a benchmark.
 
@@ -258,12 +259,13 @@ def build_profiling_binary(
             env=build_env,
             build_profile=selection.guest_profile,
             batch_server=None,  # symbolicated env differs from the cell server's
-            build_timeout_s=600.0,
+            build_timeout_s=build_timeout_s,
         )
         if not isinstance(binary, bench.MoltBinary):
             meta["refused"] = True
             if isinstance(binary, bench.MoltFailure):
                 meta["reason"] = f"profiling build failed: {binary.status}"
+                meta["molt_failure"] = bench.molt_failure_payload(binary)
                 detail = f" detail={binary.detail}" if binary.detail else ""
                 log_lines.append(
                     f"PROFILING-BUILD FAILED status={binary.status}{detail}"
@@ -578,6 +580,7 @@ def run_hot_only_profiles(
     warmup_s: float = HOT_SAMPLE_WARMUP_S,
     window_s: float = HOT_SAMPLE_WINDOW_S,
     top_n: int = 30,
+    build_timeout_s: float = bench.DEFAULT_BATCH_BUILD_TIMEOUT_S,
 ) -> list[dict]:
     """Drive the #76 hot-only profiler for each benchmark and return per-bench cells.
 
@@ -621,6 +624,7 @@ def run_hot_only_profiles(
                 target_python_version=target_python_version,
                 inner_loops=inner_loops,
                 log_lines=log_lines,
+                build_timeout_s=build_timeout_s,
             )
         workload.verify()
         cell: dict = {
@@ -631,6 +635,7 @@ def run_hot_only_profiles(
             "profile": profile,
             "target_python": target_python_version,
             "inner_loops": inner_loops,
+            "build_timeout_s": build_timeout_s,
             "build": build_meta,
         }
         if binary is None:

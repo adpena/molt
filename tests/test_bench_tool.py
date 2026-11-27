@@ -3,14 +3,18 @@ from __future__ import annotations
 from tests.wasm_execution_manifest import wasm_execution_launch
 
 import contextlib
+from collections.abc import Callable, Mapping
+import atexit
 
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Literal
 from molt.checkout_state import scratch_state_root
 import platform
 
@@ -396,6 +400,68 @@ def test_prepare_molt_binary_classifies_infrastructure_without_retry(
         "phase": "temporary_artifact_custody",
         "details": ["scratch receipt retention failed"],
     }
+
+
+@pytest.mark.parametrize("incident", ["rss", "orphaned"])
+def test_prepare_molt_binary_does_not_retry_guard_incident_with_daemon_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    incident: Literal["rss", "orphaned"],
+) -> None:
+    script = tmp_path / "bench_sample.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    guard_violation = (
+        bench_tool.memory_guard.RssViolation(
+            pid=123, rss_kb=1024, command="molt build", scope="process"
+        )
+        if incident == "rss"
+        else None
+    )
+    orphaned_groups = (123,) if incident == "orphaned" else ()
+    diagnostic = "backend daemon returned empty response"
+    attempts: list[Path] = []
+
+    def build(
+        command: list[str], **_kwargs: object
+    ) -> bench_tool.harness_memory_guard.GuardedCompletedProcess[str]:
+        out_dir = Path(command[command.index("--out-dir") + 1])
+        (out_dir / "partial").write_bytes(b"incomplete build")
+        attempts.append(out_dir)
+        return bench_tool.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            1,
+            "",
+            diagnostic,
+            child_stderr=diagnostic,
+            elapsed_s=0.01,
+            violation=guard_violation,
+            orphaned_process_groups=orphaned_groups,
+            descendants_closed=True,
+        )
+
+    monkeypatch.setattr(
+        bench_tool, "_canonical_bench_env", lambda env: {"MOLT_EXT_ROOT": str(tmp_path)}
+    )
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", build
+    )
+    install_module_view(
+        monkeypatch, "time", time, bench_tool, sleep=lambda seconds: None
+    )
+
+    failure = bench_tool.prepare_molt_binary(str(script), env={})
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert len(attempts) == 1
+    assert not attempts[0].exists()
+    assert failure.detail == "backend_daemon_empty_response"
+    assert failure.stderr == diagnostic
+    assert failure.orphaned_process_groups == orphaned_groups
+    if guard_violation is not None:
+        assert failure.status == "rss_limit_exceeded"
+        assert failure.guard_violation is not None
+        assert failure.guard_violation["pid"] == guard_violation.pid
 
 
 def test_measure_molt_run_classifies_infrastructure_as_non_evidence(
@@ -902,21 +968,81 @@ class _TempDirStub:
         pass
 
 
-def test_classified_retry_restarts_only_failed_project_client(monkeypatch, tmp_path):
+@pytest.mark.parametrize("recovery", ["explicit", "at_exit"])
+def test_classified_retry_and_eviction_preserve_the_lane_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recovery: Literal["explicit", "at_exit"],
+) -> None:
+    order: list[str] = []
+    finalizers: dict[Callable[..., None], Callable[[], None]] = {}
+
+    def register(callback: Callable[..., None], *, force: bool) -> None:
+        assert not finalizers
+        finalizers[callback] = lambda: callback(force=force)
+
+    def unregister(callback: Callable[..., None]) -> None:
+        del finalizers[callback]
+
+    class Sentinel:
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            order.append("guard closed")
+
+    sentinel = Sentinel()
+
+    def start_guard(
+        _context: bench_tool.harness_memory_guard.HarnessExecutionContext,
+        **_kwargs: object,
+    ) -> Sentinel:
+        order.append("guard opened")
+        return sentinel
+
     class Client:
-        def __init__(self, command, *, cwd, **kwargs):
+        def __init__(
+            self,
+            command: list[str],
+            *,
+            cwd: Path,
+            borrowed_sentinel: Sentinel,
+            start_local_sentinel: bool,
+            **_kwargs: object,
+        ) -> None:
+            assert borrowed_sentinel is sentinel
+            assert not start_local_sentinel
             self.cwd = cwd
-            self.closed = []
+            self.closed: list[tuple[bool, float]] = []
+            self.close_error: RuntimeError | None = None
+            clients.append(self)
 
-        def close(self, *, force, timeout):
+        def close(self, *, force: bool, timeout: float) -> None:
             self.closed.append((force, timeout))
+            error, self.close_error = self.close_error, None
+            if error is not None:
+                order.append("client close failed")
+                raise error
+            order.append("client closed")
 
+    clients: list[Client] = []
+    install_module_view(
+        monkeypatch,
+        "atexit",
+        atexit,
+        bench_tool,
+        register=register,
+        unregister=unregister,
+    )
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard.HarnessExecutionContext,
+        "start_repo_sentinel",
+        start_guard,
+    )
     monkeypatch.setattr(bench_tool, "BatchCompileServerClient", Client)
     server = bench_tool._BenchBatchBuildServer({})
     project = tmp_path / "sealed-project"
     project.mkdir()
-    repository_client = server.start()
-    failed_client = server.start(project)
+    server.start()
+    server.start(project)
+    repository_client, failed_client = clients
     failure = bench_tool.MoltFailure(
         "build",
         "daemon_crash",
@@ -930,15 +1056,45 @@ def test_classified_retry_restarts_only_failed_project_client(monkeypatch, tmp_p
         assert repository_client.closed == []
         assert failed_client.closed == [(True, 5.0)]
         assert server.start() is repository_client
-        assert server.start(project) is not failed_client
+        assert server.start(project) is clients[2]
+        third_project = tmp_path / "third-project"
+        third_project.mkdir()
+        server.start(third_project)
+        assert repository_client.closed == [(False, 5.0)]
+        assert clients[2].closed == []
+        assert order == ["guard opened", "client closed", "client closed"]
+
+        close_error = RuntimeError("pending child closure fixture")
+        clients[2].close_error = close_error
+        with pytest.raises(RuntimeError) as raised:
+            server.close()
+        assert raised.value is close_error
+        assert order[-2:] == ["client close failed", "client closed"]
+        assert list(finalizers) == [server.close]
+
+        if recovery == "at_exit":
+            finalizers[server.close]()
+        else:
+            server.close()
+        assert clients[2].closed == [(False, 5.0), (recovery == "at_exit", 5.0)]
+        assert clients[3].closed == [(False, 5.0)]
+        assert order[-2:] == ["client closed", "guard closed"]
+        assert not finalizers
     finally:
         server.close()
+    assert order.count("guard closed") == 1
 
 
 class _BatchServerStub:
     closed = False
 
-    def __init__(self, env: dict[str, str]) -> None:
+    def __init__(
+        self,
+        env: Mapping[str, str],
+        *,
+        borrowed_sentinel: bench_tool.harness_memory_guard.RepoProcessMemorySentinel
+        | None = None,
+    ) -> None:
         self.env = env
 
     def close(self) -> None:
@@ -1270,36 +1426,444 @@ def test_prepare_molt_binary_passes_cache_policy_to_batch_build_server(
         binary.temp_dir.cleanup()
 
 
+@pytest.mark.parametrize("budget", [0.0, -1.0, float("nan"), float("inf"), 1e100])
+def test_build_budget_is_validated_before_build_admission(
+    monkeypatch: pytest.MonkeyPatch, budget: float
+) -> None:
+    monkeypatch.setattr(
+        bench_tool,
+        "_canonical_bench_env",
+        lambda _: pytest.fail("invalid budget reached build admission"),
+    )
+    with pytest.raises(ValueError, match="build timeout must be positive and finite"):
+        bench_tool.prepare_molt_binary("not-admitted.py", build_timeout_s=budget)
+
+
+@pytest.mark.parametrize(
+    "mode", ["matched", "stale", "later", "unrelated", "malformed"]
+)
+def test_native_batch_pipe_failure_reads_birth_bound_serialized_suite_trip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: Literal["matched", "stale", "later", "unrelated", "malformed"],
+) -> None:
+    from tools.batch_compile_client import BatchCompileServerClient
+    from tools.memory_guard_core.harness_outcomes import SUITE_TRIP_FILE_ENV
+
+    source = tmp_path / "bench_sample.py"
+    source.write_text("print(1)\n", encoding="utf-8")
+    marker = tmp_path / "suite-trip.json"
+    script = tmp_path / "batch-fixture.py"
+    script.write_text(
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "from tools.memory_guard_core.harness_outcomes import publish_suite_trip\n"
+        "mode, marker, custody, attempt = sys.argv[1:]\n"
+        "request = json.loads(sys.stdin.readline())\n"
+        "out_dir = Path(request['params']['out_dir'])\n"
+        "Path(attempt).write_text(str(out_dir), encoding='utf-8')\n"
+        "(out_dir / 'partial').write_bytes(b'fixture')\n"
+        "if mode == 'recovered':\n"
+        "    print(json.dumps({'id': request['id'], 'returncode': 1,\n"
+        "                      'stderr': 'ordinary build failure after recovery'}), flush=True)\n"
+        "elif mode == 'malformed':\n"
+        "    Path(marker).write_text('{', encoding='utf-8')\n"
+        "else:\n"
+        "    pid, pgid, birth = json.loads(Path(custody).read_text(encoding='utf-8'))\n"
+        "    observed = time.monotonic_ns()\n"
+        "    if mode == 'stale':\n"
+        "        observed = 1\n"
+        "    elif mode == 'later':\n"
+        "        observed += 60000000000\n"
+        "    publish_suite_trip(Path(marker), {\n"
+        "        'event': 'guard_tripped', 'message': 'serialized suite RSS incident',\n"
+        "        'violation': {'pid': pgid, 'rss_kb': 73984, 'scope': 'process_tree',\n"
+        "                      'command': 'fixture compiler'},\n"
+        "        'shared_sentinel_event': {\n"
+        "            'event': 'repo_process_guard_tripped', 'victim_pgid': pgid,\n"
+        "            'observed_at_ns': observed,\n"
+        "            'termination_claimed_at_ns': observed,\n"
+        "            'violation': {'pgid': pgid, 'process_samples': [\n"
+        "                {'pid': pid, 'started_at_ns': birth + (mode == 'unrelated')}]},\n"
+        "            'termination': {'rss_triggered': True, 'attempted': True},\n"
+        "        },\n"
+        "    })\n",
+        encoding="utf-8",
+    )
+    launches: list[Path] = []
+    env = {
+        **os.environ,
+        "MOLT_EXT_ROOT": str(tmp_path),
+        "PYTHONPATH": os.pathsep.join(map(str, (REPO_ROOT, REPO_ROOT / "src"))),
+        SUITE_TRIP_FILE_ENV: str(marker),
+    }
+
+    def launch(
+        _command: list[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        guard_context: bench_tool.harness_memory_guard.HarnessExecutionContext,
+        reader_name: str,
+        borrowed_sentinel: bench_tool.harness_memory_guard.RepoProcessMemorySentinel
+        | None,
+        start_local_sentinel: bool,
+    ) -> BatchCompileServerClient:
+        index = len(launches)
+        attempt = tmp_path / f"attempt-{index}"
+        identity = tmp_path / f"identity-{index}.json"
+        client = BatchCompileServerClient(
+            [
+                sys.executable,
+                "-B",
+                str(script),
+                mode if index == 0 else "recovered",
+                str(marker),
+                str(identity),
+                str(attempt),
+            ],
+            cwd=cwd,
+            env=env,
+            guard_context=guard_context,
+            reader_name=reader_name,
+            borrowed_sentinel=borrowed_sentinel,
+            start_local_sentinel=start_local_sentinel,
+        )
+        child = client.child_process
+        try:
+            assert child.started_at_ns is not None and child.started_at_ns > 0
+            identity.write_text(
+                json.dumps([child.pid, child.pgid or child.pid, child.started_at_ns]),
+                encoding="utf-8",
+            )
+        except BaseException:
+            client.close(force=True)
+            raise
+        launches.append(attempt)
+        return client
+
+    monkeypatch.setattr(bench_tool, "BatchCompileServerClient", launch)
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda _: env)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda _: None)
+    install_module_view(
+        monkeypatch, "time", time, bench_tool, sleep=lambda seconds: None
+    )
+    batch = bench_tool._BenchBatchBuildServer(env)
+    try:
+        failure = bench_tool.prepare_molt_binary(
+            str(source), env=env, batch_server=batch, build_timeout_s=15.0
+        )
+    finally:
+        batch.close(force=True)
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    for attempt in launches:
+        assert not Path(attempt.read_text(encoding="utf-8")).exists()
+    if mode == "matched":
+        assert len(launches) == 1
+        assert failure.status == "rss_limit_exceeded"
+        assert failure.detail == "batch_server_closed_response_pipe"
+        assert "closed response pipe" in failure.stderr
+        assert failure.guard_violation is not None
+        assert failure.guard_violation["rss_kb"] == 73984
+        assert failure.guard_violation["command"] == "fixture compiler"
+        assert failure.log_refs == ({"kind": "suite_rss_trip", "path": str(marker)},)
+    elif mode == "malformed":
+        assert len(launches) == 1
+        assert failure.status == "infrastructure_error"
+        assert failure.guard_violation is None
+        assert failure.infrastructure_failure is not None
+        assert failure.infrastructure_failure.phase == "rss_trip_evidence"
+    else:
+        assert len(launches) == 2
+        assert failure.status == "build_failed"
+        assert failure.guard_violation is None
+        assert failure.stderr == "ordinary build failure after recovery"
+
+
+@pytest.mark.parametrize(
+    "route,observation",
+    [
+        ("lane", "during"),
+        ("lane", "earlier"),
+        ("lane", "later"),
+        ("outer_daemon", "scan_before"),
+        ("outer_pipe", "scan_before"),
+    ],
+)
+@pytest.mark.usefixtures("session_sentinel_paused", "no_ambient_guard_caps")
+def test_native_batch_incidents_use_the_sentinel_that_owns_the_suite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    route: Literal["lane", "outer_daemon", "outer_pipe"],
+    observation: Literal["during", "earlier", "later", "scan_before"],
+) -> None:
+    from tools import harness_memory_guard as guard, process_sentinel
+    from tools.batch_compile_client import BatchCompileServerClient
+    from tools.memory_guard_core.harness_outcomes import SUITE_TRIP_FILE_ENV
+
+    source = tmp_path / "bench_sample.py"
+    source.write_text("print(1)\n", encoding="utf-8")
+    release = tmp_path / "daemon-incident"
+    diagnostic = "backend daemon returned empty response"
+    adopted = guard.memory_guard.ProcessSample(
+        94_001, 1, 64 * 1024, "adopted daemon fixture", pgid=94_001, started_at_ns=51
+    )
+    launches: list[BatchCompileServerClient] = []
+    sentinel_paths: list[Path] = []
+    terminators: list[int] = []
+    env = {**os.environ, "MOLT_EXT_ROOT": str(tmp_path)}
+    env.pop(SUITE_TRIP_FILE_ENV, None)
+    make_sentinel = guard.repo_process_sentinel
+    default_start = guard.HarnessExecutionContext.start_repo_sentinel
+
+    def stop_test_daemon(pgid: int, **_kwargs: object) -> None:
+        terminators.append(pgid)
+        release.write_text("callback completed\n", encoding="utf-8")
+
+    def controlled_sentinel(
+        *,
+        repo_root: Path,
+        artifact_root: Path,
+        label: str,
+        limits: guard.HarnessMemoryLimits | None = None,
+    ) -> guard.RepoProcessMemorySentinel:
+        sentinel = make_sentinel(
+            repo_root=repo_root,
+            artifact_root=artifact_root,
+            label=label,
+            limits=guard.HarnessMemoryLimits(True, 0.01, 0.02, 0.03, 0.1),
+            drain_on_exit=False,
+        )
+        sentinel_paths.append(sentinel.events_path)
+        monkeypatch.setattr(sentinel, "_run", lambda: None)
+
+        def adopted_groups() -> list[process_sentinel.ProcessGroup]:
+            observed_at = time.monotonic_ns()
+            if observation in {"earlier", "scan_before"}:
+                observed_at = 1
+            sentinel._sample_observed_at_ns = observed_at
+            if route == "outer_pipe":
+                child = launches[0].child_process
+                pgid = child.pgid or child.pid
+                victim = guard.memory_guard.ProcessSample(
+                    child.pid,
+                    os.getpid(),
+                    64 * 1024,
+                    "batch fixture",
+                    pgid=pgid,
+                    started_at_ns=child.started_at_ns,
+                )
+                return [process_sentinel.ProcessGroup(pgid, (victim,), True)]
+            # The suite lease owns this process. No batch ancestry is available.
+            sentinel._suite_adopted_pids = {adopted.pid}
+            return [process_sentinel.ProcessGroup(adopted.pid, (adopted,), True)]
+
+        monkeypatch.setattr(sentinel, "_current_groups", adopted_groups)
+        return sentinel
+
+    def start_lane_sentinel(
+        context: guard.HarnessExecutionContext, *, label: str, **_kwargs: object
+    ) -> guard.RepoProcessMemorySentinel:
+        assert route == "lane"
+        return controlled_sentinel(
+            repo_root=context.repo_root, artifact_root=tmp_path, label=label
+        ).__enter__()
+
+    def claim_clock_ns() -> int:
+        now = time.monotonic_ns()
+        if observation == "earlier":
+            return 1
+        if observation == "later":
+            return now + 60_000_000_000
+        return now
+
+    class FixtureClient(BatchCompileServerClient):
+        def _readline(self, deadline: float, *, allow_closing: bool = False) -> str:
+            if self is launches[0] and not release.exists():
+                assert self._guard_sentinel is None
+                sentinel = self._borrowed_sentinel
+                assert sentinel is not None
+                sentinel.scan_once()
+            return super()._readline(deadline, allow_closing=allow_closing)
+
+    def launch(
+        _command: list[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        guard_context: guard.HarnessExecutionContext,
+        reader_name: str,
+        borrowed_sentinel: guard.RepoProcessMemorySentinel | None,
+        start_local_sentinel: bool,
+    ) -> BatchCompileServerClient:
+        if route != "lane":
+            assert default_start(guard_context, label="nested-client") is None
+        message = (
+            "ordinary build failure after recovery"
+            if launches
+            else "pipe"
+            if route == "outer_pipe"
+            else diagnostic
+        )
+        client = FixtureClient(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import json, sys, time\n"
+                "from pathlib import Path\n"
+                "request = json.loads(sys.stdin.readline())\n"
+                "while not Path(sys.argv[1]).exists():\n"
+                "    time.sleep(0.01)\n"
+                "if sys.argv[2] != 'pipe':\n"
+                "    print(json.dumps({'id': request['id'], 'returncode': 1,\n"
+                "                      'stderr': sys.argv[2]}), flush=True)\n",
+                str(release),
+                message,
+            ],
+            cwd=cwd,
+            env=env,
+            guard_context=guard_context,
+            reader_name=reader_name,
+            borrowed_sentinel=borrowed_sentinel,
+            start_local_sentinel=start_local_sentinel,
+        )
+        launches.append(client)
+        return client
+
+    monkeypatch.setattr(
+        guard.HarnessExecutionContext, "start_repo_sentinel", start_lane_sentinel
+    )
+    monkeypatch.setattr(guard, "repo_process_sentinel", controlled_sentinel)
+    monkeypatch.setattr(guard, "_claim_terminated_pgid", lambda _: True)
+    monkeypatch.setattr(process_sentinel, "terminate_group", stop_test_daemon)
+    monkeypatch.setattr(bench_tool, "BatchCompileServerClient", launch)
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda _: env)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda _: None)
+    install_module_view(
+        monkeypatch, "time", time, bench_tool, sleep=lambda seconds: None
+    )
+    install_module_view(monkeypatch, "time", time, guard, monotonic_ns=claim_clock_ns)
+
+    def build(
+        *_args: object,
+        batch_server: bench_tool._BenchBatchBuildServer,
+        **_kwargs: object,
+    ) -> dict[str, bench_tool.MoltBinary | bench_tool.MoltFailure]:
+        return {
+            "build": bench_tool.prepare_molt_binary(
+                str(source), env=env, batch_server=batch_server, build_timeout_s=15.0
+            )
+        }
+
+    if route == "lane":
+        batch = bench_tool._BenchBatchBuildServer(env)
+        try:
+            failure = build(batch_server=batch)["build"]
+        finally:
+            batch.close(force=True)
+    else:
+        monkeypatch.setattr(bench_tool, "_bench_one", build)
+        with _admitted_workloads([str(source)]) as workloads:
+            data = bench_tool.bench_results(
+                [str(source)],
+                1,
+                0,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                None,
+                "release",
+                workloads=workloads,
+                tty=False,
+                nuitka_cmd=None,
+                pyodide_cmd=None,
+                artifact_root=tmp_path,
+            )
+        failure = data["build"]
+
+    assert len(sentinel_paths) == 1
+    event = json.loads(sentinel_paths[0].read_text(encoding="utf-8").splitlines()[0])
+    assert terminators == [event["victim_pgid"]]
+    assert event["custody_ancestry"] == []
+    assert isinstance(failure, bench_tool.MoltFailure)
+    if observation == "scan_before":
+        assert event["observed_at_ns"] == 1
+        assert event["termination_claimed_at_ns"] > event["observed_at_ns"]
+    if route == "outer_pipe":
+        assert len(launches) == 1
+        assert failure.status == "rss_limit_exceeded"
+        assert failure.detail == "batch_server_closed_response_pipe"
+        assert failure.guard_violation is not None
+        assert failure.guard_violation["rss_kb"] == 64 * 1024
+        assert failure.log_refs == (
+            {"kind": "suite_rss_trip", "path": str(sentinel_paths[0])},
+        )
+        return
+    assert event["victim_pgid"] == adopted.pid
+    assert failure.guard_violation is None
+    if observation in {"during", "scan_before"}:
+        assert len(launches) == 1
+        assert failure.status == "infrastructure_error"
+        assert failure.detail == "backend_daemon_empty_response"
+        assert failure.stderr == diagnostic
+        assert failure.infrastructure_failure is not None
+        assert failure.infrastructure_failure.phase == "rss_trip_evidence"
+        assert failure.log_refs == (
+            {"kind": "suite_rss_trip", "path": str(sentinel_paths[0])},
+        )
+    else:
+        assert len(launches) == 2
+        assert failure.status == "build_failed"
+        assert failure.stderr == "ordinary build failure after recovery"
+
+
 def test_prepare_molt_binary_classifies_batch_build_timeout(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     script = tmp_path / "bench_sample.py"
     script.write_text("print(1)\n", encoding="utf-8")
+    requests: list[tuple[Path, float]] = []
+    prunes: list[Mapping[str, str]] = []
+    restarts: list[Path | None] = []
+    diagnostic = "batch compile server response timed out: first build"
 
     class _TimeoutBatchServer:
         def request_build(
             self,
             params: dict[str, object],
             *,
-            env_overrides,
+            env_overrides: Mapping[str, str],
             timeout_s: float,
             source_cwd: Path | None = None,
         ) -> dict[str, object]:
-            del params, timeout_s
-            raise TimeoutError("batch compile server response timed out")
+            out_dir = Path(str(params["out_dir"]))
+            (out_dir / "partial").write_bytes(b"interrupted build")
+            requests.append((out_dir, timeout_s))
+            raise TimeoutError(diagnostic)
+
+        def restart(self, source_cwd: Path | None = None) -> None:
+            restarts.append(source_cwd)
+
+    def unexpected_sleep(seconds: float) -> None:
+        pytest.fail(f"timed-out build reached retry backoff of {seconds}s")
 
     monkeypatch.setattr(
         bench_tool,
         "_canonical_bench_env",
         lambda env: {"BASE": "1", "MOLT_EXT_ROOT": str(tmp_path)},
     )
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", prunes.append)
     install_module_view(
         monkeypatch,
         "time",
         time,
         bench_tool,
-        sleep=lambda seconds: None,
+        sleep=unexpected_sleep,
     )
 
     failure = bench_tool.prepare_molt_binary(
@@ -1315,6 +1879,13 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
     assert failure.returncode == bench_tool.memory_guard.TIMEOUT_RETURN_CODE
     assert failure.timed_out is True
     assert failure.detail == "batch_server_response_timeout"
+    assert failure.stderr == diagnostic
+    assert len(requests) == 1
+    build_directory, timeout_s = requests[0]
+    assert timeout_s == 0.25
+    assert not build_directory.exists()
+    assert len(prunes) == 1  # Initial maintenance only.
+    assert restarts == [None]  # Close the unsynchronized stream for future cells.
 
 
 def test_host_capacity_refusal_is_infrastructure_not_a_build_failure() -> None:
@@ -2648,7 +3219,13 @@ def test_direct_bench_reuses_external_diagnostics_and_scratch_for_backends(
         yield
 
     class Batch:
-        def __init__(self, env):
+        def __init__(
+            self,
+            env: Mapping[str, str],
+            *,
+            borrowed_sentinel: bench_tool.harness_memory_guard.RepoProcessMemorySentinel
+            | None = None,
+        ) -> None:
             events.append(("batch", dict(env)))
 
         def close(self):

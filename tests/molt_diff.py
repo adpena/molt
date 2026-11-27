@@ -2136,44 +2136,12 @@ def _record_memory_guard_sentinel_sample(
     )
 
 
-def _sentinel_violation_as_rss(
-    violation: process_sentinel.SentinelViolation,
-    payload: Mapping[str, object],
-) -> memory_guard.RssViolation:
-    if violation.reason == "process_rss":
-        return memory_guard.RssViolation(
-            pid=0 if violation.peak_pid is None else violation.peak_pid,
-            rss_kb=violation.total_rss_kb
-            if violation.peak_rss_kb is None
-            else violation.peak_rss_kb,
-            command=violation.command,
-            scope="process",
-        )
-    if violation.reason == "global_rss":
-        global_total = payload.get("global_total_kb")
-        rss_kb = violation.total_rss_kb
-        if isinstance(global_total, int):
-            rss_kb = global_total
-        return memory_guard.RssViolation(
-            pid=0,
-            rss_kb=rss_kb,
-            command="all repo-scoped molt_diff process groups",
-            scope="diff_global_process_groups",
-        )
-    return memory_guard.RssViolation(
-        pid=violation.pgid,
-        rss_kb=violation.total_rss_kb,
-        command=violation.command,
-        scope="process_tree",
-    )
-
-
 def _record_memory_guard_sentinel_violation(
     violation: process_sentinel.SentinelViolation,
     limits: memory_guard.ResolvedMemoryLimits,
     payload: Mapping[str, object],
 ) -> None:
-    rss_violation = _sentinel_violation_as_rss(violation, payload)
+    rss_violation = harness_outcomes.sentinel_rss_violation(violation, payload)
     if violation.reason == "global_rss":
         reason = "global memory guard tripped"
         phase = "global"
@@ -2513,7 +2481,7 @@ def _run_batch_compile_build(
                 failure, getattr(error, "batch_request_custody", None), evidence
             )
         _shutdown_batch_compile_server(force=True)
-        if failure.rss_limit_exceeded:
+        if failure.rss_limit_exceeded or failure.infrastructure_failure is not None:
             return failure
         if deadline:
             return compat_backends.BackendResult.from_deadline(

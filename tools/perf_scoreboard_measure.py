@@ -174,6 +174,7 @@ def measure_cell(
     emit_cycle_profile: bool = False,
     emit_wasm_phases: bool = False,
     execution_host: bench.NodeExecutionPlan | None = None,
+    build_timeout_s: float = bench.DEFAULT_BATCH_BUILD_TIMEOUT_S,
 ) -> Cell:
     """Build + time one (benchmark, target, backend, profile) cell.
 
@@ -226,7 +227,7 @@ def measure_cell(
         build_profile=build_flag,
         build_target=spec.build_target,
         batch_server=batch_server,
-        build_timeout_s=600.0,
+        build_timeout_s=build_timeout_s,
         source_cwd=workload.source_cwd,
     )
 

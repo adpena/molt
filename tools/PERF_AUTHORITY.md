@@ -20,6 +20,15 @@ coordinate and becomes non-authoritative; its cells have no cold-budget ceiling.
 A present malformed budget or unreadable policy still refuses measurement.
 Ordinary gate runs require an approved budget for every selected coordinate.
 
+`--build-timeout` is a diagnostic per-build budget (including hot-only builds),
+separate from the guest execution limit `--timeout`. Its default is
+`bench.DEFAULT_BATCH_BUILD_TIMEOUT_S`; explicit overrides are retained in the
+ordinary scoreboard producer invocation, or the hot-only per-cell build budget.
+Both the canonical-command check and actual release
+producer-argv admission refuse this diagnostic flag. Build timeouts and guard
+or infrastructure failures retain their first outcome without a blind retry;
+positive transport-state recovery remains bounded by the existing producer.
+
 ## Build timing boundaries
 
 Report toolchain production and application compilation separately. Production

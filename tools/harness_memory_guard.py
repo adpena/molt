@@ -1849,6 +1849,7 @@ class RepoProcessMemorySentinel:
         self._observed_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
         self._terminated_pgids: set[int] = set()
         self._protected_pgids_recorded: set[int] = set()
+        self._suite_trips: tuple[_harness_outcomes.SuiteRssTrip, ...] = ()
         self.tripped = False
         self.infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = (
             None
@@ -1927,6 +1928,13 @@ class RepoProcessMemorySentinel:
         payload.setdefault("label", self._label)
         payload.setdefault("ts", time.time())
         _append_jsonl(self.events_path, payload)
+
+    def suite_trip_evidence(self) -> _harness_outcomes.SuiteTripEvidence | None:
+        """Read a snapshot of the existing sentinel's typed incident observations."""
+        trips, failure = self._suite_trips, self.infrastructure_failure
+        if not trips and failure is None:
+            return None
+        return _harness_outcomes.SuiteTripEvidence(trips, failure, self.events_path)
 
     def _elapsed_s(self) -> float:
         return max(0.0, time.monotonic() - self._started_monotonic)
@@ -2239,6 +2247,7 @@ class RepoProcessMemorySentinel:
                     claimed = False
                     if violation.pgid not in self._terminated_pgids:
                         claimed = _claim_terminated_pgid(violation.pgid)
+                    claimed_at_ns = time.monotonic_ns() if claimed else None
                     claim_status = "claimed" if claimed else "already_claimed"
                     observed_at = _utc_timestamp()
                     if claimed:
@@ -2255,6 +2264,7 @@ class RepoProcessMemorySentinel:
                     payload = {
                         "event": "repo_process_guard_tripped",
                         "observed_at_ns": self._sample_observed_at_ns,
+                        "termination_claimed_at_ns": claimed_at_ns,
                         "custody_ancestry": self._tree_tracker.custody_ancestry_payload(
                             {sample.pid: sample for sample in violation.samples},
                             excluded_roots=self._suite_adopted_pids,
@@ -2290,6 +2300,11 @@ class RepoProcessMemorySentinel:
                         payload["killed_at"] = observed_at
                     try:
                         self._record(payload)
+                        if claimed:
+                            trip = _harness_outcomes.suite_rss_trip_from_sentinel(
+                                violation, payload
+                            )
+                            self._suite_trips = (*self._suite_trips, trip)
                     except Exception as exc:  # noqa: BLE001
                         self._retain_trip_failure(
                             f"suite RSS event publication failed: {exc}", error=exc

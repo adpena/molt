@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import datetime as dt
 import hashlib
 import importlib.util
@@ -10,6 +11,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import threading
 from typing import Any, Literal, cast
 import time
 import uuid
@@ -36,6 +38,20 @@ DEFAULT_BATCH_BUILD_TIMEOUT_S = 600.0
 MAX_FAILURE_MESSAGE_CHARS = 4000
 
 
+def validate_build_timeout(value: float | str) -> float:
+    message = (
+        "build timeout must be positive and finite and at most "
+        f"{threading.TIMEOUT_MAX} seconds on this platform"
+    )
+    try:
+        seconds = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+    if isinstance(value, bool) or not 0 < seconds <= threading.TIMEOUT_MAX:
+        raise ValueError(message)
+    return seconds
+
+
 def _platform_label() -> str:
     machine = platform.machine() or "unknown-machine"
     return f"{sys.platform}-{machine}"
@@ -49,12 +65,15 @@ def _append_event_jsonl(path: Path, payload: dict[str, object]) -> None:
 
 from tools.batch_compile_client import (  # noqa: E402
     BatchCompileProtocolError,
+    BatchCompileRequestCustody,
+    BatchCompileResponse,
     BatchCompileServerClient,
 )
 from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
 from tools.safe_run import CapturedStreamIdentity, observed_run_outcome  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools import memory_guard  # noqa: E402
+from tools.memory_guard_core import harness_outcomes  # noqa: E402
 from tools import bench_suites  # noqa: E402
 from tools import bench_reporting  # noqa: E402
 from tools.bench_evidence import AdmittedBenchmarkWorkload, admit_benchmark_workload  # noqa: E402
@@ -706,10 +725,20 @@ def _molt_build_cmd(build_profile: str) -> list[str]:
 
 
 class _BenchBatchBuildServer:
-    """Own the persistent client; start after the first payload is admitted."""
+    """Own the clients and their lane guard after the first payload is admitted."""
 
-    def __init__(self, env: Mapping[str, str]) -> None:
+    def __init__(
+        self,
+        env: Mapping[str, str],
+        *,
+        borrowed_sentinel: harness_memory_guard.RepoProcessMemorySentinel | None = None,
+    ) -> None:
         self._env = ProcessEnvironment(env)
+        self._borrowed_sentinel = borrowed_sentinel
+        self._owned_sentinel: harness_memory_guard.RepoProcessMemorySentinel | None = (
+            None
+        )
+        self._guard_started = False
         self._guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
             "MOLT_BENCH",
             self._env,
@@ -731,6 +760,17 @@ class _BenchBatchBuildServer:
             oldest = next(iter(self._clients))
             self._clients[oldest].close(force=False, timeout=5.0)
             del self._clients[oldest]
+        if self._borrowed_sentinel is None and not self._guard_started:
+            self._owned_sentinel = self._guard_context.start_repo_sentinel(
+                label="molt_bench_batch_server",
+                drain_until_clean_sec=0.1,
+                drain_max_runtime_sec=2.0,
+            )
+            self._guard_started = True
+            if self._owned_sentinel is not None:
+                # Register before the clients so their own exit handlers get
+                # the first chance to close, then retry and drain the lane.
+                atexit.register(self.close, force=True)
         client = BatchCompileServerClient(
             [
                 sys.executable,
@@ -742,6 +782,8 @@ class _BenchBatchBuildServer:
             env=self._env,
             guard_context=self._guard_context,
             reader_name="molt-bench-batch-server-reader",
+            borrowed_sentinel=self._borrowed_sentinel or self._owned_sentinel,
+            start_local_sentinel=False,
         )
         self._clients[project] = client
         return client
@@ -773,6 +815,11 @@ class _BenchBatchBuildServer:
                 del self._clients[project]
         if primary is not None:
             raise primary
+        if self._owned_sentinel is not None:
+            self._owned_sentinel.__exit__(None, None, None)
+            self._owned_sentinel = None
+            atexit.unregister(self.close)
+        self._guard_started = False
 
     def restart(self, source_cwd: Path | None = None) -> None:
         project = (source_cwd or REPO_ROOT).resolve()
@@ -1120,6 +1167,30 @@ def classify_molt_process_failure(
     )
 
 
+def _classified_molt_completed_failure(
+    result: subprocess.CompletedProcess[str],
+    *,
+    phase: str,
+    elapsed_s: float | None,
+    default_status: str,
+) -> MoltFailure:
+    return _classified_molt_failure(
+        phase=phase,
+        returncode=getattr(result, "returncode", None),
+        stdout=getattr(result, "stdout", None),
+        stderr=getattr(result, "stderr", None),
+        elapsed_s=elapsed_s,
+        timed_out=bool(getattr(result, "timed_out", False)),
+        violation=getattr(result, "violation", None),
+        orphaned_process_groups=tuple(
+            int(pgid) for pgid in getattr(result, "orphaned_process_groups", ()) or ()
+        ),
+        child_returncode=getattr(result, "child_returncode", None),
+        infrastructure_failure=getattr(result, "infrastructure_failure", None),
+        default_status=default_status,
+    )
+
+
 def _classified_molt_exception(
     *,
     phase: str,
@@ -1128,42 +1199,22 @@ def _classified_molt_exception(
     default_status: str,
 ) -> MoltFailure:
     guarded_result = getattr(exc, "guarded_result", None)
-    if guarded_result is None:
-        timed_out = isinstance(exc, (TimeoutError, subprocess.TimeoutExpired))
-        returncode = memory_guard.TIMEOUT_RETURN_CODE if timed_out else None
-        stdout = ""
-        stderr = str(exc)
-        violation = None
-        orphaned_process_groups: tuple[int, ...] = ()
-        child_returncode = None
-        infrastructure_failure = None
-    else:
-        timed_out = bool(getattr(guarded_result, "timed_out", False))
-        returncode = getattr(guarded_result, "returncode", None)
-        stdout = getattr(guarded_result, "stdout", None)
-        stderr = getattr(guarded_result, "stderr", None)
-        violation = getattr(guarded_result, "violation", None)
-        orphaned_process_groups = tuple(
-            int(pgid)
-            for pgid in getattr(guarded_result, "orphaned_process_groups", ()) or ()
-        )
-        child_returncode = getattr(guarded_result, "child_returncode", None)
-        infrastructure_failure = getattr(guarded_result, "infrastructure_failure", None)
+    if guarded_result is not None:
         guarded_elapsed_s = getattr(guarded_result, "elapsed_s", None)
-        if guarded_elapsed_s is not None:
-            elapsed_s = guarded_elapsed_s
+        return _classified_molt_completed_failure(
+            guarded_result,
+            phase=phase,
+            elapsed_s=elapsed_s if guarded_elapsed_s is None else guarded_elapsed_s,
+            default_status=default_status,
+        )
+    timed_out = isinstance(exc, (TimeoutError, subprocess.TimeoutExpired))
     return _classified_molt_failure(
         phase=phase,
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
+        returncode=memory_guard.TIMEOUT_RETURN_CODE if timed_out else None,
+        stderr=str(exc),
         elapsed_s=elapsed_s,
         timed_out=timed_out,
-        violation=violation,
-        orphaned_process_groups=orphaned_process_groups,
-        child_returncode=child_returncode,
-        infrastructure_failure=infrastructure_failure,
-        default_status="timeout" if timed_out else default_status,
+        default_status=default_status,
     )
 
 
@@ -1174,6 +1225,93 @@ def _batch_server_stream_failure(exc: BaseException) -> bool:
         message = str(exc).casefold()
         return message.startswith(("batch compile server ", "batch compile response "))
     return False
+
+
+def _failure_has_guard_incident(failure: MoltFailure) -> bool:
+    return (
+        failure.guard_violation is not None
+        or bool(failure.orphaned_process_groups)
+        or failure.infrastructure_failure is not None
+        or failure.status == "infrastructure_error"
+    )
+
+
+def _batch_build_suite_failure(
+    failure: MoltFailure,
+    custody: object,
+    env: Mapping[str, str],
+    *,
+    response_received: bool = False,
+) -> MoltFailure:
+    if (
+        not isinstance(custody, BatchCompileRequestCustody)
+        or failure.timed_out
+        or _failure_has_guard_incident(failure)
+    ):
+        return failure
+    sources = (custody.suite_trip_evidence, harness_outcomes.read_suite_trip(env))
+    request_finished_at_ns = custody.request_finished_at_ns
+    matches = harness_outcomes.matching_suite_trips(
+        custody.child_process,
+        custody.owned_process_identities,
+        request_started_at_ns=custody.request_started_at_ns,
+        evidence=sources,
+        request_finished_at_ns=request_finished_at_ns,
+    )
+    if matches:
+        trip, path = min(
+            matches, key=lambda item: item[0].termination_claimed_at_ns or 0
+        )
+        refs = failure.log_refs
+        if path is not None:
+            refs = (*refs, {"kind": "suite_rss_trip", "path": str(path)})
+        return replace(
+            failure,
+            status="rss_limit_exceeded",
+            returncode=memory_guard.GUARD_RETURN_CODE,
+            guard_violation=trip.violation.as_payload(),
+            log_refs=refs,
+        )
+    daemon_response = response_received and _failure_is_backend_daemon_transport(
+        failure
+    )
+    for source in sources:
+        if source is None:
+            continue
+        infrastructure = source.infrastructure_failure
+        if (
+            infrastructure is None
+            and daemon_response
+            and any(
+                trip.attempted_between(
+                    custody.request_started_at_ns, request_finished_at_ns
+                )
+                for trip in source.trips
+            )
+        ):
+            # An adopted daemon can outlive or be shared by batch requests.
+            # A concurrent suite incident warrants refusal, but its victim is
+            # insufficient to claim this request exceeded its RSS limit.
+            infrastructure = memory_guard.GuardInfrastructureFailure(
+                phase="rss_trip_evidence",
+                details=(
+                    "Suite RSS termination was attempted during the batch request. "
+                    "The failed backend daemon could not be bound to the recorded victim.",
+                ),
+            )
+        if infrastructure is None:
+            continue
+        refs = failure.log_refs
+        if source.path is not None:
+            refs = (*refs, {"kind": "suite_rss_trip", "path": str(source.path)})
+        return replace(
+            failure,
+            status="infrastructure_error",
+            returncode=memory_guard.INFRASTRUCTURE_RETURN_CODE,
+            infrastructure_failure=infrastructure,
+            log_refs=refs,
+        )
+    return failure
 
 
 def molt_failure_payload(failure: MoltFailure) -> dict[str, object]:
@@ -1288,7 +1426,7 @@ def _emit_molt_failure_summary(
         print(f"--- Molt failure message ---\n{message}", file=sys.stderr)
 
 
-def _failure_should_restart_batch_server(failure: MoltFailure) -> bool:
+def _failure_is_backend_daemon_transport(failure: MoltFailure) -> bool:
     return (
         failure.phase == "build"
         and failure.detail is not None
@@ -1298,8 +1436,8 @@ def _failure_should_restart_batch_server(failure: MoltFailure) -> bool:
 
 def _failure_should_retry_build(failure: MoltFailure) -> bool:
     return (
-        failure.infrastructure_failure is None
-        and failure.status != "infrastructure_error"
+        not failure.timed_out
+        and not _failure_has_guard_incident(failure)
         and failure.phase == "build"
         and failure.detail is not None
         and failure.detail.startswith(("backend_daemon_", "batch_server_"))
@@ -1312,7 +1450,7 @@ def _restart_batch_server_for_retry(
     *,
     source_cwd: Path | None,
 ) -> None:
-    if batch_server is None or not _failure_should_restart_batch_server(failure):
+    if batch_server is None or not _failure_is_backend_daemon_transport(failure):
         return
     restart = getattr(batch_server, "restart", None)
     if not callable(restart):
@@ -1340,6 +1478,7 @@ def prepare_molt_binary(
     build_target: Literal["native", "wasm"] = "native",
     source_cwd: Path | None = None,
 ) -> MoltBinary | MoltFailure:
+    build_timeout_s = validate_build_timeout(build_timeout_s)
     if build_target not in {"native", "wasm"}:
         raise ValueError(f"unsupported benchmark build target: {build_target}")
     env = _canonical_bench_env(env)
@@ -1390,6 +1529,7 @@ def prepare_molt_binary(
             args.extend(extra_args or [])
             args.append(script)
             start = time.perf_counter()
+            custody = None
             try:
                 if batch_server is None:
                     res = harness_memory_guard.guarded_completed_process(
@@ -1409,6 +1549,8 @@ def prepare_molt_binary(
                         timeout_s=build_timeout_s,
                         source_cwd=source_cwd,
                     )
+                    if isinstance(response, BatchCompileResponse):
+                        custody = response.custody
                     res = _batch_response_completed_process(args, response)
             except (
                 RuntimeError,
@@ -1417,7 +1559,20 @@ def prepare_molt_binary(
                 subprocess.TimeoutExpired,
             ) as exc:
                 primary = exc
-                if batch_server is not None and _batch_server_stream_failure(exc):
+                failure = _classified_molt_exception(
+                    phase="build",
+                    exc=exc,
+                    elapsed_s=time.perf_counter() - start,
+                    default_status="build_failed",
+                )
+                failure = _batch_build_suite_failure(
+                    failure, getattr(exc, "batch_request_custody", None), env
+                )
+                if (
+                    batch_server is not None
+                    and not _failure_has_guard_incident(failure)
+                    and _batch_server_stream_failure(exc)
+                ):
                     try:
                         batch_server.restart(source_cwd=source_cwd)
                     except Exception as restart_exc:
@@ -1426,33 +1581,20 @@ def prepare_molt_binary(
                             f"protocol failure: {restart_exc}",
                             file=sys.stderr,
                         )
-                failure = _classified_molt_exception(
-                    phase="build",
-                    exc=exc,
-                    elapsed_s=time.perf_counter() - start,
-                    default_status="build_failed",
-                )
                 _emit_molt_failure_summary(script, failure)
                 return failure
             build_s = time.perf_counter() - start
 
             if res.returncode != 0:
                 _emit_molt_build_failure(script, res)
-                failure = _classified_molt_failure(
+                failure = _classified_molt_completed_failure(
+                    res,
                     phase="build",
-                    returncode=res.returncode,
-                    stdout=res.stdout,
-                    stderr=res.stderr,
                     elapsed_s=build_s,
-                    timed_out=bool(getattr(res, "timed_out", False)),
-                    violation=getattr(res, "violation", None),
-                    child_returncode=getattr(res, "child_returncode", None),
-                    infrastructure_failure=getattr(res, "infrastructure_failure", None),
-                    orphaned_process_groups=tuple(
-                        int(pgid)
-                        for pgid in getattr(res, "orphaned_process_groups", ()) or ()
-                    ),
                     default_status="build_failed",
+                )
+                failure = _batch_build_suite_failure(
+                    failure, custody, env, response_received=True
                 )
                 _emit_molt_failure_summary(script, failure)
                 return failure
@@ -1547,10 +1689,8 @@ def prepare_molt_binary(
     if isinstance(result, MoltBinary):
         return result
 
-    # Only transport/daemon state can be repaired by restarting the batch
-    # server and pruning its owned daemons. Deterministic compiler, Cargo,
-    # source, artifact, and linker failures are unchanged by that operation;
-    # retrying them doubled CI wall clock while preserving the same error.
+    # Repair transport/daemon state only when the first build had no timeout
+    # or guard failure. A cleanup restart does not renew a spent build budget.
     if not _failure_should_retry_build(result):
         return result
 
@@ -2157,8 +2297,8 @@ def bench_results(
         artifact_root=sentinel_artifact_root,
         label="bench",
         limits=limits,
-    ):
-        batch_server = _BenchBatchBuildServer(base_env)
+    ) as sentinel:
+        batch_server = _BenchBatchBuildServer(base_env, borrowed_sentinel=sentinel)
         try:
             for script in benchmarks:
                 data.update(

@@ -96,6 +96,13 @@ def test_bump_and_relock_rewrite_only_the_lock(tmp_path: Path) -> None:
 def test_comparison_verdict_authorities_are_governed_not_unlocked_mechanics() -> None:
     methodology = pm.load()
     owners = {
+        "tools/batch_compile_client.py",
+        "tools/harness_memory_guard.py",
+        "tools/memory_guard.py",
+        "tools/memory_guard_core/harness_outcomes.py",
+        "tools/memory_guard_core/memory_limits.py",
+        "tools/process_sentinel.py",
+        "src/molt/process_model.py",
         "tools/bench_evidence.py",
         "tools/bench_reporting.py",
         "tools/bench_diff.py",

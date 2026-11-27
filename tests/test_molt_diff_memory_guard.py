@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 
@@ -1002,6 +1003,7 @@ def test_batch_suite_trip_uses_submitted_request_custody_before_shutdown(
     entry = _suite_trip_entry(victim, born)
     event = entry["shared_sentinel_event"]
     event["observed_at_ns"] = 90 if case == "old_trip" else 120
+    event["termination_claimed_at_ns"] = event["observed_at_ns"]
     if descendant:
         event["custody_ancestry"] = [
             {
@@ -1024,7 +1026,9 @@ def test_batch_suite_trip_uses_submitted_request_custody_before_shutdown(
             if case == "timeout":
                 raise TimeoutError("request deadline")
             rc = 0 if case == "success" else 1
-            custody = BatchCompileRequestCustody(child, 100, rc)
+            custody = BatchCompileRequestCustody(
+                child, 100, rc, request_finished_at_ns=200
+            )
             if protocol_death and case != "success":
                 error = RuntimeError("response pipe closed")
                 error.batch_request_custody = custody
@@ -1202,6 +1206,7 @@ def _suite_trip_entry(pid=11, born=1000):
         "shared_sentinel_event": {
             "event": "repo_process_guard_tripped",
             "victim_pgid": pid,
+            "termination_claimed_at_ns": 120,
             "violation": {
                 "pgid": pid,
                 "process_samples": [{"pid": pid, "started_at_ns": born}],
@@ -1240,10 +1245,14 @@ def test_suite_trip_uses_only_supplied_environment(
     assert module._memory_guard_trip_outcome().infrastructure_failure is not None
 
 
-@pytest.mark.parametrize("valid", [False, True])
+@pytest.mark.parametrize(
+    "record", ["valid", "missing_rss", "missing_claim", "early_claim"]
+)
 def test_suite_trip_requires_recorded_rss_and_identity_evidence(
-    tmp_path, monkeypatch, valid
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record: Literal["valid", "missing_rss", "missing_claim", "early_claim"],
+) -> None:
     import json
 
     module = _load_diff_module()
@@ -1251,14 +1260,19 @@ def test_suite_trip_requires_recorded_rss_and_identity_evidence(
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
     monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
     assert module._memory_guard_trip_outcome() is None
-    payload = (
-        {"event": "guard_tripped", "trips": [_suite_trip_entry()]}
-        if valid
-        else {"event": "guard_tripped", "violation": None}
-    )
+    entry = _suite_trip_entry()
+    event = entry["shared_sentinel_event"]
+    if record == "missing_rss":
+        entry["violation"] = None
+    elif record == "missing_claim":
+        del event["termination_claimed_at_ns"]
+    elif record == "early_claim":
+        event["observed_at_ns"] = event["termination_claimed_at_ns"] + 1
+    payload = {"event": "guard_tripped", "trips": [entry]}
     marker.write_text(json.dumps(payload), encoding="utf-8")
     result = module._memory_guard_trip_outcome()
     assert result is not None
+    valid = record == "valid"
     assert result.rss_limit_exceeded is valid
     assert (result.infrastructure_failure is None) is valid
     assert result.resource_failure == ("rss_limit_exceeded" if valid else None)

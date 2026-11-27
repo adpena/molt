@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import datetime as dt
 from enum import Enum
 
 import json
@@ -76,6 +77,7 @@ class SignalConfidence(str, Enum):
 
 
 class SignalAction(str, Enum):
+    INSPECT_RUN_OWNER = "inspect_run_owner"
     REPRODUCE_OUTPUT = "reproduce_output"
     INSPECT_BUILD = "inspect_build"
     INSPECT_RUNTIME = "inspect_runtime"
@@ -141,6 +143,7 @@ class AgentSignalCoverage:
 class AgentSignalReport:
     evidence_path: str
     generated_at: str
+    run_state: Literal["partial", "complete"]
     source_revisions: tuple[tuple[str, str], ...]
     methodology_schema: str | None
     methodology_version: int | None
@@ -158,6 +161,7 @@ class AgentSignalReport:
             "snapshot": {
                 "evidence_path": self.evidence_path,
                 "generated_at": self.generated_at,
+                "run_state": self.run_state,
                 "source_revisions": dict(self.source_revisions),
                 "methodology_schema": self.methodology_schema,
                 "methodology_version": self.methodology_version,
@@ -416,6 +420,8 @@ def build_agent_signals(
         if (
             cell.get("molt_failure_timed_out") is True
             or cell.get("molt_failure_guard_violation") is not None
+            or bool(cell.get("molt_failure_orphaned_process_groups"))
+            or bool(failure.get("orphaned_process_groups"))
             or failure.get("infrastructure_failure") is not None
             or status
             in (
@@ -564,17 +570,33 @@ def build_agent_signals(
                 SignalSeverity.COVERAGE,
                 SignalConfidence.OBSERVED,
                 SignalAction.RUN_MISSING,
-                "Declared coordinate was not run; no timing or correctness observation exists.",
+                "Declared coordinate has no completed observation in this snapshot.",
                 "Run this selected coordinate under the recorded methodology.",
                 coordinate,
                 f"/coverage/not_run/{index}",
                 None,
             )
         )
+    run_state = cast(Literal["partial", "complete"], doc["run_state"])
+    if run_state == "partial":
+        # A checkpoint is not a live-process probe. Guard every route before
+        # truncation: even the first qualification item must not launch a copy.
+        signals = [
+            replace(
+                signal,
+                action_code=SignalAction.INSPECT_RUN_OWNER,
+                action=(
+                    "Inspect the existing run owner or confirm closure before "
+                    "scheduling more work. " + signal.action
+                ),
+            )
+            for signal in signals
+        ]
     signals.sort(key=_signal_sort_key)
     return AgentSignalReport(
         evidence_path=evidence_path,
         generated_at=cast(str, doc["generated_at"]),
+        run_state=run_state,
         source_revisions=revisions,
         methodology_schema=_signal_text(provenance.get("methodology_schema")),
         methodology_version=cast(int, provenance["methodology_version"])
@@ -597,7 +619,10 @@ def print_agent_signals(
         print(json.dumps(report.as_record(), indent=2))
         return
     print("AGENT SIGNALS — retained snapshot; no current-main proof")
-    print(f"Evidence: {report.evidence_path}  generated_at={report.generated_at}")
+    print(
+        f"Evidence: {report.evidence_path}  generated_at={report.generated_at} "
+        f"run_state={report.run_state}"
+    )
     print(
         "Source: "
         + (
@@ -685,9 +710,10 @@ def print_summary(doc: dict) -> None:
 
     # --- Authoritative-tree header (council ruling A + B) -------------------
     prov = doc.get("provenance", {})
-    authoritative = prov.get("authoritative", True)
+    authoritative = prov.get("authoritative") is True
     print("\n" + "=" * 100)
     print("CPYTHON FLOOR SCOREBOARD — two-dimensional (warm ≠ cold)")
+    print(f"RUN STATE: {doc.get('run_state', 'unknown')}")
     print(
         f"  origin/main = {_short(prov.get('origin_sha'))}   "
         f"local HEAD = {_short(prov.get('local_head_sha'))}   "
@@ -717,7 +743,7 @@ def print_summary(doc: dict) -> None:
                 )
     if authoritative:
         print(
-            "  AUTHORITATIVE: revision on origin/main, clean, tool unmodified, machine quiescent"
+            "  SOURCE AUTHORITY FLAG: true; source and host admission are checked separately"
         )
     else:
         print("  *** WARNING: benchmark is NON-AUTHORITATIVE ***")
@@ -859,19 +885,17 @@ def print_summary(doc: dict) -> None:
     if errs or stale:
         print(f"\nBACKEND ERRORS / NON-AUTHORITATIVE ({len(errs) + len(stale)}):")
         for c in errs:
-            origin_rerun = "yes" if not authoritative else "no"
             failure = _molt_failure_summary(c)
             print(
                 f"    {c.get('verdict'):<16} {c['benchmark']} [{c['backend']}/{c['profile']}]"
-                f"  stale?={'yes' if not authoritative else 'no'}  "
-                f"origin_rerun_needed?={origin_rerun}"
+                f"  source_unqualified={'yes' if not authoritative else 'no'}"
                 + (f"  ({c.get('note')})" if c.get("note") else "")
                 + (f"  failure={failure}" if failure else "")
             )
         for c in stale[:5]:
             print(
                 f"    FAIL_STALE       {c['benchmark']} [{c['backend']}/{c['profile']}]"
-                "  stale?=yes  origin_rerun_needed?=yes"
+                "  source_unqualified=yes"
             )
         if len(stale) > 5:
             print(
@@ -884,19 +908,6 @@ def print_summary(doc: dict) -> None:
         print(f"\nREGRESSIONS FROM LAST GREEN ({len(regressions)}):")
         for m in regressions:
             print(f"    {m}")
-
-    # --- GREENS WORTH PROTECTING (>2x — do not reopen a won class) ----------
-    greens = by_verdict.get(VERDICT_GREEN, [])
-    protected = sorted(
-        (c for c in greens if (c.get("warm_speedup") or 0.0) > 2.0),
-        key=lambda c: -(c.get("warm_speedup") or 0.0),
-    )
-    print(f"\nGREENS WORTH PROTECTING ({len(protected)}) — won classes, do NOT reopen:")
-    for c in protected:
-        print(
-            f"    {_fmt(c.get('warm_speedup'))}x  {c['benchmark']} "
-            f"[{c['backend']}/{c['profile']}]"
-        )
 
     # --- 5-STATE CLASSIFICATION (#69 --classify) ---------------------------
     summary = doc.get("summary", {})
@@ -919,8 +930,8 @@ def print_summary(doc: dict) -> None:
             key=lambda c: c.get("warm_speedup") or 0.0,
         )
         print(
-            f"\n  CONFIRMED FRESH-PROCESS LOSSES — RED_STABLE ({len(red_stable)}) "
-            "[quiescent + stable + CI below 1.00; profile to attribute cost]:"
+            f"\n  RECORDED CLASSIFICATION — RED_STABLE ({len(red_stable)}) "
+            "[classification alone does not qualify source, host or performance]:"
         )
         for c in red_stable:
             cp = c.get("cycle_profile") or {}
@@ -939,12 +950,17 @@ def print_summary(doc: dict) -> None:
         if noisy:
             print(
                 f"\n  RED_NOISY ({len(noisy)}) — unconfirmed comparison, "
-                "contaminated/unstable/missing repeat CI — re-measure quiet:"
+                "contaminated/unstable/missing repeat CI:"
             )
             for c in sorted(noisy, key=lambda c: c.get("warm_speedup") or 0.0)[:20]:
+                reason = (
+                    ""
+                    if doc.get("run_state") == "partial"
+                    else f"  ({c.get('classification_reason')})"
+                )
                 print(
                     f"    {_fmt(c.get('warm_speedup'))}x  {c['benchmark']} "
-                    f"[{c['backend']}/{c['profile']}]  ({c.get('classification_reason')})"
+                    f"[{c['backend']}/{c['profile']}]{reason}"
                 )
         ties = by_class.get(CLASS_TIE, [])
         if ties:
@@ -965,9 +981,22 @@ def print_summary(doc: dict) -> None:
                     f"({c.get('classification_reason')})"
                 )
 
-    # --- FASTEST NEXT UNLOCK -----------------------------------------------
-    unlock = _fastest_next_unlock(warm_reds, cold_reds)
-    print(f"\nFASTEST NEXT UNLOCK: {unlock}")
+    # Keep one qualification and action authority for compact and full reports.
+    try:
+        priorities = build_agent_signals(
+            doc, evidence_path="<in-memory summary>", limit=1
+        )
+    except (ScoreboardSchemaError, ValueError):
+        next_action = "validate the retained schema and source evidence before scheduling or choosing an optimization target"
+    else:
+        if priorities.signals:
+            first = priorities.signals[0]
+            next_action = f"{first.action_code.value}: {first.action}"
+        else:
+            next_action = (
+                "retain the qualified snapshot and inspect the declared coverage plan"
+            )
+    print(f"\nNEXT ACTION: {next_action}")
 
     if doc["benchmarks_deferred"]:
         print(f"\nDEFERRED / CPY-INCOMPATIBLE ({len(doc['benchmarks_deferred'])}):")
@@ -982,26 +1011,6 @@ def _short(sha: str | None) -> str:
     if not sha:
         return "-"
     return sha[:12]
-
-
-def _fastest_next_unlock(warm_reds: list[dict], cold_reds: list[dict]) -> str:
-    """Suggest cost attribution for the largest recorded process comparison gap."""
-    if warm_reds:
-        worst = min(warm_reds, key=lambda c: c.get("warm_speedup") or 1e9)
-        return (
-            f"profile fresh-process cost for {worst['benchmark']} "
-            f"[{worst['backend']}/{worst['profile']}] "
-            f"({_fmt(worst.get('warm_speedup'))}x) — hypothesis: "
-            f"{worst.get('suspected_missing_fact', '?')}"
-        )
-    if cold_reds:
-        worst = max(cold_reds, key=lambda c: c.get("startup_tax_ms") or 0.0)
-        return (
-            f"profile first-minus-repeat delta: {worst['benchmark']} "
-            f"delta={_fmt(worst.get('startup_tax_ms'), 0)}ms "
-            f"— {worst.get('suspected_startup_component', 'cause unproven')}"
-        )
-    return "no reds — protect the greens; widen the suite for the next class"
 
 
 def _molt_failure_summary(cell: dict) -> str | None:
@@ -1033,8 +1042,11 @@ def diff_against_baseline(
     """Return (newly_red, regressed_still_green) message lists vs a prior board."""
     try:
         prior = json.loads(baseline_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return ([f"baseline unreadable: {exc}"], [])
+
+    if problems := baseline_snapshot_problems(prior):
+        return (["baseline refused: " + "; ".join(problems)], [])
 
     prior_cells = {_cell_key(c): c for c in _flatten_cells(prior)}
     newly_red: list[str] = []
@@ -1080,13 +1092,23 @@ def _cell_key(c: dict) -> str:
     return f"{c['benchmark']} [{c['backend']}/{c['profile']}]"
 
 
-def _latest_baseline(exclude: Path | None = None) -> Path | None:
-    """The most recent committed board, EXCLUDING in-progress ``.partial.json``
-    checkpoints and an optional explicit path (the board being written now).
+def baseline_snapshot_problems(doc: object) -> list[str]:
+    """One admission boundary for automatic and explicit baseline consumers."""
+    if not isinstance(doc, dict):
+        return ["baseline must be a scoreboard object"]
+    try:
+        problems = validate_board(doc)
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        return [f"baseline schema is malformed: {exc}"]
+    if doc.get("run_state") != "complete":
+        problems.insert(
+            0, "baseline run is not complete; inspect its owner or confirm closure"
+        )
+    return problems
 
-    Without the ``.partial`` exclusion a diff would compare a board against its
-    own mid-sweep checkpoint (a near-self-diff that hides every regression).
-    """
+
+def _latest_baseline(exclude: Path | None = None) -> Path | None:
+    """Find the latest valid, complete snapshot, regardless of its filename."""
     if not SCOREBOARD_DIR.exists():
         return None
     exclude_resolved = exclude.resolve() if exclude is not None else None
@@ -1096,7 +1118,22 @@ def _latest_baseline(exclude: Path | None = None) -> Path | None:
         if not p.name.endswith(".partial.json")
         and (exclude_resolved is None or p.resolve() != exclude_resolved)
     ]
-    return candidates[-1] if candidates else None
+    admitted: list[tuple[dt.datetime, Path]] = []
+    for candidate in candidates:
+        try:
+            doc = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not baseline_snapshot_problems(doc):
+            try:
+                generated_at = dt.datetime.fromisoformat(doc["generated_at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if generated_at.tzinfo is not None:
+                admitted.append((generated_at, candidate))
+    return (
+        max(admitted, key=lambda item: (item[0], item[1].name))[1] if admitted else None
+    )
 
 
 def _gate_exit_code(

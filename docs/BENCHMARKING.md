@@ -94,6 +94,9 @@ coordinates, confidence, evidence/log pointers and next diagnostic actions.
 Correctness mismatches, build/runtime diagnostic leads, qualified performance
 losses, measurement problems and missing coverage remain distinct. The header
 names the retained snapshot and methodology; it does not verify current main.
+The snapshot carries `run_state`. For partial checkpoints, every action first
+requires inspecting the existing run owner or confirming closure before
+scheduling; a partial file alone proves neither liveness nor abandonment.
 Historical schemas are refused rather than upgraded. See the
 [signal contract](design/foundation/69_benchmark_corpus_union_and_dynamic_calibration.md#optimization-and-correctness-signals)
 for admission thresholds and the optimization/correctness response loop.
@@ -105,6 +108,28 @@ Cache state is uncontrolled. These observations do not isolate startup or
 measure in-process steady state. Stable wins and losses require quiescence;
 attribution fields remain hypotheses requiring independent profiles.
 
+Build and guest-execution limits are separate: `--build-timeout SECONDS`
+bounds each benchmark or hot-only profiling build request. Cleanup can finish
+after the request deadline. Failure elapsed time is sampled where the failure
+is observed: it can include lower-level cleanup but excludes later restart or
+owner cleanup. It is not a strict wall-clock limit for the whole command.
+`--timeout SECONDS` bounds normal
+measurement guests; hot-only sizing and sampler attachment use their own
+internal limits. The canonical build default comes from
+`bench.DEFAULT_BATCH_BUILD_TIMEOUT_S` (600 seconds). An explicit build budget is
+a diagnostic option, recorded in ordinary scoreboard producer argv and the
+hot-only per-cell build budget, and refused by release
+admission. Timeouts, guard violations and infrastructure failures return their
+first failure without an automatic rebuild; protocol-desynchronization recovery
+retains its existing bounded retry. Do not treat `--no-gate` exit zero as a
+successful cell: inspect its verdict, output parity, coverage and signals.
+Automatic and explicit baseline consumers require a valid, completed snapshot;
+a diagnostic merge of partial inputs remains partial even after every selected
+coordinate has an observation. Its filename does not establish closure. Default
+`--no-gate --allow-nonauthoritative` merge outputs use `.diagnostic.json` so they
+preserve an ordinary board at the same revision; explicit `--out` names are
+caller-owned destinations.
+
 For declared real-application inputs and honest qualification limits, use the
 [application portfolio](../bench/corpus/README.md#declared-application-diagnostics).
 `--set applications` on the existing scoreboard and `--applications` on sibling
@@ -115,8 +140,8 @@ a correctness obligation. Full semantic output and guest stderr must qualify
 before runtime measurements are accepted.
 
 
-Maintainer and agent benchmark/profiling runs should enter through the active
-project environment, for example `uv run --active --project . ...`.
+Maintainer and agent benchmark/profiling runs should use the canonical selected
+environment: `uv run --no-project python tools/venv_exec.py python ...`.
 Harness internals must reuse `sys.executable` for nested Molt builds and helper
 tools instead of launching another `uv run`; otherwise a warm benchmark loop can
 still pay project-env setup and extra launcher/process churn.
@@ -125,7 +150,7 @@ The citable release performance authority is the canonical scoreboard, not the
 developer harness:
 
 ```bash
-uv run python3 tools/perf_scoreboard.py \
+uv run --no-project python tools/venv_exec.py python tools/perf_scoreboard.py \
   --set core --backend native --backend llvm --profile release-fast \
   --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent
 ```
@@ -156,7 +181,8 @@ modes are disabled for this user-output boundary. The board stores only hashes,
 stability axes, and the first mismatch sample identity. Missing or failed
 evidence is `RUN_ERROR`; a
 faster wrong or unstable output can never be GREEN. Historical schema-v3/v4 boards
-remain historical and cannot be rebuilt/merged into schema v5 without remeasurement.
+remain historical and cannot be rebuilt or merged into the current schema
+without remeasurement.
 A WASM scoreboard invocation admits one Node executable before benchmark builds:
 its exact resolved path, version, byte size and SHA-256 accompany the board and
 every WASM cell as `execution_host`. Cells reuse that plan; native-only boards

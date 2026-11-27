@@ -81,25 +81,32 @@ python tools/benchmark_applications.py --write-oracle sqlglot
 ```
 
 Review oracle changes as semantic changes. Generation does not qualify Molt or
-replace upstream conformance tests. Both application runtime-performance cells
-remain unqualified. In particular, the pinned HTML5lib dependency `six` executes
+replace upstream conformance tests. Current application qualification and
+remaining obligations belong to [V1-07](../../docs/agent/V1_HANDOFF_FINDINGS.md).
+In particular, the pinned HTML5lib dependency `six` executes
 source with `exec`; Molt intentionally rejects it under the [AOT policy](../../docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md).
 Retain the failure without a timing score or a package/compiler workaround.
 Failures within the intended subset remain defects, not new policy exclusions.
 
-## Suites + lane status
+## Suite selection and qualification
 
-| Suite | CPython (oracle) | molt | reference engine |
-|---|---|---|---|
-| `pyperformance_benchmarks` | ✅ active (97 IDs, full v1.14.0) | ⏸ deferred (needs build + `pyperformance` importable under molt) | — |
-| `codon_benchmarks` | ✅ active | ⏸ deferred (needs build) | codon — ✅ active, self-skips if absent |
-| `cpython_regrtest` (adapter landed) | ✅ active (`tools/regrtest_adapter.py`, version-gated) | ⏸ deferred (libregrtest via molt import boundary) | — |
-| `clbg/` kernels | vendored source; no registry-driven execution | — | — |
+The [friend manifest](../friends/manifest.toml) owns external-suite recipes,
+pinned sources and runner lanes. The adapters named above implement their
+protocols; [bench_suites](../../tools/bench_suites.py) owns the local primary
+suites, smoke subset, application recipes and typed exclusions. Inspect the
+selected local coordinates with the existing metadata-only plan:
 
-molt lanes are deferred until each is **built and verified per suite** — activated
-incrementally, never enabled unverified. The molt *native* board
-(`tools/perf_scoreboard.py`) benchmarks molt directly today; these friend lanes are the
-cross-engine comparison.
+```sh
+uv run --no-project python -B tools/venv_exec.py python tools/perf_scoreboard.py --plan
+```
+
+These inventories have different denominators. Catalog registration, vendored
+files, adapter presence and a passing CPython reference do not qualify a Molt
+lane. Activate each engine/suite only after its actual build and execution
+satisfy the declared semantic and measurement protocol; retain failures and
+unavailable-engine reasons as missing coverage. Use retained receipts for
+observed scope and [V1-07 in the V1 ledger](../../docs/agent/V1_HANDOFF_FINDINGS.md)
+for current performance and release obligations.
 
 ## Optional reference engines (out-of-band, lanes self-skip if absent)
 

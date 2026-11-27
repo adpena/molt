@@ -134,6 +134,7 @@ _CANONICAL_PERF_FORBIDDEN_FLAGS = frozenset(
         "--signals-format",
         "--signal-limit",
         "--expected-source",
+        "--build-timeout",
     }
 )
 
@@ -307,6 +308,47 @@ def _has_flag(tokens: Sequence[str], flag: str) -> bool:
     return any(token == flag or token.startswith(f"{flag}=") for token in tokens)
 
 
+def _non_release_scoreboard_flags(tokens: Sequence[str]) -> list[str]:
+    return sorted(
+        flag for flag in _CANONICAL_PERF_FORBIDDEN_FLAGS if _has_flag(tokens, flag)
+    )
+
+
+def _producer_invocation_argv(record: object) -> list[str] | None:
+    if not isinstance(record, Mapping):
+        return None
+    argv = record.get("argv")
+    if isinstance(argv, list) and argv and all(isinstance(v, str) and v for v in argv):
+        return argv
+    return None
+
+
+def _producer_invocation_flag_problem(argv: list[str]) -> str | None:
+    forbidden = _non_release_scoreboard_flags(argv)
+    if forbidden:
+        return "producer invocation uses non-release perf flags: " + ", ".join(
+            forbidden
+        )
+    return None
+
+
+def producer_invocation_arguments_problems(invocations: object) -> list[str]:
+    """Share command admission between release and current-citable readers."""
+    if not isinstance(invocations, list) or not invocations:
+        return ["producer invocation records are missing"]
+    problems: list[str] = []
+    for record in invocations:
+        if not isinstance(record, Mapping):
+            problems.append("producer invocation record is invalid")
+            continue
+        argv = _producer_invocation_argv(record)
+        if argv is None:
+            problems.append("producer invocation argv is invalid")
+        elif problem := _producer_invocation_flag_problem(argv):
+            problems.append(problem)
+    return problems
+
+
 def _command_names_perf_scoreboard(tokens: Sequence[str]) -> bool:
     for token in tokens:
         normalized = token.replace("\\", "/").lower()
@@ -368,9 +410,7 @@ def canonical_scoreboard_command_problems(
         if not _has_flag(tokens, flag):
             problems.append(f"{label} missing {flag}")
 
-    forbidden = sorted(
-        flag for flag in _CANONICAL_PERF_FORBIDDEN_FLAGS if _has_flag(tokens, flag)
-    )
+    forbidden = _non_release_scoreboard_flags(tokens)
     if forbidden:
         problems.append(f"{label} uses non-release perf flags: {', '.join(forbidden)}")
 
@@ -605,6 +645,16 @@ def current_scoreboard_problems(
             else "missing/false provenance.authoritative"
         )
         problems.append(f"{label} is not authoritative: {reason}")
+
+    invocations = (
+        provenance.get("producer_invocations")
+        if isinstance(provenance, Mapping)
+        else None
+    )
+    problems.extend(
+        f"{label} {problem}"
+        for problem in producer_invocation_arguments_problems(invocations)
+    )
 
     problems.extend(
         f"{label} {problem}"
@@ -997,20 +1047,11 @@ def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
         if isinstance(provenance, Mapping)
         else None
     )
-    if not isinstance(invocations, list) or not invocations:
-        problems.append("producer invocation records are missing")
-    else:
+    problems.extend(producer_invocation_arguments_problems(invocations))
+    if isinstance(invocations, list):
         for record in invocations:
             if not isinstance(record, Mapping):
-                problems.append("producer invocation record is invalid")
                 continue
-            argv = record.get("argv")
-            if (
-                not isinstance(argv, list)
-                or not argv
-                or any(not isinstance(v, str) or not v for v in argv)
-            ):
-                problems.append("producer invocation argv is invalid")
             check_identity(
                 record.get("command_interpreter"), "producer command interpreter"
             )

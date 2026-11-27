@@ -164,6 +164,8 @@ def test_guard_owner_never_adopts_a_foreign_loaded_guard(
 ):
     import tools
 
+    original_path = list(sys.path)
+    install_module_view(monkeypatch, "sys", sys, process_guard, path=list(sys.path))
     owner = process_guard._molt_repo_root()
     foreign = tmp_path / "compiler-inputs"
     (foreign / "tools").mkdir(parents=True)
@@ -179,6 +181,7 @@ def test_guard_owner_never_adopts_a_foreign_loaded_guard(
             None, guard_source_root=owner if explicit_owner else None
         )
     assert tools.harness_memory_guard is loaded
+    assert sys.path == original_path
 
 
 def test_guard_loader_reports_installed_package_without_source_tools(

@@ -78,8 +78,8 @@ schema = "molt-perf-methodology-v1"
 # branches directly, changing admitted dependencies and emitted instructions.
 # One synchronous source-outcome dependency observation can reduce compile time.
 # Tool source closure keys use the selected per-file content digests.
-version = 157
-content_sha256 = "cab018d98825900a029af973fd2746cd0c495596f35c70ba20cb9eb04576bfb6"
+version = 158
+content_sha256 = "56178d34551caaca7c3fcd82acc18554fde97673447ee4f5332d7aa81d473a51"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -196,13 +196,13 @@ reason = "suite membership is its own comparability axis (suite_hash)"
 path = "tools/shard_partition.py"
 reason = "deterministic shard membership is recorded in provenance and checked at merge; it does not change per-cell measurement or comparison"
 
-[[mechanics]]
+[[methodology]]
 path = "tools/harness_memory_guard.py"
-reason = "process custody: a cap breach fails the cell, it never rescales a sample"
+role = "publishes measured suite incidents and actual termination claim time before benchmark retry and failure admission"
 
-[[mechanics]]
+[[methodology]]
 path = "tools/memory_guard.py"
-reason = "process custody under safe_run"
+role = "records guarded child elapsed time, RSS and terminal failure facts consumed by benchmark observations"
 
 [[mechanics]]
 path = "tools/perf_scoreboard_build_profiles.py"
@@ -308,9 +308,13 @@ reason = "reads declared deployment paths; it never selects by directory scan or
 path = "src/molt/file_publication.py"
 reason = "classifies capture symlink and reparse metadata; substitution refuses before accepting a sample"
 
-[[mechanics]]
+[[methodology]]
 path = "tools/batch_compile_client.py"
-reason = "build transport outside sample timing; selected compiler and runtime identities are recorded"
+role = "binds native build failures to request-local guard observations before retry or admission"
+
+[[methodology]]
+path = "tools/memory_guard_core/harness_outcomes.py"
+role = "retains and matches suite guard cause, process birth and request time before classifying benchmark failures"
 
 [[mechanics]]
 path = "tools/bench_metadata.py"
@@ -544,3 +548,111 @@ reason = "canonical JSON encoding for sealed input identity; seal digest is reco
 [[mechanics]]
 path = "src/molt/typed_cache.py"
 reason = "a signature-preserving wrapper over functools caching that the same lookups used before; it memoizes pure results and never changes a computed value or sample"
+
+[[methodology]]
+path = "tools/process_sentinel.py"
+role = "selects process-tree RSS violations and their attempted termination observations"
+
+[[methodology]]
+path = "src/molt/process_model.py"
+role = "computes process-tree membership, captured birth ancestry and measured process facts used by suite incident attribution"
+
+[[methodology]]
+path = "tools/memory_guard_core/memory_limits.py"
+role = "resolves the process, tree and suite limits that admit or refuse benchmark builds and executions"
+
+[[mechanics]]
+path = "src/molt/backend_daemon_suite_custody.py"
+reason = "transports existing daemon suite leases; governed guard authorities own observed RSS and failure classification"
+
+[[mechanics]]
+path = "src/molt/cargo_execution_policy.py"
+reason = "admits canonical Cargo child environment before benchmark execution"
+
+[[mechanics]]
+path = "src/molt/checkout_state.py"
+reason = "retains source-checkout use during process ownership and cleanup, outside guest sample timing"
+
+[[mechanics]]
+path = "src/molt/guard_scope.py"
+reason = "validates registered environment stems without choosing measured values or comparison policy"
+
+[[mechanics]]
+path = "src/molt/host_capacity.py"
+reason = "observes host capacity; governed memory limits select the effective guard budgets"
+
+[[mechanics]]
+path = "src/molt/memory_guard_paths.py"
+reason = "places existing guard artifacts, not their contents or measurement policy"
+
+[[mechanics]]
+path = "src/molt/process_spawn.py"
+reason = "supplies platform process-group spawn options, not sample statistics or comparison policy"
+
+[[mechanics]]
+path = "src/molt/windows_process_api.py"
+reason = "binds Windows process APIs; the governed process model owns admitted facts and tree attribution"
+
+[[mechanics]]
+path = "src/molt/windows_process_snapshot.py"
+reason = "transports Windows process snapshots to the governed process model"
+
+[[mechanics]]
+path = "tools/compat/diff_output_layout.py"
+reason = "formats existing diagnostic artifact paths outside measured guest observations"
+
+[[mechanics]]
+path = "tools/git_transfer.py"
+reason = "owns guarded Git transport outside measured workload execution"
+
+[[mechanics]]
+path = "tools/guarded_entrypoints.py"
+reason = "identifies owned guard entrypoints without selecting RSS thresholds or comparison results"
+
+[[mechanics]]
+path = "tools/memory_guard_core/active_custody.py"
+reason = "retains existing active-process ownership markers and closure, not comparison statistics"
+
+[[mechanics]]
+path = "tools/memory_guard_core/cargo_quarantine.py"
+reason = "contains stale Cargo process state before measurements are admitted"
+
+[[mechanics]]
+path = "tools/memory_guard_core/cli_contract.py"
+reason = "parses guard CLI transport fields; governed memory limits and runner own execution decisions"
+
+[[mechanics]]
+path = "tools/memory_guard_core/common.py"
+reason = "provides shared guard filesystem and diagnostic helpers, not comparison statistics"
+
+[[mechanics]]
+path = "tools/memory_guard_core/payloads.py"
+reason = "serializes retained guarded-process payloads without deciding measurements or verdicts"
+
+[[mechanics]]
+path = "tools/memory_guard_core/process_custody.py"
+reason = "owns captured process closure; governed runner and sentinel own sampling and failure classification"
+
+[[mechanics]]
+path = "tools/memory_guard_core/reporting.py"
+reason = "renders retained guard facts and progress text, not their measured values"
+
+[[mechanics]]
+path = "tools/memory_guard_core/repro_context.py"
+reason = "records reproduction context for diagnostic incidents, not performance samples"
+
+[[mechanics]]
+path = "tools/memory_guard_core/sample_records.py"
+reason = "transports diagnostic sample records; governed runner owns canonical sample values"
+
+[[mechanics]]
+path = "tools/memory_guard_core/worker_peaks.py"
+reason = "summarizes diagnostic worker peaks; canonical sample RSS comes from governed child observations"
+
+[[mechanics]]
+path = "tools/proof_command_argv.py"
+reason = "recognizes proof command entrypoints for custody, not workload statistics"
+
+[[mechanics]]
+path = "tools/win_job.py"
+reason = "owns Windows Job containment and closure, not comparison statistics"

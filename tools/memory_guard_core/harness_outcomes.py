@@ -5,9 +5,10 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from tools import memory_guard
+from tools.process_sentinel import SentinelViolation
 from molt.file_publication import atomic_write_bytes
 from molt.guard_scope import require_guard_stem
 
@@ -233,11 +234,30 @@ SUITE_TRIP_FILE_ENV = "MOLT_DIFF_MEMORY_GUARD_TRIP_FILE"
 
 
 @dataclass(frozen=True, slots=True)
+class SuiteRssMeasurement:
+    rss_kb: int
+    scope: Literal["process", "process_tree", "diff_global_process_groups"]
+    pid: int | None
+    command: str | None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "pid": self.pid,
+            "rss_kb": self.rss_kb,
+            "rss_gb": self.rss_kb / (1024 * 1024),
+            "command": self.command,
+            "scope": self.scope,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SuiteRssTrip:
     message: str
     victim_pgid: int
     process_identities: tuple[tuple[int, int], ...]
     termination_attempted: bool
+    violation: SuiteRssMeasurement
+    termination_claimed_at_ns: int | None
     unidentified_samples: int = 0
     observed_at_ns: int | None = None
     # (victim PID, birth, live-admission time, frozen ancestor identities)
@@ -258,11 +278,10 @@ class SuiteRssTrip:
         owned: Sequence[tuple[int, memory_guard.ProcessIdentity]],
         *,
         request_started_at_ns: int | None = None,
+        request_finished_at_ns: int | None = None,
     ) -> bool:
-        if child is None or not self.termination_attempted:
-            return False
-        if request_started_at_ns is not None and (
-            self.observed_at_ns is None or self.observed_at_ns < request_started_at_ns
+        if child is None or not self.attempted_between(
+            request_started_at_ns, request_finished_at_ns
         ):
             return False
         direct = (
@@ -291,11 +310,23 @@ class SuiteRssTrip:
         )
         return direct or descendant or request_descendant
 
+    def attempted_between(
+        self, started_at_ns: int | None, finished_at_ns: int | None
+    ) -> bool:
+        claimed = self.termination_claimed_at_ns
+        return (
+            self.termination_attempted
+            and claimed is not None
+            and (started_at_ns is None or started_at_ns <= claimed)
+            and (finished_at_ns is None or claimed <= finished_at_ns)
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SuiteTripEvidence:
     trips: tuple[SuiteRssTrip, ...] = ()
     infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None
+    path: Path | None = None
 
     @property
     def message(self) -> str:
@@ -304,11 +335,34 @@ class SuiteTripEvidence:
         return "\n".join(dict.fromkeys(trip.details for trip in self.trips))
 
 
-def suite_trip_failure(message: str) -> SuiteTripEvidence:
+def matching_suite_trips(
+    child: memory_guard.GuardedChildProcess | None,
+    owned: Sequence[tuple[int, memory_guard.ProcessIdentity]],
+    *,
+    request_started_at_ns: int | None,
+    evidence: Sequence[SuiteTripEvidence | None],
+    request_finished_at_ns: int | None = None,
+) -> tuple[tuple[SuiteRssTrip, Path | None], ...]:
+    return tuple(
+        (trip, source.path)
+        for source in evidence
+        if source is not None and source.infrastructure_failure is None
+        for trip in source.trips
+        if trip.matches(
+            child,
+            owned,
+            request_started_at_ns=request_started_at_ns,
+            request_finished_at_ns=request_finished_at_ns,
+        )
+    )
+
+
+def suite_trip_failure(message: str, *, path: Path | None = None) -> SuiteTripEvidence:
     return SuiteTripEvidence(
         infrastructure_failure=memory_guard.GuardInfrastructureFailure(
             phase="rss_trip_evidence", details=(message,)
-        )
+        ),
+        path=path,
     )
 
 
@@ -316,13 +370,14 @@ def _suite_rss_trip(payload: object) -> SuiteRssTrip:
     if not isinstance(payload, dict) or payload.get("event") != "guard_tripped":
         raise ValueError("trip entry is not a guard_tripped object")
     violation = payload.get("violation")
+    if not isinstance(violation, dict):
+        raise ValueError("trip entry has no measured RSS violation")
+    rss_kb = violation.get("rss_kb")
+    scope = violation.get("scope")
     if (
-        not isinstance(violation, dict)
-        or type(violation.get("rss_kb")) is not int
-        or violation["rss_kb"] <= 0
-        or not isinstance(violation.get("scope"), str)
-        or violation["scope"]
-        not in {"process", "process_tree", "diff_global_process_groups"}
+        type(rss_kb) is not int
+        or rss_kb <= 0
+        or scope not in ("process", "process_tree", "diff_global_process_groups")
     ):
         raise ValueError("trip entry has no measured RSS violation")
     event = payload.get("shared_sentinel_event")
@@ -366,6 +421,16 @@ def _suite_rss_trip(payload: object) -> SuiteRssTrip:
     observed = event.get("observed_at_ns")
     if observed is not None and (type(observed) is not int or observed <= 0):
         raise ValueError("trip observation clock is invalid")
+    claimed = event.get("termination_claimed_at_ns")
+    if termination["attempted"]:
+        if (
+            type(claimed) is not int
+            or claimed <= 0
+            or (observed is not None and claimed < observed)
+        ):
+            raise ValueError("trip has no valid termination claim clock")
+    elif claimed is not None:
+        raise ValueError("unclaimed trip carries a termination claim clock")
     ancestry = []
     raw_ancestry = event.get("custody_ancestry", [])
     if not isinstance(raw_ancestry, list):
@@ -401,14 +466,65 @@ def _suite_rss_trip(payload: object) -> SuiteRssTrip:
     message = payload.get("message")
     if not isinstance(message, str) or not message:
         message = "memory_guard: RSS limit exceeded under suite sentinel"
+    pid = violation.get("pid")
+    command = violation.get("command")
     return SuiteRssTrip(
         message,
         pgid,
         tuple(sorted(set(identities))),
         termination["attempted"],
+        SuiteRssMeasurement(
+            rss_kb,
+            scope,
+            pid if type(pid) is int and pid >= 0 else None,
+            command if isinstance(command, str) else None,
+        ),
+        claimed,
         unidentified,
         observed,
         tuple(ancestry),
+    )
+
+
+def sentinel_rss_violation(
+    violation: SentinelViolation, payload: Mapping[str, object]
+) -> memory_guard.RssViolation:
+    if violation.reason == "process_rss":
+        if violation.peak_pid is None or violation.peak_rss_kb is None:
+            raise ValueError("process RSS trip lacks its measured peak process")
+        return memory_guard.RssViolation(
+            pid=violation.peak_pid,
+            rss_kb=violation.peak_rss_kb,
+            command=violation.command,
+            scope="process",
+        )
+    if violation.reason == "global_rss":
+        global_total = payload.get("global_total_kb")
+        if type(global_total) is not int or global_total <= 0:
+            raise ValueError("global RSS trip lacks the measured suite total")
+        return memory_guard.RssViolation(
+            pid=0,
+            rss_kb=global_total,
+            command="all repo-scoped Molt process groups",
+            scope="diff_global_process_groups",
+        )
+    return memory_guard.RssViolation(
+        pid=violation.pgid,
+        rss_kb=violation.total_rss_kb,
+        command=violation.command,
+        scope="process_tree",
+    )
+
+
+def suite_rss_trip_from_sentinel(
+    violation: SentinelViolation, payload: Mapping[str, object]
+) -> SuiteRssTrip:
+    return _suite_rss_trip(
+        {
+            "event": "guard_tripped",
+            "violation": rss_record_payload(sentinel_rss_violation(violation, payload)),
+            "shared_sentinel_event": dict(payload),
+        }
     )
 
 
@@ -437,9 +553,11 @@ def read_suite_trip(
         return None
     except (OSError, ValueError) as exc:
         return suite_trip_failure(
-            f"memory_guard: invalid suite trip evidence at {path}: {exc}"
+            f"memory_guard: invalid suite trip evidence at {path}: {exc}", path=path
         )
-    return SuiteTripEvidence(tuple(_suite_rss_trip(entry) for entry in entries))
+    return SuiteTripEvidence(
+        tuple(_suite_rss_trip(entry) for entry in entries), path=path
+    )
 
 
 def publish_suite_trip(path: Path, entry: dict[str, object]) -> None:

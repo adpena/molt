@@ -2215,6 +2215,7 @@ def _suite_victim_record(pid, born):
         "violation": {"rss_kb": 4096, "scope": "process_tree"},
         "shared_sentinel_event": {
             "event": "repo_process_guard_tripped",
+            "termination_claimed_at_ns": 120,
             "victim_pgid": pid,
             "violation": {
                 "pgid": pid,

@@ -38,6 +38,8 @@ class _FakeProc:
 def bare_client():
     client = BatchCompileServerClient.__new__(BatchCompileServerClient)
     client._proc = _FakeProc()
+    client._guard_sentinel = None
+    client._borrowed_sentinel = None
     client._request_lock = threading.Lock()
     client._closing = threading.Event()
     client._stderr_tail = b""
@@ -148,7 +150,7 @@ def test_batch_request_custody_is_immutable_across_responses_and_errors(
     monkeypatch, bare_client
 ):
     client = bare_client
-    times = iter((100, 200, 300))
+    times = iter((100, 150, 200, 250, 300, 350))
     install_module_view(
         monkeypatch,
         "time",
@@ -166,7 +168,9 @@ def test_batch_request_custody_is_immutable_across_responses_and_errors(
     first = client.request("build", timeout=1)
     second = client.request("build", timeout=1)
     assert first.custody.request_started_at_ns == 100
+    assert first.custody.request_finished_at_ns == 150
     assert second.custody.request_started_at_ns == 200
+    assert second.custody.request_finished_at_ns == 250
     assert first.custody.returncode == 0
     assert second.custody.returncode == 5
 
@@ -177,6 +181,7 @@ def test_batch_request_custody_is_immutable_across_responses_and_errors(
     with pytest.raises(RuntimeError) as error:
         client.request("build", timeout=1)
     assert error.value.batch_request_custody.request_started_at_ns == 300
+    assert error.value.batch_request_custody.request_finished_at_ns == 350
     assert error.value.batch_request_custody.child_process.started_at_ns == 1000
     assert first.custody.request_started_at_ns == 100
 
@@ -535,10 +540,14 @@ def test_batch_restart_inherits_new_lease_despite_stale_request_environment(
     guard_type = harness_memory_guard.HarnessExecutionContext
     context = guard_type.from_env("MOLT_BENCH", environment, repo_root=checkout)
 
+    class LeaseScope(contextlib.ExitStack):
+        def suite_trip_evidence(self) -> None:
+            return None
+
     def start_suite(
         _context: harness_memory_guard.HarnessExecutionContext, **_kwargs: object
     ) -> contextlib.ExitStack:
-        scope = contextlib.ExitStack()
+        scope = LeaseScope()
         scope.enter_context(
             custody.daemon_suite_scope(project_root=checkout, environ=os.environ)
         )
