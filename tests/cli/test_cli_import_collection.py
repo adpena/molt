@@ -115,6 +115,7 @@ from molt.cli.backend_artifact_contract import (
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.models import (
+    RuntimeImportMachinery,
     _ModuleGraphScanAuthority,
     _RuntimeImportSupportPolicy,
     _ModuleSourceScanAuthority,
@@ -3403,21 +3404,49 @@ def test_native_iterator_payload_reaches_namespace_writer(
 
 @pytest.mark.usefixtures("isolated_frontend_state")
 @pytest.mark.parametrize(
-    ("payload", "key", "needs_finder"),
+    ("payload", "key", "needs_finder", "load_finders"),
     [
-        ("select(0)((Row.__init__,))", "__import__", True),
-        ("choose().__call__((Row.__init__,))", "__import__", True),
-        ("select(1, 0)((None, Row.__init__))[0]", "__import__", True),
-        ("next(map(choose(), ((Row.__init__,),)))", "__import__", True),
-        ("select(Row.__init__)(Reflector())", "__import__", True),
-        ("attrgetter('__init__')(Row)", "__import__", True),
-        ("next(map(attrgetter('__class__.__init__'), (Row(1),)))", "__import__", True),
-        ("attrgetter('__init__')(Row)", "len", False),
-        ("methodcaller('__getattribute__', '__init__')(Row(1))", "__import__", True),
-        ("methodcaller('select', Row.__init__)(Reflector())", "__import__", True),
-        ("methodcaller('select', value=Row.__init__)(Reflector())", "len", False),
-        ("choose()((Row.__init__,))", "len", False),
-        ("forward()((Row.__init__,))", "len", False),
+        ("select(0)((Row.__init__,))", "__import__", True, False),
+        ("choose().__call__((Row.__init__,))", "__import__", True, False),
+        ("select(1, 0)((None, Row.__init__))[0]", "__import__", True, False),
+        ("next(map(choose(), ((Row.__init__,),)))", "__import__", True, False),
+        ("select(Row.__init__)(Reflector())", "__import__", True, False),
+        ("attrgetter('__init__')(Row)", "__import__", True, False),
+        (
+            "next(map(attrgetter('__class__.__init__'), (Row(1),)))",
+            "__import__",
+            True,
+            False,
+        ),
+        ("attrgetter('__init__')(Row)", "len", False, False),
+        (
+            "methodcaller('__getattribute__', '__init__')(Row(1))",
+            "__import__",
+            True,
+            False,
+        ),
+        (
+            "methodcaller('select', Row.__init__)(Reflector())",
+            "__import__",
+            True,
+            False,
+        ),
+        (
+            "methodcaller('select', value=Row.__init__)(Reflector())",
+            "len",
+            False,
+            False,
+        ),
+        ("choose()((Row.__init__,))", "len", False, False),
+        ("forward()((Row.__init__,))", "len", False, False),
+        pytest.param(
+            "select(Row.__init__)(Reflector())",
+            "__import__",
+            True,
+            True,
+            marks=(pytest.mark.slow, pytest.mark.long_pole),
+            id="native-import-machinery-through-getitem",
+        ),
     ],
 )
 def test_native_selection_reaches_namespace_writer(
@@ -3426,13 +3455,18 @@ def test_native_selection_reaches_namespace_writer(
     payload: str,
     key: str,
     needs_finder: bool,
+    load_finders: bool,
 ) -> None:
+    dataclass_import = "from dataclasses import dataclass\n" if load_finders else ""
+    row = (
+        "@dataclass\nclass Row:\n    x: int\n"
+        if load_finders
+        else "class Row:\n    def __init__(self, x: int): self.x = x\n"
+    )
     source = (
-        "from dataclasses import dataclass\n"
+        f"{dataclass_import}"
         "from operator import itemgetter as select, attrgetter, methodcaller\n"
-        "@dataclass\n"
-        "class Row:\n"
-        "    x: int\n"
+        f"{row}"
         "class Reflector:\n"
         "    def __getitem__(self, key): return key\n"
         "    def select(self, value): return value\n"
@@ -3466,7 +3500,9 @@ def test_native_selection_reaches_namespace_writer(
     monkeypatch.setattr(
         cli_module_import_scanner, "_module_graph_needs_runtime_import_support", observe
     )
-    _assert_graph_import_finder(tmp_path, source, needs_finder)
+    _assert_graph_import_finder(
+        tmp_path, source, needs_finder, load_finders=load_finders
+    )
     assert any(
         row.construct == "namespace" and row.module == "builtins" and row.name == key
         for row in reached
@@ -3477,6 +3513,8 @@ def test_native_selection_reaches_namespace_writer(
     )
 
 
+@pytest.mark.slow
+@pytest.mark.long_pole
 @pytest.mark.usefixtures("isolated_frontend_state")
 @pytest.mark.parametrize(
     "factory",
@@ -3512,10 +3550,17 @@ def test_returned_selector_keeps_open_argument_effects(
 
 
 def _assert_graph_import_finder(
-    tmp_path: Path, source: str, needs_finder: bool | None
+    tmp_path: Path, source: str, needs_finder: bool | None, *, load_finders: bool = True
 ) -> None:
     entry_path = tmp_path / "demo.py"
     entry_path.write_text(source, encoding="utf-8")
+    # The selector cases primarily prove the graph's demand analysis.
+    # A pure target computes the same demand without traversing the finder
+    # implementation. The marked native cases also prove closure admission.
+    target = admit_target("native" if load_finders else "wasm")
+    machinery = RuntimeImportMachinery.for_build(
+        target, wasm_profile=None if load_finders else "pure"
+    )
     prepared, error = cli_module_graph._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3526,7 +3571,8 @@ def _assert_graph_import_finder(
         diagnostics_enabled=False,
         module_reasons={},
         json_output=False,
-        target=admit_target("native"),
+        target=target,
+        runtime_import_machinery=machinery,
         target_sys_platform=None,
     )
     assert error is None
@@ -3536,7 +3582,8 @@ def _assert_graph_import_finder(
             prepared.runtime_import_support_policy.needs_runtime_import_support
             is needs_finder
         )
-        assert ("importlib.machinery" in prepared.module_graph) is needs_finder
+        if load_finders:
+            assert ("importlib.machinery" in prepared.module_graph) is needs_finder
 
 
 def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_lazy(
