@@ -17,7 +17,7 @@ from molt.compiler_analysis.python_binding_facts import (
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import IntFlag, StrEnum
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Set
 from typing import Literal, NamedTuple, assert_never, cast
 
 from molt.compiler_analysis.python_builtin_shapes import (
@@ -392,7 +392,7 @@ class PythonSourceDemands:
         self.binding_users: defaultdict[SourceValue, set[SourceValue]] = defaultdict(
             set
         )
-        self.declaration_users: dict[SourceValue, set[SourceValue]] = {}
+        self.declaration_users: dict[SourceValue, set[SourceValue]] = defaultdict(set)
         self.value_phases: defaultdict[SourceValue, set[SourceDemand]] = defaultdict(
             set
         )
@@ -564,10 +564,11 @@ class PythonSourceDemands:
     def _ensure_value(
         self, origin: SourceValue
     ) -> set[SourceCandidate] | frozenset[SourceCandidate]:
-        if origin not in self.value_candidates:
-            self.value_candidates[origin] = _EMPTY_CANDIDATES
+        candidates = self.value_candidates.get(origin)
+        if candidates is None:
+            candidates = self.value_candidates[origin] = _EMPTY_CANDIDATES
             self.queue_value(origin)
-        return self.value_candidates[origin]
+        return candidates
 
     def _queue_arguments(
         self, formal: SourceValue, candidates: set[SourceCandidate]
@@ -2968,14 +2969,12 @@ class PythonSourceDemands:
         selection: SourceValue,
         user: SourceValue,
         call: PythonSourceCall,
+        parameters: PythonSourceCallableDeclaration,
     ) -> set[SourceCandidate] | None:
         if not call.arguments:
             return None
         callee = candidate.value
-        parameters = self.declarations.get(callee)
         result = self.functions.get(callee)
-        if parameters is None or parameters.kind != FunctionKind.SYNC:
-            return None
         if result is None:
             # Bodies can publish after their call is admitted.
             self._return_projection_users.setdefault(callee, set()).add(user)
@@ -3012,7 +3011,6 @@ class PythonSourceDemands:
                     if index is None or not call.arguments[index][2]:
                         return None
                     actuals.append((index, element, exposed_only))
-        self.watch(callee, user)
         for dependency in (callee, selection):
             self._return_projection_users.setdefault(dependency, set()).add(user)
         selected: set[SourceCandidate] = set()
@@ -3133,8 +3131,7 @@ class PythonSourceDemands:
         user: SourceValue,
         receiver_bound: bool,
     ) -> None:
-        self.declaration_users.setdefault(callee, set()).add(user)
-        parameters = self.declarations.get(callee)
+        parameters = self._read_declaration(callee, user)
         if parameters is None:
             return
         for target, index, packed in self._argument_bindings(
@@ -3395,8 +3392,21 @@ class PythonSourceDemands:
                             self._queue_arguments((method.module, target), selected)
                 self.activate(method, "call")
 
-    def _function_kind(self, callee: SourceCandidate) -> FunctionKind:
-        declaration = self.declarations.get(callee.value)
+    def _read_declaration(
+        self, callee: SourceValue, user: SourceValue
+    ) -> PythonSourceCallableDeclaration | None:
+        self.declaration_users[callee].add(user)
+        return self.declarations.get(callee)
+
+    def _function_kind(
+        self, callee: SourceCandidate, *, user: SourceValue | None = None
+    ) -> FunctionKind:
+        value = callee.value
+        declaration = (
+            self.declarations.get(value)
+            if user is None
+            else self._read_declaration(value, user)
+        )
         return FunctionKind.SYNC if declaration is None else declaration.kind
 
     def _subscript_values(
@@ -3627,9 +3637,9 @@ class PythonSourceDemands:
         *,
         forward_outcome: bool = False,
         selection: SourceValue | None = None,
-    ) -> set[SourceCandidate]:
+    ) -> Set[SourceCandidate]:
         if callee.kind == "iterator_next":
-            return set(self.watch(self._iterator_contents(callee), user))
+            return self.watch(self._iterator_contents(callee), user)
         if callee.kind == "iterator_self":
             return {callee._replace(kind="iterator")}
         if callee.kind == "namespace_popitem":
@@ -3664,26 +3674,33 @@ class PythonSourceDemands:
             }
         if callee.kind == "namespace_items_method":
             return {callee._replace(kind="namespace_items")}
-        if callee.identity is not None or callee.kind in {
-            "namespace_clear",
-            "namespace_write_descriptor",
-            "namespace_write_method",
-            "resumable",
-            "class_descriptor",
-            "property_descriptor",
-        }:
-            return set()
-        if self._function_kind(callee) != FunctionKind.SYNC:
-            value = callee.value
-            self.watch(value, user)
+        if (
+            callee.identity is not None
+            or callee.kind
+            in {
+                "namespace_clear",
+                "namespace_write_descriptor",
+                "namespace_write_method",
+                "resumable",
+                "class_descriptor",
+                "property_descriptor",
+            }
+            or callee.source is None
+        ):
+            return _EMPTY_CANDIDATES
+        # A candidate's declaration selects its calling protocol. Reads of
+        # its returned values subscribe to the outcome, not the callee value.
+        value = callee.value
+        declaration = self._read_declaration(value, user)
+        if declaration is not None and declaration.kind != FunctionKind.SYNC:
             return {SourceCandidate(*value, "resumable")}
-        if selection is not None and callee.kind in {
-            "value",
-            "bound_class_method",
-            "bound_static_method",
-        }:
+        if (
+            selection is not None
+            and declaration is not None
+            and callee.kind in {"value", "bound_class_method", "bound_static_method"}
+        ):
             projection = self._project_call_result(
-                callee, selection, user, self.calls[user]
+                callee, selection, user, self.calls[user], declaration
             )
             if projection is not None:
                 return projection
@@ -3696,25 +3713,23 @@ class PythonSourceDemands:
         *,
         yielded: bool = False,
         forward_outcome: bool = False,
-    ) -> set[SourceCandidate]:
-        value = callee.value
-        self.watch(value, user)
+    ) -> Set[SourceCandidate]:
         if callee.source is None:
-            return set()
+            return _EMPTY_CANDIDATES
         outcome = (callee.module, SourceCallableOutcome(callee.source, yielded))
         if forward_outcome:
             self.call_outcome_inputs.setdefault(user, set()).add(outcome)
             self.call_outcome_users.setdefault(outcome, set()).add(user)
-            return set(self._ensure_value(outcome))
-        return set(self.watch(outcome, user))
+            return self._ensure_value(outcome)
+        return self.watch(outcome, user)
 
     def _awaited_values(
         self, awaited: SourceCandidate, user: SourceValue
-    ) -> set[SourceCandidate]:
+    ) -> Set[SourceCandidate]:
         if awaited.contained:
-            return set()
+            return _EMPTY_CANDIDATES
         if awaited.kind == "resumable":
-            if self._function_kind(awaited) == FunctionKind.ASYNC:
+            if self._function_kind(awaited, user=user) == FunctionKind.ASYNC:
                 return self._function_values(awaited, user)
         elif awaited.kind == "instance":
             member = (awaited.module, SourceMember(awaited, "__await__"))
@@ -3725,18 +3740,18 @@ class PythonSourceDemands:
             for iterator in tuple(self.watch(returned, user)):
                 result.update(self._generator_completion_values(iterator, user))
             return result
-        return set()
+        return _EMPTY_CANDIDATES
 
     def _generator_completion_values(
         self, generator: SourceCandidate, user: SourceValue
-    ) -> set[SourceCandidate]:
+    ) -> Set[SourceCandidate]:
         if (
             not generator.contained
             and generator.kind == "resumable"
-            and self._function_kind(generator) == FunctionKind.GENERATOR
+            and self._function_kind(generator, user=user) == FunctionKind.GENERATOR
         ):
             return self._function_values(generator, user)
-        return set()
+        return _EMPTY_CANDIDATES
 
     @staticmethod
     def _positional_arities(call: PythonSourceCall) -> tuple[bool, bool]:
@@ -3834,7 +3849,8 @@ class PythonSourceDemands:
                             )
                         elif receiver.kind == "iterator" or (
                             receiver.kind == "resumable"
-                            and self._function_kind(receiver) == FunctionKind.GENERATOR
+                            and self._function_kind(receiver, user=user)
+                            == FunctionKind.GENERATOR
                         ):
                             acquired.add(receiver)
                         elif self._source_class_candidate(receiver):
@@ -4000,15 +4016,18 @@ class PythonSourceDemands:
 
     def _advanced_values(
         self, iterator: SourceCandidate, user: SourceValue, *, asynchronous: bool
-    ) -> set[SourceCandidate]:
+    ) -> Set[SourceCandidate]:
         if iterator.contained:
-            return set()
+            return _EMPTY_CANDIDATES
         if iterator.kind == "iterator" and not asynchronous:
-            return set(self.watch(self._iterator_contents(iterator), user))
+            return self.watch(self._iterator_contents(iterator), user)
         expected = (
             FunctionKind.ASYNC_GENERATOR if asynchronous else FunctionKind.GENERATOR
         )
-        if iterator.kind == "resumable" and self._function_kind(iterator) == expected:
+        if (
+            iterator.kind == "resumable"
+            and self._function_kind(iterator, user=user) == expected
+        ):
             return self._function_values(iterator, user, yielded=True)
         if iterator.kind == "instance":
             name = "__anext__" if asynchronous else "__next__"
@@ -4016,12 +4035,12 @@ class PythonSourceDemands:
             item = (iterator.module, SourceReturn(member))
             if asynchronous:
                 item = (iterator.module, SourceAwait(item))
-            return set(self.watch(item, user))
-        return set()
+            return self.watch(item, user)
+        return _EMPTY_CANDIDATES
 
     def _iterated_values(
         self, iterable: SourceCandidate, user: SourceValue, *, asynchronous: bool
-    ) -> set[SourceCandidate]:
+    ) -> Set[SourceCandidate]:
         if iterable.kind in {"namespace_values", "namespace_items"}:
             return {
                 candidate._replace(contained=iterable.kind == "namespace_items")
