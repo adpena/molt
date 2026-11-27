@@ -56,6 +56,7 @@ pub enum HomeCount<W> {
 pub struct FrameReservation {
     pub arena_bytes: u32,
     pub recursion_depth: u32,
+    pub virtual_exception_level: bool,
 }
 
 impl FrameReservation {
@@ -66,6 +67,7 @@ impl FrameReservation {
         Some(Self {
             arena_bytes: u32::try_from(bytes).ok()?,
             recursion_depth: depth,
+            virtual_exception_level: false,
         })
     }
 }
@@ -222,6 +224,25 @@ pub fn generate_frame_entry_admits<B: FrameBuilder>(
                 require_arena_space(b, thread, end);
             }
             checked_callable(b, function, code_slot);
+            if reservation.virtual_exception_level {
+                let depth =
+                    b.load_word(thread, crate::THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET);
+                // Normal activation snapshots use the same nonnegative u32
+                // subset in the native and Wasm exception coordinate ABI.
+                let fits =
+                    compare_immediate(b, WordComparison::UnsignedLessThan, depth, 1_u64 << 32);
+                b.require(fits);
+                let admitted =
+                    b.load_word(thread, crate::THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET);
+                let aligned = b.compare(WordComparison::Equal, depth, admitted);
+                b.require(aligned);
+                let baseline =
+                    b.load_word(thread, crate::THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET);
+                let after_depth = b.add_immediate(depth, 1);
+                let covers_baseline =
+                    b.compare(WordComparison::UnsignedLessThan, baseline, after_depth);
+                b.require(covers_baseline);
+            }
             let yes = b.constant(1);
             b.set(result, yes);
         },

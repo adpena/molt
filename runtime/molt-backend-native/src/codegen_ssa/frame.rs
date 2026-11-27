@@ -465,19 +465,16 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
         use super::builder::SiteBody;
         use super::value_table::HeldCarrier;
         use molt_codegen_abi::frame_record::FrameReservation;
-        use molt_ir::runtime_fn_generated::RuntimeFn;
 
         let reservation = FramePrefix::reservation_from_attrs(&op.attrs)
             .and_then(|counts| FrameReservation::from_counts(counts.homes, counts.depth));
         let operands = self.operands();
         let function = op.operands[0];
-        let needs_level = FramePrefix::requires_virtual_level(&op.attrs);
-        let level = RuntimeFn::ExceptionVirtualLevelReady;
-        let admitted = if (!needs_level || self.runtime.contains(level))
-            && let (Some(AttrValue::Str(owner)), Some(reservation)) =
-                (op.attrs.get("s_value"), reservation)
+        let admitted = if let (Some(AttrValue::Str(owner)), Some(mut reservation)) =
+            (op.attrs.get("s_value"), reservation)
             && operands.held(function) == HeldCarrier::Boxed
         {
+            reservation.virtual_exception_level = FramePrefix::requires_virtual_level(&op.attrs);
             let thread = b.thread_record_word();
             let callable = operands.resolve(b, function);
             let code = b.program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner);
@@ -491,18 +488,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
                     b.word_value(unused_admission),
                 ],
             );
-            let admitted = b.expect_word(result);
-            if needs_level {
-                let frame = b.low_bit(admitted);
-                let result = b.choose(
-                    frame,
-                    |b| b.call_runtime(level, &[]).expect("virtual level readiness"),
-                    |b| b.constant(0),
-                );
-                b.low_bit(result)
-            } else {
-                b.low_bit(admitted)
-            }
+            b.low_bit(b.expect_word(result))
         } else {
             b.bit_constant(false)
         };

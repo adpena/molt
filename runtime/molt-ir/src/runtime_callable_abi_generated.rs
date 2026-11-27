@@ -18273,10 +18273,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_trace_prepend__molt_context_66fa900595616b00",
         },
-        "molt_exception_virtual_level_ready" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_exception_virtual_level_ready__molt_context_66fa900595616b00",
-        },
         "molt_exception_with_traceback" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_with_traceback__molt_context_66fa900595616b00",

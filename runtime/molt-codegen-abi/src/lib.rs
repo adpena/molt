@@ -259,6 +259,10 @@ pub const THREAD_RECORD_MISSING_SLOT_OFFSET: i32 = 104;
 pub const THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET: i32 = 112;
 /// u64: the current activation's pop boundary, saved and restored on entry/exit.
 pub const THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET: i32 = 120;
+/// u64: active stack depth with a spare lexical slot and tracing disabled.
+/// An unaligned handler depth or a deeper baseline still requires a real entry.
+pub const THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET: i32 = 128;
+pub const NO_VIRTUAL_EXCEPTION_DEPTH: u64 = u64::MAX;
 
 // A frame record: six header words, then the frame's homes. `base` is the
 // homes base; every header word sits at a negative offset from it, so home
@@ -632,10 +636,12 @@ pub struct GeneratedObjectAbiFacts {
     pub buffer2d_storage_packed: u64,
     pub thread_record_exception_handler_depth_offset: i32,
     pub thread_record_exception_stack_baseline_offset: i32,
+    pub thread_record_virtual_exception_depth_offset: i32,
+    pub no_virtual_exception_depth: u64,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 82] {
+    pub const fn words(self) -> [u64; 84] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -719,6 +725,8 @@ impl GeneratedObjectAbiFacts {
             self.buffer2d_storage_packed,
             self.thread_record_exception_handler_depth_offset as u64,
             self.thread_record_exception_stack_baseline_offset as u64,
+            self.thread_record_virtual_exception_depth_offset as u64,
+            self.no_virtual_exception_depth,
         ]
     }
 
@@ -825,6 +833,8 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     buffer2d_storage_packed: BUFFER2D_STORAGE_PACKED,
     thread_record_exception_handler_depth_offset: THREAD_RECORD_EXCEPTION_HANDLER_DEPTH_OFFSET,
     thread_record_exception_stack_baseline_offset: THREAD_RECORD_EXCEPTION_STACK_BASELINE_OFFSET,
+    thread_record_virtual_exception_depth_offset: THREAD_RECORD_VIRTUAL_EXCEPTION_DEPTH_OFFSET,
+    no_virtual_exception_depth: NO_VIRTUAL_EXCEPTION_DEPTH,
 };
 
 /// The runtime callable identity scheme that generated code embeds (HF-881):
@@ -874,16 +884,17 @@ pub const RUNTIME_CALLABLE_KEY_SCHEME: u64 = runtime_callable_key("molt_func_new
 /// Revision 17 retires Wasm's eager intrinsic manifest from the shared ABI.
 /// Revision 18 binds Buffer2D's direct cell pointer and its distinct packed tag.
 /// Revision 19 binds the exception depth and baseline of the thread record.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V19: u64 = 0xc92c_f9aa_b6f2_2349;
+/// Revision 20 binds the active stack's virtual lexical entry admission.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V20: u64 = 0x1ccb_4cd2_9c2b_3681;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V19,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V20,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 /// Link witnesses use this spelling in both the emitter and runtime producer.
 #[macro_export]
 macro_rules! generated_object_abi_link_symbol {
     ($mode:literal) => {
-        concat!("molt_generated_object_abi_c92cf9aab6f22349_", $mode, "_v19")
+        concat!("molt_generated_object_abi_1ccb4cd29c2b3681_", $mode, "_v20")
     };
 }
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str = generated_object_abi_link_symbol!("gil");
@@ -1924,14 +1935,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V19
+            GENERATED_OBJECT_ABI_FINGERPRINT_V20
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V19,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V20,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1939,13 +1950,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V19);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V20);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v19"), "{symbol}");
+            assert!(symbol.ends_with("_v20"), "{symbol}");
         }
     }
 

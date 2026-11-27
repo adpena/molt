@@ -23,8 +23,10 @@ impl<'ctx> LlvmBackend<'ctx> {
     ) -> FunctionValue<'ctx> {
         self.site_helper(
             &format!(
-                "__molt_frame_entry_probe_{}_{}",
-                reservation.arena_bytes, reservation.recursion_depth
+                "__molt_frame_entry_probe_{}_{}_{}",
+                reservation.arena_bytes,
+                reservation.recursion_depth,
+                u8::from(reservation.virtual_exception_level),
             ),
             4,
             |b, words| {
