@@ -44,6 +44,7 @@ from molt.compiler_analysis.python_lexical_scope import (
     python_scope_declarations,
 )
 from molt.compiler_analysis.python_source_keys import (
+    PythonSourceLocations,
     PythonSourceKey,
     _PythonAstDigestAdmission,
     decode_python_source_key,
@@ -244,18 +245,21 @@ class PythonNamespaceWrite:
         return bool(self.borrowed_if) or self.key_source is not None
 
 
-def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
+def python_namespace_write_payload(
+    write: PythonNamespaceWrite,
+    locations: PythonSourceLocations = PythonSourceLocations(),
+) -> list[object]:
     return [
         write.module,
         write.name,
         write.construct,
-        write.line,
-        None if write.source_owner is None else list(write.source_owner),
-        None if write.source_site is None else list(write.source_site),
+        locations.line(write.line),
+        None if write.source_owner is None else list(locations.key(write.source_owner)),
+        None if write.source_site is None else list(locations.key(write.source_site)),
         None if write.key_bound is None else write.key_bound.payload(),
         list(write.initialized),
-        None if write.key_source is None else list(write.key_source),
-        [[list(call), position] for call, position in write.borrowed_if],
+        None if write.key_source is None else list(locations.key(write.key_source)),
+        [[list(locations.key(call)), position] for call, position in write.borrowed_if],
     ]
 
 

@@ -58,6 +58,7 @@ from molt.compiler_analysis.python_source_keys import (
     PythonElementProtocol,
     PythonSourceProjection,
     PythonSourceKey,
+    PythonSourceLocations,
     decode_python_source_key,
     python_source_contains,
 )
@@ -309,9 +310,11 @@ def _decode_optional_source_key(raw):
     return None if raw is None else decode_python_source_key(raw)
 
 
-def _encode_source_site(site):
+def _encode_source_site(
+    site: SourceImportSite, locations: PythonSourceLocations = PythonSourceLocations()
+) -> dict[str, object]:
     return {
-        "source": site.source,
+        "source": locations.key(site.source),
         "request": asdict(site.request) if site.request is not None else None,
         "plan": _encode_source_plan(site.plan),
         "owner_plan": _encode_source_plan(site.owner_plan),
@@ -355,15 +358,19 @@ def _decode_source_all(raw):
     return SourceAllExports(item["status"], names, item["reason"])
 
 
-def _encode_namespace_summary(summary: PythonNamespaceSummary) -> dict[str, Any]:
+def _encode_namespace_summary(
+    summary: PythonNamespaceSummary,
+    locations: PythonSourceLocations = PythonSourceLocations(),
+) -> dict[str, Any]:
     return {
         "schema": SUMMARY_SCHEMA,
         "own_names": None if summary.own_names is None else sorted(summary.own_names),
         "foreign_writes": [
-            python_namespace_write_payload(write) for write in summary.foreign_writes
+            python_namespace_write_payload(write, locations)
+            for write in summary.foreign_writes
         ],
-        "own_reflection_line": summary.own_reflection_line,
-        "own_namespace_line": summary.own_namespace_line,
+        "own_reflection_line": locations.line(summary.own_reflection_line),
+        "own_namespace_line": locations.line(summary.own_namespace_line),
     }
 
 
@@ -1884,15 +1891,17 @@ def _decode_import_scan_payload(
 
 
 def _encode_runtime_catalog_deferral(
-    deferral: RuntimeCatalogDeferral | None,
+    deferral: RuntimeCatalogDeferral | None, *, include_owner_identity: bool
 ) -> dict[str, Any] | None:
     if deferral is None:
         return None
-    return {
-        "source_ast_digest": deferral.source_ast_digest,
+    payload: dict[str, Any] = {
         "imports": deferral.imports,
         "star_modules": deferral.star_modules,
     }
+    if include_owner_identity:
+        payload["source_ast_digest"] = deferral.source_ast_digest
+    return payload
 
 
 def _decode_runtime_catalog_deferral(value: object) -> RuntimeCatalogDeferral | None:
@@ -1928,6 +1937,7 @@ def _import_scan_payload(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_catalog_owner: bool = False,
     purpose: SourceImportPurpose = SourceImportPurpose.EXECUTION,
+    locations: PythonSourceLocations = PythonSourceLocations(),
 ) -> dict[str, object]:
     _validate_import_scan_namespace_summary(
         scan.namespace_summary, source_owner=source_owner
@@ -1949,50 +1959,60 @@ def _import_scan_payload(
         ).payload(),
         "import_scan_mode": import_scan_mode,
         "purpose": purpose.value,
-        "source_owner": source_owner,
+        "source_owner": locations.optional(source_owner),
         "source_arguments": source_arguments,
         "source_demands": [
             [
-                item.source,
+                locations.key(item.source),
                 item.phase,
                 item.argument_count,
-                item.owner,
-                item.argument_call,
+                locations.optional(item.owner),
+                locations.optional(item.argument_call),
             ]
             for item in scan.source_demands
         ],
-        "source_sites": [_encode_source_site(site) for site in scan.source_sites],
+        "source_sites": [
+            _encode_source_site(site, locations) for site in scan.source_sites
+        ],
         "all_exports": asdict(scan.all_exports),
         "namespace_summary": (
             None
             if scan.namespace_summary is None
-            else _encode_namespace_summary(scan.namespace_summary)
+            else _encode_namespace_summary(scan.namespace_summary, locations)
         ),
-        "source_bindings": scan.source_bindings,
+        "source_bindings": [
+            binding._replace(source=locations.key(binding.source))
+            for binding in scan.source_bindings
+        ],
         "source_values": {
             "namespaces": [
                 (
-                    owner,
-                    [(name, sorted(origins)) for name, origins in names],
-                    sorted(exposed),
+                    locations.key(owner),
+                    [(name, locations.ordered(origins)) for name, origins in names],
+                    locations.ordered(exposed),
                 )
                 for owner, names, exposed in scan.source_values.namespaces
             ],
             "attributes": [
-                (owner, name, sorted(origins))
+                (locations.key(owner), name, locations.ordered(origins))
                 for owner, name, origins in scan.source_values.attributes
             ],
             "elements": [
-                (item.owner, item.protocol, sorted(item.origins), item.key)
+                (
+                    locations.key(item.owner),
+                    item.protocol,
+                    locations.ordered(item.origins),
+                    item.key,
+                )
                 for item in scan.source_values.elements
             ],
             "calls": [
                 (
-                    item.owner,
-                    sorted(item.callees),
+                    locations.key(item.owner),
+                    locations.ordered(item.callees),
                     item.intrinsic_result,
                     [
-                        (name, sorted(direct), sorted(exposed))
+                        (name, locations.ordered(direct), locations.ordered(exposed))
                         for name, direct, exposed in item.arguments
                     ],
                     item.argument_strings,
@@ -2002,56 +2022,84 @@ def _import_scan_payload(
                 )
                 for item in scan.source_values.calls
             ],
-            "callables": scan.source_values.callables,
+            "callables": [
+                (locations.key(owner), count)
+                for owner, count in scan.source_values.callables
+            ],
             "call_imports": [
                 (
                     transfer.identities,
-                    _encode_source_site(transfer.site),
+                    _encode_source_site(transfer.site, locations),
                     transfer.returned_modules,
-                    sorted(transfer.returned_sources),
-                    sorted(transfer.returned_exposed),
+                    locations.ordered(transfer.returned_sources),
+                    locations.ordered(transfer.returned_exposed),
                 )
                 for transfer in scan.source_values.call_imports
             ],
-            "declarations": [tuple(item) for item in scan.source_values.declarations],
+            "declarations": [
+                (
+                    locations.key(item.owner),
+                    item.kind,
+                    tuple(map(locations.key, item.positional)),
+                    locations.optional(item.vararg),
+                    [(name, locations.key(key)) for name, key in item.keywords],
+                    locations.optional(item.kwarg),
+                )
+                for item in scan.source_values.declarations
+            ],
             "functions": [
                 (
-                    item.owner,
-                    sorted(item.returned),
-                    sorted(item.returned_exposed),
-                    sorted(item.yielded),
-                    sorted(item.yielded_exposed),
+                    locations.key(item.owner),
+                    locations.ordered(item.returned),
+                    locations.ordered(item.returned_exposed),
+                    locations.ordered(item.yielded),
+                    locations.ordered(item.yielded_exposed),
                     item.returns_calls_only,
                 )
                 for item in scan.source_values.functions
             ],
             "activation_partitions": [
-                (owner, [None if item is None else sorted(item) for item in classes])
+                (
+                    locations.key(owner),
+                    [None if item is None else sorted(item) for item in classes],
+                )
                 for owner, classes in scan.source_values.activation_partitions
             ],
             "bases": [
-                (owner, sorted(origins)) for owner, origins in scan.source_values.bases
+                (locations.key(owner), locations.ordered(origins))
+                for owner, origins in scan.source_values.bases
             ],
             "completions": [
-                (owner, sorted(origins))
+                (locations.key(owner), locations.ordered(origins))
                 for owner, origins in scan.source_values.completions
             ],
             "cache_writes": [
-                (source, keys, sorted(origins), sorted(contents))
+                (
+                    locations.key(source),
+                    keys,
+                    locations.ordered(origins),
+                    locations.ordered(contents),
+                )
                 for source, keys, origins, contents in scan.source_values.cache_writes
             ],
-            "classes": scan.source_values.classes,
+            "classes": [
+                item._replace(owner=locations.key(item.owner))
+                for item in scan.source_values.classes
+            ],
             "native_initializers": [
                 (
-                    item.owner,
-                    sorted(item.receiver),
-                    sorted(item.captures),
-                    [(name, sorted(origins)) for name, origins in item.attributes],
+                    locations.key(item.owner),
+                    locations.ordered(item.receiver),
+                    locations.ordered(item.captures),
+                    [
+                        (name, locations.ordered(origins))
+                        for name, origins in item.attributes
+                    ],
                     item.parameters,
                     None
                     if item.capture_values is None
                     else [
-                        (sorted(direct), sorted(exposed))
+                        (locations.ordered(direct), locations.ordered(exposed))
                         for direct, exposed in item.capture_values
                     ],
                     item.stores,
@@ -2060,11 +2108,22 @@ def _import_scan_payload(
                 for item in scan.source_values.native_initializers
             ],
             "cache_reads": [
-                (source, keys, sorted(defaults), sorted(contents), contained)
+                (
+                    locations.key(source),
+                    keys,
+                    locations.ordered(defaults),
+                    locations.ordered(contents),
+                    contained,
+                )
                 for source, keys, defaults, contents, contained in scan.source_values.cache_reads
             ],
             "attribute_writes": [
-                (item.site, item.owner, sorted(item.receivers), item.names)
+                (
+                    locations.key(item.site),
+                    locations.optional(item.owner),
+                    locations.ordered(item.receivers),
+                    item.names,
+                )
                 for item in scan.source_values.attribute_writes
             ],
         },
@@ -2083,7 +2142,9 @@ def _import_scan_payload(
         ),
         "requires_runtime_package_anchor": scan.requires_runtime_package_anchor,
         "uses_runtime_import_protocol": scan.uses_runtime_import_protocol,
-        "runtime_catalog": _encode_runtime_catalog_deferral(scan.runtime_catalog),
+        "runtime_catalog": _encode_runtime_catalog_deferral(
+            scan.runtime_catalog, include_owner_identity=locations.slots is None
+        ),
     }
     return payload
 

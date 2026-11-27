@@ -39,7 +39,10 @@ from molt.compiler_analysis.python_import_redirects import (
     UNKNOWN_IMPORT_REDIRECTS,
     ImportRedirects,
 )
-from molt.compiler_analysis.python_source_keys import PythonSourceKey
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    PythonSourceLocations,
+)
 from molt.backend_environment import CodegenSelection
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -464,6 +467,7 @@ class PersistedImportScanObservation:
 
     query: ImportScanQuery
     result_digest: str
+    result_locations: PythonSourceLocations
     admissions: frozenset[ImportScanAdmission] = frozenset(
         (ImportScanAdmission.PERSISTED,)
     )
