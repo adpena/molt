@@ -240,7 +240,17 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         )
         is None
     )
-    for defect in ("schema", "producer", "context", "topology", "observers", "digest"):
+    for defect in (
+        "schema",
+        "producer",
+        "context",
+        "topology",
+        "observers",
+        "digest",
+        "source_index",
+        "source_size",
+        "authority_premise",
+    ):
         damaged = json.loads(stored.payload)
         if defect == "schema":
             damaged["schema"] -= 1
@@ -251,10 +261,22 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         elif defect == "topology":
             damaged["topology"]["probes"] *= 2
         elif defect == "digest":
-            damaged["queries"][0]["result_digest"] = "invalid"
+            damaged["result_digests"][0] = "invalid"
+        elif defect == "source_index":
+            damaged["queries"][0][0] = len(damaged["query_sources"])
+        elif defect == "source_size":
+            damaged["query_sources"][0][2] += 1
+        elif defect == "authority_premise":
+            damaged["authority"][0]["namespace_premise"] = -1
         else:
+            peers = {
+                index
+                for index, row in enumerate(damaged["query_sources"])
+                if row[3] == "peer"
+            }
+            assert peers
             damaged["queries"] = [
-                row for row in damaged["queries"] if row["module"] != "peer"
+                row for row in damaged["queries"] if row[0] not in peers
             ]
         assert files.put("import-graph", key, json.dumps(damaged).encode())
         assert import_graph_record.replay_import_graph(context) is None, defect
