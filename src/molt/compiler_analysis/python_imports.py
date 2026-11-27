@@ -1968,7 +1968,8 @@ def _analyze_module_import_flow_uncached(
                 )
                 if body.normal is None:
                     unreachable_block(statement.orelse)
-                if body.raised is not None and statement.handlers:
+                raised_state = body.exception_state()
+                if raised_state is not None and statement.handlers:
 
                     def evaluate_handler_type(
                         handler: ast.ExceptHandler,
@@ -2030,7 +2031,7 @@ def _analyze_module_import_flow_uncached(
                             )
 
                         handled = PythonCompletionFlow.exception_group_handlers(
-                            body.raised,
+                            raised_state,
                             statement.handlers,
                             evaluate_type=evaluate_handler_type,
                             execute_handler=execute_handler,
@@ -2042,7 +2043,7 @@ def _analyze_module_import_flow_uncached(
                             handled, join_states=_join_import_states
                         )
                     else:
-                        unmatched: _ImportStates | None = body.raised
+                        unmatched: _ImportStates | None = raised_state
                         for handler in statement.handlers:
                             if unmatched is None:
                                 record_unreachable(handler)
@@ -2065,9 +2066,9 @@ def _analyze_module_import_flow_uncached(
                                 PythonCompletionFlow(raised=unmatched),
                                 join_states=_join_import_states,
                             )
-                elif body.raised is not None:
+                elif raised_state is not None:
                     outcome = outcome.merge(
-                        PythonCompletionFlow(raised=body.raised),
+                        PythonCompletionFlow(raised=raised_state),
                         join_states=_join_import_states,
                     )
                 else:

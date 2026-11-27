@@ -11,8 +11,8 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 
 import ast
 from bisect import bisect_left
-from dataclasses import dataclass, field, fields
-from enum import IntFlag, StrEnum
+from dataclasses import dataclass, field, fields, replace
+from enum import Enum, IntFlag, StrEnum, auto
 from operator import attrgetter
 from types import MappingProxyType
 from collections.abc import Callable, Iterator, Sequence
@@ -587,21 +587,38 @@ class PythonCompletion(IntFlag):
     CONTINUE = 1 << 4
 
 
+class EscapingException(Enum):
+    # This exit bypasses every state-consuming continuation in the region.
+    PRESENT = auto()
+
+
 @dataclass(frozen=True, slots=True)
 class PythonCompletionFlow[T]:
     """One abstract state per completion, shared by binding and import flow.
 
-    Missing states are unreachable successors, not unknown values. Sequence
-    visits only normal completion; finally may replace each incoming completion.
-    The payload join belongs to the consumer, never to an AST classifier.
+    An exceptional exit may retain only its presence after leaving the
+    region where handlers or cleanup can consume its state. Other successors
+    carry a state whenever reachable.
     """
 
     normal: T | None = None
     returned: T | None = None
-    raised: T | None = None
+    raised: T | EscapingException | None = None
     broken: T | None = None
     continued: T | None = None
     effects: EffectMask = 0
+
+    def exception_state(self) -> T | None:
+        raised = self.raised
+        if raised is EscapingException.PRESENT:
+            raise ValueError("exception continuation requires its incoming state")
+        return raised
+
+    def discard_exception_state(self) -> PythonCompletionFlow[T]:
+        raised = self.raised
+        if raised is None or raised is EscapingException.PRESENT:
+            return self
+        return replace(self, raised=EscapingException.PRESENT)
 
     def successors(self) -> tuple[tuple[PythonCompletion, T], ...]:
         return tuple(
@@ -609,7 +626,7 @@ class PythonCompletionFlow[T]:
             for kind, state in (
                 (PythonCompletion.NORMAL, self.normal),
                 (PythonCompletion.RETURN, self.returned),
-                (PythonCompletion.RAISE, self.raised),
+                (PythonCompletion.RAISE, self.exception_state()),
                 (PythonCompletion.BREAK, self.broken),
                 (PythonCompletion.CONTINUE, self.continued),
             )
@@ -619,8 +636,16 @@ class PythonCompletionFlow[T]:
     @property
     def completions(self) -> PythonCompletion:
         result = PythonCompletion.NONE
-        for kind, _state in self.successors():
-            result |= kind
+        if self.normal is not None:
+            result |= PythonCompletion.NORMAL
+        if self.returned is not None:
+            result |= PythonCompletion.RETURN
+        if self.raised is not None:
+            result |= PythonCompletion.RAISE
+        if self.broken is not None:
+            result |= PythonCompletion.BREAK
+        if self.continued is not None:
+            result |= PythonCompletion.CONTINUE
         return result
 
     @classmethod
@@ -657,7 +682,12 @@ class PythonCompletionFlow[T]:
         return PythonCompletionFlow(
             normal=join(self.normal, other.normal),
             returned=join(self.returned, other.returned),
-            raised=join(self.raised, other.raised),
+            raised=(
+                EscapingException.PRESENT
+                if self.raised is EscapingException.PRESENT
+                or other.raised is EscapingException.PRESENT
+                else join(self.raised, other.raised)
+            ),
             broken=join(self.broken, other.broken),
             continued=join(self.continued, other.continued),
             effects=self.effects | other.effects,
@@ -685,10 +715,15 @@ class PythonCompletionFlow[T]:
         )
 
     def map_states[U](self, transform: Callable[[T], U]) -> PythonCompletionFlow[U]:
+        raised = self.raised
         return PythonCompletionFlow(
             normal=None if self.normal is None else transform(self.normal),
             returned=None if self.returned is None else transform(self.returned),
-            raised=None if self.raised is None else transform(self.raised),
+            raised=(
+                raised
+                if raised is None or raised is EscapingException.PRESENT
+                else transform(raised)
+            ),
             broken=None if self.broken is None else transform(self.broken),
             continued=None if self.continued is None else transform(self.continued),
             effects=self.effects,
@@ -854,8 +889,9 @@ class PythonCompletionFlow[T]:
                 )
                 if handled.normal is not None:
                     append(following, (True, deferred_raise), handled.normal)
-                if handled.raised is not None:
-                    append(following, (True, True), handled.raised)
+                raised = handled.exception_state()
+                if raised is not None:
+                    append(following, (True, True), raised)
             pending = following
         for (matched, deferred_raise), successor in pending.items():
             reconstructed = merge_group(successor).sequence(
