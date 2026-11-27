@@ -1442,6 +1442,65 @@ def test_inherited_member_search_visits_shared_ancestors_once(
     assert set(reads) == engine.value_candidates.keys()
 
 
+def test_class_member_query_shares_selection_and_replays_property_origins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        SourceCandidate,
+        SourceReturn,
+        _SourceNamespace,
+    )
+
+    engine = PythonSourceDemands(
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=lambda *_: None,
+    )
+    owner = SourceCandidate("provider", (1, 0, 1, 1, "ClassDef"), "instance")
+    member_source = (2, 0, 2, 1, "FunctionDef")
+    getter_source = (3, 0, 3, 1, "FunctionDef")
+    member = SourceCandidate("provider", member_source)
+    getter = SourceCandidate("provider", getter_source, "property_descriptor")
+    engine.value_candidates[member.value] = {member}
+    engine.value_candidates[getter.value] = {getter}
+    engine.value_candidates[("provider", SourceReturn(getter.value))] = {member}
+    first, second, third = ("first", None), ("second", None), ("third", None)
+
+    from unittest.mock import Mock
+
+    select = Mock(wraps=engine.select_member)
+    monkeypatch.setattr(engine, "select_member", select)
+    assert not engine._select_class_members(owner, "selected", first, strict=False)
+    assert not engine._select_class_members(owner, "selected", second, strict=False)
+    assert select.call_count == 1
+
+    engine._publish(
+        engine.namespaces,
+        owner.value,
+        _SourceNamespace({"selected": frozenset({member_source})}),
+    )
+    assert engine._select_class_members(owner, "selected", third, strict=False) == {
+        member
+    }
+    assert select.call_count == 2
+    assert first in engine.value_jobs and third not in engine.value_jobs
+    assert third not in engine._property_results
+
+    # The value is unchanged, but its getter provenance changes binding.
+    engine._publish(
+        engine.namespaces,
+        owner.value,
+        _SourceNamespace({"selected": frozenset({getter_source})}),
+    )
+    assert engine._select_class_members(owner, "selected", second, strict=False) == {
+        member
+    }
+    assert select.call_count == 3
+    assert third in engine.value_jobs
+    assert engine._property_results[second] == {member}
+
+
 @pytest.mark.parametrize("escape", [False, True])
 def test_unrelated_member_class_is_exposure_not_an_inherited_base(
     tmp_path, monkeypatch, escape

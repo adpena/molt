@@ -167,6 +167,19 @@ class SourceMember:
 
 
 @dataclass(frozen=True, slots=True)
+class _ClassMemberLookup:
+    owner: SourceCandidate
+    name: str
+    strict: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassMemberResult:
+    members: frozenset[SourceCandidate]
+    property_results: frozenset[SourceCandidate]
+
+
+@dataclass(frozen=True, slots=True)
 class SourceCacheItem:
     key: str | None
     # None normally means every key. A wildcard write is also a possible
@@ -218,6 +231,7 @@ SourceValue = tuple[
     str,
     PythonSourceKey
     | SourceMember
+    | _ClassMemberLookup
     | SourceCacheItem
     | SourceReturn
     | SourceCallArguments
@@ -367,6 +381,7 @@ class PythonSourceDemands:
         # Per attribute value: the values a property getter returned to it. A
         # call of one passes the call's own arguments, never the instance.
         self._property_results: dict[SourceValue, set[SourceCandidate]] = {}
+        self._class_members: dict[_ClassMemberLookup, _ClassMemberResult] = {}
         # Attribute values whose receiver-binding proof read a candidate set
         # still queued; `drain` decides them once the queue empties.
         self._deferred_receiver_proofs: set[SourceValue] = set()
@@ -938,6 +953,7 @@ class PythonSourceDemands:
         pending = [owner]
         while pending:
             current = pending.pop()
+            self.watch(current, user)
             for base in sorted(self.bases.get(current, ())):
                 for candidate in sorted(
                     self.watch((current[0], base), user), key=_candidate_order
@@ -1033,6 +1049,55 @@ class PythonSourceDemands:
             or name in _OBJECT_METHODS_WITHOUT_CALLBACKS
         )
 
+    def _refresh_class_members(
+        self, lookup: _ClassMemberLookup, value: SourceValue
+    ) -> _ClassMemberResult:
+        owner, name = lookup.owner, lookup.name
+        property_results: set[SourceCandidate] = set()
+        if lookup.strict:
+            seen: set[SourceCandidate] = set()
+            members: set[SourceCandidate] = set()
+            for ancestor in self._strict_ancestors(owner.value, value):
+                members.update(
+                    self.select_member(
+                        ancestor._replace(kind=owner.kind),
+                        name,
+                        value,
+                        member_seen=seen,
+                        binding_owner=owner,
+                        property_results=property_results,
+                    )
+                )
+        else:
+            members = self.select_member(
+                owner, name, value, property_results=property_results
+            )
+        result = _ClassMemberResult(frozenset(members), frozenset(property_results))
+        if result != self._class_members.get(lookup):
+            self._class_members[lookup] = result
+            for user in self.value_users.get(value, ()):
+                self.queue_value(user)
+        return result
+
+    def _select_class_members(
+        self, owner: SourceCandidate, name: str, user: SourceValue, *, strict: bool
+    ) -> frozenset[SourceCandidate]:
+        lookup = _ClassMemberLookup(owner, name, strict)
+        value = (owner.module, lookup)
+        result = self._class_members.get(lookup)
+        if result is None or self.value_jobs.get(value, False):
+            # An attribute transfer needs the current snapshot to decide whether
+            # its receiver escapes. Leave a queued slot in place when forcing it.
+            if value in self.value_jobs:
+                self.value_jobs[value] = False
+            result = self._refresh_class_members(lookup, value)
+        self.value_users.setdefault(value, set()).add(user)
+        if result.property_results:
+            self._property_results.setdefault(user, set()).update(
+                result.property_results
+            )
+        return result.members
+
     def _select_attribute(
         self,
         owner_value: SourceValue,
@@ -1056,22 +1121,14 @@ class PythonSourceDemands:
         binding_changed = False
         for candidate in tuple(self.watch(owner_value, user)):
             source_class = self._source_class_candidate(candidate)
-            if strict:
-                members: set[SourceCandidate] = set()
-                if source_class:
-                    member_seen: set[SourceCandidate] = set()
-                    for ancestor in self._strict_ancestors(candidate.value, user):
-                        members.update(
-                            self.select_member(
-                                ancestor._replace(kind=candidate.kind),
-                                name,
-                                user,
-                                member_seen=member_seen,
-                                binding_owner=candidate,
-                            )
-                        )
-            else:
+            if source_class:
+                members = self._select_class_members(
+                    candidate, name, user, strict=strict
+                )
+            elif not strict:
                 members = self.select_member(candidate, name, user)
+            else:
+                members = frozenset()
             bound = self.receiver_bound_members.setdefault(user, set())
             unbound = self.unbound_members.setdefault(user, set())
             property_results = self._property_results.get(user, ())
@@ -1168,6 +1225,7 @@ class PythonSourceDemands:
         visiting=frozenset(),
         member_seen: set[SourceCandidate] | None = None,
         binding_owner=None,
+        property_results: set[SourceCandidate] | None = None,
     ):
         if owner.kind == "reflective_result" and not owner.contained:
             if name in {"__builtins__", "f_builtins"}:
@@ -1295,6 +1353,8 @@ class PythonSourceDemands:
                     namespace_ownership=PythonNamespaceOwnership.BORROWED,
                 )
             }
+        # Fast class metadata reads also depend on later publication.
+        self.watch(owner.value, user)
         if (
             owner_source is not None
             and owner_source[-1] == "ClassDef"
@@ -1311,7 +1371,6 @@ class PythonSourceDemands:
             }
         # An excluded star member still depends on the export policy. A later
         # writer can widen __all__ without changing the module candidate itself.
-        self.watch(owner.value, user)
         exports = self.exports.get(owner_module)
         if (
             from_star
@@ -1380,9 +1439,12 @@ class PythonSourceDemands:
                                 ),
                                 user,
                             )
-                            self._property_results.setdefault(user, set()).update(
-                                returned
-                            )
+                            if property_results is None:
+                                self._property_results.setdefault(user, set()).update(
+                                    returned
+                                )
+                            else:
+                                property_results.update(returned)
                             result.update(returned)
                         else:
                             result.add(candidate)
@@ -1414,6 +1476,7 @@ class PythonSourceDemands:
                             user,
                             member_seen=member_seen,
                             binding_owner=binding_owner,
+                            property_results=property_results,
                         )
                     )
         else:
@@ -1427,7 +1490,12 @@ class PythonSourceDemands:
                     if candidate[0] not in visiting:
                         result.update(
                             self.select_member(
-                                candidate, name, user, from_star=True, visiting=visiting
+                                candidate,
+                                name,
+                                user,
+                                from_star=True,
+                                visiting=visiting,
+                                property_results=property_results,
                             )
                         )
         return result
@@ -2027,10 +2095,14 @@ class PythonSourceDemands:
 
     def process_value(self, value: SourceValue) -> None:
         refresh = self.value_jobs.pop(value)
+        module_name, source = value
+        if isinstance(source, _ClassMemberLookup):
+            if refresh:
+                self._refresh_class_members(source, value)
+            return
         if not refresh:
             self._activate_pending(value, self.value_candidates[value], ())
             return
-        module_name, source = value
         if module_name not in self.modules and not isinstance(source, SourceCacheItem):
             self.pending_modules.setdefault(module_name, set()).add(value)
             return
@@ -2076,7 +2148,14 @@ class PythonSourceDemands:
         elif isinstance(source, SourceSubclassInvocation):
             self._call_init_subclass(source.owner, value)
         elif isinstance(source, SourceMember):
-            candidates.update(self.select_member(source.owner, source.name, value))
+            if self._source_class_candidate(source.owner):
+                candidates.update(
+                    self._select_class_members(
+                        source.owner, source.name, value, strict=False
+                    )
+                )
+            else:
+                candidates.update(self.select_member(source.owner, source.name, value))
             if source.owner.kind == "instance":
                 for callee in candidates:
                     self.watch(callee.value, value)
@@ -2379,8 +2458,11 @@ class PythonSourceDemands:
                         self._bind_native_call(value, candidate)
                     if candidate.source[-1] == "ClassDef":
                         if candidate.kind == "value":
-                            for initializer in self.select_member(
-                                candidate._replace(kind="instance"), "__init__", value
+                            for initializer in self._select_class_members(
+                                candidate._replace(kind="instance"),
+                                "__init__",
+                                value,
+                                strict=False,
                             ):
                                 if initializer.kind in {
                                     "native_initializer",
@@ -2390,8 +2472,13 @@ class PythonSourceDemands:
                             candidates.add(
                                 SourceCandidate(*candidate.value, "instance")
                             )
-                            for member in self.select_member(
-                                candidate, "__new__", value
+                            for member in self._select_class_members(
+                                candidate, "__new__", value, strict=False
+                            ):
+                                candidates.update(self._returned_values(member, value))
+                        elif candidate.kind == "instance":
+                            for member in self._select_class_members(
+                                candidate, "__call__", value, strict=False
                             ):
                                 candidates.update(self._returned_values(member, value))
                         else:
