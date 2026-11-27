@@ -152,7 +152,7 @@ fn aliasing_op_may_observe_slot(
 #[derive(Debug, Clone, PartialEq)]
 pub struct AliasAnalysisResult {
     /// Producer-derived scalar facts, never annotation/subclass hints.
-    exact_scalar_types: HashMap<ValueId, crate::tir::types::TirType>,
+    exact_scalar_types: std::sync::Arc<HashMap<ValueId, crate::tir::types::TirType>>,
     /// Transparent-SSA-copy alias roots.
     pub aliases: AliasUnionFind,
     /// Points-to / escape lattice for every tracked allocation root.
@@ -165,6 +165,12 @@ pub struct AliasAnalysisResult {
 impl AliasAnalysisResult {
     pub(crate) fn exact_scalar_types(&self) -> &HashMap<ValueId, crate::tir::types::TirType> {
         &self.exact_scalar_types
+    }
+
+    pub(super) fn share_scalar_types(
+        &self,
+    ) -> std::sync::Arc<HashMap<ValueId, crate::tir::types::TirType>> {
+        self.exact_scalar_types.clone()
     }
 
     /// Compute the result for `func`. Resolves transparent aliases, then
@@ -188,7 +194,7 @@ impl AliasAnalysisResult {
             .collect();
 
         Self {
-            exact_scalar_types: crate::tir::type_refine::extract_exact_scalar_map(func),
+            exact_scalar_types: crate::tir::type_refine::extract_exact_scalar_map(func).into(),
             aliases,
             escape,
             alloc_roots,
