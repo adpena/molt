@@ -584,7 +584,6 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
         (OpKind::Ord, 1),
         (OpKind::StringJoin, 2),
         (OpKind::ModuleSetAttr, 3),
-        (OpKind::ExceptionStackExit, 1),
         (OpKind::CallargsPushPos, 2),
         (OpKind::CallargsExpandStar, 2),
         (OpKind::CodeNew, 9),
@@ -695,6 +694,13 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
         ),
         (OpKind::Abs, 1, None, "molt_abs_builtin", "(i64 %boxed_int)"),
         (
+            OpKind::ExceptionStackExit,
+            1,
+            None,
+            "molt_exception_stack_exit",
+            "(i64 %boxed_int)",
+        ),
+        (
             OpKind::StringFormat,
             2,
             None,
@@ -725,7 +731,10 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
     ];
     for &(kind, arity, tag, symbol, arguments) in cases {
         let ctx = Context::create();
-        let backend = make_backend(&ctx);
+        let mut backend = make_backend(&ctx);
+        if kind == OpKind::ExceptionStackExit {
+            admit_runtime_entry(&mut backend, symbol);
+        }
         let mut func = TirFunction::new(
             format!("dedicated_{kind}"),
             vec![],
@@ -776,8 +785,13 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
                 "{kind}: the site body's miss is the runtime entry: {module}"
             );
         }
+        let owner = if kind == OpKind::ExceptionStackExit {
+            "exception_baseline".to_string()
+        } else {
+            kind.to_string()
+        };
         let release =
-            format!("call void @__molt_inline_release(i64 %{kind}_owner_bits, i64 %rc_admission)");
+            format!("call void @__molt_inline_release(i64 %{owner}_owner_bits, i64 %rc_admission)");
         assert!(
             ir.contains_execution(&call),
             "{kind}: object operands are boxed and raw ABI words stay raw: {ir}"

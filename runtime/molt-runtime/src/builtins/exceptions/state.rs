@@ -1,4 +1,5 @@
 use crate::runtime_flags::{self, RuntimeFlag};
+use crate::state::tls::ExceptionDepthWord;
 use crate::{PyToken, runtime_state};
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::AtomicU64;
@@ -49,9 +50,9 @@ impl<T: 'static> RecordField<T> {
 /// two-domain thread-state drain that releases its strong edge.
 pub(crate) static THREAD_LAST_EXCEPTION: RecordField<ThreadExceptionState> =
     RecordField(|tls| &tls.thread_last_exception);
-pub(crate) static EXCEPTION_HANDLER_DEPTH: RecordField<Cell<usize>> =
+pub(crate) static EXCEPTION_HANDLER_DEPTH: RecordField<ExceptionDepthWord> =
     RecordField(|tls| &tls.exception_handler_depth);
-pub(crate) static EXCEPTION_STACK_BASELINE: RecordField<Cell<usize>> =
+pub(crate) static EXCEPTION_STACK_BASELINE: RecordField<ExceptionDepthWord> =
     RecordField(|tls| &tls.exception_stack_baseline);
 pub(crate) static ACTIVE_EXCEPTION_STACK: RecordField<std::mem::ManuallyDrop<RefCell<Vec<u64>>>> =
     RecordField(|tls| &tls.active_exception_stack);

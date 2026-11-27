@@ -187,7 +187,9 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             ));
             return;
         }
-        if self.buffer_dimension_call(b, op, abi.function) {
+        if self.exception_coordinate_call(b, op, abi.function)
+            || self.buffer_dimension_call(b, op, abi.function)
+        {
             return;
         }
         let callee = b.runtime_callee(abi.function);
