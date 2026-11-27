@@ -123,6 +123,30 @@ def explicit_wasi_sdk_prefix(
     return prefix.parent if prefix.name == SDK_DIRNAME else prefix
 
 
+_LLVM_PREFIX_ENV_NAME = re.compile(
+    r"(?:LLVM_SYS_[1-9][0-9]+|(?:MLIR_SYS|TABLEGEN)_[1-9][0-9]*0)_PREFIX"
+)
+
+
+def llvm_prefix_environment_name(name: str) -> bool:
+    """Recognize a path selector for LLVM, MLIR, or TableGen."""
+    return (
+        name == "MOLT_LLVM_PREFIX" or _LLVM_PREFIX_ENV_NAME.fullmatch(name) is not None
+    )
+
+
+def resolve_environment_path(
+    value: str | Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> Path:
+    path = expand_user_path(value, environment=environ)
+    if not path.is_absolute():
+        path = (Path.cwd() if cwd is None else cwd) / path
+    return path.resolve(strict=False)
+
+
 def _default_home_str(environ: Mapping[str, str] | None = None) -> str | None:
     try:
         return os.fspath(

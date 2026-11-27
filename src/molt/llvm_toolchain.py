@@ -26,7 +26,13 @@ from molt.llvm_link_plan import (
     LlvmNativeLinkPlan,
     select_native_llvm_link_plan,
 )
-from molt.default_paths import SDK_DIRNAME, expand_user_path, explicit_wasi_sdk_prefix
+from molt.default_paths import (
+    SDK_DIRNAME,
+    expand_user_path,
+    explicit_wasi_sdk_prefix,
+    llvm_prefix_environment_name,
+    resolve_environment_path,
+)
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.flag_strings import FlagStringRule
 
@@ -1212,11 +1218,6 @@ def tablegen_prefix_env_var(major: int) -> str:
     return f"TABLEGEN_{major * 10}_PREFIX"
 
 
-_LLVM_TOOLCHAIN_PREFIX_ENVIRONMENT_NAME = re.compile(
-    r"(?:LLVM_SYS_[1-9][0-9]+|(?:MLIR_SYS|TABLEGEN)_[1-9][0-9]*0)_PREFIX"
-)
-
-
 def llvm_toolchain_environment_name(name: str) -> bool:
     """Recognize SDK selectors, including the binding crates' versioned names.
 
@@ -1226,11 +1227,10 @@ def llvm_toolchain_environment_name(name: str) -> bool:
     Names are case-sensitive; callers with case-insensitive environments must
     normalize them before using this predicate.
     """
-    return name in {
-        "MOLT_LLVM_PREFIX",
+    return llvm_prefix_environment_name(name) or name in {
         "LLVM_CONFIG_PATH",
         LLVM_NATIVE_LINK_PLAN_ENV,
-    } or (_LLVM_TOOLCHAIN_PREFIX_ENVIRONMENT_NAME.fullmatch(name) is not None)
+    }
 
 
 def managed_llvm_prefix(
@@ -1363,7 +1363,10 @@ def _llvm_config_candidates(
     candidates: list[tuple[Path, str]] = []
     if configured := env.get("LLVM_CONFIG_PATH", "").strip():
         candidates.append(
-            (_normalized_prefix(configured, environ=env, cwd=cwd), "LLVM_CONFIG_PATH")
+            (
+                resolve_environment_path(configured, environ=env, cwd=cwd),
+                "LLVM_CONFIG_PATH",
+            )
         )
 
     if not configured and explicit_prefix is None and llvm_sys_search_prefix is None:
@@ -1392,32 +1395,6 @@ def _llvm_config_candidates(
     return _dedupe_paths(candidates)
 
 
-def declared_llvm_prefixes(
-    pin: LlvmBackendPin,
-    environ: Mapping[str, str],
-    *,
-    cwd: Path | None,
-) -> tuple[tuple[Path, ...], Path | None]:
-    """Read the SDK and executable-search prefixes without running the SDK."""
-    sdk_authority_names = (
-        "MOLT_LLVM_PREFIX",
-        mlir_sys_prefix_env_var(pin.major),
-        tablegen_prefix_env_var(pin.major),
-    )
-
-    explicit = {
-        _normalized_prefix(value, environ=environ, cwd=cwd)
-        for name in sdk_authority_names
-        if (value := environ.get(name, "").strip())
-    }
-    llvm_sys_search_prefix = (
-        _normalized_prefix(value, environ=environ, cwd=cwd)
-        if (value := environ.get(pin.env_var, "").strip())
-        else None
-    )
-    return tuple(sorted(explicit, key=str)), llvm_sys_search_prefix
-
-
 def discover_llvm_toolchain(
     root: Path,
     *,
@@ -1440,7 +1417,16 @@ def discover_llvm_toolchain(
     if pin is None:
         return None
     env = ProcessEnvironment(os.environ if environ is None else environ)
-    explicit, llvm_sys_search_prefix = declared_llvm_prefixes(pin, env, cwd=cwd)
+    sdk_authority_names = (
+        "MOLT_LLVM_PREFIX",
+        mlir_sys_prefix_env_var(pin.major),
+        tablegen_prefix_env_var(pin.major),
+    )
+    explicit = {
+        resolve_environment_path(value, environ=env, cwd=cwd)
+        for name in sdk_authority_names
+        if (value := env.get(name, "").strip())
+    }
     if len(explicit) > 1:
         rendered = ", ".join(str(path) for path in sorted(explicit, key=str))
         raise LlvmToolchainConfigError(
@@ -1448,6 +1434,11 @@ def discover_llvm_toolchain(
             f"{rendered}"
         )
     explicit_prefix = next(iter(explicit), None)
+    llvm_sys_search_prefix = (
+        resolve_environment_path(value, environ=env, cwd=cwd)
+        if (value := env.get(pin.env_var, "").strip())
+        else None
+    )
     rejected: list[str] = []
     for candidate, source in _llvm_config_candidates(
         root, pin, env, explicit_prefix, llvm_sys_search_prefix, cwd=cwd
@@ -2094,7 +2085,7 @@ def verify_llvm_toolchain_prefix(
 
     from molt.checkout_state import toolchain_state_use
 
-    resolved = _normalized_prefix(prefix, environ=environ, cwd=cwd)
+    resolved = resolve_environment_path(prefix, environ=environ, cwd=cwd)
     with toolchain_state_use((resolved,)):
         pin = required_llvm_backend_pin(root)
         if pin is None:
@@ -2103,7 +2094,7 @@ def verify_llvm_toolchain_prefix(
             )
         contract = load_llvm_architecture_contract(root)
         llvm_config = (
-            _normalized_prefix(llvm_config_override, environ=environ, cwd=cwd)
+            resolve_environment_path(llvm_config_override, environ=environ, cwd=cwd)
             if llvm_config_override is not None
             else llvm_config_executable(resolved)
         )
@@ -2615,18 +2606,6 @@ def _llvm_config_version(
             f"llvm-config returned an invalid version {rendered!r}: {executable}"
         )
     return int(match.group(1)), int(match.group(2)), rendered
-
-
-def _normalized_prefix(
-    path: str | Path,
-    *,
-    environ: Mapping[str, str] | None = None,
-    cwd: Path | None = None,
-) -> Path:
-    expanded = expand_user_path(path, environment=environ)
-    if not expanded.is_absolute():
-        expanded = (Path.cwd() if cwd is None else cwd) / expanded
-    return expanded.resolve(strict=False)
 
 
 def resolve_llvm_toolchain_prefix(

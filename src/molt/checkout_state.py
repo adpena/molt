@@ -47,9 +47,15 @@ from .custody_layout import (
     git_directories,
     storage_rule,
 )
-from .default_paths import hot_path, lock_stripe
+from .default_paths import (
+    hot_path,
+    llvm_prefix_environment_name,
+    lock_stripe,
+    resolve_environment_path,
+)
 from .disk_capacity import FLOOR_MIN_IDLE_S
 from .exact_json import ExactJsonError, read_exact, write_exact
+from .process_environment import ProcessEnvironment
 
 EVIDENCE_INDEX_NAME = "storage-index.json"
 
@@ -776,24 +782,16 @@ def checkout_state_environment_roots(
             and (toolchain_root := _toolchain_owner_root(sdk)) is not None
         ):
             roots.setdefault(sdk, CheckoutOwner(toolchain_root, "toolchains"))
-    if environment.get("MOLT_LLVM_PREFIX") or any(
-        name.startswith(("LLVM_SYS_", "MLIR_SYS_", "TABLEGEN_")) for name in environment
-    ):
-        from .llvm_toolchain import declared_llvm_prefixes, required_llvm_backend_pin
-
-        if (pin := required_llvm_backend_pin(source_root)) is not None:
-            prefixes, search_prefix = declared_llvm_prefixes(
-                pin, environment, cwd=working
-            )
-            for prefix in (*prefixes, search_prefix):
-                # A reader can retain an existing SDK. Only the provider's
-                # explicit publication operation may claim an absent prefix.
-                if (
-                    prefix is not None
-                    and prefix.is_dir()
-                    and (owner := _toolchain_owner_root(prefix)) is not None
-                ):
-                    roots.setdefault(prefix, CheckoutOwner(owner, "toolchains"))
+    environment = ProcessEnvironment(environment)
+    for name, raw in environment.items():
+        if not llvm_prefix_environment_name(environment.rule.key(name)):
+            continue
+        if value := raw.strip():
+            prefix = resolve_environment_path(value, environ=environment, cwd=working)
+            # Prefix selectors declare reader custody independently of the
+            # compiler product. The provider alone claims an absent prefix.
+            if prefix.is_dir() and (owner := _toolchain_owner_root(prefix)) is not None:
+                roots.setdefault(prefix, CheckoutOwner(owner, "toolchains"))
     import sys
 
     if include_current_process:
