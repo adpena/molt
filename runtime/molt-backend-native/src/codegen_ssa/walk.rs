@@ -834,7 +834,10 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
     } else {
         Default::default()
     };
-    let exception_levels = if trace.is_none() && runtime.contains(RuntimeFn::ExceptionPushOrDefer) {
+    let exception_levels = if trace.is_none()
+        && runtime.contains(RuntimeFn::ExceptionPush)
+        && runtime.contains(RuntimeFn::ExceptionPop)
+    {
         super::exception_levels::slots(b, func, &exception_targets)
     } else {
         HashMap::default()

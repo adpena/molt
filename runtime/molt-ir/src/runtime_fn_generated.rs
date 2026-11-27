@@ -1033,7 +1033,6 @@ pub enum RuntimeFn {
     ExceptionPop,
     ExceptionPrepareRaise,
     ExceptionPush,
-    ExceptionPushOrDefer,
     ExceptionResolveCaptured,
     ExceptionSetLast,
     ExceptionSetValue,
@@ -3891,7 +3890,6 @@ impl RuntimeFn {
         Self::ExceptionPop,
         Self::ExceptionPrepareRaise,
         Self::ExceptionPush,
-        Self::ExceptionPushOrDefer,
         Self::ExceptionResolveCaptured,
         Self::ExceptionSetLast,
         Self::ExceptionSetValue,
@@ -5833,7 +5831,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2854;
+    pub const COUNT: usize = 2853;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -19261,18 +19259,6 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: None,
         result: RuntimeReturnContract::OwnedObject,
-        form: RuntimeCallForm::Helper,
-        effects: RuntimeEffects::Impure,
-    },
-    RuntimeFnAbi {
-        symbol: "molt_exception_push_or_defer",
-        linker_symbol: "molt_exception_push_or_defer__molt_context_66fa900595616b00",
-        context: RuntimeExecutionContext::Attached,
-        params: 0,
-        param_types: PARAMS_NONE,
-        result_type: Some(RuntimeMachineType::Word),
-        callable: None,
-        result: RuntimeReturnContract::RawBits,
         form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },

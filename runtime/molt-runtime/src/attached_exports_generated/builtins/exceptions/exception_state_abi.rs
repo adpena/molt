@@ -140,16 +140,6 @@ pub unsafe extern "C" fn molt_exception_push(__context: u64) -> u64 {
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_exception_push_attached_body(_py)
 }
-#[unsafe(export_name = "molt_exception_push_or_defer__molt_context_66fa900595616b00")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_exception_push_or_defer(__context: u64) -> u64 {
-    molt_runtime_core::call_census::hit(
-        molt_runtime_core::call_census::id::molt_exception_push_or_defer,
-    );
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_exception_push_or_defer_attached_body(_py)
-}
 #[unsafe(export_name = "molt_exception_pop__molt_context_66fa900595616b00")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_exception_pop(__context: u64) -> u64 {

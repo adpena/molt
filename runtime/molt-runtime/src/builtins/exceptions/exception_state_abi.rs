@@ -509,28 +509,6 @@ pub(crate) fn molt_exception_push_attached_body(_py: &crate::PyToken<'_>) -> u64
     })
 }
 
-/// Install the physical level now when its transition is observable or may
-/// allocate. Otherwise the compiled region installs it before its first reader.
-pub(crate) fn molt_exception_push_or_defer_attached_body(_py: &crate::PyToken<'_>) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, _py, {
-        if virtual_level_ready(_py) {
-            0
-        } else {
-            exception_stack_push_in(_py);
-            1
-        }
-    })
-}
-
-fn virtual_level_ready(py: &crate::PyToken<'_>) -> bool {
-    let tls = py.execution_tls();
-    let depth = tls.exception_handler_depth.get();
-    let admitted = tls.active_exception_stack.virtual_depth();
-    admitted != molt_codegen_abi::NO_VIRTUAL_EXCEPTION_DEPTH
-        && depth as u64 == admitted
-        && depth >= tls.exception_stack_baseline.get()
-}
-
 pub(crate) fn molt_exception_pop_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         exception_stack_pop(_py);
@@ -608,7 +586,7 @@ mod diagnostic_tests {
     use super::*;
 
     #[test]
-    fn a_virtual_lexical_level_requires_unobserved_aligned_spare_context() {
+    fn exception_stack_publishes_spare_depth_only_while_readable_and_untraced() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let tls = py.execution_tls();
@@ -616,59 +594,30 @@ mod diagnostic_tests {
             let old_baseline = tls.exception_stack_baseline.get();
             tls.exception_handler_depth.set(0);
             tls.exception_stack_baseline.set(0);
-            let old_active = tls.active_exception_stack.replace(Vec::new());
-
-            assert!(!virtual_level_ready(py));
-            assert_eq!(tls.exception_handler_depth.get(), 0);
-            assert_eq!(
-                molt_exception_push_or_defer_attached_body(py),
-                1,
-                "no spare slot"
-            );
-            assert_eq!(tls.exception_handler_depth.get(), 1);
+            let stack = &tls.active_exception_stack;
+            let old_active = stack.replace(Vec::new());
+            let unavailable = molt_codegen_abi::NO_VIRTUAL_EXCEPTION_DEPTH;
+            assert_eq!(stack.virtual_depth(), unavailable);
+            exception_stack_push_in(py);
             exception_stack_pop(py);
-            assert_eq!(virtual_level_ready(py), !trace_exception_stack());
+            let ready = if trace_exception_stack() {
+                unavailable
+            } else {
+                0
+            };
+            assert_eq!(stack.virtual_depth(), ready);
             {
-                let _exclusive = tls.active_exception_stack.borrow_mut();
-                assert!(
-                    !virtual_level_ready(py),
-                    "the mutable stack has no admission"
-                );
+                let mut values = stack.borrow_mut();
+                assert_eq!(stack.virtual_depth(), unavailable);
+                let capacity = values.capacity();
+                values.resize(capacity, MoltObject::none().bits());
             }
-            assert_eq!(virtual_level_ready(py), !trace_exception_stack());
+            assert_eq!(stack.virtual_depth(), unavailable);
+            stack.borrow_mut().clear();
+            assert_eq!(stack.virtual_depth(), ready);
             assert_eq!(tls.exception_handler_depth.get(), 0);
-            let materialized = molt_exception_push_or_defer_attached_body(py);
-            assert_eq!(materialized, u64::from(trace_exception_stack()));
-            assert_eq!(tls.exception_handler_depth.get(), materialized as usize);
-            if materialized == 1 {
-                exception_stack_pop(py);
-            }
 
-            let dormant =
-                MoltObject::from_ptr(alloc_exception(py, BuiltinExc::KeyError, "dormant")).bits();
-            tls.active_exception_stack.borrow_mut().push(dormant);
-            assert_eq!(
-                molt_exception_push_or_defer_attached_body(py),
-                1,
-                "detached context depth"
-            );
-            exception_stack_pop(py);
-            assert_eq!(*tls.active_exception_stack.borrow(), [dormant]);
-            assert_eq!(tls.active_exception_stack.borrow_mut().pop(), Some(dormant));
-            dec_ref_bits(py, dormant);
-
-            tls.exception_stack_baseline.set(1);
-            assert_eq!(
-                molt_exception_push_or_defer_attached_body(py),
-                1,
-                "abnormal baseline"
-            );
-            exception_stack_pop(py);
-            assert_eq!(tls.exception_handler_depth.get(), 1);
-            tls.exception_stack_baseline.set(0);
-            exception_stack_pop(py);
-
-            tls.active_exception_stack.replace(old_active);
+            stack.replace(old_active);
             tls.exception_handler_depth.set(old_depth);
             tls.exception_stack_baseline.set(old_baseline);
         });
