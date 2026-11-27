@@ -55,66 +55,39 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
     // beyond the normal block-splitting that any structured
     // construct does.
 
-    // The executable loop forest (headers from backedges, sorted by id for
-    // deterministic tie-breaking; bodies via dominator-based natural-loop
-    // construction) is shared with BCE through the analysis manager.
-    let forest = am.get::<LoopForest>(func).clone();
-    if forest.headers.is_empty() {
+    if am.get::<LoopForest>(func).headers.is_empty() {
         return stats;
     }
-    let predecessors = am.get::<PredMap>(func).clone();
-    let tree = am.get::<ImmediateDoms>(func).clone();
+    am.get::<ValueRange>(func);
+    am.get::<DefMap>(func);
+    am.get::<PredMap>(func);
+    am.get::<ImmediateDoms>(func);
+    let forest = am.cached::<LoopForest>().unwrap();
+    let predecessors = am.cached::<PredMap>().unwrap();
+    let tree = am.cached::<ImmediateDoms>().unwrap();
+    let value_ranges = am.cached::<ValueRange>().unwrap();
+    let definitions = am.cached::<DefMap>().unwrap();
     let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
-    // Value-range proof, shared with BCE/SROA via the analysis manager. Used to
-    // DISPROVE the throw condition of a `pure_may_throw` op (a shift whose count
-    // is in `[0, 63]`, a divide whose divisor is non-zero), which makes that op
-    // provably nothrow at the hoist site and therefore LICM-hoistable. Cloned
-    // because we take `&mut func.blocks` below; the analysis is a pure function
-    // of the function and LICM only moves invariant ops (never changes any value
-    // range), so the snapshot stays valid across the hoists. (A hoisted op keeps
-    // its operands and result `ValueId`s, so the value-keyed ranges still line
-    // up after the move.)
-    let vr = am.get::<ValueRange>(func).clone();
-
-    // Process all loops, innermost first, so ops hoisted from an inner
-    // loop's body into the inner preheader become visible to the
-    // enclosing loop and can be hoisted further out if invariant there.
-    //
-    // Step 1: index each loop's natural-loop block set by header (headers are
-    // already in ascending-id order from the forest). Natural loops nest
-    // properly: an inner loop's body is a strict subset of its enclosing
-    // outer loop's body.
-    let loop_block_sets: Vec<(BlockId, HashSet<BlockId>)> = forest
+    // Inner loops go first. A move into an inner preheader can expose an
+    // additional move out of the enclosing loop. Preserve header order on
+    // equal depth, and keep the shared CFG and range facts borrowed.
+    let mut headers_with_depth: Vec<_> = forest
         .headers
         .iter()
-        .map(|&h| (h, forest.bodies[&h].clone()))
-        .collect();
-
-    // Step 2: nesting depth = number of OTHER loops whose block set
-    // contains this loop's header. A header at depth k is inside k
-    // enclosing loops. Sorting by descending depth yields a post-order
-    // over the loop forest: every inner loop is processed before its
-    // enclosing loop.
-    let mut headers_with_depth: Vec<(BlockId, usize)> = loop_block_sets
-        .iter()
-        .map(|(h, _)| {
-            let depth = loop_block_sets
+        .map(|&header| {
+            let depth = forest
+                .headers
                 .iter()
-                .filter(|(other_h, other_blocks)| *other_h != *h && other_blocks.contains(h))
+                .filter(|&&other| other != header && forest.bodies[&other].contains(&header))
                 .count();
-            (*h, depth)
+            (header, depth)
         })
         .collect();
-    // Descending depth -> innermost first. Stable across ties.
     headers_with_depth.sort_by_key(|(_, depth)| std::cmp::Reverse(*depth));
-    let loop_headers: Vec<BlockId> = headers_with_depth.into_iter().map(|(h, _)| h).collect();
 
-    // Value -> defining-block map (block args, op results, and params at entry),
-    // shared with GVN through the analysis manager. Cloned because LICM mutates
-    // its local copy as it hoists ops (recording their new preheader def block);
-    // the cached analysis is not mutated.
-    let mut value_def_block = am.get::<DefMap>(func).clone();
+    // Hoisting changes the defining block of only the moved results.
+    let mut moved_definitions = HashMap::default();
 
     // Collect all values used as block arguments in terminators.
     // These participate in phi resolution and must not be hoisted.
@@ -125,100 +98,57 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
             .for_each_edge(|_, args| phi_values.extend(args.iter().copied()));
     }
 
-    // Index the precomputed loop block sets by header for cheap lookup.
-    let loop_blocks_by_header: HashMap<BlockId, HashSet<BlockId>> =
-        loop_block_sets.into_iter().collect();
-
-    for header_bid in &loop_headers {
-        let loop_blocks = match loop_blocks_by_header.get(header_bid) {
-            Some(set) => set,
-            None => continue,
+    let mut sorted_loop_blocks = Vec::new();
+    let mut hoisted = Vec::new();
+    for (header, _) in headers_with_depth {
+        let loop_blocks = &forest.bodies[&header];
+        let Some(preheader) = find_preheader(header, loop_blocks, predecessors, tree) else {
+            continue;
         };
 
-        let preheader = match find_preheader(*header_bid, loop_blocks, &predecessors, &tree) {
-            Some(p) => p,
-            None => continue, // No unique preheader - can't hoist.
-        };
+        sorted_loop_blocks.clear();
+        sorted_loop_blocks.extend(loop_blocks.iter().map(|&block| {
+            let position = tree
+                .reverse_postorder_position(block)
+                .expect("a natural-loop body contains only executable blocks");
+            (position, block)
+        }));
+        sorted_loop_blocks.sort_unstable();
 
-        // Stable iteration order over loop blocks: keeps hoisted-op
-        // ordering deterministic for golden-file diffs and for downstream
-        // passes that depend on textual TIR equivalence.
-        let mut sorted_loop_blocks: Vec<BlockId> = loop_blocks.iter().copied().collect();
-        sorted_loop_blocks.sort_unstable_by_key(|b| b.0);
-
-        // Collect invariant ops: ops in loop blocks whose operands are
-        // all defined outside the loop.
-        // Iterate to fixpoint: hoisting one op may make another invariant.
-        for _round in 0..10 {
-            let mut hoisted_this_round = 0usize;
-
-            for &loop_bid in &sorted_loop_blocks {
-                let block = match func.blocks.get(&loop_bid) {
-                    Some(b) => b,
-                    None => continue,
-                };
-
-                let mut to_hoist: Vec<usize> = Vec::new();
-
-                for (i, op) in block.ops.iter().enumerate() {
-                    if !is_hoistable(op, &vr, &value_types) {
-                        continue;
-                    }
-                    if op.results.is_empty() {
-                        continue;
-                    }
-
-                    // Skip ops whose results participate in phi nodes.
-                    let result_is_phi = op.results.iter().any(|r| phi_values.contains(r));
-                    if result_is_phi {
-                        continue;
-                    }
-
-                    // Being outside the loop is not enough: an operand in a
-                    // sibling or exception-only block may be unavailable at
-                    // the preheader. Unknown definitions are not a proof.
-                    let all_invariant =
-                        op.operands
-                            .iter()
-                            .all(|&operand| match value_def_block.get(&operand) {
-                                Some(def_bid) => {
-                                    !loop_blocks.contains(def_bid)
-                                        && tree.dominates(*def_bid, preheader)
-                                }
-                                None => false,
-                            });
-
-                    if all_invariant {
-                        to_hoist.push(i);
-                    }
+        // SSA definitions precede their uses in executable reverse postorder,
+        // with source order within each block. Marking moves as they are
+        // extracted lets dependent operations hoist in this same traversal.
+        for &(_, loop_block) in &sorted_loop_blocks {
+            let block = func.blocks.get_mut(&loop_block).unwrap();
+            hoisted.extend(block.ops.extract_if(.., |op| {
+                if op.results.is_empty()
+                    || op.results.iter().any(|result| phi_values.contains(result))
+                    || !is_hoistable(op, value_ranges, &value_types)
+                {
+                    return false;
                 }
-
-                // Remove back-to-front to preserve indices, then append in
-                // source order. Moving definitions must not reverse their
-                // dependency order at the destination.
-                let mut hoisted = Vec::with_capacity(to_hoist.len());
-                for &idx in to_hoist.iter().rev() {
-                    let op = func.blocks.get_mut(&loop_bid).unwrap().ops.remove(idx);
-                    // Update def_block for the hoisted values.
-                    for &res in &op.results {
-                        value_def_block.insert(res, preheader);
-                    }
-                    // Insert at the end of the preheader (before the terminator,
-                    // which is handled structurally, not in the ops vec).
-                    hoisted.push(op);
-                    hoisted_this_round += 1;
-                    stats.ops_removed += 1; // removed from loop
-                    stats.ops_added += 1; // added to preheader
+                let invariant = op.operands.iter().all(|operand| {
+                    moved_definitions
+                        .get(operand)
+                        .or_else(|| definitions.get(operand))
+                        .is_some_and(|&definition| {
+                            !loop_blocks.contains(&definition)
+                                && tree.dominates(definition, preheader)
+                        })
+                });
+                if invariant {
+                    moved_definitions.extend(op.results.iter().map(|&result| (result, preheader)));
                 }
+                invariant
+            }));
+            if !hoisted.is_empty() {
+                stats.ops_removed += hoisted.len();
+                stats.ops_added += hoisted.len();
                 func.blocks
                     .get_mut(&preheader)
                     .unwrap()
                     .ops
-                    .extend(hoisted.into_iter().rev());
-            }
-
-            if hoisted_this_round == 0 {
-                break;
+                    .append(&mut hoisted);
             }
         }
     }

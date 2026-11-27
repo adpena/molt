@@ -115,6 +115,11 @@ impl DominatorTree {
         }
     }
 
+    /// Position in the shared CFG reverse postorder, if reachable.
+    pub fn reverse_postorder_position(&self, block: BlockId) -> Option<usize> {
+        self.positions.get(&block).copied()
+    }
+
     /// The reachable blocks in reverse postorder, the entry first.
     pub fn blocks(&self) -> &[BlockId] {
         &self.blocks
