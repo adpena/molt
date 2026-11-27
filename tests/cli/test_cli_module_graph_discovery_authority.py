@@ -1443,6 +1443,44 @@ def test_generator_source_demand_is_resumed_not_its_creation(tmp_path, consume):
     assert any(key[-1] == "GeneratorExp" for key, _args in owners) is consume
 
 
+def test_dirty_receivers_wait_for_writers_through_clean_relays(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    discovery = module_graph_discovery
+    state = discovery._ModuleGraphDiscovery(
+        _ModuleResolutionCache(), _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    for writer, receivers in (
+        ("writer", ("relay",)),
+        ("relay", ("receiver",)),
+        ("receiver", ()),
+        ("independent", ()),
+        ("clean_a", ("clean_b",)),
+        ("clean_b", ("clean_a",)),
+    ):
+        path = state.graph[writer] = tmp_path / f"{writer}.py"
+        state.modules_by_source[path] = {writer}
+        state.active_owners[writer] = {None}
+        state.namespace_writes[writer] = {
+            PythonNamespaceWrite(receiver, "value", "attribute", 1)
+            for receiver in receivers
+        }
+    state.scan_revisions.update(
+        discovery._SourceScanJob(module, None)
+        for module in ("writer", "receiver", "independent")
+    )
+    first = discovery._ready_namespace_revisions(state)
+    assert {job.module_name for job in first} == {"writer", "independent"}
+    state.scan_revisions.difference_update(first)
+    assert discovery._ready_namespace_revisions(state) == {
+        discovery._SourceScanJob("receiver", None)
+    }
+
+
 def test_nested_writer_revisions_hold_receivers_until_the_outer_exit(
     tmp_path: Path,
 ) -> None:

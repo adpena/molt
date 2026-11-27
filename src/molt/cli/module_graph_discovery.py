@@ -319,7 +319,16 @@ def _ready_namespace_revisions(
     elif not writers:
         return state.scan_revisions.copy()
     else:
-        pending.append(state.graph.keys())
+        # Only dirty rows and their transitive inputs can affect this wave.
+        # Keep clean relays and cycle heads, but visit shared inputs once.
+        relevant = dirty.copy()
+        frontier = list(dirty)
+        while frontier:
+            for dependency in writers.get(frontier.pop(), ()):
+                if dependency not in relevant:
+                    relevant.add(dependency)
+                    frontier.append(dependency)
+        pending.append(relevant)
 
     ready: set[str] = set()
     while pending:
