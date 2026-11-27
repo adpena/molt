@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 
 use super::analysis::AnalysisManager;
-#[cfg(test)]
 use super::blocks::BlockId;
 use super::call_targets::{gpu_runtime_result_type_for_op, static_call};
 use super::function::TirFunction;
@@ -94,7 +93,6 @@ pub fn may_call_python(func: &TirFunction) -> bool {
 
 pub(crate) enum CallEvent<'a> {
     Operation {
-        #[cfg(test)]
         position: (BlockId, usize),
         op: &'a TirOp,
         site: CallSite,
@@ -146,7 +144,6 @@ pub(crate) fn visit_sites(func: &TirFunction, mut stop: impl FnMut(CallEvent<'_>
             };
             if let Some(target) = target
                 && stop(CallEvent::Operation {
-                    #[cfg(test)]
                     position,
                     op,
                     site: CallSite { target, effects },

@@ -11,10 +11,10 @@ use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
 use super::activation::Activations;
-use super::call_sites::CallSite;
 use super::packed_splice::{ordinary_call, test_block};
 use super::packed_wrapper::{Check, PackedWrapper};
 use super::packed_wrapper_prefix::{Prefix, ReadState, Snapshot};
+use crate::tir::call_graph::StaticCallSite;
 
 fn insert(func: &mut TirFunction, ops: Vec<TirOp>, terminator: Terminator) -> BlockId {
     let id = func.fresh_block();
@@ -328,7 +328,7 @@ fn emit(
 pub(super) fn splice(
     caller: &mut TirFunction,
     callee: &TirFunction,
-    site: &CallSite,
+    site: &StaticCallSite,
     summary: &PackedWrapper,
     activations: &mut Activations,
 ) -> Option<BlockId> {
