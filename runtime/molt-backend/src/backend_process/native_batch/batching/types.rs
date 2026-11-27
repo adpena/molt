@@ -1,6 +1,9 @@
 use std::{collections::BTreeSet, path::PathBuf};
 
 use molt_backend::{ModuleRegistryIR, NativeBackendModuleContext, SimpleIR};
+use serde::Deserialize as _;
+use serde::de::value::{MapAccessDeserializer, StringDeserializer};
+use serde::de::{self, DeserializeSeed, MapAccess, Visitor};
 
 pub(crate) struct NativeApplicationArtifactOptions<'a> {
     pub(crate) object_cache: Option<crate::backend_process::shared_stdlib_cache::NativeObjectCache>,
@@ -29,13 +32,70 @@ pub(crate) struct NativeApplicationArtifactResult {
 
 /// Source stdlib constituents keep their independent content keys. Application
 /// objects carry the terminal graph the parent partitioned for this target.
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(serde::Serialize)]
 #[serde(untagged)]
 pub(crate) enum NativeBatchInput {
     Terminal {
         terminal: molt_backend::NativeTerminalObject,
     },
     Source(SimpleIR),
+}
+
+// The serialized terminal envelope already has a unique key. Route it to the
+// typed decoder as the map arrives, so a large byte array never lives in Serde's
+// untagged intermediate tree. Source jobs keep the regular SimpleIR validator.
+impl<'de> serde::Deserialize<'de> for NativeBatchInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct JobInput;
+        impl<'de> Visitor<'de> for JobInput {
+            type Value = NativeBatchInput;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a terminal envelope or source IR")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let first = map.next_key::<String>()?;
+                if first.as_deref() == Some("terminal") {
+                    let terminal = map.next_value()?;
+                    if let Some(extra) = map.next_key::<String>()? {
+                        return Err(de::Error::unknown_field(&extra, &["terminal"]));
+                    }
+                    return Ok(NativeBatchInput::Terminal { terminal });
+                }
+                let source =
+                    SimpleIR::deserialize(MapAccessDeserializer::new(WithFirstKey { first, map }))?;
+                Ok(NativeBatchInput::Source(source))
+            }
+        }
+        deserializer.deserialize_map(JobInput)
+    }
+}
+
+struct WithFirstKey<A> {
+    first: Option<String>,
+    map: A,
+}
+
+impl<'de, A: MapAccess<'de>> MapAccess<'de> for WithFirstKey<A> {
+    type Error = A::Error;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, Self::Error> {
+        match self.first.take() {
+            Some(key) => seed.deserialize(StringDeserializer::new(key)).map(Some),
+            None => self.map.next_key_seed(seed),
+        }
+    }
+
+    fn next_value_seed<V: DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, Self::Error> {
+        self.map.next_value_seed(seed)
+    }
 }
 
 impl NativeBatchInput {
