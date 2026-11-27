@@ -488,17 +488,6 @@ impl<'a> Planner<'a> {
             region.retain(|_, header| !headers.contains(header));
         }
 
-        let mut every_iteration = HashSet::default();
-        for (&bid, header) in &region {
-            let body = &forest.bodies[header];
-            let mut latches = order.iter().filter(|pred| {
-                body.contains(pred) && func.blocks[pred].terminator.successors().contains(header)
-            });
-            if latches.all(|latch| doms.dominates(bid, *latch)) {
-                every_iteration.insert(bid);
-            }
-        }
-
         let mut incoming: HashMap<BlockId, Vec<Incoming>> = HashMap::default();
         incoming
             .entry(func.entry_block)
@@ -527,6 +516,32 @@ impl<'a> Planner<'a> {
                 index += 1;
             });
         }
+        let latches: HashMap<_, Vec<_>> = forest
+            .headers
+            .iter()
+            .map(|&header| {
+                let body = &forest.bodies[&header];
+                let preds = incoming
+                    .get(&header)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|edge| match edge {
+                        Incoming::Edge { pred, .. } if body.contains(pred) => Some(*pred),
+                        _ => None,
+                    })
+                    .collect();
+                (header, preds)
+            })
+            .collect();
+        let every_iteration = region
+            .iter()
+            .filter_map(|(&bid, header)| {
+                latches[header]
+                    .iter()
+                    .all(|&latch| doms.dominates(bid, latch))
+                    .then_some(bid)
+            })
+            .collect();
 
         Self {
             func,
@@ -713,8 +728,8 @@ impl<'a> Planner<'a> {
                 let state = entry.get(pred).filter(|_| inside).and_then(|state| {
                     self.transfer(*pred, state.clone(), candidates, None)
                         .into_iter()
-                        .find(|(edge, _)| edge == index)
-                        .map(|(_, state)| state)
+                        .find(|(edge, _, _)| edge == index)
+                        .map(|(_, _, state)| state)
                 });
                 if let Some(state) = &state {
                     for &slot in &slots {
@@ -817,27 +832,52 @@ impl<'a> Planner<'a> {
         let mut entry: HashMap<BlockId, State> = HashMap::default();
         let mut out: HashMap<(BlockId, usize), State> = HashMap::default();
         let mut changes: HashMap<(BlockId, usize), u8> = HashMap::default();
-        let limit = 4 * self.order.len() + 16;
-        for _ in 0..limit {
-            let mut changed = false;
-            for bid in &self.order {
-                let Some(mut state) = self.meet(*bid, &out, entry.get(bid)) else {
-                    continue;
-                };
-                if let Some(previous) = entry.get(bid) {
-                    bound_changes(*bid, previous, &mut state, &mut changes, self.trace);
-                }
-                if entry.get(bid) != Some(&state) {
-                    entry.insert(*bid, state.clone());
-                    changed = true;
-                }
-                for (index, edge) in self.transfer(*bid, state, candidates, None) {
-                    out.insert((*bid, index), edge);
-                }
-            }
-            if !changed {
+        let rank: HashMap<_, _> = self
+            .order
+            .iter()
+            .enumerate()
+            .map(|(i, &bid)| (bid, i))
+            .collect();
+        let mut dirty: BTreeSet<_> = (0..self.order.len()).collect();
+        let mut next = BTreeSet::new();
+        for _ in 0..4 * self.order.len() + 16 {
+            if dirty.is_empty() {
                 return Some(entry);
             }
+            // Keep the original forward sweep and widening order. Only a
+            // changed transfer can require a successor to run again.
+            while let Some(index) = dirty.pop_first() {
+                let bid = self.order[index];
+                let Some(mut state) = self.meet(bid, &out, entry.get(&bid)) else {
+                    continue;
+                };
+                if let Some(previous) = entry.get(&bid) {
+                    bound_changes(bid, previous, &mut state, &mut changes, self.trace);
+                    if previous == &state {
+                        continue;
+                    }
+                }
+                entry.insert(bid, state.clone());
+                // Optimistic parameter matching and carried homes both read
+                // the previous entry as well as the incoming edges.
+                if !self.func.blocks[&bid].args.is_empty() || self.region.get(&bid) == Some(&bid) {
+                    next.insert(index);
+                }
+                for (edge_index, target, edge) in self.transfer(bid, state, candidates, None) {
+                    let key = (bid, edge_index);
+                    if out.get(&key) != Some(&edge) {
+                        out.insert(key, edge);
+                        if let Some(&successor) = rank.get(&target) {
+                            if successor > index {
+                                dirty.insert(successor);
+                            } else {
+                                next.insert(successor);
+                            }
+                        }
+                    }
+                }
+            }
+            std::mem::swap(&mut dirty, &mut next);
         }
         None
     }
@@ -946,7 +986,7 @@ impl<'a> Planner<'a> {
         mut state: State,
         candidates: &BTreeSet<(BlockId, usize)>,
         mut events: Option<&mut Events>,
-    ) -> Vec<(usize, State)> {
+    ) -> Vec<(usize, BlockId, State)> {
         let block = &self.func.blocks[&bid];
         let location = self.slots;
         for (index, op) in block.ops.iter().enumerate() {
@@ -1040,7 +1080,7 @@ impl<'a> Planner<'a> {
             if home_region.is_some() && self.region.get(&target) != home_region {
                 self.write_all(&mut edge, Point::Edge(bid, index), &mut events);
             }
-            edges.push((index, edge));
+            edges.push((index, target, edge));
             index += 1;
         });
         edges

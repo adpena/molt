@@ -809,6 +809,7 @@ fn finalize_with_guarded_targets(
     }
     if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
         lowering_changed |= super::type_refine::bind_checked_invocations(func);
+        lowering_changed |= super::passes::packed_region::run(func);
     }
     emit_drop_function_audit(
         "after-drop-pass",

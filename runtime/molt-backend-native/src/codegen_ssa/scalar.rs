@@ -474,7 +474,7 @@ pub(crate) mod tests {
                 SiteBody::FieldGet { .. }
                 | SiteBody::FieldProbe { .. }
                 | SiteBody::FieldSet { .. } => NONE_WORD,
-                SiteBody::FrameEntryProbe { .. } => 0,
+                SiteBody::FrameProbe { .. } => 0,
                 SiteBody::ItemGet { cold, .. } => self
                     .run_runtime(cold, &words[..2])
                     .expect("an item read's miss answers a word"),

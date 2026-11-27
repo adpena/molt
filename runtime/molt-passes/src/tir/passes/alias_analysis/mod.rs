@@ -345,7 +345,7 @@ impl AliasAnalysisResult {
     /// The Boolean result also observes thread-local exception state; a heap
     /// reaching definition alone does not authorize eliminating the check.
     pub(super) fn is_read_only_access(op: &TirOp) -> bool {
-        op.opcode == crate::tir::ops::OpCode::TryBuffer2dLoadI64
+        crate::tir::op_kinds_generated::opcode_is_alias_read_only_access_table(op.opcode)
     }
 
     pub(super) fn typed_slot_region(&self, op: &TirOp) -> MemRegion {

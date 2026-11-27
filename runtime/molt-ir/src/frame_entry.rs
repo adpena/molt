@@ -107,6 +107,21 @@ impl FramePrefix {
         )
     }
 
+    const REGION_ARENA_ATTR: &str = "frame_region_arena_admitted";
+
+    /// A region-entry check covers this reservation until an exit that can
+    /// change the thread's arena. Used only by the quiescent-region rewrite.
+    pub fn admit_region_arena(attrs: &mut AttrDict) {
+        attrs.insert(Self::REGION_ARENA_ATTR.into(), AttrValue::Bool(true));
+    }
+
+    pub fn region_arena_admitted(attrs: &AttrDict) -> bool {
+        matches!(
+            attrs.get(Self::REGION_ARENA_ATTR),
+            Some(AttrValue::Bool(true))
+        )
+    }
+
     pub fn reservation_from_attrs(attrs: &AttrDict) -> Option<Self> {
         // An older per-entry ancestor count is not a region reservation.
         if [

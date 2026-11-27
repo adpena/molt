@@ -2,6 +2,7 @@ use super::*;
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::LoopRole;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect};
+use crate::tir::values::TirValue;
 use crate::tir::verify::verify_function;
 use molt_ir::OpKind;
 

@@ -86,11 +86,12 @@ use crate::tir::passes::value_identity::{
 use crate::tir::passes::value_range::ValueRange;
 use crate::tir::ssa_update::{self, RepairRefusal, Variable};
 use crate::tir::types::TirType;
-use crate::tir::values::{TirValue, ValueId};
+use crate::tir::values::ValueId;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 use super::PassStats;
 use super::fast_path_expansion::{PackedAccess, packed_access};
+use super::region_clone::RegionClone;
 
 mod short_ascii;
 
@@ -600,7 +601,7 @@ struct GuardedEntry<'cfg> {
     copies: &'cfg HashMap<ValueId, ValueId>,
 }
 
-fn plain_preheader(
+pub(super) fn plain_preheader(
     func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
@@ -1154,75 +1155,13 @@ fn version(
     let mut blocks: Vec<BlockId> = body.iter().copied().collect();
     blocks.sort_by_key(|block| block.0);
 
-    // 1. The slow loop: fresh ids for every block and every value it defines.
-    let mut block_map: HashMap<BlockId, BlockId> = HashMap::default();
-    for &bid in &blocks {
-        block_map.insert(bid, func.fresh_block());
-    }
-    let mut value_map: HashMap<ValueId, ValueId> = HashMap::default();
-    let mut defined: Vec<(ValueId, TirType)> = Vec::new();
-    for &bid in &blocks {
-        let block = &original.blocks[&bid];
-        let block_values: Vec<(ValueId, TirType)> = block
-            .args
-            .iter()
-            .map(|arg| (arg.id, arg.ty.clone()))
-            .chain(block.ops.iter().flat_map(|op| {
-                op.results.iter().map(|&result| {
-                    let ty = original
-                        .value_types
-                        .get(&result)
-                        .cloned()
-                        .unwrap_or(TirType::DynBox);
-                    (result, ty)
-                })
-            }))
-            .collect();
-        for (value, ty) in block_values {
-            let fresh = func.fresh_value();
-            if let Some(known) = original.value_types.get(&value).cloned() {
-                func.value_types.insert(fresh, known);
-            }
-            value_map.insert(value, fresh);
-            defined.push((value, ty));
-        }
-    }
-    let map_value = |value: ValueId| value_map.get(&value).copied().unwrap_or(value);
-    let mut added = 0usize;
-    for &bid in &blocks {
-        let source = &original.blocks[&bid];
-        let mut terminator = source.terminator.clone();
-        terminator.for_each_value_mut(|value| *value = map_value(*value));
-        terminator.for_each_edge_mut(|target, _| {
-            if let Some(&cloned) = block_map.get(target) {
-                *target = cloned;
-            }
-        });
-        let clone = TirBlock {
-            id: block_map[&bid],
-            args: source
-                .args
-                .iter()
-                .map(|arg| TirValue {
-                    id: map_value(arg.id),
-                    ty: arg.ty.clone(),
-                })
-                .collect(),
-            ops: source
-                .ops
-                .iter()
-                .map(|op| TirOp {
-                    operands: op.operands.iter().map(|&v| map_value(v)).collect(),
-                    results: op.results.iter().map(|&v| map_value(v)).collect(),
-                    attrs: clone_attrs_without_simple_names(&op.attrs),
-                    ..op.clone()
-                })
-                .collect(),
-            terminator,
-        };
-        added += clone.ops.len();
-        func.blocks.insert(clone.id, clone);
-    }
+    // 1. The slow loop keeps the original operations and continuations.
+    let RegionClone {
+        blocks: block_map,
+        values: value_map,
+        definitions: defined,
+        ops_added: mut added,
+    } = RegionClone::install(func, original, &blocks);
 
     // 2. The fast loop alone holds the facts it was selected under. Its
     //    numeric operands already read guarded payloads. Mark the exact ops

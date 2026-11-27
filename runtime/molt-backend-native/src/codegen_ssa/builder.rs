@@ -110,8 +110,8 @@ pub(crate) enum SiteBody {
     /// `FieldGet`. Words `[object]`. The miss has no side effects.
     FieldProbe { offset: i32 },
     /// Read-only frame admission. Words `[thread, function, code_slot]`.
-    FrameEntryProbe {
-        reservation: molt_codegen_abi::frame_record::FrameReservation,
+    FrameProbe {
+        probe: molt_codegen_abi::frame_record::FrameProbe,
     },
     /// `object.<field at offset> = value`, answering None
     /// (`generate_field_slot_set`); words `[object, value]`; the miss is

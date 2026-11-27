@@ -48,11 +48,17 @@ impl CheckedBranch {
                     return None;
                 };
                 let (&flag, values) = op.results.split_last()?;
-                let raw = if op.opcode == OpCode::TryBuffer2dLoadI64
-                    && let [value] = values
+                let raw = if matches!(
+                    op.opcode,
+                    OpCode::TryBuffer2dLoadI64 | OpCode::LoadPackedBuffer2d
+                ) && let [value] = values
                 {
                     Some(*value)
-                } else if op.opcode == OpCode::TryBuffer2dStoreI64 && values.is_empty() {
+                } else if matches!(
+                    op.opcode,
+                    OpCode::TryBuffer2dStoreI64 | OpCode::StorePackedBuffer2d
+                ) && values.is_empty()
+                {
                     None
                 } else {
                     return None;
