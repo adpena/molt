@@ -790,7 +790,7 @@ impl<'a> Planner<'a> {
                     any_inside = true;
                     match arrival.state.known[slot] {
                         Known::Value(Bound::Carried(at)) if at == header => {}
-                        known if Some(known) == own => {}
+                        known @ Known::Value(_) if Some(known) == own => {}
                         Known::Value(Bound::Value(value)) => {
                             let Some(value_ty) = self.func.value_types.get(&value) else {
                                 return false;
@@ -899,7 +899,9 @@ impl<'a> Planner<'a> {
             }
             let own = previous.map(|state| state.known[slot]);
             let passes_own = |arrival: &Arrival<'_>, param: usize| {
-                Some(arrival.state.known[slot]) == own
+                // Two unknown bindings provide no evidence of passthrough.
+                matches!(own, Some(Known::Value(_)))
+                    && Some(arrival.state.known[slot]) == own
                     && arrival
                         .args
                         .and_then(|args| args.get(param))
