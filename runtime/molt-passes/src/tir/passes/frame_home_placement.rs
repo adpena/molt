@@ -400,7 +400,7 @@ struct Events {
 struct Planner<'a> {
     func: &'a TirFunction,
     repr: &'a Representation,
-    split_polls: bool,
+    work_only_polls: HashSet<(BlockId, usize)>,
     exact: HashMap<ValueId, TirType>,
     /// Home store or clear -> whether the binding it releases is
     /// finalizer-free.
@@ -431,6 +431,11 @@ impl<'a> Planner<'a> {
     ) -> Self {
         let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
         let labels = dominators::exception_label_to_block(func);
+        let work_only_polls = if split_polls {
+            super::check_exception_elim::polls_without_pending_exception(func, &labels)
+        } else {
+            HashSet::default()
+        };
         let all_blocks = block_order(func);
         let releases = binding_releases(func, &exact, &labels, &all_blocks);
         let reachable = dominators::executable_reachable_blocks(func);
@@ -526,7 +531,7 @@ impl<'a> Planner<'a> {
         Self {
             func,
             repr,
-            split_polls,
+            work_only_polls,
             exact,
             releases,
             canon,
@@ -955,7 +960,7 @@ impl<'a> Planner<'a> {
             }
             if op.opcode == OpCode::CheckException {
                 let (_, reads_location) = check_uses(op);
-                if op.is_async_work_poll() && self.split_polls && self.splittable(bid) {
+                if self.work_only_polls.contains(&(bid, index)) && self.splittable(bid) {
                     // The cold block writes; the normal path stays stale.
                     let mut cold = state.clone();
                     self.write_all(&mut cold, Point::PollCold(bid, index), &mut events);

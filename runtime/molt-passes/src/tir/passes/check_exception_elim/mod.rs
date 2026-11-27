@@ -36,3 +36,4 @@ mod flow;
 mod tests;
 
 pub use engine::{run, run_post_drop};
+pub(super) use flow::polls_without_pending_exception;
