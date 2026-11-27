@@ -1,21 +1,24 @@
-//! Prove the normal path of a synchronous getter before expanding its frame.
+//! Prove the normal path of a synchronous packed accessor before expanding its frame.
 //! The original call is the residual on a guard miss. A cut reached after a
-//! successful read must resume with that result and the original frame state.
+//! successful access must resume with that result and the original frame state.
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
-use molt_ir::runtime_fn_generated::RuntimeFn;
-use molt_ir::{ClassId, OpKind, ParameterCustody};
+use molt_ir::ir::GlobalSlotRef;
+use molt_ir::literal_payload::LiteralPayload;
+use molt_ir::{ClassId, FunctionId, OpKind};
 
 use crate::tir::blocks::{BlockId, Terminator};
-use crate::tir::call_targets::direct_boxed_runtime;
+use crate::tir::call_targets::static_call;
 use crate::tir::dominators::{checked_exception_observer, exception_label_to_block};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 use crate::tir::ops::{AttrValue, OpCode};
+use crate::tir::passes::fast_path_expansion::{PackedAccess, packed_access};
 use crate::tir::passes::{async_work_poll, value_identity};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
+use super::checked_scalar::CheckedScalar;
 use super::sync_frame::SyncFrame;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +39,8 @@ pub(super) enum After {
     FrameEntry,
     Setup,
     FieldLoad,
-    BufferRead,
+    Convert,
+    BufferAccess,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +51,8 @@ pub(super) struct Origin {
     pub snapshot: Snapshot,
     /// Includes an authored call-return service not yet marked by placement.
     pub services_pending: bool,
+    pub payload: Vec<ValueId>,
+    pub checked_word: Option<ValueId>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,16 +65,29 @@ pub(super) struct PackedRead {
     pub class: ClassId,
     pub offset: i64,
     pub field_load: Site,
-    pub buffer_read: Site,
+    pub buffer_access: Site,
+    pub conversion: Option<Conversion>,
     pub origins: Vec<Origin>,
     pub retirement: (Site, Snapshot),
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Conversion {
+    pub proof: CheckedScalar,
+    pub cell: GlobalSlotRef,
+    pub literal: Vec<u8>,
+    pub formal: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
     Formal(usize),
+    Converted(usize),
     Field,
-    Read,
+    Access,
+    Cell,
+    Literal,
+    None,
     Flag(bool),
 }
 
@@ -87,7 +106,10 @@ fn snapshot(frame: &SyncFrame, site: Site, sources: &HashMap<ValueId, Source>) -
     let homes = point
         .homes
         .iter()
-        .map(|&(slot, value)| Some((slot, formal(sources, value)?)))
+        .map(|&(slot, value)| match *sources.get(&value)? {
+            Source::Formal(position) | Source::Converted(position) => Some((slot, position)),
+            _ => None,
+        })
         .collect::<Option<_>>()?;
     Some(Snapshot {
         location: point.location,
@@ -98,10 +120,20 @@ fn snapshot(frame: &SyncFrame, site: Site, sources: &HashMap<ValueId, Source>) -
 /// Match actual executable operations and each checked cut. Type annotations,
 /// symbol spellings and successful-return forwarding alone cannot establish
 /// this effect trace. All exceptional destinations remain in the original body.
-pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
+pub(super) fn extract<'a>(
+    func: &TirFunction,
+    resolve: impl Fn(FunctionId) -> Option<&'a TirFunction>,
+) -> Option<PackedRead> {
+    let write = func.param_types.len() == 4 && func.return_type == TirType::None;
+    let kind = if write {
+        PackedAccess::Write
+    } else {
+        PackedAccess::Read
+    };
+
     if !func.return_abi.returns_value()
         || func.has_closure_parameter()
-        || func.param_types.len() != 3
+        || (!write && func.param_types.len() != 3)
     {
         return None;
     }
@@ -120,8 +152,10 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
     let mut entered = false;
     let mut awaiting = None;
     let mut field = None;
-    let mut read = None;
-    let mut return_poll = false;
+    let mut access = None;
+    let mut conversion: Option<Conversion> = None;
+    let mut cell = None;
+    let mut literal = None;
     let mut retirement = None;
     let mut origins = Vec::new();
     let mut visited = HashSet::default();
@@ -134,9 +168,8 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
         for (index, op) in block.ops.iter().enumerate() {
             let site = Site { block: id, index };
             if retirement.is_some()
-                || op.callee.is_some()
-                || (op.runtime.is_some()
-                    && direct_boxed_runtime(op) != Some(RuntimeFn::Buffer2dGet))
+                || (op.callee.is_some() && (!write || op.opcode != OpCode::Call))
+                || (op.runtime.is_some() && packed_access(op) != Some(kind))
                 || !op.has_valid_shape()
                 || (op.is_async_work_poll() && op.opcode != OpCode::CheckException)
                 || (awaiting.is_some() && op.opcode != OpCode::CheckException)
@@ -147,28 +180,37 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
                 if op.exception_edge_kind()? != ExceptionEdgeKind::Origin {
                     return None;
                 }
-                let after = awaiting.take().unwrap_or(After::Setup);
+                let (after, call_poll) = awaiting.take().unwrap_or((After::Setup, false));
                 // A checked invocation projects only this call's physical
                 // result. Its exceptional payload remains on the authored op.
                 if op.has_checked_invocation_binding()
-                    && (after != After::BufferRead
+                    && (after != After::BufferAccess
                         || op
                             .checked_invocation_source()
                             .and_then(|value| sources.get(&value))
-                            != Some(&Source::Read))
+                            != Some(&Source::Access))
                 {
                     return None;
                 }
-                let services_pending =
-                    op.is_async_work_poll() || (after == After::BufferRead && return_poll);
-                if services_pending && after != After::BufferRead {
+                let services_pending = op.is_async_work_poll() || call_poll;
+                if services_pending && !matches!(after, After::BufferAccess | After::Convert) {
+                    return None;
+                }
+                let target = checked_exception_observer(op, |label| labels.get(&label).copied())?;
+                if after == After::BufferAccess
+                    && (!op.exception_payload().is_empty()
+                        || op.has_checked_invocation_binding()
+                        || !super::packed_wrapper::is_plain_unwind(func, target))
+                {
                     return None;
                 }
                 origins.push(Origin {
                     site,
                     after,
                     services_pending,
-                    target: checked_exception_observer(op, |label| labels.get(&label).copied())?,
+                    payload: op.exception_payload().to_vec(),
+                    checked_word: op.checked_invocation_source(),
+                    target,
                     snapshot: snapshot(&frame, site, &sources)?,
                 });
             } else if op.opcode == OpCode::Copy && op.origin == Some(OpKind::TraceEnterSlot) {
@@ -176,15 +218,18 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
                     return None;
                 }
                 entered = true;
-                awaiting = Some(After::FrameEntry);
+                awaiting = Some((After::FrameEntry, false));
             } else if op.opcode == OpCode::Copy && op.origin == Some(OpKind::FrameHomeStore) {
                 let ([value], [view]) = (&*op.operands, &*op.results) else {
                     return None;
                 };
-                let position = formal(&sources, *value)?;
-                sources.insert(*view, Source::Formal(position));
+                let source = *sources.get(value)?;
+                if !matches!(source, Source::Formal(_) | Source::Converted(_)) {
+                    return None;
+                }
+                sources.insert(*view, source);
             } else if op.opcode == OpCode::Copy && op.origin == Some(OpKind::TraceExit) {
-                read?;
+                access?;
                 retirement = Some((site, snapshot(&frame, site, &sources)?));
             } else if (op.opcode == OpCode::FrameSetLocation
                 || (op.opcode == OpCode::Copy && op.origin == Some(OpKind::Line)))
@@ -195,8 +240,22 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
             } else if let Some(value) = value_identity::copy_value_source(op) {
                 let source = *sources.get(&value)?;
                 sources.insert(op.results[0], source);
+            } else if write && op.opcode == OpCode::StaticCellLoad && op.operands.is_empty() {
+                let slot = op.global_slot()?;
+                if cell.is_some() || !(slot.cell && slot.init_once) || conversion.is_some() {
+                    return None;
+                }
+                cell = Some(slot);
+                sources.insert(*op.results.first()?, Source::Cell);
+            } else if write && op.opcode == OpCode::ConstStr {
+                if literal.is_some() || conversion.is_some() {
+                    return None;
+                }
+                literal = Some(LiteralPayload::from_tir(op).ok()?.as_bytes().to_vec());
+                sources.insert(op.results[0], Source::Literal);
+                awaiting = Some((After::Setup, false));
             } else if let Some((receiver, offset)) = op.plain_typed_slot_load() {
-                if field.is_some() {
+                if field.is_some() || (write && conversion.is_none()) {
                     return None;
                 }
                 let position = formal(&sources, receiver)?;
@@ -205,21 +264,66 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
                 };
                 field = Some((site, position, *class, offset));
                 sources.insert(op.results[0], Source::Field);
-                awaiting = Some(After::FieldLoad);
-            } else if direct_boxed_runtime(op) == Some(RuntimeFn::Buffer2dGet) {
-                let ([payload, row, column], [result]) = (&*op.operands, &*op.results) else {
+                awaiting = Some((After::FieldLoad, false));
+            } else if packed_access(op) == Some(kind) {
+                let ([payload, row, column, rest @ ..], [result]) = (&*op.operands, &*op.results)
+                else {
                     return None;
                 };
-                if read.is_some()
-                    || sources.get(payload) != Some(&Source::Field)
-                    || (0..3).any(|index| op.operand_custody(index) != ParameterCustody::Borrowed)
+                if access.is_some() || sources.get(payload) != Some(&Source::Field) {
+                    return None;
+                }
+                match (rest, &conversion) {
+                    ([], None) if !write => {}
+                    ([value], Some(convert))
+                        if write
+                            && sources.get(value) == Some(&Source::Converted(convert.formal)) => {}
+                    _ => return None,
+                }
+                access = Some((site, formal(&sources, *row)?, formal(&sources, *column)?));
+                sources.insert(*result, Source::Access);
+                awaiting = Some((
+                    After::BufferAccess,
+                    async_work_poll::is_call_return_poll(op),
+                ));
+            } else if write && op.opcode == OpCode::Call {
+                if field.is_some() || conversion.is_some() {
+                    return None;
+                }
+                let call = static_call(op)?;
+                let target = resolve(call.callee)?;
+                let proof = CheckedScalar::summarize(target)?;
+                let args = call.bind(target)?;
+                let [first, second] = <[ValueId; 2]>::try_from(args.positional)
+                    .ok()?
+                    .map(|word| sources.get(&word).copied());
+                let (value, diagnostic) = match proof.formal() {
+                    0 => (first, second),
+                    1 => (second, first),
+                    _ => return None,
+                };
+                let Some(Source::Formal(formal)) = value else {
+                    return None;
+                };
+                if args.first_positional() != 0
+                    || diagnostic != Some(Source::Literal)
+                    || sources.get(&call.callable?) != Some(&Source::Cell)
                 {
                     return None;
                 }
-                return_poll = async_work_poll::is_call_return_poll(op);
-                read = Some((site, formal(&sources, *row)?, formal(&sources, *column)?));
-                sources.insert(*result, Source::Read);
-                awaiting = Some(After::BufferRead);
+                let [result] = op.results[..] else {
+                    return None;
+                };
+                conversion = Some(Conversion {
+                    proof,
+                    cell: cell.take()?,
+                    literal: literal.take()?,
+                    formal,
+                });
+                sources.insert(result, Source::Converted(formal));
+                awaiting = Some((After::Convert, async_work_poll::is_call_return_poll(op)));
+            } else if write && op.opcode == OpCode::ConstNone && access.is_some() {
+                sources.insert(*op.results.first()?, Source::None);
             } else if op.opcode == OpCode::ConstBool {
                 let Some(AttrValue::Bool(flag)) = op.attrs.get("value") else {
                     return None;
@@ -244,13 +348,18 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
             },
             Terminator::Return { values } => {
                 if awaiting.is_some()
-                    || !matches!(&values[..], [v] if sources.get(v) == Some(&Source::Read))
+                    || !matches!(&values[..], [v] if sources.get(v) == Some(&if write { Source::None } else { Source::Access }))
                 {
                     return None;
                 }
                 let (field_load, receiver, class, offset) = field?;
-                let (buffer_read, row, column) = read?;
+                let (buffer_access, row, column) = access?;
                 if receiver == row || receiver == column || row == column {
+                    return None;
+                }
+                if let Some(convert) = &conversion
+                    && [receiver, row, column].contains(&convert.formal)
+                {
                     return None;
                 }
                 return Some(PackedRead {
@@ -260,7 +369,8 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
                     class,
                     offset,
                     field_load,
-                    buffer_read,
+                    buffer_access,
+                    conversion,
                     origins,
                     retirement: retirement?,
                 });
@@ -285,6 +395,7 @@ pub(super) fn extract(func: &TirFunction) -> Option<PackedRead> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use molt_ir::runtime_fn_generated::RuntimeFn;
 
     #[test]
     fn recognizes_the_ordered_read_and_rejects_changed_effects() {
@@ -318,7 +429,7 @@ mod tests {
         func.value_types.insert(receiver.id, ty.clone());
         func.exact_param_types = vec![TirType::DynBox, ty, TirType::DynBox];
 
-        let plan = extract(&func).expect("typed field and direct runtime read");
+        let plan = extract(&func, |_| None).expect("typed field and direct runtime read");
         assert_eq!((plan.receiver, plan.row, plan.column), (1, 2, 0));
         assert_eq!((plan.class, plan.offset), (class, 16));
         assert_eq!(
@@ -329,7 +440,7 @@ mod tests {
             [
                 (After::FrameEntry, None, false),
                 (After::FieldLoad, Some(7), false),
-                (After::BufferRead, Some(6), true)
+                (After::BufferAccess, Some(6), true)
             ]
         );
         assert_eq!(plan.origins[2].snapshot.homes, [(0, 1), (1, 2), (2, 0)]);
@@ -357,16 +468,19 @@ mod tests {
         annotated.param_types[1] = TirType::Class(class);
         annotated.exact_param_types.clear();
         assert!(
-            extract(&annotated).is_none(),
+            extract(&annotated, |_| None).is_none(),
             "an annotation is not layout proof"
         );
 
         let mut changed = func.clone();
-        let call = &mut changed.blocks.get_mut(&plan.buffer_read.block).unwrap().ops
-            [plan.buffer_read.index];
+        let call = &mut changed
+            .blocks
+            .get_mut(&plan.buffer_access.block)
+            .unwrap()
+            .ops[plan.buffer_access.index];
         call.runtime = None;
         assert!(
-            extract(&changed).is_none(),
+            extract(&changed, |_| None).is_none(),
             "the printed name does not prove the target"
         );
         let mut changed = func.clone();
@@ -374,13 +488,13 @@ mod tests {
             &mut changed.blocks.get_mut(&plan.field_load.block).unwrap().ops[plan.field_load.index];
         field.origin = None;
         assert!(
-            extract(&changed).is_none(),
+            extract(&changed, |_| None).is_none(),
             "a dynamic field may run Python"
         );
         let cut = plan.origins[1].site;
         func.blocks.get_mut(&cut.block).unwrap().ops[cut.index].mark_async_work_poll();
         assert!(
-            extract(&func).is_none(),
+            extract(&func, |_| None).is_none(),
             "an extra service may replace the field before use"
         );
     }

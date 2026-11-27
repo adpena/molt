@@ -1,4 +1,4 @@
-//! The executable successful path of a checked wrapper around a packed read.
+//! The executable successful path of a checked wrapper around a packed access.
 //! All sites and SSA operands belong to the indicated immutable module body.
 //! A consumer must preserve the listed observations even on a fast hit.
 
@@ -99,7 +99,7 @@ pub(crate) enum Event {
     Invoke(Site),
     Check(Check),
     LoadField(Site),
-    ReadPacked(Site),
+    AccessPacked(Site),
     Retire {
         site: Site,
         location: Option<i64>,
@@ -115,6 +115,7 @@ pub(crate) struct PackedWrapper {
     pub identity_return_parameter: usize,
     /// Receiver, row and column positions in the leaf signature.
     pub leaf_formals: [usize; 3],
+    pub(super) write: Option<(usize, packed_read::Conversion)>,
     pub identity_call: Invocation,
     pub leaf_call: Invocation,
     pub receiver: usize,
@@ -196,16 +197,12 @@ impl ForwardedReceiver {
     }
 }
 
-/// A committed packed read can leave through the captured frame chain. This
+/// A committed packed access can leave through the captured frame chain. This
 /// is equivalent to the authored exceptional successor only when it merely
 /// clears this activation and unwinds. Payload cleanup, a handler, or any
 /// additional Python operation needs the original continuation.
-fn forwards_exception(func: &TirFunction, check: &Check) -> bool {
-    if !check.payload.is_empty() || check.checked_word.is_some() {
-        return false;
-    }
+pub(super) fn is_plain_unwind(func: &TirFunction, mut current: BlockId) -> bool {
     let mut visited = HashSet::default();
-    let mut current = check.exceptional;
     let mut exited = false;
     while visited.insert(current) {
         let Some(block) = func.blocks.get(&current) else {
@@ -522,10 +519,11 @@ fn trace<'a>(
 
 /// Compose only immutable, unexpanded source bodies. Function-relative SSA
 /// numbers remain distinct even when two callees use the same value numbers.
-pub(crate) fn summarize<'a>(
+pub(super) fn summarize_with_leaf<'a>(
     wrapper_id: FunctionId,
     wrapper: &'a TirFunction,
     resolve: impl Fn(FunctionId) -> Option<&'a TirFunction>,
+    write_leaf: impl Fn(FunctionId) -> Option<&'a packed_read::PackedRead>,
 ) -> Option<PackedWrapper> {
     let wrapper_frame = frame(wrapper, wrapper_id, FramePrefix::default())?;
     let outer = trace(wrapper, &wrapper_frame, Role::Wrapper, &resolve)?;
@@ -538,7 +536,6 @@ pub(crate) fn summarize<'a>(
     if identity_call.target == wrapper_id
         || leaf_call.target == wrapper_id
         || identity_call.target == leaf_call.target
-        || outer.returned != Source::CallResult(leaf_call.site)
     {
         return None;
     }
@@ -546,7 +543,10 @@ pub(crate) fn summarize<'a>(
         .events
         .iter()
         .skip_while(|event| !matches!(event, Event::Invoke(site) if *site == leaf_call.site));
-    if !matches!(after_leaf.nth(1), Some(Event::Check(check)) if forwards_exception(wrapper, check))
+    if !matches!(after_leaf.nth(1), Some(Event::Check(check))
+        if check.payload.is_empty()
+            && check.checked_word.is_none()
+            && is_plain_unwind(wrapper, check.exceptional))
     {
         return None;
     }
@@ -561,7 +561,25 @@ pub(crate) fn summarize<'a>(
 
     let body = resolve(leaf_call.target)?;
     let leaf = frame(body, leaf_call.target, nested_prefix)?;
-    let packed = packed_read::extract(body)?;
+    let packed = if let Some(prepared) = write_leaf(leaf_call.target) {
+        prepared.clone()
+    } else {
+        packed_read::extract(body, &resolve)?
+    };
+    let write = if let Some(convert) = packed.conversion.clone() {
+        if outer.returned != Source::CallResult(identity_call.site) {
+            return None;
+        }
+        let Source::Formal(value) = leaf_call.arguments.get(convert.formal)?.source else {
+            return None;
+        };
+        Some((value, convert))
+    } else {
+        if outer.returned != Source::CallResult(leaf_call.site) {
+            return None;
+        }
+        None
+    };
     let class = TirType::Class(packed.class);
     if wrapper.exact_param_types.get(receiver) != Some(&class)
         || leaf_call.arguments.get(packed.receiver)?.source
@@ -583,29 +601,29 @@ pub(crate) fn summarize<'a>(
     };
     let mut leaf_events = vec![Event::Enter(leaf.entry)];
     for origin in packed.origins {
+        if origin.after == packed_read::After::Convert {
+            continue;
+        }
         match origin.after {
             packed_read::After::FieldLoad => {
                 leaf_events.push(Event::LoadField(leaf_site(packed.field_load)))
             }
-            packed_read::After::BufferRead => {
-                leaf_events.push(Event::ReadPacked(leaf_site(packed.buffer_read)))
+            packed_read::After::BufferAccess => {
+                leaf_events.push(Event::AccessPacked(leaf_site(packed.buffer_access)))
             }
             _ => {}
         }
         let site = leaf_site(origin.site);
-        let check = body.blocks.get(&site.block)?.ops.get(site.index)?;
+
         let observed = Check {
             site,
             exceptional: origin.target,
             location: origin.snapshot.location,
             homes: origin.snapshot.homes,
             services_pending: origin.services_pending,
-            payload: check.exception_payload().to_vec(),
-            checked_word: check.checked_invocation_source(),
+            payload: origin.payload,
+            checked_word: origin.checked_word,
         };
-        if origin.after == packed_read::After::BufferRead && !forwards_exception(body, &observed) {
-            return None;
-        }
         leaf_events.push(Event::Check(observed));
     }
     leaf_events.push(Event::Retire {
@@ -631,6 +649,7 @@ pub(crate) fn summarize<'a>(
         leaf,
         identity_return_parameter: forwarded,
         leaf_formals: [packed.receiver, packed.row, packed.column],
+        write,
         identity_call,
         leaf_call,
         receiver,
@@ -640,6 +659,15 @@ pub(crate) fn summarize<'a>(
         offset: packed.offset,
         events,
     })
+}
+
+#[cfg(test)]
+fn summarize<'a>(
+    wrapper_id: FunctionId,
+    wrapper: &'a TirFunction,
+    resolve: impl Fn(FunctionId) -> Option<&'a TirFunction>,
+) -> Option<PackedWrapper> {
+    summarize_with_leaf(wrapper_id, wrapper, resolve, |_| None)
 }
 
 #[cfg(test)]
