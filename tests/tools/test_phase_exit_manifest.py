@@ -600,6 +600,10 @@ def _board(
     )
     doc = ps.build_scoreboard_doc(
         cells,
+        planned_cells=tuple(
+            pa.perf_schema.PlannedCell(c.benchmark, c.target, c.backend, c.profile)
+            for c in cells
+        ),
         benchmarks_run=list(pa.CANONICAL_PERF_BENCHMARKS),
         benchmarks_deferred=[],
         cpython_version=CPYTHON_BASELINE,

@@ -321,7 +321,7 @@ class Cell:
     molt_ok: bool = False
     cpython_ok: bool = False
 
-    # COLD: first cold-cache sample for each runtime.
+    # COLD: first invocation for each runtime; cache state is uncontrolled.
     cold_molt_s: float | None = None
     cold_cpython_s: float | None = None
 
@@ -338,15 +338,16 @@ class Cell:
     note: str | None = None
 
     # --- Two-dimensional verdict (council ruling A) ----------------------
-    # warm_speedup = cpython_warm / molt_warm  (the EXECUTION-ENGINE axis).
-    # cold_speedup = cpython_cold / molt_cold  (the END-TO-END cold axis).
-    # startup_tax_ms = (molt_cold_total - molt_warm_total) * 1000  (fixed tax).
+    # warm_speedup = cpython_warm / molt_warm (repeated fresh processes).
+    # cold_speedup = cpython_cold / molt_cold (first invocations).
+    # startup_tax_ms retains its historical wire name for the first-minus-repeat
+    # delta. Both phases include startup; their difference does not isolate it.
     warm_speedup: float | None = None
     cold_speedup: float | None = None
     startup_tax_ms: float | None = None
     cold_budget_ms: float | None = None  # the budget this cell was gated against
     verdict: str = "pending"  # one of the VERDICT_* constants
-    # The single most-likely missing fact / startup component, for triage.
+    # Attribution hypotheses for triage; timing alone does not prove a cause.
     suspected_missing_fact: str | None = None
     suspected_startup_component: str | None = None
     fact_class: str | None = None
@@ -394,7 +395,7 @@ class Cell:
 
     # --- Measurement-hygiene classification (#69 --classify) --------------
     # The council's 5-state classification (orthogonal to ``verdict``): the
-    # answer to "TRUE compiler target or measurement artifact?". Set only when
+    # answer to "confirmed comparison or unqualified observation?". Set only when
     # --classify is requested; None otherwise so the 2-D verdict path is
     # unchanged for callers that do not opt in.
     classification: str | None = None  # one of CLASSIFY_STATES
@@ -426,8 +427,8 @@ class Cell:
     ) -> None:
         """Derive speedups + the TWO-DIMENSIONAL verdict from collected facts.
 
-        ``budget_ms`` is the cold-start tax budget for this (backend, profile)
-        cell (None = no budget recorded yet; FAIL_COLD_BUDGET cannot fire).
+        ``budget_ms`` is the recorded first-minus-repeat ceiling for this
+        (backend, profile) cell (None = no budget; FAIL_COLD_BUDGET cannot fire).
         ``authoritative`` False stamps every cell FAIL_STALE (the board cannot
         be the canonical origin/main performance contract) — overriding all
         other verdicts per council ruling A.
@@ -491,9 +492,8 @@ class Cell:
         self.warm_speedup = _safe_ratio(self.warm_cpython_s, self.warm_molt_s)
         self.cold_speedup = _safe_ratio(self.cold_cpython_s, self.cold_molt_s)
 
-        # startup_tax_ms = the fixed cold-start cost molt pays that the warm
-        # steady state does not (cold_total - warm_total). This is the quantity
-        # the cold-start budget gates against — NOT the cold/cpython ratio.
+        # Preserve the historical budget arithmetic. This observational delta
+        # includes cache effects and noise; it is not isolated startup latency.
         if self.cold_molt_s is not None and self.warm_molt_s is not None:
             self.startup_tax_ms = round(
                 (self.cold_molt_s - self.warm_molt_s) * 1000.0, 2
@@ -517,16 +517,14 @@ class Cell:
         )
 
         # --- The two-dimensional decision (council ruling A) -------------
-        # 1. FAIL_ENGINE — warm steady-state is at/below CPython. This is the
-        #    execution-engine red, the release blocker. It dominates a cold
-        #    failure (if the engine is slow, fix the engine first).
+        # 1. FAIL_ENGINE retains its wire name for a repeated fresh-process
+        #    comparison at/below CPython. Timing does not localize the cause.
         if warm_below:
             self.verdict = VERDICT_FAIL_ENGINE
             _apply_perf_attribution(self)
             return
-        # 2. FAIL_COLD_BUDGET — warm is fine but the fixed startup tax exceeds
-        #    the recorded budget for this lane. A startup regression, not an
-        #    engine red; routes to the cold-start lane.
+        # 2. FAIL_COLD_BUDGET — the first-minus-repeat delta exceeds the
+        #    recorded ceiling. This preserves the historical budget contract.
         if over_budget:
             self.verdict = VERDICT_FAIL_COLD_BUDGET
             self.suspected_startup_component = (
@@ -534,9 +532,8 @@ class Cell:
                 or _suspect_startup_component(self.benchmark)
             )
             return
-        # 3. WARN_COLD_FLOOR — warm > CPython, but cold <= CPython AND the loss
-        #    is solely the fixed startup tax (within budget). NOT an engine red;
-        #    does not fail the gate unless --strict-cold.
+        # 3. WARN_COLD_FLOOR — repeated-process win, first-invocation loss,
+        #    delta within budget. These facts do not identify a startup cause.
         if cold_below:
             self.verdict = VERDICT_WARN_COLD_FLOOR
             self.suspected_startup_component = (
@@ -591,7 +588,7 @@ def classify_cell(
     quiescent: bool,
     baseline_cell: dict | None = None,
 ) -> tuple[str, str]:
-    """Return (classification, reason) — the 5-state measurement-hygiene verdict.
+    """Classify the repeated fresh-process comparison, without attributing cost.
 
     ``quiescent`` is the machine-quiescence result for the WHOLE board (a single
     run cannot be partly quiet). ``baseline_cell`` (optional) enables
@@ -669,7 +666,8 @@ def classify_cell(
             return (
                 CLASS_RED_STABLE,
                 f"repeat CI [{cell.repeat_ci_lo}, {cell.repeat_ci_hi}] clears below "
-                f"1.00 (point {warm}x), quiescent + stable — TRUE compiler target",
+                f"1.00 (point {warm}x), quiescent + stable — fresh-process loss; "
+                "cost attribution required",
             )
         # Demote to RED_NOISY and NAME why it is not yet a target.
         causes = []
@@ -686,36 +684,27 @@ def classify_cell(
 
     # --- WARM GREEN / DIMENSIONAL branch (CI-governed when present) ----------
     if warm_above:
-        # ASYMMETRY OF CONTAMINATION: a competing build steals cycles from the
-        # TIMED molt process, so it can only make molt look SLOWER — never
-        # artificially FASTER. Therefore a warm-ABOVE cell under contamination is
-        # a CONSERVATIVE green (the quiet number would be >= this); the win is
-        # real. Only cell INSTABILITY (CV/robustness) can undermine a green —
-        # NOT non-quiescence. (Contrast the warm-BELOW branch, where load CAN
-        # manufacture a false red, so quiescence is mandatory there.) Calling a
-        # 10x cell RED_NOISY merely because an idle daemon was running is wrong.
-        if cell.stable:
-            note = f"warm point {warm}x above 1.00, stable"
+        # Competing load can delay either runtime in an interleaved pair.
+        # A stable apparent win therefore requires the same quiet-host
+        # precondition as a stable loss.
+        if cell.stable and quiescent:
+            note = f"fresh-process ratio {warm}x above 1.00, stable + quiescent"
             if has_ci:
                 note += (
                     f", repeat CI [{cell.repeat_ci_lo}, {cell.repeat_ci_hi}] clears "
                     "above 1.00"
                 )
-            if not quiescent:
-                note += (
-                    " (measured non-quiescent — contamination is conservative for "
-                    "a green: the quiet number can only be faster; board authority "
-                    "still gated)"
-                )
-            else:
-                note += " + quiescent"
             return CLASS_GREEN, note
-        # warm>1 but the cell is UNSTABLE -> not a confirmed win (a straddle was
-        # already caught above; this is point-above with a volatile sample).
+        causes: list[str] = []
+        if not quiescent:
+            causes.append("machine NOT quiescent (either runtime may be delayed)")
+        if not cell.stable:
+            causes.append("cell unstable (CV/robustness)")
         return (
             CLASS_RED_NOISY,
-            f"warm point {warm}x above 1.00 BUT cell unstable (CV/robustness) — "
-            "green unconfirmed",
+            f"fresh-process ratio {warm}x above 1.00 BUT "
+            + "; ".join(causes)
+            + " — green unconfirmed",
         )
 
     # --- DIMENSIONAL_WIN: warm gate flat, another dimension improved --------
@@ -790,17 +779,11 @@ def _apply_perf_attribution(cell: Cell) -> None:
 
 
 def _suspect_startup_component(benchmark: str) -> str:
-    """Cold-start tax components are program-INDEPENDENT for the fixed floor.
-
-    The cold tax is dominated by the fixed startup cost (process-launch/dyld +
-    molt-runtime-init + binary page-in), not the program. The per-benchmark
-    delta is binary SIZE (larger linked surface = more page-in) and any extra
-    module-init the program's imports trigger. See docs/perf/COLD_START.md.
-    """
+    """Return an explicitly unverified hypothesis, never timing attribution."""
     name = Path(benchmark).stem.lower()
     if any(n in name for n in ("json", "csv", "import", "etl", "channel", "async")):
-        return "module-init + binary page-in (program imports extra stdlib surface)"
-    return "fixed startup floor: binary page-in + molt-runtime-init + dyld"
+        return "hypothesis: module initialization or binary page-in; profile to verify"
+    return "hypothesis: process loading, runtime initialization or page-in; profile to verify"
 
 
 def _cell_from_dict(d: dict) -> Cell:

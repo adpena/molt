@@ -6,6 +6,8 @@ from functools import cache
 from pathlib import Path
 import tomllib
 import io
+import json
+from typing import Literal, cast
 import zipfile
 
 import pytest
@@ -65,6 +67,262 @@ def test_every_benchmark_file_has_exactly_one_primary_owner_or_exclusion() -> No
         assert (ROOT / path).is_file()
         assert exclusion.kind in allowed_exclusion_kinds
         assert exclusion.reason.strip()
+
+
+@pytest.fixture
+def inventory_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    declarations = {
+        "BENCHMARKS": ("tests/benchmarks/bench_selected.py",),
+        "SMOKE_BENCHMARKS": ("tests/benchmarks/bench_selected.py",),
+        "WS_BENCHMARKS": ("tests/benchmarks/bench_ws.py",),
+        "DYNAMIC_BUILTIN_SLICES": ("tests/benchmarks/bench_slice.py",),
+    }
+    for name, paths in declarations.items():
+        monkeypatch.setattr(bench_suites, name, paths)
+    excluded = "tests/benchmarks/bench_diag.py"
+    monkeypatch.setattr(
+        bench_suites,
+        "EXCLUDED_BENCHMARKS",
+        {excluded: bench_suites.BenchmarkExclusion("diagnostic", "epoch-only proof")},
+    )
+    monkeypatch.setattr(bench_suites, "_applications", lambda: ())
+    for path in {
+        excluded,
+        *(path for paths in declarations.values() for path in paths),
+    }:
+        source = tmp_path / path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(
+            "raise RuntimeError('inventory must not execute sources')\n",
+            encoding="utf-8",
+        )
+    return tmp_path
+
+
+def test_inventory_keeps_primary_alias_and_exclusion_denominators_separate(
+    inventory_project: Path,
+) -> None:
+    inventory = bench_suites.benchmark_inventory(root=inventory_project)
+    assert inventory.as_record() == {
+        "primary_suites": {
+            "core": ["tests/benchmarks/bench_selected.py"],
+            "websocket": ["tests/benchmarks/bench_ws.py"],
+            "dynamic_builtin": ["tests/benchmarks/bench_slice.py"],
+        },
+        "smoke": ["tests/benchmarks/bench_selected.py"],
+        "applications": [],
+        "exclusions": {
+            "tests/benchmarks/bench_diag.py": {
+                "kind": "diagnostic",
+                "reason": "epoch-only proof",
+            }
+        },
+    }
+    assert bench_suites.benchmark_suite_keys("core", inventory=inventory) == (
+        "tests/benchmarks/bench_selected.py",
+    )
+    assert (
+        bench_suites.benchmark_suite_keys("smoke", inventory=inventory)
+        == inventory.smoke
+    )
+    inventory.as_record()["primary_suites"]["core"].append("changed")
+    assert bench_suites.benchmark_suite_keys("core", inventory=inventory) == (
+        "tests/benchmarks/bench_selected.py",
+    )
+    with pytest.raises(ValueError, match="unknown benchmark set"):
+        bench_suites.benchmark_set("unknown")
+
+
+@pytest.mark.parametrize("drift", ["new", "missing", "duplicate", "excluded", "smoke"])
+def test_inventory_refuses_drift_instead_of_silently_selecting_it(
+    inventory_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: Literal["new", "missing", "duplicate", "excluded", "smoke"],
+) -> None:
+    if drift == "new":
+        (inventory_project / "tests/benchmarks/bench_new.py").write_text(
+            "pass\n", encoding="utf-8"
+        )
+    elif drift == "missing":
+        (inventory_project / "tests/benchmarks/bench_selected.py").unlink()
+    elif drift == "duplicate":
+        monkeypatch.setattr(bench_suites, "WS_BENCHMARKS", bench_suites.BENCHMARKS)
+    elif drift == "excluded":
+        monkeypatch.setattr(
+            bench_suites,
+            "EXCLUDED_BENCHMARKS",
+            {
+                bench_suites.BENCHMARKS[0]: bench_suites.BenchmarkExclusion(
+                    "diagnostic", "double ownership"
+                )
+            },
+        )
+    else:
+        monkeypatch.setattr(
+            bench_suites, "SMOKE_BENCHMARKS", bench_suites.WS_BENCHMARKS
+        )
+    with pytest.raises(ValueError):
+        bench_suites.benchmark_inventory(root=inventory_project)
+
+
+def test_inventory_application_selection_is_derived_from_catalog_without_acquisition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_acquisition(*args: object, **kwargs: object) -> None:
+        pytest.fail("inventory acquired application inputs")
+
+    monkeypatch.setattr(
+        benchmark_applications, "prepare_application", unexpected_acquisition
+    )
+    monkeypatch.setattr(benchmark_applications, "_archive", unexpected_acquisition)
+    inventory = bench_suites.benchmark_inventory()
+    assert inventory.applications == tuple(
+        app.driver for app in benchmark_applications.applications()
+    )
+    assert bench_suites.benchmark_suite_keys("applications", inventory=inventory) == (
+        inventory.applications
+    )
+    assert set(inventory.applications).isdisjoint(
+        path for _, paths in inventory.primary_suites for path in paths
+    )
+
+
+@pytest.mark.parametrize("selection", ["core", "applications", "shard", "explicit"])
+def test_scoreboard_plan_is_exact_and_precedes_workload_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    selection: Literal["core", "applications", "shard", "explicit"],
+) -> None:
+    from tools import bench_evidence, perf_scoreboard, perf_scoreboard_cli
+
+    def unexpected_work(*args: object, **kwargs: object) -> None:
+        pytest.fail("metadata-only plan crossed the measurement boundary")
+
+    for module, name in (
+        (perf_scoreboard, "_resolve_system_cpython"),
+        (perf_scoreboard, "wait_for_quiescence"),
+        (perf_scoreboard_cli, "_observe_cpython_runtime"),
+        (bench_evidence, "admit_benchmark_workload"),
+        (bench, "admit_wasm_execution"),
+        (bench, "_BenchBatchBuildServer"),
+        (benchmark_applications, "prepare_application"),
+        (benchmark_applications, "_archive"),
+    ):
+        monkeypatch.setattr(module, name, unexpected_work)
+    output = tmp_path / "must-not-exist" / "board.json"
+    monkeypatch.setattr(perf_scoreboard, "SCOREBOARD_DIR", output.parent)
+    argv = [
+        "--plan",
+        "--plan-format",
+        "json",
+        "--backend",
+        "native",
+        "--backend",
+        "wasm",
+        "--profile",
+        "release-fast",
+        "--out",
+        str(output),
+    ]
+    if selection == "applications":
+        argv += ["--set", "applications"]
+        selected = set(bench_suites.APPLICATION_BENCHMARKS)
+    elif selection == "explicit":
+        argv += ["--benchmark", "bench_sum.py"]
+        selected = {"tests/benchmarks/bench_sum.py"}
+    elif selection == "shard":
+        argv += ["--set", "smoke", "--shard", "0/2"]
+        selected = {"tests/benchmarks/bench_bytes_find.py"}
+    else:
+        selected = set(bench_suites.BENCHMARKS)
+    assert perf_scoreboard.main(argv) == 0
+    plan = cast(
+        perf_scoreboard_cli.BenchmarkPlanRecord, json.loads(capsys.readouterr().out)
+    )
+    assert plan["kind"] == "molt.benchmark-plan.v1"
+    assert {
+        (cell["benchmark"], cell["target"], cell["backend"], cell["profile"])
+        for cell in plan["planned_cells"]
+    } == {
+        (key, target, backend, "release-fast")
+        for key in selected
+        for target, backend in (("native", "native"), ("wasm", "wasm"))
+    }
+    assert len(plan["planned_cells"]) == 2 * len(selected)
+    if selection == "shard":
+        assert plan["shard"] is not None
+        assert plan["shard"]["members"] == sorted(selected)
+        assert plan["shard"]["set_members"] == sorted(bench_suites.SMOKE_BENCHMARKS)
+    else:
+        assert plan["shard"] is None
+    assert plan["inventory"] == bench_suites.benchmark_inventory().as_record()
+    assert not output.parent.exists()
+
+
+def test_scoreboard_plan_summary_lists_each_benchmark_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tools import perf_scoreboard
+
+    def unexpected_work(*args: object, **kwargs: object) -> None:
+        pytest.fail("plan summary crossed the measurement boundary")
+
+    monkeypatch.setattr(perf_scoreboard, "_resolve_system_cpython", unexpected_work)
+    assert (
+        perf_scoreboard.main(
+            ["--plan", "--set", "smoke", "--backend", "native", "--backend", "llvm"]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "planning only; no measurement" in output
+    assert "set=smoke shard=all benchmarks=2 coordinates=4" in output
+    assert "backends=native,llvm profiles=release-fast" in output
+    assert f"core={len(bench_suites.BENCHMARKS)}" in output
+    assert f"applications={len(bench_suites.APPLICATION_BENCHMARKS)}" in output
+    assert f"exclusions={len(bench_suites.EXCLUDED_BENCHMARKS)}" in output
+    for path in bench_suites.SMOKE_BENCHMARKS:
+        assert output.splitlines().count(path) == 1
+    assert output.split("selected benchmark keys:\n")[1].splitlines() == list(
+        bench_suites.SMOKE_BENCHMARKS
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--backend", "native", "--backend", "native"],
+        ["--profile", "release-fast", "--profile", "release-fast"],
+        ["--benchmark", "bench_sum.py", "--benchmark", "bench_sum.py"],
+        ["--benchmark", "missing-benchmark.py"],
+        ["--benchmark", "tests/benchmarks"],
+        ["--benchmark", ""],
+        ["--merge", "board.json"],
+        ["--rebuild-summary", "board.json"],
+        ["--sample-hot-only"],
+        ["--self-test"],
+        ["--plan-format", "unknown"],
+    ],
+)
+def test_scoreboard_plan_refuses_ambiguous_or_incompatible_selection(
+    monkeypatch: pytest.MonkeyPatch, args: list[str]
+) -> None:
+    from tools import perf_scoreboard
+
+    def unexpected_work(*args: object, **kwargs: object) -> None:
+        pytest.fail("invalid plan crossed the measurement boundary")
+
+    monkeypatch.setattr(perf_scoreboard, "_resolve_system_cpython", unexpected_work)
+    with pytest.raises(SystemExit):
+        perf_scoreboard.main(["--plan", *args])
+
+
+def test_scoreboard_plan_format_requires_plan() -> None:
+    from tools import perf_scoreboard
+
+    with pytest.raises(SystemExit, match="2"):
+        perf_scoreboard.main(["--plan-format", "json"])
 
 
 def test_molt_benchmark_args_are_canonicalized_for_all_call_shapes() -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 from tools.benchmark_applications import applications as _applications
 
@@ -110,6 +110,45 @@ class BenchmarkExclusion:
     reason: str
 
 
+BenchmarkSet = Literal["core", "smoke", "applications"]
+PrimaryBenchmarkSuite = Literal["core", "websocket", "dynamic_builtin"]
+
+
+class BenchmarkExclusionRecord(TypedDict):
+    kind: BenchmarkExclusionKind
+    reason: str
+
+
+class BenchmarkInventoryRecord(TypedDict):
+    primary_suites: dict[PrimaryBenchmarkSuite, list[str]]
+    smoke: list[str]
+    applications: list[str]
+    exclusions: dict[str, BenchmarkExclusionRecord]
+
+
+@dataclass(frozen=True)
+class BenchmarkInventory:
+    """Validated immutable selection metadata, without acquiring workloads."""
+
+    primary_suites: tuple[tuple[PrimaryBenchmarkSuite, tuple[str, ...]], ...]
+    smoke: tuple[str, ...]
+    applications: tuple[str, ...]
+    exclusions: tuple[tuple[str, BenchmarkExclusion], ...]
+
+    def as_record(self) -> BenchmarkInventoryRecord:
+        return {
+            "primary_suites": {
+                name: list(paths) for name, paths in self.primary_suites
+            },
+            "smoke": list(self.smoke),
+            "applications": list(self.applications),
+            "exclusions": {
+                path: {"kind": exclusion.kind, "reason": exclusion.reason}
+                for path, exclusion in self.exclusions
+            },
+        }
+
+
 # Every tests/benchmarks/bench_*.py file must be owned by one primary runnable
 # suite above or by this typed exclusion table. SMOKE_BENCHMARKS is a selection
 # alias over BENCHMARKS, not a second ownership class.
@@ -155,6 +194,87 @@ _MOLT_ARGS_BY_BASENAME = {
 }
 
 
+def benchmark_inventory(*, root: Path | None = None) -> BenchmarkInventory:
+    """Check all local ownership declarations without activating new files.
+
+    Application drivers come only from executable catalog recipes. External
+    corpus intentions and friend workloads have separate authorities and are
+    deliberately outside this inventory's denominator.
+    """
+    if root is None:
+        root = Path(__file__).resolve().parents[1]
+    primary_suites: tuple[tuple[PrimaryBenchmarkSuite, tuple[str, ...]], ...] = (
+        ("core", BENCHMARKS),
+        ("websocket", WS_BENCHMARKS),
+        ("dynamic_builtin", DYNAMIC_BUILTIN_SLICES),
+    )
+    primary = [path for _, paths in primary_suites for path in paths]
+    if len(primary) != len(set(primary)):
+        raise ValueError("benchmark inventory has duplicate primary ownership")
+    exclusions = tuple(sorted(EXCLUDED_BENCHMARKS.items()))
+    excluded = {path for path, _ in exclusions}
+    overlap = set(primary) & excluded
+    if overlap:
+        raise ValueError(f"benchmark inventory owns and excludes {sorted(overlap)}")
+    discovered = {
+        path.relative_to(root).as_posix()
+        for path in (root / "tests" / "benchmarks").glob("bench_*.py")
+        if path.is_file()
+    }
+    declared = set(primary) | excluded
+    if discovered != declared:
+        raise ValueError(
+            "benchmark inventory drift: "
+            f"unowned files {sorted(discovered - declared)}; "
+            f"missing files {sorted(declared - discovered)}"
+        )
+    if len(SMOKE_BENCHMARKS) != len(set(SMOKE_BENCHMARKS)) or not set(
+        SMOKE_BENCHMARKS
+    ) <= set(BENCHMARKS):
+        raise ValueError("smoke selection must be a unique subset of core")
+    if any(not exclusion.reason.strip() for _, exclusion in exclusions):
+        raise ValueError("benchmark exclusions require a reason")
+    applications = tuple(app.driver for app in _applications())
+    if len(applications) != len(set(applications)):
+        raise ValueError("application inventory has duplicate drivers")
+    for path in applications:
+        if path in declared or not (root / path).is_file():
+            raise ValueError(
+                f"application inventory has missing or multiply owned driver {path}"
+            )
+    return BenchmarkInventory(
+        primary_suites, SMOKE_BENCHMARKS, applications, exclusions
+    )
+
+
+def benchmark_set(value: str) -> BenchmarkSet:
+    """Close a CLI/framework set name at the selection boundary."""
+    if value == "core":
+        return "core"
+    if value == "smoke":
+        return "smoke"
+    if value == "applications":
+        return "applications"
+    raise ValueError(f"unknown benchmark set: {value}")
+
+
+def benchmark_suite_keys(
+    name: BenchmarkSet, *, inventory: BenchmarkInventory | None = None
+) -> tuple[str, ...]:
+    """Select one existing runnable set from validated inventory metadata."""
+    if inventory is None:
+        inventory = benchmark_inventory()
+    if name == "smoke":
+        return inventory.smoke
+    if name == "applications":
+        return inventory.applications
+    if name == "core":
+        return next(
+            paths for suite, paths in inventory.primary_suites if suite == "core"
+        )
+    raise ValueError(f"unknown benchmark set: {name}")
+
+
 def canonical_benchmark_key(script: str | Path) -> str:
     """Exact repository membership; external paths never impersonate suite keys."""
     path = Path(script).expanduser()
@@ -189,6 +309,11 @@ def application_run_args(script: str | Path) -> list[str]:
 
 
 def validate_benchmark_selection(scripts: list[Path]) -> None:
+    if not scripts:
+        raise ValueError("benchmark selection must be nonempty")
+    missing = [str(path) for path in scripts if not path.is_file()]
+    if missing:
+        raise ValueError(f"benchmark selection requires source files: {missing}")
     keys = [canonical_benchmark_key(p) for p in scripts]
     # Current log publication uses stems. Reject collisions before any build.
     stems = [p.stem for p in scripts]

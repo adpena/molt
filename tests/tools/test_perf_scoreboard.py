@@ -223,7 +223,7 @@ def _cell(
     c = ps.Cell(
         workload=synthetic_workload(benchmark),
         benchmark=benchmark,
-        target="native",
+        target="wasm" if backend == "wasm" else "native",
         backend=backend,
         profile=profile,
     )
@@ -269,7 +269,7 @@ def test_green_warm_and_cold_fast() -> None:
 
 
 def test_fail_engine_when_warm_at_or_below_floor() -> None:
-    # Warm steady-state SLOWER than CPython -> FAIL_ENGINE (release blocker).
+    # Repeated fresh-process latency loses to CPython -> historical FAIL_ENGINE.
     c = _cell(
         warm_molt_s=0.20,
         warm_cpython_s=0.12,  # cpython faster warm
@@ -342,7 +342,7 @@ def test_warn_cold_floor_when_warm_fast_but_cold_slow_within_budget() -> None:
 
 
 def test_fail_cold_budget_when_tax_exceeds_budget() -> None:
-    # Warm fast, but the fixed startup tax exceeds the budget -> FAIL_COLD_BUDGET.
+    # Repeated processes win, but the observed first-minus-repeat delta exceeds budget.
     c = _cell(
         warm_molt_s=0.010,
         warm_cpython_s=0.020,
@@ -510,7 +510,13 @@ def _release_evidence(cell: ps.Cell) -> None:
 # --- Gate exit code ---------------------------------------------------------
 
 
-def _board(cells: list[ps.Cell], provenance: dict | None = None) -> dict:
+def _board(
+    cells: list[ps.Cell],
+    provenance: dict | None = None,
+    *,
+    planned_cells: tuple[schema.PlannedCell, ...] | None = None,
+    run_state: Literal["partial", "complete"] = "complete",
+) -> dict:
     full_provenance = {
         "origin_sha": "a" * 40,
         "local_head_sha": "a" * 40,
@@ -525,6 +531,15 @@ def _board(cells: list[ps.Cell], provenance: dict | None = None) -> dict:
         full_provenance.update(provenance)
     return ps.build_scoreboard_doc(
         cells,
+        planned_cells=(
+            planned_cells
+            if planned_cells is not None
+            else tuple(
+                schema.PlannedCell(c.benchmark, c.target, c.backend, c.profile)
+                for c in cells
+            )
+        ),
+        run_state=run_state,
         benchmarks_run=[c.benchmark for c in cells],
         benchmarks_deferred=[],
         cpython_version="3.14",
@@ -542,6 +557,55 @@ def _board(cells: list[ps.Cell], provenance: dict | None = None) -> dict:
             "pointer_bits": ps._host_pointer_bits(),
         },
     )
+
+
+def test_summary_names_process_scope_and_observational_delta(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cell = _cell(
+        cold_molt_s=0.12,
+        cold_cpython_s=0.25,
+        warm_molt_s=0.10,
+        warm_cpython_s=0.20,
+    )
+    cell.finalize(budget_ms=1000.0, authoritative=True)
+    doc = _board([cell])
+    ps.print_summary(doc)
+    output = capsys.readouterr().out
+    assert "fresh process per sample; cache state uncontrolled" in output
+    assert "FIRST = first invocation" in output
+    assert "DELTAms = first minus repeat" in output
+    assert "COVERAGE: selected=1 attempted=1" in output
+    assert "execution-engine" not in output
+    assert "FIXED startup tax" not in output
+
+
+def test_interpreter_warm_samples_restart_process_state(tmp_path: Path) -> None:
+    # Independent child observations establish that discarded and measured
+    # launches cannot share process-local warmup/JIT state.
+    script = tmp_path / "observe_process.py"
+    observations = tmp_path / "processes.txt"
+    script.write_text(
+        "import os, sys\n"
+        "with open(sys.argv[1], 'a', encoding='utf-8') as stream:\n"
+        "    stream.write(str(os.getpid()) + '\\n')\n",
+        encoding="utf-8",
+    )
+    elapsed = measure._measure_interpreter_warm(
+        sys.executable,
+        str(script),
+        [str(observations)],
+        samples=2,
+        warmup=1,
+        rss_mb=256,
+        timeout_s=15,
+        label="fresh-process-observation",
+    )
+    assert elapsed is not None
+    child_pids = observations.read_text(encoding="utf-8").splitlines()
+    assert len(child_pids) == 3
+    assert len(set(child_pids)) == 3
+    assert str(os.getpid()) not in child_pids
 
 
 def test_gate_fails_on_engine_red() -> None:
@@ -1427,7 +1491,8 @@ def test_classify_red_stable_requires_quiescent_stable_and_ci_below() -> None:
     )
     cls, reason = ps.classify_cell(c, quiescent=True)
     assert cls == ps.CLASS_RED_STABLE
-    assert "TRUE compiler target" in reason
+    assert "fresh-process loss" in reason
+    assert "cost attribution required" in reason
 
 
 def test_classify_red_noisy_when_not_quiescent() -> None:
@@ -1531,22 +1596,26 @@ def test_classify_green_single_pass_quiescent_stable() -> None:
     assert cls == ps.CLASS_GREEN
 
 
-def test_classify_green_survives_load_contamination_is_conservative() -> None:
-    # ASYMMETRY OF CONTAMINATION: load can only make molt look SLOWER, never
-    # faster. So a clear warm WIN measured under contamination is still a real
-    # GREEN (the quiet number would be even better) — NOT a RED_NOISY. Only
-    # instability demotes a green. (A 10x cell must not be mislabeled RED just
-    # because an idle daemon was running.)
-    c = _warm_cell(3.00, stable=True)
+@pytest.mark.parametrize("repeated", [False, True])
+def test_classify_apparent_green_requires_quiescence(repeated: bool) -> None:
+    # Load can delay CPython as well as Molt; a stable ratio and even a narrow
+    # repeat CI cannot establish a quiet-host win from contaminated pairs.
+    c = _warm_cell(
+        3.00,
+        stable=True,
+        repeat_stability="STABLE_ABOVE" if repeated else None,
+        repeat_ci=(2.9, 3.1) if repeated else None,
+        repeat_passes=5 if repeated else None,
+    )
     cls, reason = ps.classify_cell(c, quiescent=False)
-    assert cls == ps.CLASS_GREEN
-    assert "conservative" in reason
+    assert cls == ps.CLASS_RED_NOISY
+    assert "NOT quiescent" in reason
+    assert "green unconfirmed" in reason
 
 
-def test_classify_green_above_demoted_to_noisy_only_when_unstable() -> None:
+def test_classify_green_above_demoted_to_noisy_when_unstable() -> None:
     # A point-above cell that is UNSTABLE (volatile samples) is not a confirmed
-    # win -> RED_NOISY (green unconfirmed). Instability, not load, is what blocks
-    # a green.
+    # win -> RED_NOISY (green unconfirmed), including on a quiet host.
     c = _warm_cell(3.00, stable=False)
     cls, reason = ps.classify_cell(c, quiescent=True)
     assert cls == ps.CLASS_RED_NOISY
@@ -1700,12 +1769,9 @@ def test_apply_classification_contaminated_demotes_all_reds() -> None:
     assert red.measured_quiescent is False
 
 
-def test_apply_classification_asymmetry_red_noisy_but_green_survives() -> None:
-    # On a NON-quiescent board, a warm RED is demoted to RED_NOISY (load can
-    # manufacture a false red) but a clear warm GREEN STAYS GREEN_STABLE (load
-    # can only have made the win look smaller — it is a conservative green). This
-    # is the board-level twin of the asymmetry rule, exercised the way
-    # --rebuild-summary re-applies it from a stored non-quiescent board.
+def test_apply_classification_contamination_invalidates_both_directions() -> None:
+    # Delays to either member of the paired comparison can manufacture a
+    # ratio in either direction, even when repeated samples are stable.
     red = _warm_cell(
         0.60,
         stable=True,
@@ -1724,8 +1790,8 @@ def test_apply_classification_asymmetry_red_noisy_but_green_survives() -> None:
     green.workload = synthetic_workload(green.benchmark)
     ps.apply_classification([red, green], quiescent=False)
     assert red.classification == ps.CLASS_RED_NOISY
-    assert green.classification == ps.CLASS_GREEN
-    assert green.measured_quiescent is False  # recorded, but not gating the green
+    assert green.classification == ps.CLASS_RED_NOISY
+    assert green.measured_quiescent is False
 
 
 # --- Quiescence gather (synthetic; monkeypatched probes) --------------------
@@ -2111,7 +2177,7 @@ def test_main_refuses_nonauthoritative_before_batch_build(
     monkeypatch.setattr(
         ps,
         "_resolve_benchmark_set",
-        lambda _set, _benchmark: [Path("tests/benchmarks/bench_fib.py")],
+        lambda _set, _benchmark, **_kwargs: [Path("tests/benchmarks/bench_fib.py")],
     )
     monkeypatch.setattr(
         ps,
@@ -2664,7 +2730,13 @@ def test_shard_coverage_accepts_only_a_complete_disjoint_plan() -> None:
     assert "exactly once" in ps._shard_coverage_problem([first, overlapping])
 
 
-def _shard_board(benchmark: str, record: dict) -> dict:
+def _shard_board(
+    benchmark: str,
+    record: dict | None,
+    *,
+    planned_cells: tuple[schema.PlannedCell, ...] | None = None,
+    run_state: Literal["partial", "complete"] = "complete",
+) -> dict:
     cell = _cell(
         benchmark=benchmark,
         warm_molt_s=0.10,
@@ -2676,13 +2748,16 @@ def _shard_board(benchmark: str, record: dict) -> dict:
     _release_evidence(cell)
     doc = _board(
         [cell],
+        planned_cells=planned_cells,
+        run_state=run_state,
         provenance={
             **LOCKED_METHODOLOGY,
             "diverges_from_origin": False,
             "quiescent": True,
             "require_quiescent": True,
             "producer_invocations": [],
-            "shard": record,
+            "authoritative": run_state == "complete",
+            **({"shard": record} if record is not None else {}),
         },
     )
     doc["git_rev"] = doc["provenance"]["origin_sha"]
@@ -2711,6 +2786,99 @@ def test_merge_of_shard_boards_requires_every_shard(
     assert sorted(merged["benchmarks_run"]) == everything
     assert "shard" not in merged["provenance"]
     assert ps.validate_board(merged) == []
+
+
+def test_rebuild_summary_preserves_selected_but_unrun_coordinates(
+    tmp_path: Path,
+) -> None:
+    first = schema.PlannedCell(
+        "tests/benchmarks/bench_a.py", "native", "native", "release-fast"
+    )
+    missing = schema.PlannedCell(
+        "tests/benchmarks/bench_b.py", "native", "native", "release-fast"
+    )
+    doc = _shard_board(
+        first.benchmark, None, planned_cells=(first, missing), run_state="partial"
+    )
+    path = tmp_path / "partial.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    assert ps._rebuild_summary(path, no_gate=True, allow_nonauthoritative=True) == 0
+    rebuilt = json.loads(path.read_text(encoding="utf-8"))
+    assert rebuilt["planned_cells"] == [first.as_record(), missing.as_record()]
+    assert rebuilt["coverage"]["selected"] == 2
+    assert rebuilt["coverage"]["attempted"] == 1
+    assert rebuilt["coverage"]["not_run"] == [missing.as_record()]
+    assert rebuilt["run_state"] == "partial"
+    assert rebuilt["provenance"]["authoritative"] is False
+    assert rebuilt["coverage"]["release_qualified"] == 0
+    assert [cell["benchmark"] for cell in schema.flatten_cells(rebuilt)] == [
+        first.benchmark
+    ]
+
+
+@pytest.mark.parametrize("leave_unrun", [False, True])
+def test_merge_partial_plan_with_disjoint_continuation_retains_observations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], leave_unrun: bool
+) -> None:
+    first = schema.PlannedCell(
+        "tests/benchmarks/bench_a.py", "native", "native", "release-fast"
+    )
+    continued = schema.PlannedCell(
+        "tests/benchmarks/bench_b.py", "native", "native", "release-fast"
+    )
+    still_missing = schema.PlannedCell(
+        "tests/benchmarks/bench_c.py", "native", "native", "release-fast"
+    )
+    docs = (
+        _shard_board(
+            first.benchmark, None, planned_cells=(first, continued), run_state="partial"
+        ),
+        _shard_board(
+            continued.benchmark,
+            None,
+            planned_cells=(continued, still_missing) if leave_unrun else (continued,),
+            run_state="partial",
+        ),
+    )
+    paths = [tmp_path / "first.json", tmp_path / "continuation.json"]
+    for path, doc in zip(paths, docs, strict=True):
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    output = tmp_path / "merged.json"
+    assert ps._merge_boards(paths, output, no_gate=True) == 3
+    assert not output.exists()
+    assert (
+        ps._merge_boards(paths, output, no_gate=True, allow_nonauthoritative=True) == 0
+    )
+    merged = json.loads(output.read_text(encoding="utf-8"))
+    expected_plan = [first.as_record(), continued.as_record()]
+    if leave_unrun:
+        expected_plan.append(still_missing.as_record())
+    assert merged["planned_cells"] == expected_plan
+    assert merged["coverage"]["selected"] == (3 if leave_unrun else 2)
+    assert merged["coverage"]["attempted"] == 2
+    assert merged["coverage"]["not_run"] == (
+        [still_missing.as_record()] if leave_unrun else []
+    )
+    assert merged["run_state"] == ("partial" if leave_unrun else "complete")
+    assert merged["provenance"]["authoritative"] is False
+    assert merged["coverage"]["release_qualified"] == 0
+    assert sorted(cell["benchmark"] for cell in schema.flatten_cells(merged)) == [
+        first.benchmark,
+        continued.benchmark,
+    ]
+
+    duplicate_output = tmp_path / "duplicate.json"
+    assert (
+        ps._merge_boards(
+            [*paths, paths[0]],
+            duplicate_output,
+            no_gate=True,
+            allow_nonauthoritative=True,
+        )
+        == 3
+    )
+    assert "duplicate cell" in capsys.readouterr().err
+    assert not duplicate_output.exists()
 
 
 @pytest.mark.parametrize(
@@ -2795,7 +2963,7 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     api = dict(vars(ps))
     api.update(
         {
-            "_resolve_benchmark_set": lambda *a: scripts,
+            "_resolve_benchmark_set": lambda *a, **kw: scripts,
             "_resolve_system_cpython": lambda *a: SimpleNamespace(
                 version="3.12.15",
                 display="fixture-python",
@@ -2927,6 +3095,12 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     def checkpoint(path, *args, **kwargs):
         report._checkpoint(path, *args, **kwargs)
         checkpoints.append(json.loads(path.read_text(encoding="utf-8")))
+        assert all(
+            cell["measured_quiescent"] is True
+            for cell in schema.flatten_cells(checkpoints[-1])
+        ), (
+            "incremental observations must retain the captured quiescence before classification"
+        )
 
     api["_checkpoint"] = checkpoint
 
@@ -2977,7 +3151,7 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
         assert codon_closes == [expected]
         assert not publications
         assert output.read_bytes() == previous
-        assert len(checkpoints) == (1 if measure_fails else 2)
+        assert len(checkpoints) == (2 if measure_fails else 3)
         partial = output.with_suffix(".partial.json")
         retained = json.loads(partial.read_text(encoding="utf-8"))
         assert retained == checkpoints[-1]
@@ -2994,7 +3168,10 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
         assert rc == 2 and not measured and not output.exists()
         assert not checkpoints and not publications
         return
-    assert rc == 0 and len(measured) == 2 and len(checkpoints) == 2
+    assert rc == 0 and len(measured) == 2 and len(checkpoints) == 3
+    assert checkpoints[0]["coverage"]["selected"] == 2
+    assert checkpoints[0]["coverage"]["attempted"] == 0
+    assert len(checkpoints[0]["coverage"]["not_run"]) == 2
     if budget_policy == "absent":
         doc = json.loads(output.read_text(encoding="utf-8"))
         assert doc["provenance"]["authoritative"] is False

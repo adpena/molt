@@ -5,14 +5,13 @@
 ruling** (`project_council_decisions_20260608`, section A). It is the
 machine-readable artifact the constitution mandates: a single scoreboard keyed
 **benchmark × target × backend × profile** reporting the molt-vs-CPython speedup
-split into a **warm (execution-engine) axis** and a **cold (startup-tax) axis**,
+split into **repeated fresh-process** and **first-invocation** comparisons,
 with a CI-gateable nonzero exit and full **provenance** so a board is never
 silently measured against a stale tree.
 
 This tool **measures and surfaces**; it does not fix slow benchmarks. Fixing a
-RED benchmark is a separate optimization arc — and per the constitution's
-*"fix the representation, not the pass"* posture, the first question for each RED
-is never *"which peephole recovers it"* but *"which FACT is missing from IR?"*.
+RED benchmark is a separate optimization arc. First attribute the measured
+whole-process cost; a timing ratio alone cannot identify a missing compiler fact.
 
 ## Two-dimensional gating (council ruling A) — warm ≠ cold
 
@@ -21,10 +20,10 @@ now emits one **verdict** per cell:
 
 | verdict | condition | meaning / lane |
 |---------|-----------|----------------|
-| `GREEN` | warm fast, cold fast, tax within budget | won |
-| `FAIL_ENGINE` | `warm_speedup = cpython_warm/molt_warm ≤ 1.00` | **execution-engine red — RELEASE BLOCKER.** Needs an IR FACT. |
-| `FAIL_COLD_BUDGET` | `startup_tax_ms > budget_ms` | startup regression. Routes to the cold-start/runtime/artifact lane. |
-| `WARN_COLD_FLOOR` | `cold_speedup ≤ 1.00` BUT `warm_speedup > 1.00` and the loss is the fixed startup tax (within budget) | **not a hard red.** Warns; fails the gate only with `--strict-cold`. |
+| `GREEN` | repeated and first invocations beat CPython, delta within budget | observed process wins; release qualification has additional requirements |
+| `FAIL_ENGINE` | `warm_speedup = cpython_warm/molt_warm ≤ 1.00` | historical identifier for a repeated fresh-process loss; profile to attribute cost |
+| `FAIL_COLD_BUDGET` | `startup_tax_ms > budget_ms` | first-minus-repeat delta exceeds its recorded ceiling; startup cause unproven |
+| `WARN_COLD_FLOOR` | `cold_speedup ≤ 1.00` but `warm_speedup > 1.00`, delta within budget | first invocation loses while repeated processes win |
 | `FAIL_STALE` | board provenance is non-authoritative: origin mismatch, dirty tree, modified tool, or required quiescence failed | overrides all. Fails the gate unless `--allow-nonauthoritative`. |
 | `UNSTABLE` | CV above threshold | untrustworthy in either direction — gated. |
 | `BUILD_FAILED` / `RUN_ERROR` | molt build failed / CPython ran but molt did not | gated. |
@@ -35,27 +34,35 @@ each guest observation and records `CPY_INCOMPATIBLE` only after successful
 execution. CPython failures on comparable workloads remain `RUN_ERROR`.
 
 Where:
-- `warm_speedup = cpython_warm / molt_warm` (steady-state — the engine axis).
+- `warm_speedup = cpython_warm / molt_warm` compares repeated fresh-process
+  medians after discarded launches. Every sample includes process startup.
   Warmup and measured runs execute in Molt/CPython pairs and alternate which
   runtime starts each pair, reducing sensitivity to drift during a cell.
-- `cold_speedup = cpython_cold / molt_cold` (end-to-end cold path).
-- `startup_tax_ms = (molt_cold_total − molt_warm_total) × 1000` — the **fixed
-  startup cost** molt pays cold that the warm steady state does not. This (NOT
-  `cold_speedup`) is what the cold-start budget gates against.
+- `cold_speedup = cpython_cold / molt_cold` compares each runtime's first
+  invocation. The harness does not evict or certify cold filesystem caches.
+- `startup_tax_ms = (molt_cold_total − molt_warm_total) × 1000` retains its
+  historical wire name for an **observational first-minus-repeat delta**.
+  Both phases include startup; their difference also includes cache effects,
+  scheduler variation and noise. It does not isolate startup or body execution.
+  The historical budget continues to gate this same arithmetic.
 
-**The gate fails (nonzero exit) iff any** `FAIL_ENGINE`, `FAIL_COLD_BUDGET`,
-`BUILD_FAILED`, `RUN_ERROR`, or `UNSTABLE`. `WARN_COLD_FLOOR` does **not** fail
-the gate (it is a fixed tax within budget) unless `--strict-cold`. `FAIL_STALE`
-fails unless `--allow-nonauthoritative` (local-debug opt-out). Never blend
-cold+warm into one bucket — warm reds need IR facts; cold reds need
-startup/runtime/artifact work.
+Schema v8 records this scope in `methodology.process_timing_scope`. Historical
+boards retain their recorded schema, fields, classifications and methodology;
+summary regeneration cannot add missing scope evidence or qualify old timings.
+
+The release gate also requires the canonical selection, complete attempted and
+qualified coverage, output parity, repeated comparison evidence, valid identity
+and authority. A green cell or a warning within budget does not establish that
+the selected suite completed. `--no-gate` is an exploratory opt-out.
 
 The cold-start budget lives in `bench/scoreboard/cold_start_budget.json`, keyed
 `<backend>/<profile>` → `budget_ms`. **v0 = the measured baseline** per the
 council ladder ("v0 = current measured baseline; near-term = no regression from
 baseline; release-output native Y1 = startup_tax < 100ms"). A missing budget
 means `FAIL_COLD_BUDGET` cannot fire (we never invent a budget); the measured
-tax is still recorded so the ceiling can be seeded.
+delta is still recorded so the ceiling can be seeded. Existing numeric budgets
+remain ceilings on the recorded delta; they are not newly calibrated isolated
+startup limits.
 
 ## Regressions on main: the instruction signal
 
@@ -153,18 +160,17 @@ phantom red is worse than no measurement. These five rules are PERMANENT.
    clean, and the machine was quiescent. Provenance + quiescence are the root of
    trust; everything downstream (lore, then board) is subordinate.
 
-### The 5-state classification (`--classify`)
+### Measurement classification (`--classify`)
 
-The single warm verdict (`FAIL_ENGINE` vs `GREEN`) cannot answer the council's
-real question: *is this a TRUE compiler target, or a measurement artifact?* With
-`--classify`, each cell gets one of five states. The decisive new inputs are
+The single process ratio cannot establish measurement quality or locate a
+compiler bottleneck. With `--classify`, each cell gets a classification. Its inputs are
 **machine QUIESCENCE** and the **repeat-pass CONFIDENCE INTERVAL** (`--repeat
 N`): a warm-red is a real target only if it is stable AND quiescent AND its CI
 sits clear below 1.00.
 
 | classification | condition | meaning |
 |----------------|-----------|---------|
-| `RED_STABLE` | `warm < 1.00`, repeat CI entirely below 1.00, machine quiescent, cell robustly stable | **the TRUE warm-red set** — a real compiler target. Steer the next opt by its CYCLE profile. |
+| `RED_STABLE` | `warm < 1.00`, repeat CI entirely below 1.00, machine quiescent, cell robustly stable | confirmed repeated fresh-process loss; profile to attribute cost |
 | `RED_NOISY` | warm point below 1.00 BUT contaminated (not quiescent) / unstable / no repeat CI / CI does not clear | **NOT a target yet.** The reason names why (this is exactly the "0.66 under load" artifact). Re-measure quiet with `--repeat`. |
 | `TIE` | repeat CI straddles 1.00, OR `warm == 1.00` single-pass | statistically CPython — neither a win nor a loss. Wants facts to cross decisively, but is not a release-blocking red. |
 | `GREEN_STABLE` | `warm > 1.00`, stable + quiescent (CI clears above 1.00 when repeated) | a confirmed win. |
@@ -177,17 +183,12 @@ for `--repeat`): a 0.98 point sample whose 5-pass CI clears *above* 1.00 is a
 red. `FAIL_ENGINE` maps to `RED_STABLE` **only** when quiescent + stable + CI
 below; under contamination the same cell is `RED_NOISY`.
 
-**Asymmetry of contamination (why quiescence gates reds but not greens).** A
-competing build steals cycles from the *timed* molt process, so it can only make
-molt look **slower**, never artificially faster. Quiescence is therefore
-**mandatory for a warm-RED** (load can manufacture a false red → a non-quiescent
-red is `RED_NOISY`, never `RED_STABLE`) but **not required for a warm-GREEN**: a
-cell measured *faster* than CPython under load is a *conservative* `GREEN_STABLE`
-(the quiet number can only be better). Only cell **instability** demotes a green.
-This is why the non-quiescent LLVM board still shows `bench_sum` 10.56× as GREEN,
-not RED_NOISY — calling a 10× cell "red" because an idle daemon was running would
-be the measurement-system bug Rule 3 warns against. Board-level *authority* is
-still gated by quiescence; the per-cell green/red *direction* is not.
+**Quiescence applies in both directions.** Competing work can delay CPython,
+Molt, or both members of an interleaved pair. Stable ratios and narrow repeat
+intervals do not remove that bias. A non-quiescent apparent win is `RED_NOISY`
+(green unconfirmed), as is a non-quiescent loss. The historical LLVM board's
+22 non-quiescent `GREEN_STABLE` classifications remain recorded historical
+outputs; the current classifier no longer issues that claim.
 
 ### The quiescence guard (`--require-quiescent`) — checks + thresholds
 
@@ -370,12 +371,13 @@ retained — additive, never changes a normal build or any speedup number.
 
 ### Exit code (the gate)
 
-Exit is **nonzero iff any cell is `FAIL_ENGINE`, `FAIL_COLD_BUDGET`,
-`BUILD_FAILED`, `RUN_ERROR`, or `UNSTABLE`**. `WARN_COLD_FLOOR` does NOT fail
-the gate (fixed tax within budget) unless `--strict-cold`. `FAIL_STALE` fails
-unless `--allow-nonauthoritative`. Historical `RUN_BLOCKED` and `CPY_INCOMPATIBLE`
+Release exit is nonzero unless the selected canonical matrix is complete and
+eligible under the release authority. The separate per-cell verdicts retain the
+historical two-dimensional arithmetic. Historical `RUN_BLOCKED` and `CPY_INCOMPATIBLE`
 remain readable report vocabulary. A failed CPython sample is `RUN_ERROR`,
-including missing guard metrics, and cannot create a compatibility exclusion. `--no-gate` always exits 0.
+including missing guard metrics, and cannot create a compatibility exclusion.
+`--no-gate` skips release qualification; input, execution and publication errors
+can still fail the command.
 
 ```bash
 # Add the PyPy + Codon comparator lanes (auto-detect, or pass an explicit path).
@@ -392,10 +394,20 @@ uv run python3 tools/perf_scoreboard.py --set core --strict-cold
 
 ### Recoverability
 
-The sweep is long (56 × 2 backends, each with cold + warm + warmup runs for two
-runtimes). It checkpoints the full board to `…<gitrev>.partial.json` after every
-cell via an atomic temp-rename, so a death mid-sweep is recoverable — the
-partial is a valid scoreboard document.
+The selected matrix comes from `--plan`. Before the first build, the runner
+publishes all selected coordinates to `…<gitrev>.partial.json`; every completed
+cell replaces that checkpoint through an atomic temp-rename. An interruption
+before the first result therefore retains zero attempts and the full `not_run`
+list. Each observed cell retains the captured quiescence before final
+classification. Checkpoints are valid current-schema documents with open
+source custody and `authoritative=false`.
+
+Unsharded partial observations may be merged only with both `--no-gate` and
+`--allow-nonauthoritative`; even a fully observed merged selection retains
+`authoritative=false`. This recovers diagnostics, never release admission.
+Shard merges retain their stricter existing rule: every declared shard and
+member must be present exactly once. An incomplete shard remains an inspectable
+checkpoint rather than a mergeable release board.
 
 ## Methodology (pyperf discipline)
 
@@ -404,9 +416,11 @@ partial is a valid scoreboard document.
 - **median + mean + stdev + coefficient of variation** per phase. A phase whose
   CV exceeds `0.20` is flagged **unstable**; an unstable cell cannot be trusted
   GREEN and is gated like a RED.
-- **COLD and WARM both captured.** COLD = first cold-cache run for each runtime;
-  WARM = steady-state median after warmups. The constitution forbids warm-only
-  wins, so a cell is RED if **either** the warm OR the cold speedup is `< 1.00×`.
+- **First invocation and repeated fresh processes both captured.** Historical
+  `cold_*` fields hold the first invocation; `warm_*` fields hold the repeated
+  process median after discarded launches. Cache state is uncontrolled and no
+  process-local warmup state survives between launches. The verdict table above
+  defines the preserved arithmetic; release coverage is a separate obligation.
 - Per-run RSS-cap (`--rss-mb`, default 4096) + wall-clock timeout (`--timeout`,
   default 120s) via the shared typed guard API. Tight RSS poll (0.01s) so short benchmarks
   still capture a representative peak.
@@ -498,10 +512,18 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 
 ```jsonc
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "kind": "cpython_floor_scoreboard",
   "generated_at": "<iso8601 utc>",
   "git_rev": "<full sha>",
+  "run_state": "complete",
+  "planned_cells": [
+    {"benchmark": "<benchmark>", "target": "native", "backend": "native", "profile": "release-fast"}
+  ],
+  "coverage": {
+    "selected": 1, "attempted": 1, "parity_qualified": 1,
+    "measured": 1, "release_qualified": 0, "not_run": []
+  },
   "provenance": { /* see the Provenance section above */ },
   "host": {
     "execution_host": null, // native-only; WASM carries the admitted Node record
@@ -530,6 +552,13 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
   "verdict_legend": { "GREEN": "…", "FAIL_ENGINE": "…", … },
   "methodology": { "samples_per_phase": 5, "warmup_runs": 2,
                    "cold_and_warm": true,
+                   "process_timing_scope": {
+                     "sampling_unit": "fresh_process",
+                     "first_sample": "first_invocation",
+                     "repeated_sample": "fresh_process_after_discarded_launches",
+                     "cache_state": "uncontrolled",
+                     "delta": "first_minus_repeated_process_latency"
+                   },
                    "warm_speedup": "cpython_warm / molt_warm",
                    "cold_speedup": "cpython_cold / molt_cold",
                    "startup_tax_ms": "(molt_cold_total - molt_warm_total) * 1000" },
@@ -568,13 +597,13 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
       "cold_molt_s": 0.253, "cold_cpython_s": 0.068,
       "warm_molt_s": 0.069, "warm_cpython_s": 0.070,
       // --- TWO-DIMENSIONAL verdict (council ruling A) ---
-      "warm_speedup": 1.01,            // = cpython_warm / molt_warm (engine axis)
+      "warm_speedup": 1.01,            // repeated fresh-process ratio, startup included
       "cold_speedup": 0.27,            // = cpython_cold / molt_cold
       "startup_tax_ms": 184.0,         // = (cold_molt - warm_molt) * 1000
       "cold_budget_ms": 250.0,         // the budget this cell was gated against
       "verdict": "WARN_COLD_FLOOR",    // GREEN|FAIL_ENGINE|FAIL_COLD_BUDGET|WARN_COLD_FLOOR|…
-      "fact_class": "shape_facts",     // derived fact family for a warm red
-      "suspected_missing_fact": "…",   // derived missing-fact attribution
+      "fact_class": "shape_facts",     // attribution hypothesis family
+      "suspected_missing_fact": "…",   // hypothesis requiring independent cost evidence
       "pypy_advantage_class": "shape_propagation",
       "reference_class": "static_equiv",
       "codon_semantics": "non_equivalent",
@@ -609,9 +638,9 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 ```
 
 **Direction is labelled unambiguously**: `speedup = cpython_time / molt_time`.
-`> 1.0` ⇒ molt faster. The **warm** axis (`warm_speedup`) is the
-execution-engine contract; the **cold** axis is the startup-tax budget — they
-are never blended.
+`> 1.0` ⇒ molt faster for the recorded process scope. `warm_speedup` compares
+repeated fresh processes, `cold_speedup` compares first invocations, and the
+historically named startup budget bounds their Molt latency difference.
 
 ### The hot-only cycle-profile board (`--sample-hot-only`, #76)
 
@@ -621,7 +650,7 @@ artifact, **not** a speedup board, and never feeds the release gate.
 
 ```jsonc
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "kind": "hot_only_cycle_profile",
   "git_rev": "<full sha>",
   "backend": "native", "target": "native", "profile": "release-fast",
@@ -683,7 +712,13 @@ artifact, **not** a speedup board, and never feeds the release gate.
 | `bench/scoreboard/cpython_b54dd9b896…json` | the prior 112-cell board (56 native + 56 llvm, compiler tree `aad7f25fb…`) | **NON-AUTHORITATIVE for warm verdicts** — measured under **multi-agent load** (a parallel build was active). Its 30 `FAIL_ENGINE` cells are reclassified below as `RED_NOISY` (no repeat-CI + contaminated) / `TIE` (`warm==1.00`); the TRUE warm-red set comes from the QUIET board. Its *build-fact* columns (binary size, compile-time, build-ok, the #47 healed/not-healed analysis) and the *cold/WARN_COLD_FLOOR* axis remain usable. |
 | `bench/scoreboard/cpython_79903045…json` | the older "stale" board | superseded; build-failure baseline for the #47 healed-comparison only. |
 
-## Authoritative QUIET board (origin/main compiler, native / release-fast)
+## Historical QUIET board (native / release-fast)
+
+The following retained reports describe the observations and interpretations
+recorded at the time. Their terminology does not override the current process
+scope or qualify steady-state execution, isolated startup, current release
+acceptance, or non-quiescent green classifications. Separate hot-only profiles
+have their own in-process sampling scope.
 
 > **First authoritative quiet board (#69).** Native measured on the fresh
 > origin/main worktree (`origin_sha 4fecd96d2533`) with `--require-quiescent
@@ -1036,11 +1071,10 @@ recorded in `host.pypy` / `host.codon` and the provenance.
 - **PyPy 7.3.17 (Python 3.10.14)** — `/opt/homebrew/bin/pypy3.10` (`brew install
   pypy3.10`). The *dynamic-runtime comparator* (JIT). `pypy_ratio =
   pypy_warm / molt_warm` (> 1.0 = molt faster). PyPy is **measure-and-name, NOT
-  a hard gate**: where PyPy wins, the cell carries the molt fact to name (IC
-  tiering, class-version guard, borrow inference, generator fusion, trace-like
-  loop specialization). PyPy's strength is long-running JIT warmup — a different
-  operating point than molt's AOT, so a PyPy win on a hot loop is expected and
-  informative, not a contract violation.
+  a hard gate**. Attribution fields suggest hypotheses such as call or shape
+  specialization; a ratio does not prove one. Every observation restarts PyPy,
+  so discarded launches do not preserve JIT state. These ratios describe
+  whole-script process latency rather than sustained JIT throughput.
 - **Codon 0.19.6** — `~/.codon/bin/codon` (exaloop release tarball). The
   *AOT/native north star* (C/C++-class). `codon_ratio = codon_warm / molt_warm`.
   Codon is **equivalence-gated**: it is NOT drop-in CPython (no full object
@@ -1053,8 +1087,9 @@ recorded in `host.pypy` / `host.codon` and the provenance.
   `libomp`/`libcodonrt` via `@loader_path`; the runner sets `DYLD_LIBRARY_PATH`
   (+ `CODON_LIBRARY`) to `~/.codon/lib/codon` so they run under `safe_run`.
 
-Both lanes use the identical ≥5-sample cold+warm discipline through
-the shared typed measurement API as the CPython path.
+Both comparator lanes discard warmup launches and measure repeated fresh
+processes through the shared typed measurement API. Their nullable warm columns
+include startup and do not provide an independent first-invocation comparison.
 
 ### First deltas (native / release-fast, this host)
 

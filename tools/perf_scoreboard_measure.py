@@ -784,9 +784,10 @@ def _measure_interpreter_warm(
     timeout_s: float,
     label: str,
 ) -> float | None:
-    """Warm steady-state median wall time for a Python-compatible interpreter.
+    """Repeated fresh-process median wall time for a compatible interpreter.
 
-    Same >=samples cold+warm discipline as the CPython path, through safe_run.
+    Discard warmup launches, then measure fresh launches through safe_run.
+    Startup is included in every sample; process-local JIT state is not reused.
     Returns None if the interpreter cannot run the script (so a comparator that
     chokes on a benchmark simply leaves the column null, never poisons a cell).
     """

@@ -684,6 +684,11 @@ def _wasm_merge_source(benchmark, engine):
     cell["target"] = "wasm"
     cell["profile"] = "wasm-release"
     doc["scoreboard"] = {benchmark: {"wasm": {"wasm": {"wasm-release": cell}}}}
+    planned = (perf_schema.PlannedCell(benchmark, "wasm", "wasm", "wasm-release"),)
+    doc["planned_cells"] = [coordinate.as_record() for coordinate in planned]
+    doc["coverage"] = perf_schema.scoreboard_coverage(
+        planned, [cell], authoritative=doc["provenance"]["authoritative"]
+    )
     doc["provenance"]["backend_binary_identity"] = {"wasm/wasm-release": "binary-wasm"}
     doc["provenance"]["runtime_identity"] = {}
     doc["host"]["execution_host"] = copy.deepcopy(engine)

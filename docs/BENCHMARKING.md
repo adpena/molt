@@ -58,6 +58,36 @@ does not instantiate the split build fixture.
 
 ## Running Benchmarks
 
+Start with the existing scoreboard's metadata-only plan:
+
+```bash
+uv run --no-project python tools/venv_exec.py python tools/perf_scoreboard.py --plan
+```
+
+The default compact view lists the derived inventory, selected dimensions and
+benchmark keys once. Add `--plan-format json` for the complete coordinate plan.
+`--set`, `--benchmark`, `--backend`, `--profile` and `--shard` select the same
+snapshot used by measurement. Planning performs no package acquisition, oracle
+or Node probe, directory creation or build; it refuses inventory drift instead
+of silently activating discovered files. The
+[suite roadmap](design/foundation/69_benchmark_corpus_union_and_dynamic_calibration.md#benchmark-suite-delivery-roadmap)
+gives the dependency order and closure criteria.
+
+Current-schema boards retain `planned_cells` and `run_state`. Their derived
+`coverage` separates selected, attempted, parity-qualified, measured and
+release-qualified cells; `not_run` names every selected coordinate without an
+observation. An initial partial checkpoint precedes the first build. Rebuilding
+or merging preserves the declared scope; it cannot upgrade an old board to
+current evidence. Catalog intentions, primary runnable suites, application
+recipes and friend-runner lanes retain distinct denominators.
+
+Every ordinary timing sample starts a fresh process. Legacy `cold_*` fields
+mean first invocation, `warm_*` means repeated processes after discarded
+launches, and `startup_tax_ms` is the observational first-minus-repeat delta.
+Cache state is uncontrolled. These observations do not isolate startup or
+measure in-process steady state. Stable wins and losses require quiescence;
+attribution fields remain hypotheses requiring independent profiles.
+
 For declared real-application inputs and honest qualification limits, use the
 [application portfolio](../bench/corpus/README.md#declared-application-diagnostics).
 `--set applications` on the existing scoreboard and `--applications` on sibling

@@ -57,6 +57,7 @@ import shlex
 import subprocess
 import sys
 import time
+from typing import Literal
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -123,6 +124,7 @@ from molt.backend_binary_identity import identify_backend_binary  # noqa: E402
 from molt.backend_executable_names import is_host_tool_executable_name  # noqa: E402
 from molt.host_tool_products import HostToolProduct  # noqa: E402
 from tools.perf_schema import (  # noqa: E402
+    PlannedCell,
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
     CLASS_INFRA,
@@ -144,6 +146,8 @@ from tools.perf_schema import (  # noqa: E402
     VERDICT_UNSTABLE,
     VERDICT_WARN_COLD_FLOOR,
     flatten_cells as flatten_cells,
+    process_timing_scope,
+    scoreboard_coverage,
     validate_board as validate_board,
     verdict_fails_gate as verdict_fails_gate,
 )
@@ -1380,6 +1384,8 @@ def _refuses_nonauthoritative_measurement(
 def build_scoreboard_doc(
     cells: list[Cell],
     *,
+    planned_cells: tuple[PlannedCell, ...],
+    run_state: Literal["partial", "complete"] = "complete",
     benchmarks_run: list[str],
     benchmarks_deferred: list[dict],
     cpython_version: str,
@@ -1401,6 +1407,14 @@ def build_scoreboard_doc(
     problems = workload_collection_problems([asdict(c) for c in cells])
     if problems:
         raise ScoreboardSchemaError("workload collection", problems)
+    try:
+        coverage = scoreboard_coverage(
+            planned_cells,
+            [asdict(cell) for cell in cells],
+            authoritative=(provenance or {}).get("authoritative") is True,
+        )
+    except ValueError as exc:
+        raise ScoreboardSchemaError("planned coverage", [str(exc)]) from exc
     git_rev = _git_rev()
     nested: dict = {}
     for cell in cells:
@@ -1447,16 +1461,19 @@ def build_scoreboard_doc(
         "kind": "cpython_floor_scoreboard",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": git_rev,
+        "planned_cells": [coordinate.as_record() for coordinate in planned_cells],
+        "run_state": run_state,
+        "coverage": coverage,
         "provenance": provenance or {},
         "host": host,
-        "direction": "speedup = cpython_time / molt_time; >1.0 = molt faster; <=1.0 = engine/cold red",
+        "direction": "speedup = cpython_time / molt_time; >1.0 = molt faster; fresh-process latency",
         "red_threshold": RED_THRESHOLD,
         "unstable_cv_threshold": UNSTABLE_CV,
         "verdict_legend": {
-            "GREEN": "warm fast, cold fast, within cold-start budget",
-            "FAIL_ENGINE": "warm_speedup <= 1.00 — execution-engine red, RELEASE BLOCKER",
-            "FAIL_COLD_BUDGET": "startup_tax_ms > budget_ms — startup regression",
-            "WARN_COLD_FLOOR": "cold <= 1.00 but warm > 1.00 & tax within budget — not a hard red",
+            "GREEN": "first and repeated fresh processes faster, within first-minus-repeat budget",
+            "FAIL_ENGINE": "warm_speedup <= 1.00 — repeated fresh-process latency fails floor",
+            "FAIL_COLD_BUDGET": "startup_tax_ms > budget_ms — first-minus-repeat delta over budget",
+            "WARN_COLD_FLOOR": "first process <= 1.00 but repeated > 1.00; release eligibility follows policy",
             "FAIL_STALE": "non-authoritative board — overrides all (gate fails unless --allow-nonauthoritative)",
             "UNSTABLE": "CV above threshold — untrustworthy in either direction",
             "BUILD_FAILED": "molt build failed",
@@ -1473,6 +1490,7 @@ def build_scoreboard_doc(
             CLASS_INFRA: "build/run/blocked/cpy-incompat/stale — no warm number to classify",
         },
         "methodology": {
+            "process_timing_scope": process_timing_scope(),
             "samples_per_phase": samples,
             "warmup_runs": warmup,
             "cold_and_warm": True,
@@ -1519,7 +1537,9 @@ def build_scoreboard_doc(
                 1 for c in cells if c.verdict == VERDICT_WARN_COLD_FLOOR
             ),
             "cells_fail_stale": len(stale_cells),
-            "gate_fails": bool(gate_failing),
+            "gate_fails": bool(gate_failing)
+            or bool(coverage["not_run"])
+            or run_state == "partial",
             # The two-dimensional breakdown (council ruling A) — every cell
             # keyed by its verdict so a reader routes warm reds to the IR-fact
             # lane and cold reds to the startup lane WITHOUT re-deriving them.
@@ -1578,19 +1598,19 @@ def build_scoreboard_doc(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_benchmark_set(name: str, explicit: list[str] | None) -> list[Path]:
+def _resolve_benchmark_set(
+    name: str,
+    explicit: list[str] | None,
+    *,
+    inventory: bench_suites.BenchmarkInventory | None = None,
+) -> list[Path]:
     if explicit:
         scripts = [_resolve_script(b) for b in explicit]
         bench_suites.validate_benchmark_selection(scripts)
         return scripts
-    if name == "smoke":
-        keys = bench_suites.SMOKE_BENCHMARKS
-    elif name == "core":
-        keys = bench_suites.BENCHMARKS
-    elif name == "applications":
-        keys = bench_suites.APPLICATION_BENCHMARKS
-    else:
-        raise SystemExit(f"unknown benchmark set: {name}")
+    keys = bench_suites.benchmark_suite_keys(
+        bench_suites.benchmark_set(name), inventory=inventory
+    )
     scripts = [_resolve_script(k) for k in keys]
     bench_suites.validate_benchmark_selection(scripts)
     return scripts
@@ -1673,6 +1693,10 @@ def _rebuild_summary(
     # earlier. Missing producer identities require a new measured receipt.
     doc = build_scoreboard_doc(
         cells,
+        planned_cells=tuple(
+            PlannedCell.from_payload(c) for c in prior["planned_cells"]
+        ),
+        run_state=prior["run_state"],
         benchmarks_run=prior.get("benchmarks_run", []),
         benchmarks_deferred=deferred,
         cpython_version=host.get("cpython_baseline", "unknown"),
@@ -1780,6 +1804,8 @@ def _merge_boards(
     merged_runtimes: dict = {}
     merged_invocations: list[dict] = []
     shard_records: list[tuple[Path, object, list]] = []
+    planned_coordinates: set[PlannedCell] = set()
+    diagnostic_partial = False
     for src in sources:
         try:
             doc = json.loads(src.read_text(encoding="utf-8"))
@@ -1796,6 +1822,9 @@ def _merge_boards(
             )
             return 3
         prov = doc.get("provenance", {})
+        planned_coordinates.update(
+            PlannedCell.from_payload(c) for c in doc["planned_cells"]
+        )
         invocations = prov.get("producer_invocations", [])
         if not isinstance(invocations, list) or any(
             not isinstance(v, dict) for v in invocations
@@ -1812,8 +1841,17 @@ def _merge_boards(
                 file=sys.stderr,
             )
             return 3
+        partial_source = doc["run_state"] == "partial"
+        if partial_source and not (no_gate and allow_nonauthoritative):
+            print(
+                f"--merge: source {src} is partial; open custody permits only "
+                "explicit --no-gate --allow-nonauthoritative diagnostic merging",
+                file=sys.stderr,
+            )
+            return 3
+        diagnostic_partial = diagnostic_partial or partial_source
         if (
-            prov.get("authoritative") is not True
+            (prov.get("authoritative") is not True and not partial_source)
             or prov.get("dirty_tree") is not False
             or prov.get("quiescent") is not True
             or prov.get("require_quiescent") is not True
@@ -1945,6 +1983,11 @@ def _merge_boards(
     provenance["producer_invocations"] = merged_invocations
     provenance["backend_binary_identity"] = merged_identities
     provenance["runtime_identity"] = merged_runtimes
+    if diagnostic_partial:
+        provenance["authoritative"] = False
+        provenance["authoritative_reason"] = (
+            "diagnostic merge includes partial observations; source custody remains unqualified"
+        )
     cells = list(by_key.values())
     try:
         _finalize_with_board_context(
@@ -1969,6 +2012,8 @@ def _merge_boards(
 
     doc = build_scoreboard_doc(
         cells,
+        planned_cells=tuple(sorted(planned_coordinates)),
+        run_state="partial" if len(cells) < len(planned_coordinates) else "complete",
         benchmarks_run=[b for b in CANONICAL_PERF_BENCHMARKS if b in benchmarks_run]
         + [b for b in benchmarks_run if b not in CANONICAL_PERF_BENCHMARKS],
         benchmarks_deferred=deferred,

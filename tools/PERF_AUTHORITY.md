@@ -121,6 +121,29 @@ never retries using another counter. `--counter` makes selection explicit.
 
 ## Scoreboard methodology
 
+Schema v8 records the selected coordinate matrix before the first build and
+keeps it through incremental checkpoints, rebuilds and compatible merges.
+Coverage derives selected, attempted, parity-qualified, measured and
+release-qualified counts from that plan and its actual observations; missing
+coordinates remain `not_run`. Partial boards cannot be authoritative, and
+complete boards cannot omit selected coordinates. Legacy boards retain their
+original schema and cannot gain an invented plan or timing scope by rebuilding.
+
+`perf_scoreboard.py --plan` resolves canonical metadata without acquisition,
+oracle/Node probes or compilation. Its compact output is the agent entry point;
+`--plan-format json` emits the complete machine-readable plan. This is selection
+evidence only, not capability or performance qualification. The
+[suite roadmap](../docs/design/foundation/69_benchmark_corpus_union_and_dynamic_calibration.md#benchmark-suite-delivery-roadmap)
+owns the development sequence; the V1 ledger owns release status.
+
+The typed `process_timing_scope` records a fresh process for every sample,
+first invocation, repeated processes after discarded launches, uncontrolled
+cache state, and an observational first-minus-repeat delta. Historic field
+names `cold_*`, `warm_*` and `startup_tax_ms` remain, with unchanged arithmetic
+and budget values. They establish neither cold-cache isolation, isolated startup
+cost nor in-process steady state. Contention can bias either timed comparator;
+stable classifications require quiescence in both directions.
+
 Methodology v36 moves the instruction axis to `tools/perf_instructions.py`
 (farm records against the nearest measured ancestor, CPython for output only,
 no committed ratchet) and retires the board-vs-history chain (`perf_history`,

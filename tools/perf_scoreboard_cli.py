@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import sys
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal, Protocol, TypedDict, cast
 
 from molt.node_runtime import NodeRuntimeError
 from molt.toolchain_identity import executable_content_identity
@@ -18,9 +18,71 @@ from molt.python_runtime_identity import (
     validate_python_runtime_identity,
 )
 from tools import harness_memory_guard
+from tools.bench_suites import BenchmarkInventoryRecord, BenchmarkSet
 from tools.perf_scoreboard_measure import _cpython_run_env
 from tools.perf_scoreboard_model import Cell
+from tools.perf_schema import PlannedCell, PlannedCellRecord
 from tools.shard_partition import lpt_shards
+
+
+class ShardRecord(TypedDict):
+    id: int
+    count: int
+    set: BenchmarkSet | Literal["explicit"]
+    members: list[str]
+    set_members: list[str]
+
+
+class BenchmarkPlanRecord(TypedDict):
+    kind: Literal["molt.benchmark-plan.v1"]
+    inventory: BenchmarkInventoryRecord
+    planned_cells: list[PlannedCellRecord]
+    shard: ShardRecord | None
+
+
+class _CanonicalBenchmarkKeys(Protocol):
+    def canonical_benchmark_key(self, script: str | Path) -> str: ...
+
+
+PlanFormat = Literal["summary", "json"]
+
+
+def _plan_format(value: str) -> PlanFormat:
+    if value == "summary":
+        return "summary"
+    if value == "json":
+        return "json"
+    raise argparse.ArgumentTypeError("plan format must be summary or json")
+
+
+def print_plan_summary(
+    plan: BenchmarkPlanRecord, *, set_name: BenchmarkSet | Literal["explicit"]
+) -> None:
+    """Project the captured plan once, without repeating keys per coordinate."""
+    cells = plan["planned_cells"]
+    keys = tuple(dict.fromkeys(cell["benchmark"] for cell in cells))
+    backends = tuple(dict.fromkeys(cell["backend"] for cell in cells))
+    profiles = tuple(dict.fromkeys(cell["profile"] for cell in cells))
+    shard = plan["shard"]
+    shard_label = "all" if shard is None else f"{shard['id']}/{shard['count']}"
+    inventory = plan["inventory"]
+    primary_counts = " ".join(
+        f"{name}={len(paths)}" for name, paths in inventory["primary_suites"].items()
+    )
+    print("BENCHMARK PLAN: planning only; no measurement")
+    print(
+        f"set={set_name} shard={shard_label} "
+        f"benchmarks={len(keys)} coordinates={len(cells)}"
+    )
+    print(f"backends={','.join(backends)} profiles={','.join(profiles)}")
+    print(f"primary inventory: {primary_counts}")
+    print(
+        f"applications={len(inventory['applications'])} "
+        f"exclusions={len(inventory['exclusions'])} "
+        f"smoke_alias={len(inventory['smoke'])}"
+    )
+    print("selected benchmark keys:")
+    print("\n".join(keys))
 
 
 def _observe_cpython_runtime(cmd: tuple[str, ...]) -> dict[str, object]:
@@ -70,29 +132,27 @@ def _parse_shard(text: str) -> tuple[int, int]:
 
 
 def select_shard(
-    api: Mapping[str, Any],
+    api: Mapping[str, object],
     scripts: list[Path],
     shard: tuple[int, int],
     *,
-    set_name: str,
-) -> tuple[list[Path], dict[str, Any]]:
+    set_name: BenchmarkSet | Literal["explicit"],
+) -> tuple[list[Path], ShardRecord]:
     """Select one deterministic shard of the resolved benchmark set.
 
     The returned record travels in the board's provenance, so a merge can
     prove that its shard boards cover the set exactly once.
     """
     index, count = shard
-    by_key = {
-        api["bench_suites"].canonical_benchmark_key(script): script
-        for script in scripts
-    }
+    suites = cast(_CanonicalBenchmarkKeys, api["bench_suites"])
+    by_key = {suites.canonical_benchmark_key(script): script for script in scripts}
     if len(by_key) != len(scripts):
         raise SystemExit("--shard: the benchmark set names a benchmark twice")
     plan = lpt_shards([{"path": key, "weight": 1} for key in by_key], count)
     members = plan[index]["entries"]
     chosen = set(members)
     selected = [script for key, script in by_key.items() if key in chosen]
-    record = {
+    record: ShardRecord = {
         "id": index,
         "count": count,
         "set": set_name,
@@ -122,6 +182,18 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         action="append",
         default=None,
         help="explicit benchmark path/key (repeatable); overrides --set",
+    )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="show validated inventory and selected coordinates without running workloads",
+    )
+    parser.add_argument(
+        "--plan-format",
+        type=_plan_format,
+        default=None,
+        metavar="{summary,json}",
+        help="--plan output format (default: summary; json for automation)",
     )
     parser.add_argument(
         "--backend",
@@ -340,6 +412,19 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
     )
     ns = parser.parse_args(argv)
 
+    if ns.plan_format is not None and not ns.plan:
+        parser.error("--plan-format requires --plan")
+    if ns.plan and (
+        ns.merge is not None
+        or ns.rebuild_summary is not None
+        or ns.sample_hot_only
+        or ns.self_test
+    ):
+        parser.error(
+            "--plan cannot be combined with --merge, --rebuild-summary, "
+            "--sample-hot-only or --self-test"
+        )
+
     if ns.rebuild_summary is not None:
         return api["_rebuild_summary"](
             Path(ns.rebuild_summary),
@@ -374,17 +459,68 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         ns.warmup = 1
         print("[self-test] bench_fib x native x release-fast, samples=%d" % ns.samples)
 
-    scripts = api["_resolve_benchmark_set"](ns.set, ns.benchmark)
-    shard_record: dict[str, Any] | None = None
+    try:
+        inventory = api["bench_suites"].benchmark_inventory()
+        scripts = api["_resolve_benchmark_set"](
+            ns.set, ns.benchmark, inventory=inventory
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if not scripts or not backends or not profiles:
+        parser.error("benchmark selection, backends and profiles must be nonempty")
+    if len(set(backends)) != len(backends) or len(set(profiles)) != len(profiles):
+        parser.error("backend and profile selections must not contain duplicates")
+    shard_record: ShardRecord | None = None
     if ns.shard is not None:
         if ns.self_test:
             raise SystemExit("--shard cannot be combined with --self-test")
-        scripts, shard_record = select_shard(
-            api,
-            scripts,
-            ns.shard,
-            set_name="explicit" if ns.benchmark else ns.set,
+        try:
+            scripts, shard_record = select_shard(
+                api,
+                scripts,
+                ns.shard,
+                set_name="explicit" if ns.benchmark else ns.set,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+    planned_cells = tuple(
+        PlannedCell.from_payload(
+            {
+                "benchmark": api["bench_suites"].canonical_benchmark_key(script),
+                "target": api["BACKENDS_BY_NAME"][backend_name].build_target,
+                "backend": backend_name,
+                "profile": profile,
+            }
         )
+        for backend_name in backends
+        for profile in profiles
+        for script in scripts
+    )
+    if ns.plan:
+        plan: BenchmarkPlanRecord = {
+            "kind": "molt.benchmark-plan.v1",
+            "inventory": inventory.as_record(),
+            "planned_cells": [cell.as_record() for cell in planned_cells],
+            "shard": shard_record,
+        }
+        if ns.plan_format == "json":
+            print(
+                json.dumps(
+                    plan,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print_plan_summary(
+                plan,
+                set_name=(
+                    "explicit"
+                    if ns.benchmark
+                    else api["bench_suites"].benchmark_set(ns.set)
+                ),
+            )
+        return 0
     try:
         cpython_oracle = api["_resolve_system_cpython"](ns.cpython)
     except RuntimeError as exc:
@@ -686,6 +822,32 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         benchmarks_deferred: list[dict] = []
         cells: list[Cell] = []
 
+        def write_checkpoint() -> None:
+            api["_checkpoint"](
+                partial_path,
+                cells,
+                benchmarks_run,
+                benchmarks_deferred,
+                cpython_version,
+                ns.samples,
+                ns.warmup,
+                planned_cells=planned_cells,
+                provenance=provenance,
+                cpython_identity=cpython_identity,
+                pypy_version=pypy_version,
+                codon_version=codon_version,
+                execution_host=execution_host_record,
+                validate_inputs=verify_workloads,
+            )
+
+        # Publish the complete intended matrix before the first build. A stop
+        # during the first cell must leave every selected coordinate visible.
+        try:
+            write_checkpoint()
+        except api["ScoreboardSchemaError"] as exc:
+            api["_print_schema_error"](exc)
+            return 3
+
         # Per (backend, profile) we open ONE daemon batch build server and reuse it
         # across the whole benchmark set — matching bench.py's amortized-build model.
         for backend_name in backends:
@@ -769,6 +931,9 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
                                     if missing_budgets and previous_reason
                                     else str(exc)
                                 )
+                        # Publish the run's captured quiescence with each
+                        # observation, including checkpoints before classification.
+                        cell.measured_quiescent = bool(quiescence["quiet"])
                         cells.append(cell)
                         if key not in benchmarks_run:
                             benchmarks_run.append(key)
@@ -790,21 +955,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
                         verify_workloads()
                         # Checkpoint partial JSON after every cell (death-recoverable).
                         try:
-                            api["_checkpoint"](
-                                partial_path,
-                                cells,
-                                benchmarks_run,
-                                benchmarks_deferred,
-                                cpython_version,
-                                ns.samples,
-                                ns.warmup,
-                                provenance=provenance,
-                                cpython_identity=cpython_identity,
-                                pypy_version=pypy_version,
-                                codon_version=codon_version,
-                                execution_host=execution_host_record,
-                                validate_inputs=verify_workloads,
-                            )
+                            write_checkpoint()
                         except api["ScoreboardSchemaError"] as exc:
                             api["_print_schema_error"](exc)
                             return 3
@@ -856,6 +1007,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
 
     doc = api["build_scoreboard_doc"](
         cells,
+        planned_cells=planned_cells,
         benchmarks_run=benchmarks_run,
         benchmarks_deferred=benchmarks_deferred,
         cpython_version=cpython_version,

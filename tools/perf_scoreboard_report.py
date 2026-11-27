@@ -14,6 +14,7 @@ from tools.perf_schema import (
     CLASS_RED_NOISY,
     CLASS_RED_STABLE,
     CLASS_TIE,
+    PlannedCell,
     flatten_cells,
     validate_board,
 )
@@ -154,8 +155,14 @@ def print_summary(doc: dict) -> None:
         )
     )
     hdr = (
-        f"{'VERDICT':<17}{'WARM':>7}  {'COLD':>7}  {'TAXms':>7}  "
+        f"{'VERDICT':<17}{'REPEAT':>7}  {'FIRST':>7}  {'DELTAms':>7}  "
         f"{'PYPY':>6}  {'CODON':>6}  {'SIZEKiB':>8}  BENCHMARK [backend/profile]"
+    )
+    print("TIMING SCOPE: fresh process per sample; cache state uncontrolled.")
+    print("FIRST = first invocation; REPEAT = median after discarded launches.")
+    print(
+        "DELTAms = first minus repeat; includes noise and cache effects, "
+        "not isolated startup."
     )
     print(hdr)
     print("-" * 100)
@@ -182,6 +189,20 @@ def print_summary(doc: dict) -> None:
     for problem in admission["problems"]:
         print("E2 INELIGIBLE: " + problem)
     s = doc["summary"]
+    coverage = doc.get("coverage")
+    if coverage is not None:
+        print(
+            f"COVERAGE: selected={coverage['selected']} "
+            f"attempted={coverage['attempted']} "
+            f"parity_qualified={coverage['parity_qualified']} "
+            f"measured={coverage['measured']} "
+            f"release_qualified={coverage['release_qualified']}"
+        )
+        for coordinate in coverage["not_run"]:
+            print(
+                f"UNRUN: {coordinate['benchmark']} "
+                f"[{coordinate['target']}/{coordinate['backend']}/{coordinate['profile']}]"
+            )
     print(
         f"TOTAL={s['cells_total']}  GREEN={s['cells_green']}  "
         f"FAIL_ENGINE={s.get('cells_fail_engine', 0)}  "
@@ -192,24 +213,27 @@ def print_summary(doc: dict) -> None:
         f"STALE={s.get('cells_fail_stale', 0)}"
     )
 
-    # --- WARM EXECUTION REDS (the release blockers — IR-fact lane) ---------
+    # --- Repeated fresh-process losses ------------------------------------
     warm_reds = by_verdict.get(VERDICT_FAIL_ENGINE, [])
+    print(f"\nREPEATED FRESH-PROCESS LOSSES ({len(warm_reds)}) — FAIL_ENGINE:")
     print(
-        f"\nWARM EXECUTION REDS ({len(warm_reds)}) — execution-engine, RELEASE BLOCKER:"
+        "  (timing includes startup; attribution fields are hypotheses requiring a profile)"
     )
-    print("  (needs an IR FACT, not a local opt — see council triage doctrine)")
     for c in sorted(warm_reds, key=lambda c: c.get("warm_speedup") or 0.0):
         print(
             f"    {_fmt(c.get('warm_speedup'))}x  {c['benchmark']} "
-            f"[{c['backend']}/{c['profile']}]  -> {c.get('suspected_missing_fact', '?')}"
+            f"[{c['backend']}/{c['profile']}]  hypothesis: {c.get('suspected_missing_fact', '?')}"
         )
 
-    # --- COLD-START BUDGET REDS (startup/runtime/artifact lane) -------------
+    # --- First-minus-repeat budget failures -------------------------------
     cold_reds = by_verdict.get(VERDICT_FAIL_COLD_BUDGET, [])
-    print(f"\nCOLD-START BUDGET REDS ({len(cold_reds)}) — startup tax over budget:")
+    print(
+        f"\nFIRST-MINUS-REPEAT BUDGET FAILURES ({len(cold_reds)}) "
+        "— observed delta over budget:"
+    )
     for c in sorted(cold_reds, key=lambda c: -(c.get("startup_tax_ms") or 0.0)):
         print(
-            f"    cold={_fmt(c.get('cold_speedup'))}x  tax={_fmt(c.get('startup_tax_ms'), 0)}ms"
+            f"    first={_fmt(c.get('cold_speedup'))}x  delta={_fmt(c.get('startup_tax_ms'), 0)}ms"
             f" (budget {_fmt(c.get('cold_budget_ms'), 0)}ms)  {c['benchmark']} "
             f"[{c['backend']}/{c['profile']}]  -> {c.get('suspected_startup_component', '?')}"
         )
@@ -218,15 +242,16 @@ def print_summary(doc: dict) -> None:
     warn_cold = by_verdict.get(VERDICT_WARN_COLD_FLOOR, [])
     if warn_cold:
         print(
-            f"\nCOLD-FLOOR WARNINGS ({len(warn_cold)}) — warm>CPython, cold<=CPython "
-            "by FIXED startup tax (within budget; NOT a gate fail unless --strict-cold):"
+            f"\nFIRST-INVOCATION WARNINGS ({len(warn_cold)}) "
+            "— repeated processes win, first invocation loses "
+            "with observed delta within budget (cause unproven):"
         )
         for c in sorted(warn_cold, key=lambda c: -(c.get("startup_tax_ms") or 0.0))[
             :12
         ]:
             print(
-                f"    cold={_fmt(c.get('cold_speedup'))}x  warm={_fmt(c.get('warm_speedup'))}x"
-                f"  tax={_fmt(c.get('startup_tax_ms'), 0)}ms  {c['benchmark']} "
+                f"    first={_fmt(c.get('cold_speedup'))}x  repeat={_fmt(c.get('warm_speedup'))}x"
+                f"  delta={_fmt(c.get('startup_tax_ms'), 0)}ms  {c['benchmark']} "
                 f"[{c['backend']}/{c['profile']}]"
             )
         if len(warn_cold) > 12:
@@ -304,8 +329,8 @@ def print_summary(doc: dict) -> None:
             key=lambda c: c.get("warm_speedup") or 0.0,
         )
         print(
-            f"\n  TRUE WARM REDS — RED_STABLE ({len(red_stable)}) "
-            "[quiescent + stable + CI below 1.00 — the ONLY optimize-from set]:"
+            f"\n  CONFIRMED FRESH-PROCESS LOSSES — RED_STABLE ({len(red_stable)}) "
+            "[quiescent + stable + CI below 1.00; profile to attribute cost]:"
         )
         for c in red_stable:
             cp = c.get("cycle_profile") or {}
@@ -323,8 +348,8 @@ def print_summary(doc: dict) -> None:
         noisy = by_class.get(CLASS_RED_NOISY, [])
         if noisy:
             print(
-                f"\n  RED_NOISY ({len(noisy)}) — warm<1.00 but contaminated/"
-                "unstable/CI-straddles — DO NOT optimize (re-measure quiet):"
+                f"\n  RED_NOISY ({len(noisy)}) — unconfirmed comparison, "
+                "contaminated/unstable/missing repeat CI — re-measure quiet:"
             )
             for c in sorted(noisy, key=lambda c: c.get("warm_speedup") or 0.0)[:20]:
                 print(
@@ -370,23 +395,21 @@ def _short(sha: str | None) -> str:
 
 
 def _fastest_next_unlock(warm_reds: list[dict], cold_reds: list[dict]) -> str:
-    """One structural fact / one file lane / one gate — the highest-leverage next move.
-
-    Prefer the WORST warm red (engine reds outrank cold reds per ruling A); a
-    warm red the most benchmarks share is the fastest class to retire.
-    """
+    """Suggest cost attribution for the largest recorded process comparison gap."""
     if warm_reds:
         worst = min(warm_reds, key=lambda c: c.get("warm_speedup") or 1e9)
         return (
-            f"heal {worst['benchmark']} [{worst['backend']}/{worst['profile']}] "
-            f"({_fmt(worst.get('warm_speedup'))}x) — fact: "
+            f"profile fresh-process cost for {worst['benchmark']} "
+            f"[{worst['backend']}/{worst['profile']}] "
+            f"({_fmt(worst.get('warm_speedup'))}x) — hypothesis: "
             f"{worst.get('suspected_missing_fact', '?')}"
         )
     if cold_reds:
         worst = max(cold_reds, key=lambda c: c.get("startup_tax_ms") or 0.0)
         return (
-            f"cold-start: {worst['benchmark']} tax={_fmt(worst.get('startup_tax_ms'), 0)}ms "
-            f"— attack {worst.get('suspected_startup_component', '?')}"
+            f"profile first-minus-repeat delta: {worst['benchmark']} "
+            f"delta={_fmt(worst.get('startup_tax_ms'), 0)}ms "
+            f"— {worst.get('suspected_startup_component', 'cause unproven')}"
         )
     return "no reds — protect the greens; widen the suite for the next class"
 
@@ -661,6 +684,7 @@ def _checkpoint(
     samples: int,
     warmup: int,
     *,
+    planned_cells: tuple[PlannedCell, ...],
     provenance: dict | None = None,
     cpython_identity: dict | None = None,
     pypy_version: str | None = None,
@@ -677,6 +701,8 @@ def _checkpoint(
     )
     doc = build_scoreboard_doc(
         cells,
+        planned_cells=planned_cells,
+        run_state="partial",
         benchmarks_run=benchmarks_run,
         benchmarks_deferred=benchmarks_deferred,
         cpython_version=cpython_version,
