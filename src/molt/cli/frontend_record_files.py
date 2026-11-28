@@ -326,6 +326,7 @@ class FrontendRecordFiles:
         self._pending: _RecordIndex = {}
         self._payloads: dict[str, bytes] = {}
         self._payload_bytes = 0
+        self._packed: dict[str, _RecordLocation] = {}
         # Addresses this process recorded: newer than any index file it loads.
         self._written: _RecordIndex = {}
 
@@ -541,10 +542,13 @@ class FrontendRecordFiles:
         location = _RecordLocation(digest)
         if len(payload) <= _PACK_BYTES and self._pinned_by_operation():
             with self._lock:
+                packed = self._packed.get(digest)
+                if packed is not None:
+                    return self._record(kind, key, packed)
                 if digest not in self._payloads:
                     if (
                         self._payload_bytes + len(payload) > _PACK_BYTES
-                        and not self.save()
+                        and not self._seal_pack()
                     ):
                         return False
                     self._payloads[digest] = payload
@@ -584,37 +588,46 @@ class FrontendRecordFiles:
             return self.save()
         return True
 
+    def _seal_pack(self) -> bool:
+        """Write one bounded payload batch, leaving its addresses unpublished."""
+        if not self._payloads:
+            return True
+        # Sort by content so independent writers can share equal packs.
+        rows = sorted(self._payloads.items())
+        pack = self.put_blob(b"".join(payload for _, payload in rows))
+        if pack is None:
+            return False
+        offset = 0
+        for digest, payload in rows:
+            self._packed[digest] = _RecordLocation(
+                digest, _PackedExtent(pack, offset, len(payload))
+            )
+            offset += len(payload)
+        # Resolve each queued address in place. Aliases and this writer's reads
+        # follow the same packed extent before and after publication.
+        for address, location in self._pending.items():
+            if location.extent is None and (
+                packed := self._packed.get(location.digest)
+            ):
+                self._pending[address] = packed
+                self._written[address] = packed
+        self._payloads.clear()
+        self._payload_bytes = 0
+        return True
+
     def save(self) -> bool:
-        """Publish the operation's bounded pack, then its index."""
+        """Publish pending addresses together after writing their packs."""
         with self._lock:
             if not self._pending:
                 return True
-            published = self._pending.copy()
-            if self._payloads:
-                # A shared digest has one extent, even when several premises
-                # alias that result. Sort by content to share equal packs.
-                rows = sorted(self._payloads.items())
-                pack = self.put_blob(b"".join(payload for _, payload in rows))
-                if pack is None:
-                    return False
-                offset = 0
-                locations = {}
-                for digest, payload in rows:
-                    locations[digest] = _RecordLocation(
-                        digest, _PackedExtent(pack, offset, len(payload))
-                    )
-                    offset += len(payload)
-                for address, location in published.items():
-                    if location.extent is None:
-                        published[address] = locations.get(location.digest, location)
-            content = render_index(published)
+            if not self._seal_pack():
+                return False
+            content = render_index(self._pending)
             name = record_digest(content) + INDEX_SUFFIX
             if not self._publish(self._index / name, content):
                 return False
-            self._written.update(published)
             self._pending.clear()
-            self._payloads.clear()
-            self._payload_bytes = 0
+            self._packed.clear()
             return True
 
     def pending_count(self) -> int:
