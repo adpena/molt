@@ -353,7 +353,7 @@ impl CompilationCache {
     /// follows the ordinary quarantine fence.
     pub fn read_many<T: Send>(
         &mut self,
-        content_hashes: &[String],
+        content_hashes: &[impl AsRef<str> + Sync],
         project: impl Fn(&[u8]) -> T + Sync,
         map: impl FnOnce(
             Range<usize>,
@@ -369,12 +369,15 @@ impl CompilationCache {
         }
         let cached: Vec<_> = content_hashes
             .iter()
-            .map(|key| self.resident_hit(key))
+            .map(|key| self.resident_hit(key.as_ref()))
             .collect();
         let read = |index: usize| {
             let (resident, lookup) = match &cached[index] {
                 Some(bytes) => (true, DiskLookup::Hit(project(bytes))),
-                None => (false, self.probe_disk(&content_hashes[index], &project)),
+                None => (
+                    false,
+                    self.probe_disk(content_hashes[index].as_ref(), &project),
+                ),
             };
             CompilationCacheRead {
                 index,
@@ -407,7 +410,11 @@ impl CompilationCache {
                             Some(value)
                         }
                         DiskLookup::Corrupt { path, error } => {
-                            self.retire_corrupt_artifact(&path, &content_hashes[index], &error);
+                            self.retire_corrupt_artifact(
+                                &path,
+                                content_hashes[index].as_ref(),
+                                &error,
+                            );
                             None
                         }
                         DiskLookup::Miss => {

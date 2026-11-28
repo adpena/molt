@@ -662,18 +662,44 @@ where
                 .map(|input| input.prepared_function.function.ops.len())
                 .sum::<usize>();
             let prepared_count = inputs.len();
+            // A wave bounds both the parallel reads and live projections.
+            // The cache admits each envelope before its worker restores and
+            // verifies the body against this program's symbol table.
+            let mut cached_bodies = tir_cache
+                .as_mut()
+                .filter(|_| cache_reuse_allowed)
+                .map(|cache| {
+                    let keys: Vec<_> = inputs
+                        .iter()
+                        .map(|input| input.prepared_function.content_hash.as_str())
+                        .collect();
+                    cache.read_many(
+                        &keys,
+                        |payload| {
+                            super::serialize::deserialize_tir_function(payload, &|symbol| {
+                                symbol_ids.get(symbol).copied()
+                            })
+                        },
+                        |indices, read| {
+                            if indices.len() <= 1 {
+                                return indices.map(read).collect();
+                            }
+                            tir_pool.install(|| {
+                                indices
+                                    .into_par_iter()
+                                    .map(|index| request.enter(|| read(index)))
+                                    .collect()
+                            })
+                        },
+                    )
+                })
+                .into_iter()
+                .flatten()
+                .map(Option::flatten);
             let mut misses = Vec::new();
             for prepared in inputs {
                 let index = prepared.index;
-                let content_hash = &prepared.prepared_function.content_hash;
-                if cache_reuse_allowed
-                    && let Some(cached_bytes) =
-                        tir_cache.as_mut().and_then(|cache| cache.get(content_hash))
-                    && let Some(cached_tir_func) =
-                        super::serialize::deserialize_tir_function(&cached_bytes, &|symbol| {
-                            symbol_ids.get(symbol).copied()
-                        })
-                {
+                if let Some(cached_tir_func) = cached_bodies.next().flatten() {
                     let func_ir = &functions[index];
                     assert_eq!(
                         func_ir.return_abi, cached_tir_func.return_abi,
