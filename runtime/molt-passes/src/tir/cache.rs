@@ -25,6 +25,7 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -117,6 +118,18 @@ struct ResidentEntry {
     data: Arc<[u8]>,
     /// Precomputed so the quarantine probe on a warm hit allocates nothing.
     poison_path: PathBuf,
+}
+
+enum DiskLookup<T> {
+    Miss,
+    Hit(T),
+    Corrupt { path: PathBuf, error: String },
+}
+
+pub struct CompilationCacheRead<T> {
+    index: usize,
+    resident: bool,
+    lookup: DiskLookup<T>,
 }
 
 static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -317,21 +330,104 @@ impl CompilationCache {
             self.telemetry.memory_hits = self.telemetry.memory_hits.saturating_add(1);
             return Some(bytes);
         }
-        let artifact_path = self
-            .artifact_path(content_hash)
-            .expect("validated cache hash has a canonical artifact path");
-        let read = read_file_bounded(&artifact_path, self.max_persistent_bytes);
-        let envelope = match read {
-            Ok(Some(envelope)) => envelope,
-            Ok(None) => {
-                self.telemetry.misses = self.telemetry.misses.saturating_add(1);
-                return None;
+        match self.probe_disk(content_hash, |payload| Arc::<[u8]>::from(payload)) {
+            DiskLookup::Hit(bytes) => {
+                self.store_memory_data(content_hash, Arc::clone(&bytes));
+                self.telemetry.disk_hits = self.telemetry.disk_hits.saturating_add(1);
+                Some(bytes)
             }
-            Err(_) => {
-                // A read budget or I/O failure is not evidence of corrupt bytes.
-                self.telemetry.misses = self.telemetry.misses.saturating_add(1);
-                return None;
+            DiskLookup::Corrupt { path, error } => {
+                self.retire_corrupt_artifact(&path, content_hash, &error);
+                None
             }
+            DiskLookup::Miss => {
+                self.telemetry.misses = self.telemetry.misses.saturating_add(1);
+                None
+            }
+        }
+    }
+
+    /// Verify and project one ordered batch using the caller's compiler pool.
+    /// Disk payloads are released after projection, so only the requested
+    /// values survive until the batch finishes. Any already resident payload
+    /// follows the ordinary quarantine fence.
+    pub fn read_many<T: Send>(
+        &mut self,
+        content_hashes: &[String],
+        project: impl Fn(&[u8]) -> T + Sync,
+        map: impl FnOnce(
+            Range<usize>,
+            &(dyn Fn(usize) -> CompilationCacheRead<T> + Sync),
+        ) -> Vec<CompilationCacheRead<T>>,
+    ) -> Vec<Option<T>> {
+        if self.activate_managed(false).is_err() {
+            self.telemetry.misses = self
+                .telemetry
+                .misses
+                .saturating_add(content_hashes.len() as u64);
+            return (0..content_hashes.len()).map(|_| None).collect();
+        }
+        let cached: Vec<_> = content_hashes
+            .iter()
+            .map(|key| self.resident_hit(key))
+            .collect();
+        let read = |index: usize| {
+            let (resident, lookup) = match &cached[index] {
+                Some(bytes) => (true, DiskLookup::Hit(project(bytes))),
+                None => (false, self.probe_disk(&content_hashes[index], &project)),
+            };
+            CompilationCacheRead {
+                index,
+                resident,
+                lookup,
+            }
+        };
+        let rows = map(0..content_hashes.len(), &read);
+        assert_eq!(rows.len(), content_hashes.len());
+        rows.into_iter()
+            .enumerate()
+            .map(
+                |(
+                    position,
+                    CompilationCacheRead {
+                        index,
+                        resident,
+                        lookup,
+                    },
+                )| {
+                    assert_eq!(position, index);
+                    match lookup {
+                        DiskLookup::Hit(value) => {
+                            let hits = if resident {
+                                &mut self.telemetry.memory_hits
+                            } else {
+                                &mut self.telemetry.disk_hits
+                            };
+                            *hits = hits.saturating_add(1);
+                            Some(value)
+                        }
+                        DiskLookup::Corrupt { path, error } => {
+                            self.retire_corrupt_artifact(&path, &content_hashes[index], &error);
+                            None
+                        }
+                        DiskLookup::Miss => {
+                            self.telemetry.misses = self.telemetry.misses.saturating_add(1);
+                            None
+                        }
+                    }
+                },
+            )
+            .collect()
+    }
+
+    fn probe_disk<T>(&self, content_hash: &str, project: impl FnOnce(&[u8]) -> T) -> DiskLookup<T> {
+        let Some(artifact_path) = self.artifact_path(content_hash) else {
+            return DiskLookup::Miss;
+        };
+        let Ok(Some(envelope)) = read_file_bounded(&artifact_path, self.max_persistent_bytes)
+        else {
+            // A read budget or I/O failure is not evidence of corrupt bytes.
+            return DiskLookup::Miss;
         };
         // A quarantine names the poison sidecar before it retires the
         // artifact, so a reader inside that window must still miss.
@@ -339,21 +435,17 @@ impl CompilationCache {
             .poison_path(content_hash)
             .expect("validated cache hash has a canonical poison path");
         if !matches!(quarantine_probe(&poison_path), Ok(false)) {
-            self.telemetry.misses = self.telemetry.misses.saturating_add(1);
-            return None;
+            return DiskLookup::Miss;
         }
         match decode_artifact_envelope(content_hash, &envelope) {
             Ok(payload) => {
-                let bytes = Arc::<[u8]>::from(payload);
                 refresh_recency(&artifact_path, SystemTime::now());
-                self.store_memory_data(content_hash, Arc::clone(&bytes));
-                self.telemetry.disk_hits = self.telemetry.disk_hits.saturating_add(1);
-                Some(bytes)
+                DiskLookup::Hit(project(payload))
             }
-            Err(error) => {
-                self.retire_corrupt_artifact(&artifact_path, content_hash, &error);
-                None
-            }
+            Err(error) => DiskLookup::Corrupt {
+                path: artifact_path,
+                error,
+            },
         }
     }
 

@@ -81,13 +81,12 @@ pub(in crate::native_backend::simple_backend) fn linkage_carriers(
         };
     };
     let keys = request_parallel_map(functions, |function| cache_key(function, table));
-    let mut rows: Vec<Option<LinkageCarriers>> = keys
-        .iter()
-        .map(|key| {
-            cache
-                .get(key)
-                .and_then(|bytes| LinkageCarriers::decode(&bytes))
+    let mut rows: Vec<Option<LinkageCarriers>> = cache
+        .read_many(&keys, LinkageCarriers::decode, |indices, read| {
+            request_parallel_map(indices, read)
         })
+        .into_iter()
+        .map(Option::flatten)
         .collect();
     let misses: Vec<usize> = (0..rows.len())
         .filter(|index| rows[*index].is_none())
