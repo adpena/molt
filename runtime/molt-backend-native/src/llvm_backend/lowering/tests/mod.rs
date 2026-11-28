@@ -342,7 +342,7 @@ impl<'ctx> OpLoweringFixture<'ctx, '_> {
             source,
             op_index: 0,
             frame: crate::codegen_ssa::frame::ActiveFrame::Absent,
-            initial_homes: &Default::default(),
+            unowned_homes: &Default::default(),
             poll_frame: None,
             blocks: &HashMap::default(),
             exception_targets: &HashMap::default(),
