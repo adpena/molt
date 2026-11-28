@@ -5,7 +5,7 @@ from molt.compilation_target import admit_target
 
 from tests.compiler_identity_helper import compiler_environment_inputs
 from molt.process_environment import ProcessEnvironment
-from molt.toolchain_identity import stable_regular_file_identity
+from molt.toolchain_identity import StableRegularFileObservation
 
 from molt.cli.cache_keys import FunctionDigests
 
@@ -116,8 +116,9 @@ def _stub_backend_binary_ensure(monkeypatch, tmp_path: Path) -> Path:
         generation = publish_backend(backend_bin, b"backend")
         return cli_backend_binary._backend_ensure_success(
             coordinate=backend_bin,
-            binary_path=generation,
-            identity=stable_regular_file_identity(generation, label="test backend"),
+            observation=StableRegularFileObservation.capture(
+                generation, label="test backend"
+            ),
             fingerprint=_source_fingerprint("backend"),
         )
 
