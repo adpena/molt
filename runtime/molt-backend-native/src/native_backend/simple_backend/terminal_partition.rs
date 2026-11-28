@@ -259,6 +259,13 @@ impl SimpleBackend {
                     .insert(declaration.name.clone(), abi.clone());
             }
         }
+        if backend_timing_enabled() {
+            eprintln!(
+                "MOLT_BACKEND_TIMING: archive parent analyzed carriers for {} of {} defined bodies",
+                functions.analyzed_carrier_count(),
+                functions.bodies().count(),
+            );
+        }
         let mut definitions = Vec::new();
         let mut checked = BTreeMap::new();
         let mut bodies: Vec<_> = (0..table.len()).map(|_| None).collect();

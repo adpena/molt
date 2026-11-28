@@ -10,12 +10,8 @@ use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 /// checks for unwind before using the raw result. Generic and frozen provider
 /// rows keep their ordinary ABI.
 pub(super) fn checked_private_returns<'a>(
-    bodies: impl IntoIterator<
-        Item = Option<(
-            &'a crate::tir::TirFunction,
-            &'a crate::representation_plan::ProducerCarrierPlan,
-        )>,
-    >,
+    bodies: impl IntoIterator<Item = Option<&'a crate::tir::TirFunction>>,
+    carriers_for_row: impl Fn(usize) -> &'a crate::representation_plan::ProducerCarrierPlan,
     private_entries: impl IntoIterator<Item = molt_ir::FunctionId>,
 ) -> BTreeMap<molt_ir::FunctionId, crate::tir::types::TirType> {
     use crate::representation_plan::CheckedResultRefusal;
@@ -33,16 +29,17 @@ pub(super) fn checked_private_returns<'a>(
     let mut considered = 0;
     for id in private_entries {
         considered += 1;
-        if let Some((body, carriers)) = bodies[id.index()]
+        if let Some(body) = bodies[id.index()]
             && body.return_abi.returns_value()
-            && let Some(ty) = carriers.checked_return_type(body)
+            && let Some(ty) = carriers_for_row(id.index()).checked_return_type(body)
         {
             candidates.insert(id, (ty, false));
         }
     }
     let not_scalar = considered - candidates.len();
     let (mut non_direct, mut carrier_mismatch, mut unobserved) = (0, 0, 0);
-    for (body, carriers) in bodies.into_iter().flatten() {
+    for (row, body) in bodies.into_iter().enumerate() {
+        let Some(body) = body else { continue };
         if candidates.is_empty() {
             break;
         }
@@ -51,7 +48,7 @@ pub(super) fn checked_private_returns<'a>(
             let Some((ty, used)) = candidates.get_mut(&callee) else {
                 continue;
             };
-            match carriers.checked_direct_result(op, ty) {
+            match carriers_for_row(row).checked_direct_result(op, ty) {
                 Ok(_) => {
                     *used = true;
                     continue;
@@ -132,7 +129,7 @@ pub(in crate::native_backend::simple_backend) struct NativeFinalFunctions {
 #[cfg(feature = "native-backend")]
 struct NativeFinalRow {
     body: Option<NativeFinalFunction>,
-    local_linkage: Option<NativeFunctionLinkageAbi>,
+    local_linkage: std::sync::OnceLock<NativeFunctionLinkageAbi>,
     /// Set exclusively by the optimizer's typed specialization result.
     private_origin: Option<String>,
 }
@@ -140,7 +137,41 @@ struct NativeFinalRow {
 #[cfg(feature = "native-backend")]
 pub(crate) struct NativeFinalFunction {
     pub(crate) tir: crate::tir::TirFunction,
-    pub(crate) carriers: crate::representation_plan::ProducerCarrierPlan,
+    source_signature: molt_ir::ir::ExternFunctionSignature,
+    carriers: std::sync::OnceLock<crate::representation_plan::ProducerCarrierPlan>,
+}
+
+#[cfg(feature = "native-backend")]
+impl NativeFinalFunction {
+    pub(super) fn carriers(&self) -> &crate::representation_plan::ProducerCarrierPlan {
+        self.carriers
+            .get_or_init(|| crate::representation_plan::ProducerCarrierPlan::build(&self.tir))
+    }
+}
+
+#[cfg(feature = "native-backend")]
+impl NativeFinalRow {
+    fn local_linkage(&self, source: &FunctionIR) -> Option<&NativeFunctionLinkageAbi> {
+        if let Some(abi) = self.local_linkage.get() {
+            return Some(abi);
+        }
+        let body = self.body.as_ref()?;
+        Some(self.local_linkage.get_or_init(|| {
+            body.carriers().linkage_abi(
+                &body.tir,
+                body.source_signature,
+                source.parameter_custody.clone(),
+            )
+        }))
+    }
+
+    fn externalize(&mut self, source: &mut FunctionIR) {
+        // The body goes away, so keep its local ABI for clients without a
+        // frozen provider row. Ordinary archive planning never needs it.
+        let _ = self.local_linkage(source);
+        crate::externalize_function_with_signature(source);
+        self.body = None;
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -149,17 +180,15 @@ impl NativeFinalFunctions {
         &mut self,
         clones: &[crate::tir::passes::type_flow::SpecializedClone],
     ) {
-        let checked =
-            checked_private_returns(self.body_carriers(), clones.iter().map(|clone| clone.id));
+        let checked = self.checked_returns(clones.iter().map(|clone| clone.id));
         for clone in clones {
             let id = clone.id;
             let Some(ty) = checked.get(&id) else { continue };
-            self.rows[id.index()].private_origin =
-                Some(self.ir.functions[clone.origin.index()].name.clone());
-            let abi = self.rows[id.index()]
-                .local_linkage
-                .as_mut()
-                .expect("checked clone linkage");
+            let row = &mut self.rows[id.index()];
+            row.private_origin = Some(self.ir.functions[clone.origin.index()].name.clone());
+            row.local_linkage(&self.ir.functions[id.index()])
+                .expect("checked clone has a body");
+            let abi = row.local_linkage.get_mut().expect("checked clone linkage");
             abi.set_checked_raw_return(ty.clone());
         }
     }
@@ -168,17 +197,34 @@ impl NativeFinalFunctions {
         self.rows[id.index()].private_origin.as_deref()
     }
 
-    fn body_carriers(
+    fn checked_returns(
         &self,
-    ) -> impl Iterator<
-        Item = Option<(
-            &crate::tir::TirFunction,
-            &crate::representation_plan::ProducerCarrierPlan,
-        )>,
-    > {
+        entries: impl IntoIterator<Item = molt_ir::FunctionId>,
+    ) -> BTreeMap<molt_ir::FunctionId, crate::tir::types::TirType> {
+        checked_private_returns(
+            self.rows
+                .iter()
+                .map(|row| row.body.as_ref().map(|body| &body.tir)),
+            |row| {
+                self.rows[row]
+                    .body
+                    .as_ref()
+                    .expect("carrier analysis requires a body")
+                    .carriers()
+            },
+            entries,
+        )
+    }
+
+    pub(super) fn analyzed_carrier_count(&self) -> usize {
         self.rows
             .iter()
-            .map(|row| row.body.as_ref().map(|body| (&body.tir, &body.carriers)))
+            .filter(|row| {
+                row.body
+                    .as_ref()
+                    .is_some_and(|body| body.carriers.get().is_some())
+            })
+            .count()
     }
 
     #[cfg(feature = "jit")]
@@ -204,7 +250,7 @@ impl NativeFinalFunctions {
                 })
             })
             .collect();
-        let checked = checked_private_returns(self.body_carriers(), expected.keys().copied());
+        let checked = self.checked_returns(expected.keys().copied());
         if checked != expected {
             return Err(
                 "prepared JIT checked return differs from terminal call or carrier evidence".into(),
@@ -280,27 +326,24 @@ impl NativeFinalFunctions {
                     return NativeFinalRow {
                         body: None,
                         private_origin: None,
-                        local_linkage: None,
+                        local_linkage: Default::default(),
                     };
                 }
                 // Source references still address the pre-optimization table.
                 // All source metadata was captured before terminal inlining.
                 // Retire these ops before pruning or renumbering terminal rows.
                 drop(std::mem::take(&mut source.ops));
-                let carriers = crate::representation_plan::ProducerCarrierPlan::build(&body);
-                let local_linkage = {
-                    let signature = source
-                        .function_signature()
-                        .expect("admitted source signature");
-                    carriers.linkage_abi(&body, signature, source.parameter_custody.clone())
-                };
+                let source_signature = source
+                    .function_signature()
+                    .expect("admitted source signature");
                 NativeFinalRow {
                     body: Some(NativeFinalFunction {
                         tir: body,
-                        carriers,
+                        source_signature,
+                        carriers: Default::default(),
                     }),
                     private_origin: None,
-                    local_linkage: Some(local_linkage),
+                    local_linkage: Default::default(),
                 }
             })
             .collect();
@@ -340,7 +383,7 @@ impl NativeFinalFunctions {
                     .return_type
                     .as_ref()
                     .ok_or("checked entry has no carrier")?;
-                body.carriers
+                body.carriers()
                     .checked_direct_result(op, carrier)
                     .map_err(|why| {
                         format!("unchecked terminal reference in {}: {why:?}", body.tir.name)
@@ -350,15 +393,12 @@ impl NativeFinalFunctions {
         }
         for (&id, (symbol, abi)) in bindings {
             let row = &mut self.rows[id.index()];
-            if let Some(body) = &mut row.body {
+            if let Some(mut local) = row.local_linkage(&self.ir.functions[id.index()]).cloned() {
+                let body = row.body.as_mut().ok_or("missing private definition")?;
                 let ty = body
-                    .carriers
+                    .carriers()
                     .checked_return_type(&body.tir)
                     .ok_or("private provider has no proven scalar success carrier")?;
-                let mut local = row
-                    .local_linkage
-                    .clone()
-                    .ok_or("missing private definition")?;
                 local.set_checked_raw_return(ty);
                 if &local != abi {
                     return Err("private provider ABI differs from its terminal definition".into());
@@ -458,8 +498,7 @@ impl NativeFinalFunctions {
                 .enumerate()
             {
                 if externals.contains(&function.name) {
-                    crate::externalize_function_with_signature(&mut function);
-                    facts.body = None;
+                    facts.externalize(&mut function);
                     external.push((row, function, facts));
                 } else {
                     local.push((row, function, facts));
@@ -488,8 +527,7 @@ impl NativeFinalFunctions {
     pub(super) fn bind_shared_bodies(&mut self, shared: &BTreeSet<String>) {
         for (function, row) in self.ir.functions.iter_mut().zip(&mut self.rows) {
             if !function.is_extern && shared.contains(&function.name) {
-                crate::externalize_function_with_signature(function);
-                row.body = None;
+                row.externalize(function);
             }
         }
     }
@@ -503,7 +541,7 @@ impl NativeFinalFunctions {
         for (function, row) in self.ir.functions.iter().zip(&self.rows) {
             if let Some(abi) = row
                 .local_linkage
-                .as_ref()
+                .get()
                 .filter(|abi| abi.checked_raw_return())
             {
                 linkage
@@ -586,7 +624,7 @@ impl NativeFinalFunctions {
         let name = &self.ir.functions[id.index()].name;
         context
             .and_then(|ctx| ctx.function_linkage_abi(name))
-            .or(self.rows[id.index()].local_linkage.as_ref())
+            .or_else(|| self.rows[id.index()].local_linkage(&self.ir.functions[id.index()]))
             .unwrap_or_else(|| panic!("compiled declaration '{name}' has no provider linkage ABI"))
     }
 

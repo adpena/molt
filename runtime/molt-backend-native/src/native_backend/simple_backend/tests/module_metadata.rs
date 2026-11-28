@@ -66,7 +66,8 @@ fn checked_private_entry_requires_every_incoming_reference_to_check_its_result()
             .repr_by_value
             .insert(result, molt_ir::repr::Repr::Bool);
         super::super::module_metadata::checked_private_returns(
-            [Some((body, &consumer)), Some((&callee, &provider))],
+            [Some(body), Some(&callee), Some(&callee)],
+            |row| [&consumer, &provider][row],
             [id],
         )
     };
@@ -87,6 +88,35 @@ fn checked_private_entry_requires_every_incoming_reference_to_check_its_result()
         plan(&caller).is_empty(),
         "the entry's address escapes the call contract"
     );
+}
+
+#[test]
+fn frozen_provider_linkage_leaves_local_carrier_analysis_unforced() {
+    let id = molt_ir::FunctionId::from_index(0);
+    let mut ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "local".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            ops: vec![OpIR::new(OpKind::RetVoid)],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let provider = SimpleBackend::prepare_module_context(&mut ir.functions);
+    let eager = NativeFinalFunctions::from_codegen_fixtures(ir.clone());
+    let abi = eager.linkage(id, None).clone();
+    assert_eq!(eager.analyzed_carrier_count(), 1);
+
+    let mut functions = NativeFinalFunctions::from_codegen_fixtures(ir);
+    assert_eq!(
+        functions.linkage(id, Some(&provider)),
+        provider.function_linkage_abi("local").unwrap()
+    );
+    assert_eq!(functions.analyzed_carrier_count(), 0);
+
+    functions.bind_shared_bodies(&BTreeSet::from(["local".to_string()]));
+    assert_eq!(functions.linkage(id, None), &abi);
+    assert_eq!(functions.analyzed_carrier_count(), 0);
 }
 
 #[test]

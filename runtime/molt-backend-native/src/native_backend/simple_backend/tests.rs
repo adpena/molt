@@ -617,11 +617,11 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
         let &[product, overflow] = checked.results.as_slice() else {
             panic!("checked multiplication produces a product and an overflow bit");
         };
-        assert!(body.carriers.is_full_deopt_int(product));
-        assert!(!body.carriers.is_full_deopt_int(overflow));
+        assert!(body.carriers().is_full_deopt_int(product));
+        assert!(!body.carriers().is_full_deopt_int(overflow));
         assert!(
             !body
-                .carriers
+                .carriers()
                 .is_full_deopt_int(body.tir.blocks[&body.tir.entry_block].args[0].id)
         );
     }
@@ -796,15 +796,25 @@ impl SimpleBackend {
                 &signature,
             )
             .unwrap();
-            let carriers = crate::representation_plan::ProducerCarrierPlan::build(&tir);
+            let source = FunctionIR {
+                name: tir.name.clone(),
+                params: tir.param_names.clone(),
+                return_abi: tir.return_abi,
+                execution_context: tir.execution_context,
+                ..FunctionIR::default()
+            };
+            let (_, definition) = NativeFinalFunctions::from_final_tir(
+                SimpleIR {
+                    functions: vec![source],
+                    profile: None,
+                },
+                vec![(false, tir)],
+            )
+            .into_local_functions()
+            .next()
+            .expect("typed fixture definition");
             backend
-                .build_walker_definition(
-                    id,
-                    &super::NativeFinalFunction { tir, carriers },
-                    table,
-                    linkage,
-                    &runtime,
-                )
+                .build_walker_definition(id, &definition, table, linkage, &runtime)
                 .unwrap_or_else(|errors| panic!("{}", errors.join("\n")));
         }
         emit_direct_object(backend)

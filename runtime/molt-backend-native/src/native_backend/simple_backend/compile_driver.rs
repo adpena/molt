@@ -172,7 +172,7 @@ impl SimpleBackend {
             crate::codegen_ssa::walk::FunctionInput {
                 body: prepared,
                 own_abi,
-                plan: &definition.carriers,
+                plan: definition.carriers(),
                 physical_entry: entry,
                 entry: &parameters,
                 linkage,
@@ -353,17 +353,17 @@ impl SimpleBackend {
                 crate::llvm_backend::lowering::declare_tir_function(body, &llvm);
             }
             for (_, function) in functions.into_local_functions() {
-                let tir_func = function.tir;
+                let tir_func = &function.tir;
                 if env_setting(BackendEnv::MOLT_TIR_DUMP).as_deref() == Some("1") {
                     eprintln!(
                         "[LLVM] TIR for '{}':\n{}",
                         tir_func.name,
-                        crate::tir::printer::print_function(&tir_func)
+                        crate::tir::printer::print_function(tir_func)
                     );
                 }
                 crate::llvm_backend::lowering::lower_prepared_tir_to_llvm(
-                    &tir_func,
-                    &function.carriers,
+                    tir_func,
+                    function.carriers(),
                     &llvm,
                 )
                 .unwrap_or_else(|err| panic!("{err}"));

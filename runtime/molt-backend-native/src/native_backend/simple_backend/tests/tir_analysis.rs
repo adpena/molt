@@ -869,7 +869,7 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
                         && op.attrs.get("value") == Some(&crate::tir::ops::AttrValue::Int(7))
                 })
                 .expect("constant return value");
-            assert!(body.carriers.is_inline_safe_int(literal.results[0]));
+            assert!(body.carriers().is_inline_safe_int(literal.results[0]));
             let snapshot =
                 crate::tir::serialize::serialize_tir_function(&body.tir, &table).unwrap();
             if let Some(reference) = &reference {
