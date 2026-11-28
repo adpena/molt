@@ -11,6 +11,9 @@ use molt_codegen_abi::literal_cell::LiteralKind;
 use molt_ir::code_slots::ProgramSlotKind;
 use molt_ir::literal_payload::required_tir_literal_bytes;
 use molt_ir::runtime_fn_generated::RuntimeFn;
+use molt_ir::tir::op_kinds_generated::{
+    OwnedLiteralPayloadKind, opcode_owned_literal_payload_kind_table,
+};
 
 use super::builder::{CodegenBuilder, IntComparison, MachineKind};
 use super::function::FunctionCx;
@@ -96,6 +99,16 @@ pub(crate) fn lower<B: CodegenBuilder>(cx: &mut FunctionCx<'_, B>, b: &mut B, op
         // A discarded literal has no evaluation-time work.
         return;
     };
+    if let Some(payload) = opcode_owned_literal_payload_kind_table(op.opcode) {
+        let kind = match payload {
+            OwnedLiteralPayloadKind::String => LiteralKind::Str,
+            OwnedLiteralPayloadKind::Bytes => LiteralKind::Bytes,
+            OwnedLiteralPayloadKind::BigintBytes => LiteralKind::BigInt,
+        };
+        let value = literal(b, kind, required_tir_literal_bytes(op));
+        cx.bind(result, value, HeldCarrier::Boxed);
+        return;
+    }
     let (value, ty) = match op.opcode {
         OpCode::ConstInt => {
             let value = match op.attrs.get("value") {
@@ -125,18 +138,6 @@ pub(crate) fn lower<B: CodegenBuilder>(cx: &mut FunctionCx<'_, B>, b: &mut B, op
             let word = b.constant(nanbox::QNAN | nanbox::TAG_NONE);
             (b.word_value(word), TirType::None)
         }
-        OpCode::ConstStr => (
-            literal(b, LiteralKind::Str, required_tir_literal_bytes(op)),
-            TirType::Str,
-        ),
-        OpCode::ConstBytes => (
-            literal(b, LiteralKind::Bytes, required_tir_literal_bytes(op)),
-            TirType::Bytes,
-        ),
-        OpCode::ConstBigInt => (
-            literal(b, LiteralKind::BigInt, required_tir_literal_bytes(op)),
-            TirType::DynBox,
-        ),
         OpCode::StringLiteralCellReady => {
             let ready = string_literal_cell_ready(b, op, cx.functions);
             (b.bit_value(ready), TirType::Bool)

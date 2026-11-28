@@ -113,12 +113,7 @@ fn numbered_binding_outlives_the_del_of_its_equal() {
     insert(&mut func);
     assert_eq!(
         trace(&func, 0, &[]),
-        [
-            Event::Freed(0),
-            Event::Marker,
-            Event::Marker,
-            Event::Freed(1)
-        ]
+        [Event::Marker, Event::Marker, Event::Freed(1)]
     );
 }
 
@@ -153,13 +148,7 @@ fn numbered_binding_in_a_later_block_keeps_its_own_boundary() {
     insert(&mut func);
     assert_eq!(
         trace(&func, 0, &[]),
-        [
-            Event::Freed(0),
-            Event::Marker,
-            Event::Marker,
-            Event::Freed(1),
-            Event::Marker
-        ]
+        [Event::Marker, Event::Marker, Event::Freed(1), Event::Marker]
     );
 }
 
@@ -212,12 +201,7 @@ fn numbered_binding_joined_after_the_del_of_its_equal() {
     for taken in [true, false] {
         assert_eq!(
             trace(&func, 0, &[taken]),
-            [
-                Event::Freed(0),
-                Event::Marker,
-                Event::Marker,
-                Event::Freed(1)
-            ],
+            [Event::Marker, Event::Marker, Event::Freed(1)],
             "left arm taken: {taken}"
         );
     }
@@ -249,12 +233,7 @@ fn numbered_binding_passed_beside_its_equal_keeps_its_own_reference() {
     insert(&mut func);
     assert_eq!(
         trace(&func, 0, &[]),
-        [
-            Event::Freed(0),
-            Event::Marker,
-            Event::Marker,
-            Event::Freed(1)
-        ]
+        [Event::Marker, Event::Marker, Event::Freed(1)]
     );
 }
 
@@ -334,8 +313,8 @@ fn unpacked_binding_outlives_the_del_of_its_element() {
     body(
         &mut func,
         vec![
-            const_str(x),
-            const_str(y),
+            owned_string(x),
+            owned_string(y),
             op(OpCode::BuildTuple, vec![x, y], vec![pair]),
             op(OpCode::UnpackSequence, vec![pair], vec![p, q]),
             del(x),
@@ -365,6 +344,8 @@ fn forwarded_load_keeps_the_reference_the_load_gave_it() {
     let (object, text, loaded) = (func.fresh_value(), func.fresh_value(), func.fresh_value());
     let mut allocation = op(OpCode::Alloc, vec![], vec![object]);
     allocation.attrs.insert("value".into(), AttrValue::Int(16));
+    let mut field_value = op(OpCode::Alloc, vec![], vec![text]);
+    field_value.attrs.insert("value".into(), AttrValue::Int(16));
     let mut store = op(OpCode::StoreAttr, vec![object, text], vec![]);
     store.attrs.insert("value".into(), AttrValue::Int(0));
     store.origin = Some(molt_ir::OpKind::Store);
@@ -375,7 +356,7 @@ fn forwarded_load_keeps_the_reference_the_load_gave_it() {
         &mut func,
         vec![
             allocation,
-            const_str(text),
+            field_value,
             store,
             load,
             del(text),
