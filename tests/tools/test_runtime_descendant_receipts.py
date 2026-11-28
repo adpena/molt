@@ -43,6 +43,55 @@ def verify(receipt, **options):
     return descendants.verify_receipt(receipt, **options)
 
 
+def test_repeated_retention_verifies_existing_payload_without_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import file_publication
+    from tools.proof_queue_pkg import custody_cas
+
+    source = tmp_path / "observed"
+    source.write_bytes(b"executed program")
+    root = tmp_path / "run"
+    first = descendants.retain_file(source, root)
+
+    def unexpected_clone(source: Path, destination: Path) -> None:
+        pytest.fail(f"restaged already-retained bytes from {source} to {destination}")
+
+    monkeypatch.setattr(file_publication, "clone_file", unexpected_clone)
+    assert descendants.retain_file(source, root) == first
+    retained = descendants.retained_file(first, root=root)
+    assert retained.read_bytes() == b"executed program"
+    original_mode = retained.stat().st_mode
+    retained.chmod(0o644)
+    retained.write_bytes(b"modified program")
+    retained.chmod(original_mode)
+    with pytest.raises(ValueError, match="digest changed"):
+        descendants.retain_file(source, root)
+    assert custody_cas.parse_file_ref(first).path == str(retained)
+
+
+def test_repeated_retention_rechecks_the_source_after_cache_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools.proof_queue_pkg import custody_cas
+
+    source = tmp_path / "observed"
+    source.write_bytes(b"original program")
+    root = tmp_path / "run"
+    descendants.retain_file(source, root)
+    verify = custody_cas.verify_file_ref
+
+    def mutate_after_verification(
+        record: dict[str, object], *, expected_root: Path
+    ) -> None:
+        verify(record, expected_root=expected_root)
+        source.write_bytes(b"replacement program")
+
+    monkeypatch.setattr(custody_cas, "verify_file_ref", mutate_after_verification)
+    with pytest.raises(ValueError, match="proof custody source changed"):
+        descendants.retain_file(source, root)
+
+
 def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
     roster = {
         (owner, mode): (
