@@ -15,7 +15,7 @@
 
 use crate::deterministic_hash::{HashMap, HashSet};
 use std::fmt;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -273,11 +273,7 @@ impl AddressedProgram {
         let mut reader = BufReader::with_capacity(64 * 1024, reader);
         let mut deserializer = rmp_serde::Deserializer::new(&mut reader);
         let wire = LeaseWire::deserialize(&mut deserializer).map_err(|error| error.to_string())?;
-        if !reader
-            .fill_buf()
-            .map_err(|error| error.to_string())?
-            .is_empty()
-        {
+        if !crate::ir::ir_frame_at_eof(&mut reader).map_err(|error| error.to_string())? {
             return Err("trailing bytes after the IR value".to_string());
         }
         Self::admit(wire)

@@ -20,6 +20,17 @@ use std::collections::{BTreeMap, BTreeSet};
 mod float_transport;
 mod ndjson;
 
+/// Check the same reader used by the decoder, including its buffered suffix.
+pub fn ir_frame_at_eof(reader: &mut impl std::io::Read) -> std::io::Result<bool> {
+    loop {
+        match reader.read(&mut [0_u8; 1]) {
+            Ok(count) => return Ok(count == 0),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod ndjson_tests;
 
