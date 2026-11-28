@@ -55,7 +55,10 @@ from molt.native_callable_exports import (
 )
 from molt.target_python import TargetPythonVersion
 from molt.type_facts import TypeFacts
-from molt.toolchain_identity import StableRegularFileIdentity
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    StableRegularFileObservation,
+)
 
 if TYPE_CHECKING:
     from molt.cli.module_cache import _ModuleLoweringContext
@@ -910,6 +913,7 @@ class _BackendCacheSetup:
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None
     stdlib_cache_entry_path: Path | None = None
     backend_emission_origin: BackendEmissionOrigin | None = None
+    backend_binary_observation: StableRegularFileObservation | None = None
     output_validation: BackendArtifactValidation | None = None
 
 

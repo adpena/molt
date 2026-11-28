@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     )
 
 from molt.toolchain_identity import (
+    StableRegularFileObservation,
     executable_content_identity,
     stable_file_content_identity,
 )
@@ -70,6 +71,7 @@ from molt.cli import link_fingerprints, progress
 def _observed_build_toolchain(
     *,
     backend_bin: Path | None,
+    backend_binary_observation: StableRegularFileObservation | None = None,
     runtime_lib: Path | None,
     runtime_features: tuple[str, ...] | None = None,
     output: Path,
@@ -102,7 +104,9 @@ def _observed_build_toolchain(
             continue
         try:
             identity = (
-                executable_content_identity(path, label=f"build {name}")
+                executable_content_identity(
+                    path, label=f"build {name}", observed=backend_binary_observation
+                )
                 if executable
                 else stable_file_content_identity(path, label=f"build {name}")
             )
@@ -361,11 +365,20 @@ def _recorded_toolchain_artifact(
 
 
 def _recorded_compiler_and_output(
-    observed: Mapping[str, Any], output: Path
+    observed: Mapping[str, Any],
+    output: Path,
+    backend_binary_observation: StableRegularFileObservation | None,
 ) -> tuple[RecordedArtifact, RecordedArtifact]:
     from molt.build_record import RecordedArtifact
 
-    compiler = RecordedArtifact.capture(Path(observed["compiler"]["path"]))
+    compiler_path = Path(observed["compiler"]["path"])
+    if backend_binary_observation is None:
+        compiler = RecordedArtifact.capture(compiler_path)
+    else:
+        backend_binary_observation.verify(label="build record compiler")
+        compiler = RecordedArtifact.from_identity(
+            compiler_path, backend_binary_observation.identity
+        )
     artifact = RecordedArtifact.capture(output)
     for name, captured in (("compiler", compiler), ("artifact", artifact)):
         if observed[name] != _recorded_toolchain_artifact(
@@ -381,6 +394,7 @@ def _record_native_build_result(
     result_inputs: NativeResultInputs | None,
     warnings: Sequence[str],
     diagnostics_error: str | None,
+    backend_binary_observation: StableRegularFileObservation | None = None,
 ) -> None:
     """Retain producer identities after finalization, never recapture link inputs."""
     from molt import input_report
@@ -454,7 +468,9 @@ def _record_native_build_result(
             or observed.get("compiled_with_verified") is not False
         ):
             raise ValueError("unsupported native toolchain observation")
-        compiler, binary = _recorded_compiler_and_output(observed, Path(data["output"]))
+        compiler, binary = _recorded_compiler_and_output(
+            observed, Path(data["output"]), backend_binary_observation
+        )
         runtime_features = validate_runtime_features(
             observed["runtime"]["runtime_features"]
         )
@@ -839,6 +855,7 @@ def _emit_native_link_result(
     link_selection: tuple[Path, Path] | None = None,
     link_input_artifacts: dict[str, tuple[Path, Path]] | None = None,
     backend_bin: Path | None = None,
+    backend_binary_observation: StableRegularFileObservation | None = None,
     selected_profiles: Mapping[str, str] | None = None,
     finalize_inputs: Callable[[], None] | None = None,
     validate_inputs: Callable[[], None] | None = None,
@@ -973,6 +990,7 @@ def _emit_native_link_result(
                 )
             data["observed_toolchain"] = _observed_build_toolchain(
                 backend_bin=backend_bin,
+                backend_binary_observation=backend_binary_observation,
                 runtime_lib=runtime_lib,
                 runtime_features=runtime_features,
                 output=output_binary,
@@ -993,6 +1011,7 @@ def _emit_native_link_result(
                 result_inputs=result_inputs,
                 warnings=warnings,
                 diagnostics_error=diagnostics_error,
+                backend_binary_observation=backend_binary_observation,
             )
             return _emit_build_result_json(
                 data=data,
@@ -1094,6 +1113,7 @@ def _record_wasm_build_result(
     data: Mapping[str, Any],
     products: Mapping[str, Path],
     warnings: Sequence[str],
+    backend_binary_observation: StableRegularFileObservation | None = None,
 ) -> None:
     from dataclasses import fields
     from molt import input_report
@@ -1159,7 +1179,7 @@ def _record_wasm_build_result(
         ):
             raise ValueError("unsupported Wasm toolchain observation")
         compiler, primary = _recorded_compiler_and_output(
-            observed, Path(data["output"])
+            observed, Path(data["output"]), backend_binary_observation
         )
         raw = products["wasm"]
         require_linked = data["require_linked"]
@@ -1270,6 +1290,7 @@ def _emit_non_native_build_result(
     artifacts: Mapping[str, Any] | None = None,
     published_products: Mapping[str, Path] | None = None,
     publication_tokens: Mapping[Path, StatToken] | None = None,
+    backend_binary_observation: StableRegularFileObservation | None = None,
     extra_fields: Mapping[str, Any] | None = None,
     success_messages: Sequence[str] = (),
     finalize_inputs: Callable[[], None] | None = None,
@@ -1349,7 +1370,9 @@ def _emit_non_native_build_result(
             and publication_tokens is not None
             and input_report.result_active()
         ):
-            _record_wasm_build_result(data, published_products, warnings)
+            _record_wasm_build_result(
+                data, published_products, warnings, backend_binary_observation
+            )
         return _emit_build_result_json(
             data=data,
             warnings=warnings,

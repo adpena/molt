@@ -1082,14 +1082,14 @@ def test_installed_consumers_share_one_exact_byte_capture(
             rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert ensured.ok, ensured.message
-        assert ensured.installed_observation is installed.binary_observation
+        assert ensured.binary_observation is installed.binary_observation
         backend_execution._backend_daemon_config_digest(
             installation, "release", backend_bin=binary, env={}
         )
         target = admit_target("native")
         setup = backend_cache_setup._prepare_backend_cache_setup(
             backend_bin=binary,
-            backend_binary_observation=ensured.installed_observation,
+            backend_binary_observation=ensured.binary_observation,
             cache_enabled=False,
             ir={"functions": []},
             function_digests=FunctionDigests(),
@@ -1264,7 +1264,7 @@ def test_installed_observation_binds_role_and_fresh_facts_manifest(
             identify_backend_binary(facts.identity.path, observed=backend)
         with pytest.raises(ValueError):
             backend_binary._BackendBinaryEnsureResult(
-                ok=True, binary=facts.identity.path, installed_observation=backend
+                ok=True, binary=facts.identity.path, binary_observation=backend
             )
         path = installation / distribution.MANIFEST_NAME
         manifest = json.loads(path.read_text(encoding="utf-8"))

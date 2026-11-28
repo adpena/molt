@@ -55,6 +55,7 @@ from molt.dx import (
 from molt.exact_json import canonical_json_sha256
 from molt.file_publication import is_link_like, resolve_owned_path
 from molt.backend_binary_identity import identify_backend_binary
+from molt.toolchain_identity import StableRegularFileObservation
 from molt.cli.backend_cache import (
     _backend_artifact_source_key,
 )
@@ -319,6 +320,7 @@ def _backend_daemon_config_digest(
     *,
     env: Mapping[str, str] | None = None,
     backend_bin: Path | None = None,
+    backend_binary_observation: StableRegularFileObservation | None = None,
     target_triple: str | None = None,
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> str:
@@ -370,12 +372,13 @@ def _backend_daemon_config_digest(
             "target_triple": target_triple,
         }
         if backend_bin is not None:
-            payload["backend_binary"] = (
-                identify_backend_binary(
-                    backend_bin, observed=installed.binary_observation
-                )
+            observation = (
+                installed.binary_observation
                 if installed is not None
-                else identify_backend_binary(backend_bin)
+                else backend_binary_observation
+            )
+            payload["backend_binary"] = identify_backend_binary(
+                backend_bin, observed=observation
             )
         return canonical_json_sha256(payload)
     except CompilerIdentityError:

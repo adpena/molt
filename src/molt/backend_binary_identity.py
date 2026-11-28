@@ -11,10 +11,8 @@ from pathlib import Path
 
 from molt.exact_json import canonical_json_sha256
 from molt.toolchain_identity import (
-    ExecutableIdentity,
     StableRegularFileObservation,
     executable_content_identity,
-    stable_executable_probe,
 )
 
 
@@ -28,18 +26,9 @@ def identify_backend_binary(
 ) -> str:
     """Bind object-cache and daemon selection to stable executable content."""
     try:
-        if observed is None:
-            identity = executable_content_identity(
-                backend_bin, label="backend executable"
-            )
-        else:
-            with stable_executable_probe(
-                backend_bin, label="backend executable", identity=observed.identity
-            ) as (entrypoint, current):
-                identity = ExecutableIdentity(
-                    entrypoint, current.path, current.size, current.sha256, ""
-                ).content_record()
-                observed.verify(label="backend executable")
+        identity = executable_content_identity(
+            backend_bin, label="backend executable", observed=observed
+        )
     except (OSError, ValueError):
         if observed is None and not backend_bin.exists():
             return f"missing:{backend_bin.absolute()}"

@@ -576,16 +576,21 @@ def stable_file_sha256(path: Path, *, label: str) -> str:
     ).sha256
 
 
-def executable_content_identity(path: Path, *, label: str) -> dict[str, str | int]:
-    """Return the canonical, path-independent identity of executable file bytes."""
-
-    lexical, resolved, size, digest, _header = _stable_file_content(path, label=label)
-    return {
-        "entrypoint": _portable_filename(lexical.name),
-        "content_filename": _portable_filename(resolved.name),
-        "size": size,
-        "sha256": digest,
-    }
+def executable_content_identity(
+    path: Path, *, label: str, observed: StableRegularFileObservation | None = None
+) -> dict[str, str | int]:
+    """Project an executable's identity, capturing it when no admission was supplied."""
+    if observed is None:
+        entrypoint, identity, _ = _capture_executable_content(path, label=label)
+    else:
+        with stable_executable_probe(path, label=label, identity=observed.identity) as (
+            entrypoint,
+            identity,
+        ):
+            observed.verify(label=label)
+    return ExecutableIdentity(
+        entrypoint, identity.path, identity.size, identity.sha256, ""
+    ).content_record()
 
 
 def stable_file_content_identity(path: Path, *, label: str) -> dict[str, str | int]:

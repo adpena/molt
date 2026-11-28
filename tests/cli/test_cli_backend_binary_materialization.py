@@ -1304,12 +1304,66 @@ def _two_generation_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return coordinate, ensure
 
 
+@pytest.mark.skipif(os.name == "nt", reason="settled POSIX observation cost contract")
+def test_stored_backend_admission_carries_its_digest_to_consumers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import toolchain_identity
+    from molt.backend_binary_identity import identify_backend_binary
+    from molt.cli.compiler_identity import CompilerIdentityError
+
+    coordinate, ensure = _two_generation_fixture(tmp_path, monkeypatch)
+    generation = ensure("v1")
+    expected_digest = identify_backend_binary(generation)
+    metadata = generation.stat()
+    inode = (metadata.st_dev, metadata.st_ino)
+    captures = 0
+    original = toolchain_identity._sha256_stream
+
+    def digest(stream: BinaryIO, *, max_bytes: int) -> str:
+        nonlocal captures
+        current = os.fstat(stream.fileno())
+        if (current.st_dev, current.st_ino) == inode:
+            captures += 1
+        return original(stream, max_bytes=max_bytes)
+
+    monkeypatch.setattr(toolchain_identity, "_sha256_stream", digest)
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    result = _ensure(coordinate, tmp_path, ("probe-backend",), profile="release")
+    assert result, result.message
+    assert result.binary_observation is not None
+    assert result.binary_observation.identity.path == generation
+    assert identify_backend_binary(generation, observed=result.binary_observation) == (
+        expected_digest
+    )
+    daemon_arguments = {
+        "backend_bin": generation,
+        "backend_binary_observation": result.binary_observation,
+        "env": _backend_environment_with_compiler_fingerprint(
+            {}, result.cache_compiler_fingerprint
+        ),
+    }
+    assert cli_backend_execution._backend_daemon_config_digest(
+        tmp_path, "release", **daemon_arguments
+    )
+    assert captures == 1
+
+    replacement = generation.with_name("replacement")
+    replacement.write_bytes(generation.read_bytes())
+    replacement.chmod(metadata.st_mode)
+    os.replace(replacement, generation)
+    with pytest.raises(CompilerIdentityError, match="changed"):
+        cli_backend_execution._backend_daemon_config_digest(
+            tmp_path, "release", **daemon_arguments
+        )
+
+
 @pytest.mark.parametrize("replace_file", [False, True])
 def test_warm_backend_success_rejects_a_generation_changed_after_its_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace_file: bool
 ) -> None:
     from collections.abc import Mapping
-    from molt.toolchain_identity import StableRegularFileIdentity
+    from molt.toolchain_identity import StableRegularFileObservation
 
     coordinate, ensure = _two_generation_fixture(tmp_path, monkeypatch)
     generation = ensure("v1")
@@ -1318,8 +1372,7 @@ def test_warm_backend_success_rejects_a_generation_changed_after_its_probe(
     def changed_success(
         *,
         coordinate: Path,
-        binary_path: Path,
-        identity: StableRegularFileIdentity,
+        observation: StableRegularFileObservation,
         fingerprint: Mapping[str, object] | None = None,
     ) -> cli_backend_binary._BackendBinaryEnsureResult:
         before = generation.stat()
@@ -1333,8 +1386,7 @@ def test_warm_backend_success_rejects_a_generation_changed_after_its_probe(
         os.utime(generation, ns=(before.st_atime_ns, before.st_mtime_ns))
         return original_success(
             coordinate=coordinate,
-            binary_path=binary_path,
-            identity=identity,
+            observation=observation,
             fingerprint=fingerprint,
         )
 

@@ -73,7 +73,6 @@ from molt.toolchain_identity import (
     ExecutableIdentity,
     StableRegularFileIdentity,
     StableRegularFileObservation,
-    stable_regular_file_identity,
     stable_executable_probe,
     verify_stable_regular_file_identity,
 )
@@ -101,15 +100,15 @@ class _BackendBinaryEnsureResult:
     command: tuple[str, ...] = ()
     cache_compiler_fingerprint: str | None = None
     binary: Path | None = None
-    installed_observation: StableRegularFileObservation | None = None
+    binary_observation: StableRegularFileObservation | None = None
 
     def __post_init__(self) -> None:
         if self.ok and self.binary is None:
             raise ValueError("an admitted backend names the executable it admitted")
-        if self.installed_observation is not None and (
-            not self.ok or self.binary != self.installed_observation.identity.path
+        if self.binary_observation is not None and (
+            not self.ok or self.binary != self.binary_observation.identity.path
         ):
-            raise ValueError("installed admission must name its captured executable")
+            raise ValueError("backend admission must name its captured executable")
 
     def __bool__(self) -> bool:
         return self.ok
@@ -180,13 +179,13 @@ def _structured_backend_lock_failure(operation):
 def _backend_ensure_success(
     *,
     coordinate: Path,
-    binary_path: Path,
-    identity: StableRegularFileIdentity,
+    observation: StableRegularFileObservation,
     fingerprint: Mapping[str, Any] | None = None,
 ) -> _BackendBinaryEnsureResult:
+    binary_path = observation.identity.path
     try:
         with stable_executable_probe(
-            binary_path, label="backend executable", identity=identity
+            binary_path, label="backend executable", identity=observation.identity
         ) as (entrypoint, observed):
             binary_identity = ExecutableIdentity(
                 entrypoint, observed.path, observed.size, observed.sha256, ""
@@ -206,6 +205,7 @@ def _backend_ensure_success(
             fingerprint, binary_identity
         ),
         binary=binary_path,
+        binary_observation=observation,
     )
 
 
@@ -351,7 +351,7 @@ class StoredHostToolAdmission:
     stored: StoredHostTool
     generation: Path
     fingerprint: dict[str, Any]
-    identity: StableRegularFileIdentity
+    observation: StableRegularFileObservation
 
 
 def stored_host_tools(
@@ -402,10 +402,10 @@ def stored_host_tools(
                 store, identity, "it holds another host tool identity", variant=variant
             )
         generation = selected_backend_generation(stored.coordinate, receipt)
-        observed: StableRegularFileIdentity | None = None
+        observed: StableRegularFileObservation | None = None
         if generation is not None:
             try:
-                observed = stable_regular_file_identity(
+                observed = StableRegularFileObservation.capture(
                     generation, label="stored host-tool executable"
                 )
             except (OSError, ValueError):
@@ -414,8 +414,8 @@ def stored_host_tools(
         if (
             generation is None
             or observed is None
-            or observed.size == 0
-            or artifact_bytes_identity(observed) != content
+            or observed.identity.size == 0
+            or artifact_bytes_identity(observed.identity) != content
         ):
             raise ProductStoreError(
                 store,
@@ -921,14 +921,13 @@ def _admit_stored_backend(
             probe_target=_backend_probe_target(backend_features, product),
             backend_features=backend_features,
             fingerprint=admission.fingerprint,
-            identity=admission.identity,
+            identity=admission.observation.identity,
         ):
             _remember_backend_identity(memo_path, memo, fingerprint)
             return _backend_ensure_success(
                 coordinate=admission.stored.coordinate,
-                binary_path=admission.generation,
+                observation=admission.observation,
                 fingerprint=admission.fingerprint,
-                identity=admission.identity,
             ), fingerprint
     return None, fingerprint
 
@@ -991,7 +990,7 @@ def _ensure_backend_binary(
                 ok=True,
                 cache_compiler_fingerprint=installed.fingerprint,
                 binary=installed_binary,
-                installed_observation=observed,
+                binary_observation=observed,
             )
     except (OSError, ValueError) as exc:
         return _backend_ensure_failure("installed_compiler", str(exc))
@@ -1211,9 +1210,8 @@ def _ensure_backend_binary(
             _remember_backend_identity(memo_path, memo, fingerprint)
             return _backend_ensure_success(
                 coordinate=admission.stored.coordinate,
-                binary_path=admission.generation,
+                observation=admission.observation,
                 fingerprint=admission.fingerprint,
-                identity=admission.identity,
             )
 
         _quick_target = _backend_probe_target(backend_features, product)
@@ -1249,7 +1247,7 @@ def _ensure_backend_binary(
                 probe_target=_quick_target,
                 backend_features=backend_features,
                 fingerprint=admission.fingerprint,
-                identity=admission.identity,
+                identity=admission.observation.identity,
             )
             _record_backend_binary_stage_ms(
                 stage_timings_ms,
@@ -1263,7 +1261,7 @@ def _ensure_backend_binary(
                 binary=admission.generation,
                 validation_path=admission.stored.probe_validation,
                 admitted=admission.fingerprint,
-                identity=admission.identity,
+                identity=admission.observation.identity,
             )
             if _probe_result:
                 return _admitted(admission)
@@ -1454,6 +1452,7 @@ def _ensure_backend_binary(
         except ProductStoreError as exc:
             return _backend_ensure_failure("product_store", str(exc), command=cmd)
         try:
+            acquired_at_ns = time.time_ns()
             rebuilt_generation = _publish_backend_generation_from(
                 stored.coordinate, cargo_output, label="rebuilt Cargo backend output"
             )
@@ -1499,7 +1498,8 @@ def _ensure_backend_binary(
         _remember_backend_identity(memo_path, memo, fingerprint)
         return _backend_ensure_success(
             coordinate=stored.coordinate,
-            binary_path=rebuilt_generation.path,
+            observation=StableRegularFileObservation(
+                rebuilt_generation, acquired_at_ns
+            ),
             fingerprint=fingerprint,
-            identity=rebuilt_generation,
         )

@@ -109,6 +109,8 @@ def _emit_backend_pipeline_outputs(
     backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
     backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
 
+    backend_observation = prepared_backend_setup.cache_setup.backend_binary_observation
+
     def snapshot_build_diagnostics() -> tuple[dict[str, Any] | None, Path | None]:
         if not prepared_build_preamble.diagnostics_enabled:
             return None, None
@@ -119,6 +121,7 @@ def _emit_backend_pipeline_outputs(
                 **executable_content_identity(
                     prepared_backend_runtime_context.backend_bin,
                     label="selected compiler diagnostics",
+                    observed=backend_observation,
                 ),
                 "cargo_profile": prepared_build_config.backend_cargo_profile,
                 "fingerprint": prepared_backend_runtime_context.backend_compiler_fingerprint,
@@ -327,6 +330,7 @@ def _emit_backend_pipeline_outputs(
                 **prepared_non_native_result.extra_fields,
                 "observed_toolchain": _observed_build_toolchain(
                     backend_bin=prepared_backend_runtime_context.backend_bin,
+                    backend_binary_observation=backend_observation,
                     selected_profiles=selected_profiles,
                     emission_origin=prepared_backend_compile.backend_emission_origin,
                     link_input_observation=prepared_non_native_result.link_input_observation,
@@ -337,6 +341,7 @@ def _emit_backend_pipeline_outputs(
             artifacts=prepared_non_native_result.artifacts,
             published_products=prepared_non_native_result.published_products,
             publication_tokens=prepared_non_native_result.publication_tokens,
+            backend_binary_observation=backend_observation,
             success_messages=prepared_non_native_result.success_messages,
             finalize_inputs=validate_inputs,
         )
@@ -472,6 +477,7 @@ def _emit_backend_pipeline_outputs(
             extra_fields={
                 "observed_toolchain": _observed_build_toolchain(
                     backend_bin=prepared_backend_runtime_context.backend_bin,
+                    backend_binary_observation=backend_observation,
                     selected_profiles=selected_profiles,
                     emission_origin=prepared_backend_compile.backend_emission_origin,
                     runtime_lib=None,
@@ -578,6 +584,7 @@ def _emit_backend_pipeline_outputs(
         emission_origin=prepared_backend_compile.backend_emission_origin,
         selected_profiles=selected_profiles,
         backend_bin=prepared_backend_runtime_context.backend_bin,
+        backend_binary_observation=backend_observation,
         link_process=prepared_native_link.link_process,
         link_skipped=prepared_native_link.link_skipped,
         link_fingerprint=prepared_native_link.link_fingerprint,

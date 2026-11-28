@@ -114,6 +114,7 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.artifact_publication import discard_staged_output
 from molt.file_publication import staged_file_path
 from molt.toolchain_identity import (
+    StableRegularFileObservation,
     capture_stable_regular_file,
     verify_stable_regular_file_identity,
 )
@@ -523,7 +524,7 @@ def _prepare_backend_setup(
             native_runtime_codegen_binding=runtime_state.runtime_callable_binding,
             runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
             backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
-            backend_binary_observation=backend_ensure_result.installed_observation,
+            backend_binary_observation=backend_ensure_result.binary_observation,
             codegen=codegen,
             rust_cpu=rust_cpu,
             stage_timings_ms=stage_timings_ms,
@@ -724,6 +725,7 @@ def _prepare_backend_dispatch(
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     backend_bin: Path | None = None,
+    backend_binary_observation: StableRegularFileObservation | None = None,
     backend_compiler_fingerprint: str | None = None,
     start_daemon: bool = True,
     capture_origin: bool = False,
@@ -779,6 +781,7 @@ def _prepare_backend_dispatch(
                 backend_ensure_result.message, json_output, command="build"
             )
         backend_bin = backend_ensure_result.binary
+        backend_binary_observation = backend_ensure_result.binary_observation
         assert backend_bin is not None
         backend_env = _backend_environment_with_compiler_fingerprint(
             backend_env, backend_ensure_result.cache_compiler_fingerprint
@@ -801,6 +804,7 @@ def _prepare_backend_dispatch(
                 backend_cargo_profile,
                 env=backend_env,
                 backend_bin=backend_bin,
+                backend_binary_observation=backend_binary_observation,
                 target_triple=target_triple,
                 backend_features=backend_features,
             )
@@ -1451,6 +1455,7 @@ def _prepare_backend_compile(
                     backend_daemon_config_digest=backend_daemon_config_digest,
                     warnings=warnings,
                     backend_bin=backend_bin,
+                    backend_binary_observation=cache_setup.backend_binary_observation,
                     backend_compiler_fingerprint=backend_compiler_fingerprint,
                     codegen=codegen,
                     rust_cpu=rust_cpu,

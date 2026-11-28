@@ -386,7 +386,7 @@ def _prepare_backend_cache_setup(
         from molt.cli.compiler_identity import CompilerIdentityError
 
         raise CompilerIdentityError(
-            "Object-cache compiler differs from admitted installation"
+            "Object-cache compiler differs from admitted executable"
         )
     backend_binary_identity = (
         identify_backend_binary(backend_bin, observed=backend_binary_observation)
@@ -548,6 +548,7 @@ def _prepare_backend_cache_setup(
                 / "stdlib.a"
             )
         return _BackendCacheSetup(
+            backend_binary_observation=backend_binary_observation,
             artifact_contract=artifact_contract,
             backend_environment=backend_environment,
             cache_enabled=False,
@@ -612,6 +613,7 @@ def _prepare_backend_cache_setup(
         )
         warnings.append(f"Cache disabled: {exc}")
         return _BackendCacheSetup(
+            backend_binary_observation=backend_binary_observation,
             artifact_contract=artifact_contract,
             backend_environment=backend_environment,
             cache_enabled=False,
@@ -747,6 +749,7 @@ def _prepare_backend_cache_setup(
         stage_start,
     )
     return _BackendCacheSetup(
+        backend_binary_observation=backend_binary_observation,
         artifact_contract=artifact_contract,
         backend_environment=backend_environment,
         cache_enabled=True,
