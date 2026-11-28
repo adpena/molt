@@ -30,6 +30,7 @@ pub(crate) fn emit_fact_graph_for_ir(
     let mut tir_run = molt_backend::tir::pipeline_cache::run_cached_tir_pipeline(
         &ir.functions,
         molt_backend::tir::pipeline_cache::TirPipelineRunOptions {
+            source_contracts: None,
             target_info: request.target_info.clone(),
             cache_flavor: molt_backend::tir::pipeline_cache::TirPipelineCacheFlavor::FactGraph,
             cache: molt_backend::tir::pipeline_cache::TirCacheLocation::ProcessRoot,

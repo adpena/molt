@@ -47,6 +47,7 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
         batch_size,
         batch_ops_budget,
         options.module_context.take(),
+        options.source_facts.take(),
         options.app_callable_manifest.take(),
         &mut backend,
     )?;

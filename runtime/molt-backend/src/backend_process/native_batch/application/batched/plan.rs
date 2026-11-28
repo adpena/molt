@@ -13,6 +13,7 @@ impl NativeApplicationBatchPlan {
         batch_size: usize,
         batch_ops_budget: usize,
         module_context: Option<molt_backend::NativeBackendModuleContext>,
+        source_facts: Option<Vec<molt_backend::NativeSourceFunction>>,
         app_callable_manifest: Option<molt_backend::passes::AppCallableManifest>,
         backend: &mut SimpleBackend,
     ) -> std::io::Result<Self> {
@@ -22,7 +23,7 @@ impl NativeApplicationBatchPlan {
         backend.program_scope = molt_backend::NativeProgramScope::ApplicationArchive;
         backend.skip_shared_stdlib_partition = true;
         let mut archive = backend
-            .prepare_terminal_archive(ir, linkage)
+            .prepare_terminal_archive(ir, linkage, source_facts)
             .map_err(std::io::Error::other)?;
         let literal_cell_partitions = archive.take_literal_cell_partitions();
         let mut batches = if archive.definitions.is_empty() && !literal_cell_partitions.is_empty() {
@@ -54,9 +55,16 @@ mod tests {
             "/tests/fixtures/checked_provider.json"
         )))
         .unwrap();
-        let mut plan =
-            NativeApplicationBatchPlan::from_ir(ir, 1, 100, None, None, &mut SimpleBackend::new())
-                .unwrap();
+        let mut plan = NativeApplicationBatchPlan::from_ir(
+            ir,
+            1,
+            100,
+            None,
+            None,
+            None,
+            &mut SimpleBackend::new(),
+        )
+        .unwrap();
         let mut seen = Vec::new();
         for batch in plan.batches {
             let terminal = plan.archive.project(batch).unwrap();
@@ -123,6 +131,7 @@ mod tests {
             1,
             100,
             Some(context),
+            None,
             Some(manifest),
             &mut SimpleBackend::new(),
         )

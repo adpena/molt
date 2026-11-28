@@ -283,7 +283,8 @@ impl SimpleBackend {
         let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
-        let program = self.prepare_native_codegen(&mut ir, backend, true, timing, &compile_start);
+        let program =
+            self.prepare_native_codegen(&mut ir, None, backend, true, timing, &compile_start);
         self.emit_prepared_object(program, backend, timing, compile_start)
     }
 
@@ -544,6 +545,7 @@ impl SimpleBackend {
         let start = std::time::Instant::now();
         let program = self.prepare_native_codegen(
             &mut ir,
+            None,
             NativeCodegenBackend::Cranelift,
             false,
             backend_timing_enabled(),
@@ -571,6 +573,7 @@ impl SimpleBackend {
     pub(in crate::native_backend::simple_backend) fn prepare_native_codegen(
         &mut self,
         ir: &mut SimpleIR,
+        source_facts: Option<Vec<NativeSourceFunction>>,
         backend: NativeCodegenBackend,
         owns_cell_layout: bool,
         timing: bool,
@@ -580,8 +583,14 @@ impl SimpleBackend {
         // rewrite their callers. The post-preparation validation below also
         // covers declarations created by shared-stdlib externalization.
         crate::ir::validate_extern_call_abis(ir).unwrap_or_else(|error| panic!("native {error}"));
-        let prepared =
-            self.prepare_program_for_codegen(ir, backend, owns_cell_layout, timing, compile_start);
+        let prepared = self.prepare_program_for_codegen(
+            ir,
+            source_facts,
+            backend,
+            owns_cell_layout,
+            timing,
+            compile_start,
+        );
         let emit_resolver_here = prepared.emit_resolver_here;
         assert!(
             (self.code_slots.is_none() && self.module_registry.is_none()) || emit_resolver_here,

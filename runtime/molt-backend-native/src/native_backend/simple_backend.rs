@@ -11,6 +11,7 @@ mod imports;
 pub(crate) use imports::*;
 mod linkage_carriers;
 mod module_metadata;
+pub use module_metadata::NativeSourceFunction;
 mod terminal_partition;
 pub use module_metadata::*;
 pub use terminal_partition::{NativeTerminalArchive, NativeTerminalObject, TerminalObjectRow};

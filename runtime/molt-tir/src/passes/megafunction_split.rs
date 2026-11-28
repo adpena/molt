@@ -488,12 +488,29 @@ pub fn split_large_function(
     max_ops: usize,
     occupied_function_names: &mut BTreeSet<String>,
 ) -> Result<(FunctionIR, Vec<FunctionIR>), Box<FunctionIR>> {
+    plan_large_function_split(func, max_ops, occupied_function_names).map_err(|refusal| {
+        match refusal {
+            SplitRefusal::Body(function) | SplitRefusal::OccupiedSymbol(function) => function,
+        }
+    })
+}
+
+enum SplitRefusal {
+    Body(Box<FunctionIR>),
+    OccupiedSymbol(Box<FunctionIR>),
+}
+
+fn plan_large_function_split(
+    func: FunctionIR,
+    max_ops: usize,
+    occupied_function_names: &mut BTreeSet<String>,
+) -> Result<(FunctionIR, Vec<FunctionIR>), SplitRefusal> {
     if is_protected_runtime_entrypoint(&func.name) {
-        return Err(Box::new(func));
+        return Err(SplitRefusal::Body(Box::new(func)));
     }
 
     if func.ops.len() <= max_ops {
-        return Err(Box::new(func));
+        return Err(SplitRefusal::Body(Box::new(func)));
     }
     let execution_context = func.execution_context;
     // Outlining creates owners (the transport container and its element
@@ -501,13 +518,13 @@ pub fn split_large_function(
     // authorize those new owners. Both backend pipelines partition before the
     // terminal drop phase; reject an already lowered body without changing it.
     if func.ops.iter().any(is_drop_fact_marker_op) {
-        return Err(Box::new(func));
+        return Err(SplitRefusal::Body(Box::new(func)));
     }
     let local_frame_owner = if execution_context == ExecutionContextPolicy::Local {
         let Some(owner) = split_local_frame_owner(&func.ops) else {
             // A staged module prologue can publish state and fail before frame
             // entry. Never hoist entry across it or discard its rollback path.
-            return Err(Box::new(func));
+            return Err(SplitRefusal::Body(Box::new(func)));
         };
         Some(owner)
     } else {
@@ -526,7 +543,7 @@ pub fn split_large_function(
         .as_ref()
         .map_or(func.ops.as_slice(), |owner| owner.body_ops);
     let Some(top_level) = split_region_boundaries(all_ops) else {
-        return Err(Box::new(func));
+        return Err(SplitRefusal::Body(Box::new(func)));
     };
     let name_index = SplitNameIndex::new(all_ops);
     // A transferred parameter is a binding the stub owns. It travels through
@@ -575,14 +592,14 @@ pub fn split_large_function(
     for (idx, op) in all_ops.iter().enumerate() {
         if op.kind.is_verifier_label_definition() {
             let Some(id) = op.value else {
-                return Err(Box::new(func));
+                return Err(SplitRefusal::Body(Box::new(func)));
             };
             if label_positions.insert(id, idx).is_some() {
-                return Err(Box::new(func));
+                return Err(SplitRefusal::Body(Box::new(func)));
             }
         } else if op.kind.is_verifier_label_reference() {
             let Some(id) = split_control_target(op) else {
-                return Err(Box::new(func));
+                return Err(SplitRefusal::Body(Box::new(func)));
             };
             let entry = label_refs.entry(id).or_insert((idx, idx));
             entry.0 = entry.0.min(idx);
@@ -685,7 +702,7 @@ pub fn split_large_function(
     let Some(boundaries) =
         split_boundaries(all_ops.len(), max_ops, statement_boundaries, is_forbidden)
     else {
-        return Err(Box::new(func));
+        return Err(SplitRefusal::Body(Box::new(func)));
     };
 
     let chunk_names = (0..boundaries.len() - 1)
@@ -695,7 +712,7 @@ pub fn split_large_function(
         .iter()
         .any(|name| occupied_function_names.contains(name))
     {
-        return Err(Box::new(func));
+        return Err(SplitRefusal::OccupiedSymbol(Box::new(func)));
     }
 
     // Payload shape selects the chunk transport algorithm, never the owner ABI.
@@ -704,7 +721,7 @@ pub fn split_large_function(
     let body_has_value_returns = all_ops.iter().any(simple_ir_return_has_value);
     for (idx, op) in all_ops.iter().enumerate() {
         if op.kind.is_return_terminator() && idx + 1 != all_ops.len() {
-            return Err(Box::new(func));
+            return Err(SplitRefusal::Body(Box::new(func)));
         }
     }
     let mut occupied_names = split_collect_names(all_ops, &func.params);
@@ -745,7 +762,7 @@ pub fn split_large_function(
     let Some(exception_return_label) =
         split_label_id(&mut occupied_labels, &mut next_synthetic_label)
     else {
-        return Err(Box::new(func));
+        return Err(SplitRefusal::Body(Box::new(func)));
     };
 
     struct ChunkPlan {
@@ -796,7 +813,7 @@ pub fn split_large_function(
         if let Some(suffix_start) = suffix_clone_start {
             let Some(skip_label) = split_label_id(&mut occupied_labels, &mut next_synthetic_label)
             else {
-                return Err(Box::new(func));
+                return Err(SplitRefusal::Body(Box::new(func)));
             };
             normal_skip_label_for_cloned_suffix = Some(skip_label);
             chunk_ops.push(OpIR {
@@ -816,14 +833,14 @@ pub fn split_large_function(
                 .filter_map(|op| op.value)
                 .collect();
             if chunk_ops.len() > max_ops.saturating_mul(2) {
-                return Err(Box::new(func));
+                return Err(SplitRefusal::Body(Box::new(func)));
             }
         }
 
         if chunk_ops.iter().any(|op| {
             split_control_target(op).is_some_and(|target_id| !chunk_labels.contains(&target_id))
         }) {
-            return Err(Box::new(func));
+            return Err(SplitRefusal::Body(Box::new(func)));
         }
 
         // The replacement stub is the sole Local frame owner. Chunks retain
@@ -868,7 +885,7 @@ pub fn split_large_function(
                 let Some(insert_idx) = chunk_ops.iter().position(|op| {
                     op.kind == molt_ir::OpKind::Jump && op.value == Some(skip_label)
                 }) else {
-                    return Err(Box::new(func));
+                    return Err(SplitRefusal::Body(Box::new(func)));
                 };
                 chunk_ops.splice(insert_idx..insert_idx, stores);
             } else {
@@ -1009,7 +1026,7 @@ pub fn split_large_function(
                 let Some(continue_label) =
                     split_label_id(&mut occupied_labels, &mut next_synthetic_label)
                 else {
-                    return Err(Box::new(func));
+                    return Err(SplitRefusal::Body(Box::new(func)));
                 };
                 stub_ops.push(OpIR {
                     kind: molt_ir::OpKind::BrIf,
@@ -1125,6 +1142,23 @@ pub(crate) fn split_megafunctions_at_limit(
     max_ops: usize,
     should_split: impl Fn(&FunctionIR) -> bool,
 ) -> BTreeMap<String, String> {
+    split_megafunctions_with_custody(ir, max_ops, |_, function| should_split(function), |_, _| {})
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SourceSplitOutcome {
+    Replaced,
+    /// This rejection survives symbol-preserving row projection. A chunk
+    /// symbol collision is deliberately excluded: the symbol may disappear.
+    RefusedBody,
+}
+
+pub fn split_megafunctions_with_custody(
+    ir: &mut SimpleIR,
+    max_ops: usize,
+    should_split: impl Fn(molt_ir::FunctionId, &FunctionIR) -> bool,
+    mut report: impl FnMut(molt_ir::FunctionId, SourceSplitOutcome),
+) -> BTreeMap<String, String> {
     let mut split_sources = BTreeMap::new();
     let mut new_functions: Vec<FunctionIR> = Vec::new();
     let old_functions = std::mem::take(&mut ir.functions);
@@ -1137,14 +1171,16 @@ pub(crate) fn split_megafunctions_at_limit(
         .map(|function| function.name.clone())
         .collect::<BTreeSet<_>>();
 
-    for func in old_functions {
+    for (index, func) in old_functions.into_iter().enumerate() {
+        let id = molt_ir::FunctionId::from_index(index);
         let op_count = func.ops.len();
-        if !should_split(&func) {
+        if !should_split(id, &func) || op_count <= max_ops {
             new_functions.push(func);
             continue;
         }
-        match split_large_function(func, max_ops, &mut occupied_function_names) {
+        match plan_large_function_split(func, max_ops, &mut occupied_function_names) {
             Ok((stub, chunks)) => {
+                report(id, SourceSplitOutcome::Replaced);
                 eprintln!(
                     "MOLT_BACKEND: split `{}` ({} ops) into {} chunks",
                     stub.name,
@@ -1174,9 +1210,11 @@ pub(crate) fn split_megafunctions_at_limit(
                 new_functions.push(stub);
                 appended.extend(chunks);
             }
-            Err(original) => {
+            Err(SplitRefusal::Body(original)) => {
+                report(id, SourceSplitOutcome::RefusedBody);
                 new_functions.push(*original);
             }
+            Err(SplitRefusal::OccupiedSymbol(original)) => new_functions.push(*original),
         }
     }
 

@@ -26,9 +26,10 @@ pub use self::dead_functions::{
 };
 pub(crate) use self::megafunction_split::split_megafunctions_at_limit;
 pub use self::megafunction_split::{
-    max_function_ops, split_large_function, split_megafunctions, split_megafunctions_with_filter,
+    SourceSplitOutcome, max_function_ops, split_large_function, split_megafunctions,
+    split_megafunctions_with_custody, split_megafunctions_with_filter,
 };
-pub use self::profile_order::apply_profile_order;
+pub use self::profile_order::{apply_profile_order, apply_profile_order_with};
 pub use self::rc_coalescing::{build_const_int_map, compute_rc_coalesce_skips};
 
 #[cfg(test)]

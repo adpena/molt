@@ -231,6 +231,7 @@ impl SimpleBackend {
         let compile_start = std::time::Instant::now();
         let program = self.prepare_native_codegen(
             &mut ir,
+            None,
             NativeCodegenBackend::Cranelift,
             true,
             timing,

@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use crate::FunctionIR;
 
 use molt_ir::content_digest::CompilationCacheKey;
+use molt_ir::ir::FunctionIrContractDigest;
 
 use super::cache::{CompilationCache, CompilationCacheWriteError};
 use super::function::{TirFunction, TirModule};
@@ -129,6 +130,9 @@ pub enum TirCacheLocation {
 }
 
 pub struct TirPipelineRunOptions<'a> {
+    /// Known contracts in the input document's row order. A preparation
+    /// that rewrites the body always computes its new contract.
+    pub source_contracts: Option<&'a [Option<FunctionIrContractDigest>]>,
     pub target_info: TargetInfo,
     pub cache_flavor: TirPipelineCacheFlavor,
     pub cache: TirCacheLocation,
@@ -167,6 +171,7 @@ impl<'a> PreparedTirFunction<'a> {
         source: &'a FunctionIR,
         table: &molt_ir::FunctionTable,
         cache_prefix: &CompilationCacheKey,
+        source_contract: Option<FunctionIrContractDigest>,
         preprocess_before_lowering: &F,
     ) -> Self
     where
@@ -177,7 +182,16 @@ impl<'a> PreparedTirFunction<'a> {
         let mut function = Cow::Borrowed(source);
         trace_tir_function_stage(&function.name, "start", function.ops.len());
         preprocess_before_lowering(&mut function);
-        let content_hash = function_content_hash(&function, table, cache_prefix);
+        let content_hash = if let (Cow::Borrowed(borrowed), Some(contract)) =
+            (&function, source_contract)
+            && std::ptr::eq(*borrowed, source)
+        {
+            let mut key = cache_prefix.clone();
+            key.precomputed_digest_field(b"function-ir-contract", contract.as_bytes());
+            key.finish_hex()
+        } else {
+            function_content_hash(&function, table, cache_prefix)
+        };
         Self {
             function,
             content_hash,
@@ -651,6 +665,9 @@ where
                                 &functions[work_item.index],
                                 &table,
                                 &cache_prefix,
+                                options
+                                    .source_contracts
+                                    .and_then(|rows| rows[work_item.index]),
                                 &preprocess_before_lowering,
                             ),
                         })
@@ -1113,6 +1130,7 @@ mod tests {
 
     fn projection_test_options(cache_dir: &std::path::Path) -> TirPipelineRunOptions<'static> {
         TirPipelineRunOptions {
+            source_contracts: None,
             target_info: TargetInfo::native_release_fast(),
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
             cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
@@ -1938,6 +1956,7 @@ mod tests {
             execution_context: crate::ExecutionContextPolicy::None,
         };
         let options = |cache_dir: &std::path::Path| TirPipelineRunOptions {
+            source_contracts: None,
             target_info: target_info.clone(),
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
             cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
@@ -2070,6 +2089,7 @@ mod tests {
         );
 
         let options = |cache_dir: &std::path::Path| TirPipelineRunOptions {
+            source_contracts: None,
             target_info: target_info.clone(),
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
             cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
@@ -2102,6 +2122,44 @@ mod tests {
     }
 
     #[test]
+    fn prepared_body_contract_survives_relocation_and_is_replaced_on_rewrite() {
+        use molt_ir::{FunctionId, FunctionTable, OpKind};
+
+        let source = FunctionIR {
+            name: "app".into(),
+            ops: vec![OpIR {
+                callee: Some(FunctionId::from_index(1)),
+                ..OpIR::new(OpKind::CallInternal)
+            }],
+            ..FunctionIR::default()
+        };
+        let callee = FunctionIR {
+            name: "provider".into(),
+            ..FunctionIR::default()
+        };
+        let contracts_table = FunctionTable::of(&[source.clone(), callee.clone()]);
+        let contract = FunctionIrContractDigest::of(&source, &contracts_table).unwrap();
+        let mut relocated = source;
+        relocated.ops[0].callee = Some(FunctionId::from_index(0));
+        let table = FunctionTable::of(&[callee, relocated.clone()]);
+        let prefix = preparation_key_prefix(TirPipelineCacheFlavor::Llvm, "test-target");
+        let original_key = function_content_hash(&relocated, &table, &prefix);
+        let borrowed =
+            PreparedTirFunction::new(&relocated, &table, &prefix, Some(contract), &|_| {});
+        assert_eq!(borrowed.content_hash, original_key);
+
+        let rewritten =
+            PreparedTirFunction::new(&relocated, &table, &prefix, Some(contract), &|row| {
+                row.to_mut().frame_locals_exposed = true;
+            });
+        assert_ne!(rewritten.content_hash, original_key);
+        assert_eq!(
+            rewritten.content_hash,
+            function_content_hash(&rewritten.function, &table, &prefix)
+        );
+    }
+
+    #[test]
     fn cached_tir_custody_preserves_function_source_file() {
         let functions = vec![FunctionIR {
             module: None,
@@ -2127,6 +2185,7 @@ mod tests {
         let mut run = run_cached_tir_pipeline(
             &functions,
             TirPipelineRunOptions {
+                source_contracts: None,
                 target_info: target_info.clone(),
                 cache_flavor: TirPipelineCacheFlavor::FactGraph,
                 cache: TirCacheLocation::Directory(cache_dir.clone()),

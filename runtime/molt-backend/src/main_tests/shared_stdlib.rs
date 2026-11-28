@@ -652,6 +652,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
     let cache_dir =
         std::env::temp_dir().join(format!("molt-partition-contracts-{}", std::process::id(),));
     let mut cache = molt_backend::tir::cache::CompilationCache::open(cache_dir.clone());
+    let mut without_cache = ir.clone();
     let partition = prune_and_partition_native_stdlib(
         &mut ir,
         "app",
@@ -693,6 +694,41 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
         shared_stdlib_partition_manifest(&partition.stdlib_funcs, None, &partition.module_context)
             .expect("canonical contracts of the remapped stdlib");
     assert_eq!(projected, rehashed);
+    let app_table = molt_ir::FunctionTable::of(&partition.user_remaining);
+    let retained_app = partition
+        .user_facts
+        .as_ref()
+        .expect("application source facts");
+    assert_eq!(retained_app.len(), partition.user_remaining.len());
+    assert_eq!(
+        retained_app[0].contract,
+        Some(
+            molt_ir::ir::FunctionIrContractDigest::of(&partition.user_remaining[0], &app_table)
+                .unwrap()
+        ),
+    );
+    assert!(
+        retained_app[1].contract.is_none(),
+        "projected extern has no body"
+    );
+
+    let uncached = prune_and_partition_native_stdlib(
+        &mut without_cache,
+        "app",
+        Some(&stdlib_modules),
+        &std::collections::BTreeSet::new(),
+        None,
+    );
+    assert!(uncached.stdlib_contracts.is_none());
+    assert_eq!(
+        shared_stdlib_partition_manifest(
+            &uncached.stdlib_funcs,
+            uncached.stdlib_contracts.as_deref(),
+            &uncached.module_context,
+        )
+        .unwrap(),
+        projected,
+    );
     drop(cache);
     std::fs::remove_dir_all(cache_dir).expect("remove contract test cache");
 }

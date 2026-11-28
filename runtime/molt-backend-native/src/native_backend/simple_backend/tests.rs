@@ -978,6 +978,7 @@ fn finalize_through_tir(mut functions: Vec<FunctionIR>) -> NativeFinalFunctions 
     let mut cached = crate::tir::pipeline_cache::run_cached_tir_pipeline(
         &functions,
         crate::tir::pipeline_cache::TirPipelineRunOptions {
+            source_contracts: None,
             target_info: target_info.clone(),
             cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
             cache: crate::tir::pipeline_cache::TirCacheLocation::Directory(cache_dir.clone()),

@@ -21,6 +21,8 @@ pub(crate) struct NativeApplicationArtifactOptions<'a> {
     /// Whole-program ABI authority captured before stdlib extraction or batch
     /// partitioning removes provider bodies.
     pub(crate) module_context: Option<NativeBackendModuleContext>,
+    /// Source preparation facts reindexed with this application's function rows.
+    pub(crate) source_facts: Option<Vec<molt_backend::NativeSourceFunction>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

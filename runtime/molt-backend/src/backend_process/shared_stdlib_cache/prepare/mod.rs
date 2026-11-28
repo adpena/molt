@@ -31,6 +31,7 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         request.stdlib_archive_path,
     )?;
     let mut module_context = None;
+    let mut source_facts = None;
     let mut app_callable_manifest = None;
     let mut object_cache = None;
     let module_registry_roots: std::collections::BTreeSet<String> = request
@@ -99,6 +100,7 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         // extern rows. Whether the stdlib archive needed production cannot add
         // declarations to that document or change its action identity.
         ir.functions = prepared.user_remaining;
+        source_facts = prepared.user_facts;
         let extern_count = ir
             .functions
             .iter()
@@ -128,5 +130,6 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         module_registry: request.module_registry,
         code_slots: request.code_slots,
         module_context,
+        source_facts,
     })
 }

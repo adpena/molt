@@ -5,6 +5,7 @@ use molt_backend::tir::cache::{CompilationCache, CompilationCacheWriteError};
 use molt_backend::{ModuleRegistryIR, NativeBackendModuleContext, SimpleIR};
 use molt_ir::backend_environment::NativeCodegenEnvironment;
 use molt_ir::code_slots::CodeSlotBindings;
+use molt_ir::ir::FunctionIrContractDigest;
 use serde::Serialize;
 
 use super::super::super::{NativeApplicationArtifactOptions, NativeApplicationArtifactResult};
@@ -15,7 +16,8 @@ use crate::backend_process::shared_stdlib_cache::NativeObjectCache;
 /// dependencies which are absent from source-level direct calls.
 #[derive(Serialize)]
 struct ApplicationPlanInput<'a> {
-    ir: &'a SimpleIR,
+    source_rows: &'a [[u8; 32]],
+    profile: Option<&'a molt_ir::PgoProfileIR>,
     target: Option<&'a str>,
     module_context: Option<&'a NativeBackendModuleContext>,
     app_callable_manifest: Option<&'a molt_backend::passes::AppCallableManifest>,
@@ -57,9 +59,25 @@ impl ApplicationPlanRecord {
             log_prefix: _,
             module_registry,
             module_context,
+            source_facts,
         } = options;
+        let table = molt_ir::FunctionTable::of(&ir.functions);
+        let source_rows = ir
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(index, function)| {
+                source_facts
+                    .as_ref()
+                    .and_then(|rows| rows[index].contract)
+                    .map_or_else(|| FunctionIrContractDigest::of(function, &table), Ok)
+                    .map(|digest| *digest.as_bytes())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)?;
         let key = cache.application_plan_key(&ApplicationPlanInput {
-            ir,
+            source_rows: &source_rows,
+            profile: ir.profile.as_ref(),
             target: *target_triple,
             module_context: module_context.as_ref(),
             app_callable_manifest: app_callable_manifest.as_ref(),

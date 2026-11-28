@@ -536,6 +536,7 @@ fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
                 backend.emit_app_callable_resolver = false;
                 let prepared = backend.prepare_program_for_codegen(
                     &mut ir,
+                    None,
                     selection,
                     false,
                     false,
@@ -817,6 +818,7 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
             let mut run = run_cached_tir_pipeline(
                 &functions,
                 TirPipelineRunOptions {
+                    source_contracts: None,
                     target_info: target.clone(),
                     cache_flavor: TirPipelineCacheFlavor::Native,
                     cache: crate::tir::pipeline_cache::TirCacheLocation::Directory(

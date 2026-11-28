@@ -613,6 +613,15 @@ pub struct NativeBackendModuleContext {
         BTreeMap<String, NativeFunctionLinkageAbi>,
 }
 
+/// Facts proved for a source row by whole-program linkage preparation.
+/// Symbol-preserving row projection may carry these facts along with the body.
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy, Default)]
+pub struct NativeSourceFunction {
+    pub contract: Option<FunctionIrContractDigest>,
+    pub(super) unsplittable_at: Option<usize>,
+}
+
 #[cfg(feature = "native-backend")]
 impl NativeBackendModuleContext {
     /// Exact names whose context rows this object can consume. The generated
@@ -730,19 +739,33 @@ impl NativeBackendModuleContext {
         functions: &mut Vec<FunctionIR>,
         carrier_cache: Option<&mut crate::tir::cache::CompilationCache>,
     ) -> Self {
-        Self::with_contract_digests(functions, carrier_cache, false).0
+        Self::with_source_facts(functions, carrier_cache, false).0
     }
 
-    pub(in crate::native_backend::simple_backend) fn with_contract_digests(
+    pub(in crate::native_backend::simple_backend) fn with_source_facts(
         functions: &mut Vec<FunctionIR>,
         carrier_cache: Option<&mut crate::tir::cache::CompilationCache>,
-        retain_contracts: bool,
-    ) -> (Self, Option<Vec<Option<FunctionIrContractDigest>>>) {
+        retain_source_facts: bool,
+    ) -> (Self, Option<Vec<NativeSourceFunction>>) {
         let mut ir = SimpleIR {
             functions: std::mem::take(functions),
             profile: None,
         };
-        split_megafunctions(&mut ir);
+        let max_ops = crate::passes::max_function_ops();
+        let mut preparation =
+            retain_source_facts.then(|| vec![NativeSourceFunction::default(); ir.functions.len()]);
+        crate::passes::split_megafunctions_with_custody(
+            &mut ir,
+            max_ops,
+            |_, _| true,
+            |id, outcome| {
+                if outcome == crate::passes::SourceSplitOutcome::RefusedBody
+                    && let Some(rows) = preparation.as_mut()
+                {
+                    rows[id.index()].unsplittable_at = Some(max_ops);
+                }
+            },
+        );
         *functions = ir.functions;
         let timing = crate::env_setting(BackendEnv::MOLT_BACKEND_TIMING)
             .as_deref()
@@ -766,23 +789,20 @@ impl NativeBackendModuleContext {
             .collect();
         let table = molt_ir::FunctionTable::of(functions);
         let carriers = super::linkage_carriers::linkage_carriers(&defined, &table, carrier_cache);
-        let contracts = carriers
-            .contracts
-            .filter(|_| retain_contracts)
-            .map(|digests| {
-                assert_eq!(defined.len(), digests.len());
-                let mut body_digests = digests.into_iter();
-                functions
-                    .iter()
-                    .map(|function| {
-                        (!function.is_extern).then(|| {
-                            body_digests
-                                .next()
-                                .expect("defined row has a contract digest")
-                        })
-                    })
-                    .collect()
-            });
+        if let Some(rows) = preparation.as_mut() {
+            rows.resize(functions.len(), NativeSourceFunction::default());
+            if let Some(contracts) = carriers.contracts {
+                assert_eq!(defined.len(), contracts.len());
+                for (row, digest) in rows
+                    .iter_mut()
+                    .zip(functions.iter())
+                    .filter_map(|(row, function)| (!function.is_extern).then_some(row))
+                    .zip(contracts)
+                {
+                    row.contract = Some(digest);
+                }
+            }
+        }
         let reused_carriers = carriers.reused;
         let function_linkage_abis = defined
             .iter()
@@ -824,7 +844,7 @@ impl NativeBackendModuleContext {
                 started.elapsed(),
             );
         }
-        (context, contracts)
+        (context, preparation)
     }
 }
 

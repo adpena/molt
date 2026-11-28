@@ -12,6 +12,7 @@ use super::request::NativeStdlibCachePrepare;
 
 pub(crate) struct PreparedStdlibPartition {
     pub(crate) user_remaining: Vec<molt_backend::FunctionIR>,
+    pub(crate) user_facts: Option<Vec<molt_backend::NativeSourceFunction>>,
     pub(crate) stdlib_funcs: Vec<molt_backend::FunctionIR>,
     pub(crate) current_partition_manifest: String,
     pub(crate) module_context: molt_backend::NativeBackendModuleContext,
@@ -57,6 +58,7 @@ pub(crate) fn prepare_stdlib_partition(
 
     Ok(PreparedStdlibPartition {
         user_remaining: partition.user_remaining,
+        user_facts: partition.user_facts,
         stdlib_funcs: partition.stdlib_funcs,
         current_partition_manifest,
         module_context: partition.module_context,

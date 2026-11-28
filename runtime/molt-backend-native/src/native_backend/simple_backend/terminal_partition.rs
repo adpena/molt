@@ -212,6 +212,7 @@ impl SimpleBackend {
         &mut self,
         mut ir: SimpleIR,
         linkage: NativeBackendModuleContext,
+        source_facts: Option<Vec<NativeSourceFunction>>,
     ) -> Result<NativeTerminalArchive, String> {
         ir.resolve_function_references()?;
         self.admit_program(&ir).map_err(|error| error.to_string())?;
@@ -219,6 +220,7 @@ impl SimpleBackend {
         let backend = self.selected_object_backend();
         let program = self.prepare_native_codegen(
             &mut ir,
+            source_facts,
             backend,
             true,
             backend_timing_enabled(),

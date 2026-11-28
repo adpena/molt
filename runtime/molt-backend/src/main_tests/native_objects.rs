@@ -238,6 +238,7 @@ fn native_artifact_test_options(
         log_prefix: "MOLT_BACKEND(test)",
         module_registry: None,
         module_context: None,
+        source_facts: None,
     }
 }
 

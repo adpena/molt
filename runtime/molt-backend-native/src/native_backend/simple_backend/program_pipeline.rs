@@ -3,6 +3,7 @@ use super::compile_driver::NativeCodegenProgram;
 use super::*;
 use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+use molt_ir::ir::FunctionIrContractDigest;
 use molt_tir::ir_rewrites::rewrite_phi_to_store_load;
 use std::fmt::Write as _;
 
@@ -34,6 +35,7 @@ impl SimpleBackend {
     fn prepare_final_tir(
         &mut self,
         ir: &mut SimpleIR,
+        source_contracts: Option<&[Option<FunctionIrContractDigest>]>,
         backend: NativeCodegenBackend,
         owns_cell_layout: bool,
         mark: &mut impl FnMut(&str, usize),
@@ -68,6 +70,7 @@ impl SimpleBackend {
         let mut cached = run_cached_tir_pipeline(
             &ir.functions,
             TirPipelineRunOptions {
+                source_contracts,
                 target_info: target,
                 cache_flavor,
                 cache: self.tir_cache.clone(),
@@ -136,13 +139,23 @@ impl SimpleBackend {
     pub(in crate::native_backend::simple_backend) fn prepare_program_for_codegen(
         &mut self,
         ir: &mut SimpleIR,
+        mut source_facts: Option<Vec<NativeSourceFunction>>,
         backend: NativeCodegenBackend,
         owns_cell_layout: bool,
         timing: bool,
         compile_start: &std::time::Instant,
     ) -> NativeCodegenProgram {
         let use_llvm = backend.uses_llvm();
-        apply_profile_order(ir);
+        assert!(
+            source_facts.is_none()
+                || (self.program_scope == NativeProgramScope::ApplicationArchive
+                    && self.skip_shared_stdlib_partition)
+        );
+        crate::passes::apply_profile_order_with(ir, |order| {
+            if let Some(rows) = source_facts.as_mut() {
+                *rows = order.iter().map(|&old| rows[old]).collect();
+            }
+        });
         // Import bedrock: module init bodies are reachable only through the
         // registry blob's MODULE_INIT_TABLE relocations (no call edges), so
         // the registry's init symbols are dead-function-elimination roots.
@@ -195,7 +208,26 @@ impl SimpleBackend {
         // Capture task/closure custody from the unsplit body exactly once.
         // The first TIR lift must see bounded bodies, including the LLVM lane.
         mark("callable metadata", ir.functions.len());
-        split_megafunctions(ir);
+        let source_contracts = if let Some(rows) = source_facts {
+            assert_eq!(rows.len(), ir.functions.len(), "source preparation rows");
+            let max_ops = crate::passes::max_function_ops();
+            let mut contracts: Vec<_> = rows.iter().map(|row| row.contract).collect();
+            crate::passes::split_megafunctions_with_custody(
+                ir,
+                max_ops,
+                |id, _| rows[id.index()].unsplittable_at != Some(max_ops),
+                |id, outcome| {
+                    if outcome == crate::passes::SourceSplitOutcome::Replaced {
+                        contracts[id.index()] = None;
+                    }
+                },
+            );
+            contracts.resize(ir.functions.len(), None);
+            Some(contracts)
+        } else {
+            split_megafunctions(ir);
+            None
+        };
         mark("megafunction split", ir.functions.len());
 
         detect_gpu_kernels(&ir.functions);
@@ -213,7 +245,13 @@ impl SimpleBackend {
         if use_llvm && !self.skip_shared_stdlib_partition {
             externalize_shared_stdlib_partition(ir, &module_registry_roots);
         }
-        let mut final_functions = self.prepare_final_tir(ir, backend, owns_cell_layout, &mut mark);
+        let mut final_functions = self.prepare_final_tir(
+            ir,
+            source_contracts.as_deref(),
+            backend,
+            owns_cell_layout,
+            &mut mark,
+        );
         if !use_llvm && self.program_scope == NativeProgramScope::WholeProgram {
             final_functions.retain_reachable(&module_registry_roots);
         }

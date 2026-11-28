@@ -66,6 +66,53 @@ fn split_chunk_names_are_injective_and_reserved_against_the_full_module_namespac
 }
 
 #[test]
+fn source_split_only_retains_rejections_that_survive_partitioning() {
+    use crate::passes::{SourceSplitOutcome, split_megafunctions_with_custody};
+    let colliding = adversarial_named_large_function("app");
+    let protected = adversarial_named_large_function("molt_isolate_import");
+    let blocker = FunctionIR {
+        name: split_chunk_name("app", 0),
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        ..FunctionIR::default()
+    };
+    let mut ir = SimpleIR {
+        functions: vec![colliding, protected, blocker],
+        profile: None,
+    };
+    let mut refused = BTreeSet::new();
+    assert!(
+        split_megafunctions_with_custody(
+            &mut ir,
+            2,
+            |_, _| true,
+            |id, outcome| {
+                assert!(outcome == SourceSplitOutcome::RefusedBody);
+                refused.insert(id);
+            }
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        refused,
+        BTreeSet::from([molt_ir::FunctionId::from_index(1)])
+    );
+
+    // The app no longer contains the symbol that blocked its first split.
+    ir.functions.pop();
+    let splits = split_megafunctions_with_custody(
+        &mut ir,
+        2,
+        |id, _| !refused.contains(&id),
+        |id, outcome| {
+            assert_eq!(id, molt_ir::FunctionId::from_index(0));
+            assert!(outcome == SourceSplitOutcome::Replaced);
+        },
+    );
+    assert!(!splits.is_empty());
+    assert!(splits.values().all(|name| name == "app"));
+}
+
+#[test]
 fn split_large_function_preserves_protected_runtime_import_entrypoint() {
     let func = FunctionIR {
         module: None,

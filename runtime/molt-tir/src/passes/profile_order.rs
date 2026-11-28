@@ -2,6 +2,10 @@ use crate::SimpleIR;
 use std::collections::BTreeMap;
 
 pub fn apply_profile_order(ir: &mut SimpleIR) {
+    apply_profile_order_with(ir, |_| {});
+}
+
+pub fn apply_profile_order_with(ir: &mut SimpleIR, permute: impl FnOnce(&[usize])) {
     let Some(profile) = ir.profile.as_ref() else {
         return;
     };
@@ -29,6 +33,7 @@ pub fn apply_profile_order(ir: &mut SimpleIR) {
             .unwrap_or(usize::MAX)
     });
     order.insert(0, 0);
+    permute(&order);
     let mut map = vec![None; order.len()];
     for (position, &row) in order.iter().enumerate() {
         map[row] = Some(molt_ir::FunctionId::from_index(position));

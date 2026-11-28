@@ -240,7 +240,7 @@ impl NativeObjectCache {
     /// archive. Its record names existing objects and never owns object bytes.
     pub(crate) fn application_plan_key(&self, input: &impl Serialize) -> io::Result<String> {
         let mut digest = Sha256::new();
-        digest.update(b"native-application-archive-plan-v1\0");
+        digest.update(b"native-application-archive-plan-v2\0");
         let mut serializer =
             rmp_serde::Serializer::new(DigestWriter(&mut digest)).with_struct_map();
         (&self.authority, input)
