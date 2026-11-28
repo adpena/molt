@@ -1,6 +1,7 @@
 use super::*;
 use crate::stdlib_modules::{is_user_owned_function, partition_user_owned_functions};
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+use molt_ir::ir::FunctionIrContractDigest;
 #[cfg(feature = "native-backend")]
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
@@ -729,6 +730,14 @@ impl NativeBackendModuleContext {
         functions: &mut Vec<FunctionIR>,
         carrier_cache: Option<&mut crate::tir::cache::CompilationCache>,
     ) -> Self {
+        Self::with_contract_digests(functions, carrier_cache, false).0
+    }
+
+    pub(in crate::native_backend::simple_backend) fn with_contract_digests(
+        functions: &mut Vec<FunctionIR>,
+        carrier_cache: Option<&mut crate::tir::cache::CompilationCache>,
+        retain_contracts: bool,
+    ) -> (Self, Option<Vec<Option<FunctionIrContractDigest>>>) {
         let mut ir = SimpleIR {
             functions: std::mem::take(functions),
             profile: None,
@@ -757,6 +766,23 @@ impl NativeBackendModuleContext {
             .collect();
         let table = molt_ir::FunctionTable::of(functions);
         let carriers = super::linkage_carriers::linkage_carriers(&defined, &table, carrier_cache);
+        let contracts = carriers
+            .contracts
+            .filter(|_| retain_contracts)
+            .map(|digests| {
+                assert_eq!(defined.len(), digests.len());
+                let mut body_digests = digests.into_iter();
+                functions
+                    .iter()
+                    .map(|function| {
+                        (!function.is_extern).then(|| {
+                            body_digests
+                                .next()
+                                .expect("defined row has a contract digest")
+                        })
+                    })
+                    .collect()
+            });
         let reused_carriers = carriers.reused;
         let function_linkage_abis = defined
             .iter()
@@ -798,7 +824,7 @@ impl NativeBackendModuleContext {
                 started.elapsed(),
             );
         }
-        context
+        (context, contracts)
     }
 }
 

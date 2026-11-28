@@ -171,6 +171,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
         "demo",
         Some(&stdlib_modules),
         &std::collections::BTreeSet::new(),
+        None,
     );
     // The user document holds its bodies, then an extern row per stdlib
     // function they reference (HF-847 slice 1, C2).

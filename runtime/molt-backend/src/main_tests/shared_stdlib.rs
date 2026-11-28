@@ -243,23 +243,28 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         molt_backend::SimpleBackend::prepare_module_context(&mut changed_functions);
     let context_changed_context =
         molt_backend::SimpleBackend::prepare_module_context(&mut context_changed_functions);
-    let ordered = shared_stdlib_partition_manifest(&ordered_functions, &ordered_context)
+    let ordered = shared_stdlib_partition_manifest(&ordered_functions, None, &ordered_context)
         .expect("partition manifest");
-    let reordered = shared_stdlib_partition_manifest(&reordered_functions, &reordered_context)
+    let reordered =
+        shared_stdlib_partition_manifest(&reordered_functions, None, &reordered_context)
+            .expect("partition manifest");
+    let body_changed = shared_stdlib_partition_manifest(&changed_functions, None, &changed_context)
         .expect("partition manifest");
-    let body_changed = shared_stdlib_partition_manifest(&changed_functions, &changed_context)
-        .expect("partition manifest");
-    let execution_context_changed =
-        shared_stdlib_partition_manifest(&context_changed_functions, &context_changed_context)
-            .expect("execution-context-mutated partition manifest");
+    let execution_context_changed = shared_stdlib_partition_manifest(
+        &context_changed_functions,
+        None,
+        &context_changed_context,
+    )
+    .expect("execution-context-mutated partition manifest");
     let mut altered_context_json =
         serde_json::to_value(&ordered_context).expect("serialize module context");
     altered_context_json["function_linkage_abis"]["molt_init_sys"]["return_type"] =
         serde_json::json!("F64");
     let altered_context: molt_backend::NativeBackendModuleContext =
         serde_json::from_value(altered_context_json).expect("deserialize altered linkage context");
-    let linkage_changed = shared_stdlib_partition_manifest(&ordered_functions, &altered_context)
-        .expect("linkage-mutated partition manifest");
+    let linkage_changed =
+        shared_stdlib_partition_manifest(&ordered_functions, None, &altered_context)
+            .expect("linkage-mutated partition manifest");
 
     assert_eq!(ordered, reordered);
     assert_ne!(ordered, body_changed);
@@ -603,7 +608,14 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
-                ops: stdlib_code_slot_fixture("molt_init_sys"),
+                ops: [
+                    vec![OpIR {
+                        s_value: Some("sys_helper".to_string()),
+                        ..OpIR::new(molt_ir::OpKind::CallInternal)
+                    }],
+                    stdlib_code_slot_fixture("molt_init_sys"),
+                ]
+                .concat(),
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -611,6 +623,12 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
+            },
+            FunctionIR {
+                name: "sys_helper".to_string(),
+                module: Some("sys".to_string()),
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
+                ..Default::default()
             },
             FunctionIR {
                 module: Some("json".to_string()),
@@ -631,11 +649,15 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
     };
 
     let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
+    let cache_dir =
+        std::env::temp_dir().join(format!("molt-partition-contracts-{}", std::process::id(),));
+    let mut cache = molt_backend::tir::cache::CompilationCache::open(cache_dir.clone());
     let partition = prune_and_partition_native_stdlib(
         &mut ir,
         "app",
         Some(&stdlib_modules),
         &std::collections::BTreeSet::new(),
+        Some(&mut cache),
     );
     // The user document holds its bodies, then an extern row per stdlib
     // function they reference (HF-847 slice 1, C2).
@@ -652,7 +674,27 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
         .collect();
 
     assert_eq!(user_names, vec!["molt_main"]);
-    assert_eq!(stdlib_names, vec!["molt_init_sys"]);
+    assert_eq!(stdlib_names, vec!["molt_init_sys", "sys_helper"]);
+    assert_eq!(
+        partition.stdlib_funcs[0].ops[0].callee,
+        Some(molt_ir::FunctionId(1))
+    );
+    let retained = partition
+        .stdlib_contracts
+        .as_deref()
+        .expect("carrier cache hashed the body");
+    let projected = shared_stdlib_partition_manifest(
+        &partition.stdlib_funcs,
+        Some(retained),
+        &partition.module_context,
+    )
+    .expect("retained contracts");
+    let rehashed =
+        shared_stdlib_partition_manifest(&partition.stdlib_funcs, None, &partition.module_context)
+            .expect("canonical contracts of the remapped stdlib");
+    assert_eq!(projected, rehashed);
+    drop(cache);
+    std::fs::remove_dir_all(cache_dir).expect("remove contract test cache");
 }
 
 #[test]
@@ -714,6 +756,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
         "__main__",
         Some(&stdlib_modules),
         &std::collections::BTreeSet::new(),
+        None,
     );
     // The user document holds its bodies, then an extern row per stdlib
     // function they reference (HF-847 slice 1, C2).
@@ -766,6 +809,7 @@ fn shared_stdlib_resolver_keeps_only_reachable_descriptor_publishers() {
             "unused".into(),
         ])),
         &std::collections::BTreeSet::from(["registry_init".into()]),
+        None,
     );
     assert_eq!(
         partition.app_callable_manifest.compiled_bodies,

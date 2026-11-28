@@ -17,6 +17,7 @@ use super::*;
 use crate::tir::cache::{CompilationCache, CompilationCacheWriteError};
 use crate::tir::pipeline_cache::request_parallel_map;
 use molt_ir::backend_environment as backend_env;
+use molt_ir::ir::FunctionIrContractDigest;
 
 const KEY_DOMAIN: &[u8] = b"molt-native-linkage-carriers-key-v1";
 const MAGIC: &[u8] = b"MOLT:NATIVE-LINKAGE-CARRIERS:v1\0";
@@ -34,6 +35,7 @@ pub(in crate::native_backend::simple_backend) struct LinkageCarrierRows {
     pub(in crate::native_backend::simple_backend) rows: Vec<LinkageCarriers>,
     /// Rows served by the cache rather than computed.
     pub(in crate::native_backend::simple_backend) reused: usize,
+    pub(in crate::native_backend::simple_backend) contracts: Option<Vec<FunctionIrContractDigest>>,
 }
 
 impl LinkageCarriers {
@@ -57,12 +59,9 @@ impl LinkageCarriers {
     }
 }
 
-fn cache_key(function: &FunctionIR, table: &molt_ir::FunctionTable) -> String {
+fn cache_key(contract: &FunctionIrContractDigest) -> String {
     let mut key = molt_ir::content_digest::CompilationCacheKey::new(KEY_DOMAIN);
-    key.digest_field(b"function-ir-contract", |writer| {
-        molt_ir::ir::write_function_ir_contract(function, table, writer)
-    })
-    .expect("digest-backed FunctionIR contract serialization cannot fail");
+    key.precomputed_digest_field(b"function-ir-contract", contract.as_bytes());
     key.finish_hex()
 }
 
@@ -78,9 +77,14 @@ pub(in crate::native_backend::simple_backend) fn linkage_carriers(
         return LinkageCarrierRows {
             rows: request_parallel_map(functions, |function| LinkageCarriers::compute(function)),
             reused: 0,
+            contracts: None,
         };
     };
-    let keys = request_parallel_map(functions, |function| cache_key(function, table));
+    let contracts = request_parallel_map(functions, |function| {
+        FunctionIrContractDigest::of(function, table)
+            .expect("digest-backed FunctionIR contract serialization cannot fail")
+    });
+    let keys = contracts.iter().map(cache_key).collect::<Vec<_>>();
     let mut rows: Vec<Option<LinkageCarriers>> = cache
         .read_many(&keys, LinkageCarriers::decode, |indices, read| {
             request_parallel_map(indices, read)
@@ -114,5 +118,6 @@ pub(in crate::native_backend::simple_backend) fn linkage_carriers(
             .map(|row| row.expect("every function has a carrier row"))
             .collect(),
         reused,
+        contracts: Some(contracts),
     }
 }

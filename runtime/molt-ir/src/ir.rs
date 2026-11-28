@@ -20,6 +20,17 @@ use std::collections::{BTreeMap, BTreeSet};
 mod float_transport;
 mod ndjson;
 
+/// Check the same reader used by the decoder, including its buffered suffix.
+pub fn ir_frame_at_eof(reader: &mut impl std::io::Read) -> std::io::Result<bool> {
+    loop {
+        match reader.read(&mut [0_u8; 1]) {
+            Ok(count) => return Ok(count == 0),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod ndjson_tests;
 
@@ -586,6 +597,24 @@ pub struct FunctionIR {
     /// fact.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameter_custody: Vec<ParameterCustody>,
+}
+
+/// Digest of the complete versioned FunctionIR contract. A pure FunctionId
+/// remap preserves it because references are encoded as resolved symbols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FunctionIrContractDigest([u8; 32]);
+
+impl FunctionIrContractDigest {
+    pub fn of(function: &FunctionIR, table: &crate::FunctionTable) -> Result<Self, String> {
+        crate::content_digest::stream_digest(|writer| {
+            write_function_ir_contract(function, table, writer)
+        })
+        .map(Self)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
 }
 
 /// Stream the complete versioned FunctionIR contract into a cache digest or

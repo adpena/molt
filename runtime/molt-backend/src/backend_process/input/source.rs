@@ -15,13 +15,8 @@ pub(super) fn invalid_ir(context: &str, err: impl std::fmt::Display) -> io::Erro
 /// Check the same reader used by the decoder, including any buffered suffix.
 #[cfg(feature = "cbor")]
 pub(super) fn require_eof(reader: &mut impl io::Read, context: &str) -> io::Result<()> {
-    let mut suffix = [0_u8; 1];
-    loop {
-        match reader.read(&mut suffix) {
-            Ok(0) => return Ok(()),
-            Ok(_) => return Err(invalid_ir(context, "trailing bytes after the IR value")),
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-            Err(err) => return Err(err),
-        }
+    if !molt_ir::ir::ir_frame_at_eof(reader)? {
+        return Err(invalid_ir(context, "trailing bytes after the IR value"));
     }
+    Ok(())
 }

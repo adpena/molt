@@ -332,6 +332,17 @@ impl SimpleBackend {
         NativeBackendModuleContext::from_functions(functions)
     }
 
+    /// Freeze linkage and return any cache-key body digests in FunctionId order.
+    pub fn prepare_module_context_with_contracts(
+        functions: &mut Vec<FunctionIR>,
+        carrier_cache: Option<&mut crate::tir::cache::CompilationCache>,
+    ) -> (
+        NativeBackendModuleContext,
+        Option<Vec<Option<molt_ir::ir::FunctionIrContractDigest>>>,
+    ) {
+        NativeBackendModuleContext::with_contract_digests(functions, carrier_cache, true)
+    }
+
     pub fn set_module_context(&mut self, context: NativeBackendModuleContext) {
         self.module_context = Some(context);
     }
