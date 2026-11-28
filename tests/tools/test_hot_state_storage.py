@@ -552,9 +552,16 @@ def test_hot_outputs_require_raw_home_headroom(
 
 def test_the_storage_write_check_admits_the_hot_mirror_and_nothing_else(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import dx
+    from molt import disk_capacity, dx
     from molt import temporary_artifacts as scratch
+
+    # This test exercises write claims. Provide the volume measurement so the
+    # production capacity check cannot make it depend on the host's free space.
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda _path: 80 << 30
+    )
 
     repo = tmp_path / "repo"
     repo.mkdir()
