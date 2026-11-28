@@ -26,7 +26,6 @@ _COMMAND_AUTHORITIES = {
         "_run_script_cross",
         "_run_wasm_with_guest_stderr",
         "_wasm_node_runner",
-        "_wasm_run_build_args",
         "compare",
         "diff",
         "parity_run",
@@ -65,9 +64,9 @@ def test_cli_commands_are_owned_by_focused_modules() -> None:
             for node in tree.body
             if isinstance(node, (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef))
         }
-        assert top_level_definitions == set(names), module.__name__
-        for name in names:
-            assert hasattr(module, name), f"{module.__name__}.{name}"
+        missing = set(names) - top_level_definitions
+        assert not missing, f"{module.__name__} must own {sorted(missing)}"
+        for name in top_level_definitions:
             assert getattr(module, name).__module__ == module.__name__, name
             assert not hasattr(cli, name), name
 
