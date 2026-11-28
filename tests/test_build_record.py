@@ -1162,6 +1162,7 @@ def test_the_outputs_publication_custody_is_a_product(
     stage = file_publication.staged_file_path(output, purpose="stage")
     receipt_stage = file_publication.staged_file_path(receipt)
     journal = output.parent / f".molt-artifact-publication-{'0' * 32}.json"
+    listed_directory = os.fspath(output.parent)
     ledger = _future_ledger()
     ledger.observed |= {
         ("file", os.fspath(receipt)),
@@ -1170,22 +1171,23 @@ def test_the_outputs_publication_custody_is_a_product(
         ("file", os.fspath(journal)),
         ("file", os.fspath(output.parent / ".molt-artifact-publication.lock")),
         ("file", os.fspath(other_receipt)),
-        # The publication's own scan for journals.
-        ("directory", os.fspath(output.parent)),
+        # An independent listing, outside the publication's scoped scan.
+        ("directory", listed_directory),
     }
     if extended_side == "observed":
         ledger.observed = {
             (kind, "\\\\?\\" + name.upper()) for kind, name in ledger.observed
         }
         other_receipt = Path("\\\\?\\" + str(other_receipt).upper())
+        listed_directory = "\\\\?\\" + listed_directory.upper()
     selected_output = (
         Path("\\\\?\\" + str(output).upper()) if extended_side == "products" else output
     )
     build_record.resolve_observed(ledger, (), published_outputs=(selected_output,))
-    # Another destination's receipt stays an input; nothing records the
-    # directory the publication changed.
+    # Another destination's receipt and an independent listing stay inputs.
     assert set(ledger.files) == {os.fspath(other_receipt)}
-    assert ledger.directories == {} and ledger.probes == {}
+    assert set(ledger.directories) == {listed_directory}
+    assert ledger.probes == {}
 
     # A reader that consumes the directory reports it, and that report stays.
     explicit = _future_ledger()

@@ -20,7 +20,7 @@ import stat
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
@@ -1559,9 +1559,16 @@ def check(
             return "unexpected named WASM link output"
         if consumer != selection.path and consumer not in product_paths:
             return "unreadable record: consumer is not a product"
-        from molt.artifact_publication import publication_locks
+        # Only a multi-file publication has a journal and an existing lock.
+        # Creating a lock for a standalone binary would itself change the
+        # directory generation an independent input probe may depend on.
+        if product_roles:
+            from molt.artifact_publication import publication_locks
 
-        with publication_locks(member for _role, member, _token in tokens):
+            custody = publication_locks(member for _role, member, _token in tokens)
+        else:
+            custody = nullcontext()
+        with custody:
             selection.verify()
             if linked_selection is not None:
                 linked_selection.verify()
