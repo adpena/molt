@@ -93,3 +93,24 @@ mapped = types.FunctionType(
     template.__code__, {"__builtins__": BuiltinsMapping(), "__name__": "mapped"}
 )
 print(mapped())
+
+
+
+class ModuleObserver:
+    def __init_subclass__(cls):
+        print("hook module", cls.__dict__.get("__module__", "absent"))
+
+
+def dynamic_type():
+    namespace = {}
+    cls = type("Dynamic", (ModuleObserver,), namespace)
+    print("dynamic owner", cls.__dict__.get("__module__", "absent"), namespace)
+    cls = type.__new__(type, "Explicit", (ModuleObserver,), {"__module__": None})
+    print("explicit owner", cls.__module__)
+
+
+dynamic_type()
+foreign_globals = {"__name__": "other_owner", "ModuleObserver": ModuleObserver}
+types.FunctionType(dynamic_type.__code__, foreign_globals)()
+del foreign_globals["__name__"]
+types.FunctionType(dynamic_type.__code__, foreign_globals)()

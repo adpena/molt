@@ -1,5 +1,8 @@
 //! Host-tool process budgets, independent of compiler IR and runtime allocations.
 
+mod resident;
+pub use resident::current_process_rss_bytes;
+
 const GIB_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Parse a non-negative, possibly fractional GB value into bytes, saturating

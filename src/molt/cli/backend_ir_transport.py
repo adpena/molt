@@ -73,12 +73,14 @@ class BackendIrProgram:
     __slots__ = ("_digests", "_function_digests", "_ir")
 
     def __init__(self, ir: Mapping[str, Any], function_digests: FunctionDigests):
-        self._ir = ir
+        self._ir: Mapping[str, object] | None = ir
         self._function_digests = function_digests
         self._digests: tuple[bytes, ...] | None = None
 
     @property
     def _functions(self) -> list[dict[str, Any]]:
+        if self._ir is None:
+            raise RuntimeError("complete IR lease already owns the bodies")
         functions = self._ir.get("functions")
         if not isinstance(functions, list):
             raise TypeError("backend IR requires a functions list")
@@ -99,6 +101,17 @@ class BackendIrProgram:
         """The program's digests as one lowercase hex string, in order."""
         return b"".join(self.digests).hex()
 
+    def release_serialized_bodies(self) -> None:
+        """Transfer the owning body list to an already published complete lease.
+
+        Callers that can still send more bodies must keep the list. The
+        digest vector survives publication to validate the reply.
+        """
+        assert self._digests is not None
+        self._functions.clear()
+        self._ir = None
+        self._function_digests.release_bodies()
+
     def write(self, handle: ByteSink, shipped: Collection[int] | None = None) -> None:
         """Stream the lease, shipping the bodies at ``shipped`` (every body when None).
 
@@ -110,10 +123,11 @@ class BackendIrProgram:
         if positions and not 0 <= positions[0] <= positions[-1] < len(self.digests):
             raise ValueError("shipped function position outside the program")
         encode = msgspec.msgpack.Encoder(order="sorted").encode
+        ir = self._ir
+        if ir is None:
+            raise RuntimeError("complete IR lease already owns the bodies")
         functions = self._functions
-        header = sorted(
-            (key, self._ir[key]) for key in _LEASE_HEADER_KEYS if key in self._ir
-        )
+        header = sorted((key, ir[key]) for key in _LEASE_HEADER_KEYS if key in ir)
         handle.write(_container_header(len(header) + 2, array=False))
         fields = [
             *header,

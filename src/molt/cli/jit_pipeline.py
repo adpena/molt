@@ -33,7 +33,6 @@ from molt.cli.backend_execution import (
 )
 from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.build_request import BuildProfile
-from molt.cli.cache_keys import FunctionDigests
 from molt.cli.build_results import (
     _build_common_build_json_data,
     _emit_build_result_json,
@@ -135,7 +134,7 @@ def _run_jit_pipeline(
     image = output_layout.output_artifact
     image.parent.mkdir(parents=True, exist_ok=True)
     ir = prepared_backend_ir.ir
-    function_digests = FunctionDigests(prepared_backend_ir.function_digest_seeds)
+    function_digests = prepared_backend_ir.take_function_digests()
     program = BackendIrProgram(ir, function_digests)
     native_target = (
         target
@@ -214,6 +213,7 @@ def _run_jit_pipeline(
         ) as scratch:
             stage = Path(scratch)
             lease = _write_backend_ir_lease(prepared_build_roots.project_root, program)
+            program.release_serialized_bodies()
             prepared = stage / "program.msgpack"
             try:
                 process = _run_completed_command(

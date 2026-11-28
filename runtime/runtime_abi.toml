@@ -1250,6 +1250,18 @@ runtime_name = "molt_build_class_builtin"
 callable_arity = 2
 
 [[import]]
+name = "class_prepare_statement"
+type = 4
+runtime_name = "molt_class_prepare_statement"
+callable_arity = 3
+
+[[import]]
+name = "class_finish_statement"
+type = 4
+runtime_name = "molt_class_finish_statement"
+callable_arity = 3
+
+[[import]]
 name = "class_builder_check"
 type = 0
 runtime_name = "molt_class_builder_check"

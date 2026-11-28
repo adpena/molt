@@ -32,13 +32,9 @@ pub(super) fn run_native_application_batches(
                 "{log_prefix}: compiling materialized batch {}/{total}",
                 batch_idx + 1
             );
-            let job = spec.job.encode()?;
-            // The byte stream owns this input now. Later jobs need neither
-            // its terminal bodies nor its projected declarations.
-            drop(spec.job);
             let origin = run_native_batch_worker_with_failure_artifacts(
                 "native application batch worker",
-                &job,
+                spec.job,
                 &spec.job_name,
                 &spec.object_path,
             )?;

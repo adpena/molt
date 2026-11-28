@@ -782,6 +782,100 @@ pub(crate) fn molt_types_resolve_bases_attached_body(
     })
 }
 
+fn finish_prepared_class(
+    py: &PyToken<'_>,
+    name: u64,
+    original_bases: u64,
+    resolved_bases: u64,
+    state: &PreparedClassState,
+) -> u64 {
+    if original_bases != resolved_bases {
+        let key = crate::NameId::DunderOrigBases.bits(py);
+        if key == 0 {
+            return MoltObject::none().bits();
+        }
+        molt_setitem_method_attached_body(py, state.namespace_bits, key, original_bases);
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+    }
+    call_with_kwargs(
+        py,
+        state.metaclass_bits,
+        &[name, resolved_bases, state.namespace_bits],
+        state.kwds_bits,
+    )
+}
+
+/// Class statements have already evaluated their bases and keywords. Enter
+/// the same preparation as the public helpers without creating their Python
+/// callable objects or packing general call arguments.
+pub(crate) fn molt_class_prepare_statement_attached_body(
+    py: &PyToken<'_>,
+    name: u64,
+    original_bases: u64,
+    keywords: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(py, py, {
+        let bases = resolve_bases_impl(py, original_bases);
+        if obj_from_bits(bases).is_none() {
+            return bases;
+        }
+        let Some(state) = prepare_class_impl(py, name, bases, keywords) else {
+            dec_ref_bits(py, bases);
+            return MoltObject::none().bits();
+        };
+        // Only the first field (the namespace) is consumed by the body.
+        // The remaining fields stay together for publication after the body.
+        let fields = [
+            state.namespace_bits,
+            state.metaclass_bits,
+            bases,
+            state.kwds_bits,
+        ];
+        let ptr = alloc_tuple(py, &fields);
+        for value in fields {
+            dec_ref_bits(py, value);
+        }
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+pub(crate) fn molt_class_finish_statement_attached_body(
+    py: &PyToken<'_>,
+    name: u64,
+    original_bases: u64,
+    prepared: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(py, py, {
+        let Some(ptr) = obj_from_bits(prepared)
+            .as_ptr()
+            .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_TUPLE })
+        else {
+            return raise_exception(py, BuiltinExc::SystemError, "invalid prepared class");
+        };
+        // Keep the immutable tuple, not an allocated copy of its fields,
+        // alive while the namespace and metaclass run arbitrary Python code.
+        inc_ref_bits(py, prepared);
+        let _prepared_owner = crate::PtrDropGuard::new(py, ptr);
+        let fields =
+            unsafe { with_immutable_tuple_slice(ptr, |fields| <[u64; 4]>::try_from(fields).ok()) };
+        let Some(Some([namespace_bits, metaclass_bits, bases, kwds_bits])) = fields else {
+            return raise_exception(py, BuiltinExc::SystemError, "invalid prepared class");
+        };
+        let state = PreparedClassState {
+            metaclass_bits,
+            namespace_bits,
+            kwds_bits,
+        };
+        finish_prepared_class(py, name, original_bases, bases, &state)
+    })
+}
+
 pub(crate) fn molt_types_new_class_attached_body(
     _py: &crate::PyToken<'_>,
     args_bits: u64,
@@ -911,41 +1005,8 @@ pub(crate) fn molt_types_new_class_attached_body(
                 return MoltObject::none().bits();
             }
         }
-        if resolved_bases_bits != bases_bits {
-            let Some(orig_bases_name_bits) = crate::NameId::DunderOrigBases.owned_bits(_py) else {
-                dec_ref_bits(_py, state.metaclass_bits);
-                dec_ref_bits(_py, state.namespace_bits);
-                dec_ref_bits(_py, state.kwds_bits);
-                dec_ref_bits(_py, resolved_bases_bits);
-                if owned_bases {
-                    dec_ref_bits(_py, bases_bits);
-                }
-                return MoltObject::none().bits();
-            };
-            let _ = molt_setitem_method_attached_body(
-                _py,
-                state.namespace_bits,
-                orig_bases_name_bits,
-                bases_bits,
-            );
-            dec_ref_bits(_py, orig_bases_name_bits);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, state.metaclass_bits);
-                dec_ref_bits(_py, state.namespace_bits);
-                dec_ref_bits(_py, state.kwds_bits);
-                dec_ref_bits(_py, resolved_bases_bits);
-                if owned_bases {
-                    dec_ref_bits(_py, bases_bits);
-                }
-                return MoltObject::none().bits();
-            }
-        }
-        let class_bits = call_with_kwargs(
-            _py,
-            state.metaclass_bits,
-            &[name_bits, resolved_bases_bits, state.namespace_bits],
-            state.kwds_bits,
-        );
+        let class_bits =
+            finish_prepared_class(_py, name_bits, bases_bits, resolved_bases_bits, &state);
         // `prepare_class_impl` returns `metaclass_bits` as an owned reference;
         // release it now that the metaclass has been called.
         dec_ref_bits(_py, state.metaclass_bits);

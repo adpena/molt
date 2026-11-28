@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_string_facts import (
+    SourceStringArguments,
+)
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from molt.compiler_analysis import python_import_scan as _source_import_scan
@@ -121,7 +124,7 @@ class _SourceScanJob(NamedTuple):
 
     module_name: str
     source: PythonSourceKey | None
-    arguments: tuple[str, ...] = ()
+    arguments: SourceStringArguments = ()
 
 
 class _SourceArgumentClasses(NamedTuple):
@@ -224,7 +227,7 @@ class _ModuleGraphDiscovery:
             str, tuple[str, _module_source.PythonSourceSnapshot | None]
         ] = {}
         self.scanned_bodies: dict[
-            str, set[tuple[PythonSourceKey, tuple[str, ...]]]
+            str, set[tuple[PythonSourceKey, SourceStringArguments]]
         ] = {}
         self.argument_classes: dict[
             str, dict[PythonSourceKey, _SourceArgumentClasses]
@@ -1320,23 +1323,22 @@ def _discovery_pass(
                 authority, uses_runtime_import_protocol=True
             )
 
+    def admit_value_imports(module: str, names: tuple[str, ...]) -> None:
+        admit_imports(names, state.contexts[module])
+
     demands = state.demands
     if demands is None:
         demands = state.demands = PythonSourceDemands(
-            admit_imports=lambda module, names: admit_imports(
-                names, state.contexts[module]
-            ),
+            admit_imports=admit_value_imports,
             queue_body=queue_scan,
             require_runtime_import_protocol=require_runtime_import_protocol,
         )
     else:
-        # The solver is retained; only its fully drained graph-owner callbacks
-        # are rebound to the current extension's result accumulator.
-        demands.admit_imports = lambda module, names: admit_imports(
-            names, state.contexts[module]
+        demands.begin_invocation(
+            admit_imports=admit_value_imports,
+            queue_body=queue_scan,
+            require_runtime_import_protocol=require_runtime_import_protocol,
         )
-        demands.queue_body = queue_scan
-        demands.require_runtime_import_protocol = require_runtime_import_protocol
 
     def drain_source_demands() -> None:
         demands.drain()
@@ -1407,8 +1409,15 @@ def _discovery_pass(
         return writes
 
     def accept_source_scan(
-        module_name, path, scan, generation=None, snapshot=None, *, source_owner=None
-    ):
+        module_name: str,
+        path: Path,
+        scan: _CompleteImportScan,
+        generation: str | None = None,
+        snapshot: _module_source.PythonSourceSnapshot | None = None,
+        *,
+        source_owner: PythonSourceKey | None = None,
+        source_arguments: SourceStringArguments = (),
+    ) -> None:
         projected.add(module_name)
         source_context = state.contexts[module_name]
         if generation is not None:
@@ -1494,7 +1503,12 @@ def _discovery_pass(
             requests = requests._replace(
                 source_values=requests.source_values._replace(activation_partitions=())
             )
-        demands.accept(module_name, requests)
+        demands.accept(
+            module_name,
+            requests,
+            source_owner=source_owner,
+            source_arguments=source_arguments,
+        )
         drain_source_demands()
         for requested_name, execution_path in scan.source_executions:
             execution_name = requested_name or resolution_cache.module_name_from_path(
@@ -1998,6 +2012,7 @@ def _discovery_pass(
                     loaded.snapshot.sha256 if loaded.snapshot is not None else None,
                     loaded.snapshot,
                     source_owner=job.source,
+                    source_arguments=job.arguments,
                 )
                 published_scans.add(job)
             if job.source is None:
@@ -2220,6 +2235,7 @@ def _discovery_pass(
             and previous.body_selection.roots != authority.body_selection.roots
         ):
             requeue_module_bodies(module_name)
+    demands.finish_invocation()
     state.validate_sources(touched | projected)
     for module_name in projected:
         authority = scan_sources[module_name]
@@ -2354,7 +2370,7 @@ def _load_module_import_scan(
     import_scan_mode: ImportScanMode,
     purpose: _source_import_scan.SourceImportPurpose,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     resolution_cache: _module_resolution._ModuleResolutionCache,
     project_root: Path | None,
     tree: ast.AST | None = None,
@@ -2744,7 +2760,7 @@ def _collect_module_import_scan(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     source_owner: PythonSourceKey | None,
-    source_arguments: tuple[str, ...],
+    source_arguments: SourceStringArguments,
     runtime_import_custody: _RuntimeImportScanCustody | None,
     ast_digest_admission: _PythonAstDigestAdmission,
     namespace_premise: PythonNamespacePremise | None,

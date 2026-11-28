@@ -183,9 +183,6 @@ def publish_frame_locations(
         for op in function["ops"]:
             class_owner = op.pop("class_frame", None)
             site_owner = class_owner or owner
-            if site_owner != last_owner:
-                last_location = None
-                last_owner = site_owner
             position = SourcePosition.from_operation(op)
             # This frontend-only end-line fact is captured in the code table;
             # the explicit publication carries its index through every IR.
@@ -218,7 +215,10 @@ def publish_frame_locations(
                 )
             ):
                 location = indices[site_owner][position]
-                if location != last_location:
+                # A synthetic operation without location/owner metadata does
+                # not switch frames. Compare owners only at real observations;
+                # control-flow boundaries below still invalidate the location.
+                if site_owner != last_owner or location != last_location:
                     if class_owner is not None:
                         # The inline region still borrows its enclosing
                         # function's homes. Publish into the class entry rather
@@ -253,6 +253,7 @@ def publish_frame_locations(
                                 "end_col_offset": position.end_column,
                             }
                         )
+                    last_owner = site_owner
                     last_location = location
             rewritten.append(op)
             # A check's normal successor is this fallthrough. It changes no

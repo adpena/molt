@@ -112,6 +112,8 @@ class PythonSourceProjection(StrEnum):
     CALL_MAPPING_VALUE = "Call.mapping_value"
     CALL_NATIVE_BUILTINS = "Call.native_builtins"
     DECORATOR_APPLY = "Decorator.apply"
+    DECORATOR_POSSIBLE_CLASS_METHOD = "Decorator.class_method"
+    DECORATOR_POSSIBLE_STATIC_METHOD = "Decorator.static_method"
     CALL_REFLECTED_BUILTINS = "Call.reflected_builtins"
     ARGUMENT_REFLECTED_GLOBALS = "Argument.reflected_globals"
     MAPPING_WRITE = "Mapping.write"

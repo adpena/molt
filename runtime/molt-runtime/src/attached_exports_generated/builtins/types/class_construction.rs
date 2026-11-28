@@ -37,6 +37,34 @@ pub unsafe extern "C" fn molt_types_resolve_bases(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_resolve_bases_attached_body(_py, args_bits, kwargs_bits)
 }
+#[unsafe(export_name = "molt_class_prepare_statement__molt_context_66fa900595616b00")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_class_prepare_statement(
+    __context: u64,
+    name: u64,
+    original_bases: u64,
+    keywords: u64,
+) -> u64 {
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_class_prepare_statement,
+    );
+    let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_class_prepare_statement_attached_body(_py, name, original_bases, keywords)
+}
+#[unsafe(export_name = "molt_class_finish_statement__molt_context_66fa900595616b00")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_class_finish_statement(
+    __context: u64,
+    name: u64,
+    original_bases: u64,
+    prepared: u64,
+) -> u64 {
+    molt_runtime_core::call_census::hit(
+        molt_runtime_core::call_census::id::molt_class_finish_statement,
+    );
+    let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_class_finish_statement_attached_body(_py, name, original_bases, prepared)
+}
 #[unsafe(export_name = "molt_types_new_class__molt_context_66fa900595616b00")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_new_class(

@@ -34,13 +34,15 @@ pub(super) fn read_daemon_job_document(
         .iter()
         .map(|digest| digest.to_string())
         .collect();
-    let admitted: Vec<_> = program
-        .shipped()
-        .map(|(digest, function)| (digest, Arc::clone(function)))
-        .collect();
     let mut resident = cache.resident_functions(program.digests(), |digest| !program.ships(digest));
+    // Pin missing inputs before admission can evict them. Charge the shipped
+    // bodies before assembly, so only admitted cache entries force a clone.
+    cache.insert_functions(
+        program
+            .shipped()
+            .map(|(digest, body)| (digest, Arc::clone(body))),
+    );
     let assembled = program.assemble(|position, _| resident[position].take());
-    cache.insert_functions(admitted);
     match assembled {
         Ok(document) => Ok(DaemonJobDocument::Ready(
             Box::new(document),

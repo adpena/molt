@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_string_facts import (
+    SourceStringArguments,
+    encode_source_string_arguments,
+)
 from molt.compilation_target import Target, is_wasm_target
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
@@ -177,7 +181,9 @@ class _ModuleSourceScanAuthority:
     requires_runtime_package_anchor: bool = False
     # Some scan of this source reached an import or an import-capable call.
     uses_runtime_import_protocol: bool = False
-    deferred_owners: frozenset[tuple[PythonSourceKey, tuple[str, ...]]] = frozenset()
+    deferred_owners: frozenset[tuple[PythonSourceKey, SourceStringArguments]] = (
+        frozenset()
+    )
     read_callables: frozenset[PythonSourceKey] = frozenset()
     namespace_premise: PythonNamespacePremise | None = None
     # The globals the module's own deferred code may rebind
@@ -385,7 +391,10 @@ class _ModuleGraphScanAuthority:
                 "mode": source.mode,
                 "source_sha256": source.source_sha256,
                 "deferred_bodies": [
-                    {"source": list(owner), "arguments": list(arguments)}
+                    {
+                        "source": list(owner),
+                        "arguments": encode_source_string_arguments(arguments),
+                    }
                     for owner, arguments in sorted(source.deferred_owners)
                 ],
                 "read_callables": [
@@ -446,7 +455,7 @@ class ImportScanQuery:
     mode: ImportScanMode
     purpose: SourceImportPurpose
     source_owner: PythonSourceKey | None
-    source_arguments: tuple[str, ...]
+    source_arguments: SourceStringArguments
     target_python: TargetPythonVersion
     target_sys_platform: str | None
     namespace_premise: PythonNamespacePremise | None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
+from molt.compiler_analysis.python_string_facts import SourceStringArguments
 
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
@@ -13,6 +14,7 @@ import os
 import posixpath
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Callable, cast
 
 import pytest
@@ -59,6 +61,77 @@ def load(path: Path, **kwargs):
     )
     options.update(kwargs)
     return discovery._load_module_import_scan(path, **options)
+
+
+@pytest.mark.parametrize(
+    ("setup", "target"),
+    [
+        ("name, *options = '  spark ,opt=true'.split(',')", "name.strip()"),
+        (
+            "name, *options = '  spark '.split(sep=',', maxsplit=0)",
+            "name.lstrip().rstrip()",
+        ),
+        (
+            "name, *options = b' presto ,opt=true'.split(b',')\n"
+            "if name == b' presto ':\n"
+            "    kind = 'presto'\n"
+            "else:\n"
+            "    kind = 'other'",
+            "kind",
+        ),
+    ],
+)
+def test_exact_text_operations_preserve_import_names(
+    monkeypatch: pytest.MonkeyPatch, setup: str, target: str
+) -> None:
+    import importlib
+
+    source = (
+        f"import importlib\n{setup}\n"
+        f"importlib.import_module(f'dialects.{{{target}}}')\n"
+    )
+    imports = _source_import_scan._collect_imports_for_graph(
+        ast.parse(source), "entry", import_scan_mode="module_init"
+    ).imports
+    observed = []
+    with monkeypatch.context() as runtime:
+
+        def import_module(name: str) -> ModuleType:
+            observed.append(name)
+            return ModuleType(name)
+
+        runtime.setattr(importlib, "import_module", import_module)
+        exec(compile(source, "<text-import-oracle>", "exec"), {})
+    assert set(imports) == {"importlib", *observed}
+
+
+def test_source_demand_rows_preserve_admitted_and_pending_slots_across_storage() -> (
+    None
+):
+    from molt.compiler_analysis.python_source_demands import (
+        SourceDemand,
+        _SourceDemandIncidences,
+    )
+
+    rows = _SourceDemandIncidences()
+    value = ("module", None)
+    seed = SourceDemand("escape", (), None, "seed")
+    assert rows.add(value, seed)
+    assert tuple(rows.take_pending(value, include_existing=False)[1]) == (seed,)
+
+    for index in range(rows._DENSE_SLOTS):
+        name = f"peer_{index}"
+        rows.add((name, None), SourceDemand("escape", (), None, name))
+
+    delayed = SourceDemand("call", ((0, "1"),), 1, "consumer")
+    earlier = rows.demands(value)
+    assert rows.add(value, delayed)
+    assert not rows.add(value, delayed)
+    assert tuple(earlier) == (seed,)
+    known, pending = rows.take_pending(value, include_existing=True)
+    assert tuple(known) == (seed,)
+    assert tuple(pending) == (delayed,)
+    assert tuple(rows.demands(value)) == (seed, delayed)
 
 
 def test_deferred_writer_refines_only_the_selected_namespace_key(
@@ -157,8 +230,10 @@ def test_import_query_records_preserve_python_string_identity(tmp_path: Path) ->
 
     options = dict(module_name="entry", is_package=False, import_scan_mode="full")
     assert records._import_scan_cache_key(
-        path, **options, source_arguments=(pair,)
-    ) != records._import_scan_cache_key(path, **options, source_arguments=(scalar,))
+        path, **options, source_arguments=((0, pair),)
+    ) != records._import_scan_cache_key(
+        path, **options, source_arguments=((0, scalar),)
+    )
 
     from molt.cli.import_graph_record import ImportResultDigests
 
@@ -830,10 +905,15 @@ def test_source_demand_activation_join_emits_only_new_incidences(tmp_path, monke
         for module, owner, _arguments in queued_bodies
     )
     assert not engine.value_candidates[value]
+    engine.demand(value, "read", consumer="borrower")
+    engine.demand(value, "factory", consumer="factory_reader")
+    assert value not in engine.value_jobs
+    assert len(tuple(engine._incidences.demands(value))) == 1
     body = load(source, import_scan_mode="module_init", source_owner=make_owner)
     engine.accept("entry", body.scan.source_requests)
     engine.drain()
     expected = {python_node_source_key(node) for node in tree.body[:2]}
+    assert expected <= engine.read_callables["entry"]
     assert {
         candidate.source for candidate in engine.value_candidates[value]
     } == expected
@@ -1616,7 +1696,7 @@ def test_inherited_providers_share_search_and_rebind_after_shadowing(
     for receiver in (left, right):
         assert engine._select_class_members(
             receiver, "factory", ("consumer", None), strict=False
-        ) == {original._replace(kind="bound_class_method", receiver=receiver.value)}
+        ) == {original._replace(kind="bound_method", receiver=receiver.value)}
     assert sum(call.args[0] == parent.value for call in follow.call_args_list) == 1
 
     engine._publish(
@@ -1627,7 +1707,7 @@ def test_inherited_providers_share_search_and_rebind_after_shadowing(
     for receiver in (left, right):
         assert engine._select_class_members(
             receiver, "factory", ("consumer", None), strict=False
-        ) == {shadow._replace(kind="bound_class_method", receiver=receiver.value)}
+        ) == {shadow._replace(kind="bound_method", receiver=receiver.value)}
 
 
 def test_class_member_query_shares_selection_and_replays_property_origins(
@@ -3295,7 +3375,7 @@ def test_shared_deferred_requests_bind_owner_and_arguments(
     options = dict(
         import_scan_mode="module_init",
         source_owner=owners[function],
-        source_arguments=(argument,),
+        source_arguments=((0, argument),),
     )
     cold = load(source, project_root=first, **options)
     warm = load(source, project_root=second, **options)
@@ -3383,9 +3463,9 @@ def test_module_export_fact_is_shared_by_owner_arguments_and_star_consumer(
         )
         for owner, arguments in (
             (None, ()),
-            (owners[0], ("one",)),
-            (owners[0], ("two",)),
-            (owners[1], ("one",)),
+            (owners[0], ((0, "one"),)),
+            (owners[0], ((0, "two"),)),
+            (owners[1], ((0, "one"),)),
         )
     ]
     children, exports = scanner._expand_static_package_all_star_children(
@@ -3446,8 +3526,8 @@ def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
     ):
         for source_owner, arguments in (
             (None, ()),
-            (owner, ("one",)),
-            (owner, ("two",)),
+            (owner, ((0, "one"),)),
+            (owner, ((0, "two"),)),
         ):
             projection = _source_import_scan._collect_imports_for_graph(
                 parsed.tree,
@@ -4510,7 +4590,7 @@ def test_argument_class_representative_scans_like_every_member(
             source,
             import_scan_mode="module_init",
             source_owner=hook,
-            source_arguments=(argument,),
+            source_arguments=((0, argument),),
             namespace_premise=WHOLE_PROGRAM,
         )
 
@@ -4556,7 +4636,7 @@ def test_member_reads_share_one_hook_scan_per_argument_class(
     hook_jobs = sorted(
         arguments for module, owner, arguments in scanned if owner == hook
     )
-    assert hook_jobs == [(), (UNMATCHED_ARGUMENT,), ("tasks",)]
+    assert hook_jobs == [(), ((0, UNMATCHED_ARGUMENT),), ((0, "tasks"),)]
     assert "tasks_leaf" in imports
     assert "futures_leaf" not in imports
     body_loads = set()
@@ -4564,7 +4644,7 @@ def test_member_reads_share_one_hook_scan_per_argument_class(
 
     def observe(path: Path, **kwargs: object) -> discovery._LoadedModuleImportScan:
         if kwargs["module_name"] == "hooked" and kwargs.get("source_owner") == hook:
-            body_loads.add(cast(tuple[str, ...], kwargs["source_arguments"]))
+            body_loads.add(cast(SourceStringArguments, kwargs["source_arguments"]))
         load_scan = cast(Callable[..., discovery._LoadedModuleImportScan], original)
         return load_scan(path, **kwargs)
 
@@ -4616,11 +4696,11 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
     )
     engine.accept("hooked", scan)
     for argument in ("x", "y", "a"):
-        engine.demand(("hooked", hook), "call", (argument,))
+        engine.demand(("hooked", hook), "call", ((0, argument),))
     engine.drain()
     assert sorted(bodies) == [
-        ("hooked", hook, (UNMATCHED_ARGUMENT,)),
-        ("hooked", hook, ("a",)),
+        ("hooked", hook, ((0, UNMATCHED_ARGUMENT),)),
+        ("hooked", hook, ((0, "a"),)),
     ]
     shrunk = scan._replace(
         source_values=scan.source_values._replace(
@@ -4630,18 +4710,18 @@ def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
     engine.accept("hooked", shrunk)
     engine.drain()
     assert sorted(arguments for _, _, arguments in bodies) == [
-        (UNMATCHED_ARGUMENT,),
-        ("a",),
-        ("x",),
-        ("y",),
+        ((0, UNMATCHED_ARGUMENT),),
+        ((0, "a"),),
+        ((0, "x"),),
+        ((0, "y"),),
     ]
 
     # Another context can prove its partition without erasing the context
     # that requires exact arguments. A new argument still gets its own body.
     engine.accept("hooked", scan)
-    engine.demand(("hooked", hook), "call", ("z",))
+    engine.demand(("hooked", hook), "call", ((0, "z"),))
     engine.drain()
-    assert bodies[-1] == ("hooked", hook, ("z",))
+    assert bodies[-1] == ("hooked", hook, ((0, "z"),))
 
 
 @pytest.mark.parametrize("corruption", [None, "length", "unsorted", "type"])

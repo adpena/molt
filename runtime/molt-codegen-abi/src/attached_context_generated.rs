@@ -832,11 +832,13 @@ macro_rules! attached_symbol {
     ("molt_class_body_builtins") => { "molt_class_body_builtins__molt_context_66fa900595616b00" };
     ("molt_class_builder_check") => { "molt_class_builder_check__molt_context_66fa900595616b00" };
     ("molt_class_def_namespace") => { "molt_class_def_namespace__molt_context_66fa900595616b00" };
+    ("molt_class_finish_statement") => { "molt_class_finish_statement__molt_context_66fa900595616b00" };
     ("molt_class_frame_enter") => { "molt_class_frame_enter__molt_context_66fa900595616b00" };
     ("molt_class_frame_exit") => { "molt_class_frame_exit__molt_context_66fa900595616b00" };
     ("molt_class_frame_set_location") => { "molt_class_frame_set_location__molt_context_66fa900595616b00" };
     ("molt_class_layout_version") => { "molt_class_layout_version__molt_context_66fa900595616b00" };
     ("molt_class_new") => { "molt_class_new__molt_context_66fa900595616b00" };
+    ("molt_class_prepare_statement") => { "molt_class_prepare_statement__molt_context_66fa900595616b00" };
     ("molt_class_set_base") => { "molt_class_set_base__molt_context_66fa900595616b00" };
     ("molt_class_set_definition") => { "molt_class_set_definition__molt_context_66fa900595616b00" };
     ("molt_classmethod_builtin") => { "molt_classmethod_builtin__molt_context_66fa900595616b00" };
@@ -1324,7 +1326,6 @@ macro_rules! attached_symbol {
     ("molt_email_utils_parsedate_to_datetime") => { "molt_email_utils_parsedate_to_datetime__molt_context_66fa900595616b00" };
     ("molt_email_utils_parsedate_tz") => { "molt_email_utils_parsedate_tz__molt_context_66fa900595616b00" };
     ("molt_encodings_aliases_map") => { "molt_encodings_aliases_map__molt_context_66fa900595616b00" };
-    ("molt_enum_auto_value") => { "molt_enum_auto_value__molt_context_66fa900595616b00" };
     ("molt_enum_create") => { "molt_enum_create__molt_context_66fa900595616b00" };
     ("molt_enum_flag_and") => { "molt_enum_flag_and__molt_context_66fa900595616b00" };
     ("molt_enum_flag_contains") => { "molt_enum_flag_contains__molt_context_66fa900595616b00" };
@@ -1333,7 +1334,6 @@ macro_rules! attached_symbol {
     ("molt_enum_flag_or") => { "molt_enum_flag_or__molt_context_66fa900595616b00" };
     ("molt_enum_flag_xor") => { "molt_enum_flag_xor__molt_context_66fa900595616b00" };
     ("molt_enum_init_member") => { "molt_enum_init_member__molt_context_66fa900595616b00" };
-    ("molt_enum_is_auto") => { "molt_enum_is_auto__molt_context_66fa900595616b00" };
     ("molt_enum_is_descriptor") => { "molt_enum_is_descriptor__molt_context_66fa900595616b00" };
     ("molt_enum_member") => { "molt_enum_member__molt_context_66fa900595616b00" };
     ("molt_enum_str_value") => { "molt_enum_str_value__molt_context_66fa900595616b00" };

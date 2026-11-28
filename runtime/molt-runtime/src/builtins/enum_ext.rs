@@ -1,18 +1,11 @@
 // === FILE: runtime/molt-runtime/src/builtins/enum_ext.rs ===
 //
-// Intrinsics for Flag, IntFlag, StrEnum, and auto() enumeration machinery.
+// Intrinsics for Flag, IntFlag, and StrEnum.
 //
 // Flag values are integer bitmasks.  All Flag operations work entirely in the
 // NaN-boxed integer / float domain – no heap allocation for the bitmask value
 // itself.  The Python wrapper classes hold the integer value; the intrinsics
 // compute the combined/decomposed values and report membership.
-//
-// auto() values: Python maintains a per-class counter in _generate_next_value_;
-// here we provide a simple monotonic counter that returns the next power-of-2
-// for Flag-style enums when count_bits represents the *number of existing
-// members* (0-based), and a plain 1-based index for non-Flag enums.
-// The Python stdlib wrapper can call molt_enum_auto_value(len(existing_members))
-// to get the next value.
 
 use crate::object::builders::alloc_class_obj;
 use crate::*;
@@ -157,43 +150,6 @@ pub(crate) fn molt_enum_flag_decompose_attached_body(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// auto() value generation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Compute the next `auto()` value given the current member count.
-///
-/// For standard (non-Flag) enums: returns `count + 1` (1-based index).
-/// The Python wrapper decides based on enum kind whether to use the returned
-/// value directly (for Enum/IntEnum/StrEnum) or left-shift it (for Flag).
-///
-/// For Flag enums the wrapper calls `1 << molt_enum_auto_value(count)` to get
-/// the next power-of-two — but for simplicity we expose the raw count-based
-/// formula here.  The stdlib `_generate_next_value_` hook in Flag already does
-/// the bit-shift math; the intrinsic just hands back an integer the Python
-/// layer can use as the seed.
-///
-/// Returns: `count + 1` as a NaN-boxed int.
-pub(crate) fn molt_enum_auto_value_attached_body(_py: &crate::PyToken<'_>, count_bits: u64) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, _py, {
-        let Some(count) = to_i64(obj_from_bits(count_bits)) else {
-            return raise_exception::<_>(
-                _py,
-                BuiltinExc::TypeError,
-                "auto() count must be an integer",
-            );
-        };
-        if count < 0 {
-            return raise_exception::<_>(
-                _py,
-                BuiltinExc::ValueError,
-                "auto() count must be non-negative",
-            );
-        }
-        MoltObject::from_int(count + 1).bits()
-    })
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // @unique / duplicate-value checking
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -251,35 +207,6 @@ pub(crate) fn molt_enum_is_descriptor_attached_body(
             }
         }
         MoltObject::from_bool(false).bits()
-    })
-}
-
-/// Check whether an object is an auto() sentinel (has _molt_auto == True).
-///
-/// Returns True/False as NaN-boxed bool.
-pub(crate) fn molt_enum_is_auto_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, _py, {
-        let owner_bits = type_of_bits(_py, obj_bits);
-        let Some(owner_ptr) = obj_from_bits(owner_bits).as_ptr() else {
-            return MoltObject::from_bool(false).bits();
-        };
-        if unsafe { object_type_id(owner_ptr) } != TYPE_ID_TYPE {
-            return MoltObject::from_bool(false).bits();
-        }
-        let Some(name_key) = crate::NameId::PrivateMoltAuto.owned_bits(_py) else {
-            return MoltObject::from_bool(false).bits();
-        };
-        let val =
-            unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key) };
-        dec_ref_bits(_py, name_key);
-        let val = match val {
-            Ok(value) => value,
-            Err(()) => return MoltObject::none().bits(),
-        };
-        let Some(val_bits) = val else {
-            return MoltObject::from_bool(false).bits();
-        };
-        MoltObject::from_bool(is_truthy(_py, obj_from_bits(val_bits))).bits()
     })
 }
 

@@ -1695,9 +1695,9 @@ def _compile_with_backend_daemon(
     full_request_sent = False
     # A probe miss ships the positions the daemon named, then, if a body was
     # evicted meanwhile, every body: a complete lease cannot miss.
-    leases: tuple[list[int] | None, ...] = (
-        (shipped, None) if error is None and shipped is not None else ()
-    )
+    leases: tuple[list[int] | None, ...] = ()
+    if error is None and shipped is not None:
+        leases = (None,) if len(set(shipped)) == len(program) else (shipped, None)
     for lease_shipped in leases:
         try:
             ir_lease = _write_backend_ir_lease(
@@ -1712,6 +1712,8 @@ def _compile_with_backend_daemon(
                 break
             assert compile_request is not None
             full_request_sent = True
+            if lease_shipped is None:
+                program.release_serialized_bodies()
             response, error = send(compile_request)
         finally:
             with contextlib.suppress(OSError):

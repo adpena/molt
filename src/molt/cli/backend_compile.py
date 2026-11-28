@@ -122,7 +122,7 @@ from molt.exact_json import loads_exact
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 from molt.file_locks import _shared_cache_lock
 from molt.target_python import TargetPythonVersion
-from molt import host_capacity
+from molt import host_capacity, process_model
 
 
 if TYPE_CHECKING:
@@ -161,13 +161,20 @@ def _with_worker_memory_budget(env: Mapping[str, str]) -> dict[str, str]:
     fits beside the running workers in this budget (molt-backend
     ``native_batch/worker/admission.rs``), so a cold build is bounded by
     memory, not by core count. A value a launcher or guard already set wins.
+    Delegate the caller's remaining guarded tree slice independently of raw
+    host availability. The backend charges its own live RSS to that slice.
     The figures are request resources, never cache-key inputs.
     """
     selected = dict(env)
+    capacity = host_capacity.memory_capacity(selected)
+    if capacity.tree_limit_bytes is not None:
+        resident = process_model.current_process_resident_bytes()
+        selected["MOLT_BACKEND_TREE_SLICE_BYTES"] = str(
+            max(0, capacity.tree_limit_bytes - resident) if resident is not None else 0
+        )
     if any(key in selected for key in _MEMORY_AVAILABILITY_KEYS):
         return selected
-    capacity = host_capacity.memory_capacity()
-    _total, available = capacity.bounded_bytes
+    available = capacity.available_bytes
     if available is None:
         return selected
     gib = 1024**3

@@ -829,11 +829,7 @@ def test_nested_function_compile_restores_class_body_loop_state() -> None:
         return const_names.get(args[1])
 
     done_store = next(
-        op
-        for op in main_ops
-        if op["kind"] == "store_index"
-        and op.get("container_type") == "dict"
-        and key_name(op) == "done"
+        op for op in main_ops if op["kind"] == "store_index" and key_name(op) == "done"
     )
 
     def namespace_probe(value: str) -> dict:
@@ -857,7 +853,6 @@ def test_nested_function_compile_restores_class_body_loop_state() -> None:
         op
         for op in main_ops
         if op["kind"] == "store_index"
-        and op.get("container_type") == "dict"
         and op["args"][0] == class_ns
         and key_name(op) == "total"
         and by_out.get(op["args"][2], {}).get("kind") == "add"

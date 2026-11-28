@@ -1298,6 +1298,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "int",
+      "name": "MOLT_BACKEND_TREE_SLICE_BYTES",
+      "output_neutral": true,
+      "owner": "runtime/molt-passes/src/memory_budget.rs",
+      "summary": "Bytes of the caller's guarded allocation available to the backend coordinator and its workers at dispatch. Worker admission charges the coordinator's live resident bytes against this slice independently of host headroom.",
+      "values": []
+    },
+    {
       "audience": "developer",
       "default": "",
       "kind": "path",

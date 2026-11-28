@@ -1,4 +1,4 @@
-use super::compile::NativeWorkerOrigin;
+use super::{admission::WorkerPermit, compile::NativeWorkerOrigin};
 use std::{io, path::Path};
 
 #[cfg(test)]
@@ -10,6 +10,7 @@ use super::compile::compile_native_batch_object_job_bytes;
 pub(super) fn run_native_batch_worker(
     job: &[u8],
     object_path: &Path,
+    permit: WorkerPermit,
 ) -> io::Result<NativeWorkerOrigin> {
     use crate::backend_process::input::ContentIdentity;
     use std::io::{Read as _, Write as _};
@@ -32,9 +33,6 @@ pub(super) fn run_native_batch_worker(
     }
     // A daemon worker gets its request's settings, not the daemon's.
     molt_backend::backend_environment::configure_child(&mut command);
-    // Start only when the worker's expected peak fits the request's memory
-    // budget beside the workers already running.
-    let permit = super::admission::WorkerPermit::acquire();
     let mut child = command.spawn().map_err(|err| {
         io::Error::other(format!(
             "failed to spawn native batch worker '{}': {err}",
@@ -150,9 +148,8 @@ fn wait_with_resident_peak(
 pub(super) fn run_native_batch_worker(
     job: &[u8],
     object_path: &Path,
+    permit: WorkerPermit,
 ) -> io::Result<NativeWorkerOrigin> {
-    // The in-process stand-in passes through the same admission.
-    let permit = super::admission::WorkerPermit::acquire();
     let origin = compile_native_batch_object_job_bytes(job, object_path);
     permit.finish(None);
     origin

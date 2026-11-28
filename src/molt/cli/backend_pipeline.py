@@ -31,7 +31,6 @@ from molt.cli.backend_ir_transport import BackendIrLease, BackendIrProgram
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
-from molt.cli.cache_keys import FunctionDigests
 from molt.cli.external_native import _external_native_artifact_output_custody_error
 from molt.cli.build_request import BuildProfile
 from molt.cli.models import (
@@ -162,7 +161,7 @@ def _run_backend_pipeline(
             for module, inputs in prepared_backend_ir.module_lowering_inputs.items()
         }
     ir = prepared_backend_ir.ir
-    function_digests = FunctionDigests(prepared_backend_ir.function_digest_seeds)
+    function_digests = prepared_backend_ir.take_function_digests()
     # The one addressed form of this IR every backend transport writes (HF-516).
     program = BackendIrProgram(ir, function_digests)
     required_link_features = prepared_backend_ir.required_link_features
@@ -245,6 +244,7 @@ def _run_backend_pipeline(
                 program,
                 bind_input=capture_link_inputs,
             )
+            program.release_serialized_bodies()
         return backend_ir_lease
 
     def _cleanup_backend_ir_file_path() -> None:

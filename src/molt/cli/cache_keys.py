@@ -342,6 +342,10 @@ class FunctionDigests:
         # Publish only after every seed and optional verification has succeeded.
         self._by_identity = admitted
 
+    def release_bodies(self) -> None:
+        """End this identity owner's lifetime after the complete lease is published."""
+        self._by_identity.clear()
+
     def digest(self, function: object) -> bytes:
         held = self._by_identity.get(id(function))
         if held is not None and held[0] is function:

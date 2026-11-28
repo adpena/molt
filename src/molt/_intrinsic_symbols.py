@@ -1216,6 +1216,8 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_static_cells_bind": ("molt_static_cells_bind", 4),
     "molt_build_class_builtin": ("molt_build_class_builtin", 2),
     "molt_class_builder_check": ("molt_class_builder_check", 0),
+    "molt_class_prepare_statement": ("molt_class_prepare_statement", 3),
+    "molt_class_finish_statement": ("molt_class_finish_statement", 3),
     "molt_class_body_builtins": ("molt_class_body_builtins", 1),
     "molt_code_set_class_body": ("molt_code_set_class_body", 1),
     "molt_class_frame_enter": ("molt_class_frame_enter", 3),
@@ -1660,7 +1662,6 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_decimal_to_int": ("molt_decimal_to_int", 1),
     "molt_decimal_to_integral_exact": ("molt_decimal_to_integral_exact", 2),
     "molt_decimal_to_integral_value": ("molt_decimal_to_integral_value", 2),
-    "molt_enum_auto_value": ("molt_enum_auto_value", 1),
     "molt_enum_flag_and": ("molt_enum_flag_and", 2),
     "molt_enum_flag_contains": ("molt_enum_flag_contains", 2),
     "molt_enum_flag_decompose": ("molt_enum_flag_decompose", 1),
@@ -2239,7 +2240,6 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_datetime_format_time": ("molt_datetime_format_time", 5),
     "molt_datetime_time_repr": ("molt_datetime_time_repr", 4),
     "molt_datetime_timetuple": ("molt_datetime_timetuple", 9),
-    "molt_enum_is_auto": ("molt_enum_is_auto", 1),
     "molt_enum_is_descriptor": ("molt_enum_is_descriptor", 1),
     "molt_json_calc_lineno_col": ("molt_json_calc_lineno_col", 2),
     "molt_json_coerce_text": ("molt_json_coerce_text", 1),
@@ -2387,7 +2387,7 @@ INTRINSIC_RUNTIME_ROOTS: dict[str, tuple[str, ...]] = {
     "molt_urllib_request_open": ("socketserver",),
 }
 RUNTIME_ROOTS_FINGERPRINT = 0x650eaa14af1188ea
-INTRINSIC_MANIFEST_FINGERPRINT = 0x0700e6a562ff02e1
+INTRINSIC_MANIFEST_FINGERPRINT = 0x91aa5ffbb4205776
 
 
 def intrinsic_runtime_symbol_name(name: str) -> str:

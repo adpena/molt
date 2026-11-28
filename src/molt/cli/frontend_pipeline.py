@@ -907,6 +907,9 @@ def _prepare_frontend_stage_state(
     if prepared_build_outputs_error is not None:
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
     assert prepared_build_outputs is not None
+    # Materialization owns the immutable plan. Module analysis cannot schedule
+    # more discovery or retain the discovery solver's working sets.
+    del prepared_module_graph
     if graph_context is not None and replayed_plan is None:
         from molt.cli.import_graph_record import publish_import_graph
 

@@ -133,6 +133,11 @@ pub(super) unsafe fn builtin_call_binding(
                 bind_builtin_exception_args(_py, args, false)
             }));
         }
+        if matches_builtin!(molt_type_prepare) {
+            // CPython's default class hook ignores the entire evaluated call.
+            // The constructor still receives the original class keywords.
+            return Some(BuiltinCallBinding::Arguments(|_, _, _, _| Some(Vec::new())));
+        }
         if matches_builtin!(molt_object_init_subclass) {
             return Some(BuiltinCallBinding::Arguments(|py, _, args, _storage| {
                 bind_builtin_class_hook(py, args)

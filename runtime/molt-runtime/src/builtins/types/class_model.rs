@@ -311,6 +311,37 @@ pub(crate) fn molt_type_of_attached_body(_py: &crate::PyToken<'_>, val_bits: u64
     crate::with_attached_entry_nopanic!(_py, _py, { type_of_owned(_py, val_bits) })
 }
 
+/// Populate a dynamic type's copied namespace from the executing Python
+/// frame, as CPython's type_new_set_module does before class hooks run.
+fn set_default_type_module(py: &PyToken<'_>, namespace: *mut u8) -> Result<(), ()> {
+    let globals = crate::builtins::frames::frame_stack_active_globals_bits();
+    if globals == 0 {
+        return Ok(());
+    }
+    let module_key = crate::NameId::DunderModule.bits(py);
+    if module_key == 0 {
+        return Err(());
+    }
+    if unsafe { dict_get_in_place(py, namespace, module_key) }?.is_some() {
+        return Ok(());
+    }
+    let Some(storage) = crate::builtins::frames::globals_namespace_storage_bits(py, globals)?
+    else {
+        return Ok(());
+    };
+    let name_key = crate::NameId::DunderName.bits(py);
+    if name_key == 0 {
+        return Err(());
+    }
+    let Some(module) = crate::builtins::modules::lookup_namespace_item(py, storage, name_key)?
+    else {
+        return Ok(());
+    };
+    let stored = unsafe { dict_set_in_place(py, namespace, module_key, module) };
+    dec_ref_bits(py, module);
+    stored.then_some(()).ok_or(())
+}
+
 pub(crate) fn molt_type_new_attached_body(
     _py: &crate::PyToken<'_>,
     cls_bits: u64,
@@ -519,7 +550,9 @@ pub(crate) fn molt_type_new_attached_body(
             }
         }
 
-        if unsafe { !class_finalize_namespace_metadata(_py, class_ptr, name_bits) } {
+        if set_default_type_module(_py, namespace_ptr).is_err()
+            || unsafe { !class_finalize_namespace_metadata(_py, class_ptr, name_bits) }
+        {
             if bases_owned {
                 dec_ref_bits(_py, bases_tuple_bits);
             }
@@ -585,12 +618,7 @@ pub(crate) fn molt_type_init_attached_body(
     })
 }
 
-pub(crate) fn molt_type_prepare_attached_body(
-    _py: &crate::PyToken<'_>,
-    _cls_bits: u64,
-    _name_bits: u64,
-    _bases_bits: u64,
-) -> u64 {
+pub(crate) fn molt_type_prepare_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {

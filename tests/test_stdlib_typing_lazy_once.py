@@ -241,6 +241,37 @@ def test_callable_and_paramspec_preserve_their_cpython_boundaries(
         assert str(actual_error.value) == str(expected_error.value)
 
 
+@pytest.mark.parametrize(
+    ("name", "parameters"),
+    [
+        ("AbstractSet", int),
+        ("MutableSet", int),
+        ("MappingView", int),
+        ("KeysView", str),
+        ("ItemsView", (str, int)),
+        ("ValuesView", int),
+    ],
+)
+def test_typing_collection_abc_alias_uses_declared_origin(
+    molt_typing: types.ModuleType, name: str, parameters: object
+) -> None:
+    import typing as cpython_typing
+
+    actual = getattr(molt_typing, name)
+    expected = getattr(cpython_typing, name)
+    assert name in molt_typing.__all__ and name in cpython_typing.__all__
+    origin_name = cpython_typing.get_origin(expected).__name__
+    abc = molt_typing._collections_abc_module
+    assert molt_typing.get_origin(actual) is getattr(abc, origin_name)
+    actual_applied = actual[parameters]
+    expected_applied = expected[parameters]
+    assert repr(actual_applied) == repr(expected_applied)
+    assert molt_typing.get_origin(actual_applied) is getattr(abc, origin_name)
+    assert molt_typing.get_args(actual_applied) == cpython_typing.get_args(
+        expected_applied
+    )
+
+
 def test_typing_collection_uses_python_equality_and_iterable_metadata(molt_typing):
     import typing as host_typing
 

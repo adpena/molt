@@ -7,7 +7,7 @@
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
-use molt_host_process::parse_nonnegative_gb;
+use molt_host_process::{current_process_rss_bytes, parse_nonnegative_gb};
 
 /// Raw memory availability, most specific first. The admitted process cap is
 /// separate: its host reserve has already been deducted.
@@ -40,14 +40,17 @@ pub fn env_memory_budget_bytes() -> Option<u64> {
     memory_budget_bytes(available, reserve, process_cap)
 }
 
-/// Memory the backend's worker processes may hold together: raw availability
-/// after its reserve. Each worker is its own process, so the backend
-/// process's own admitted cap does not bound their sum. `None` when the
-/// launcher supplied no availability.
+/// Intersect raw host availability with the live remainder of the caller's
+/// guarded tree allocation. The per-process cap cannot bound several workers.
 pub fn worker_tree_budget_bytes() -> Option<u64> {
-    let available = first_gb_env(&AVAILABLE_GB_ENV)?;
+    let available = first_gb_env(&AVAILABLE_GB_ENV);
     let reserve = first_gb_env(&RESERVE_GB_ENV).unwrap_or(0);
-    Some(available.saturating_sub(reserve))
+    let slice = backend_env::var(BackendEnv::MOLT_BACKEND_TREE_SLICE_BYTES)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    let remaining =
+        slice.map(|slice| current_process_rss_bytes().map_or(0, |rss| slice.saturating_sub(rss)));
+    memory_budget_bytes(available, reserve, remaining)
 }
 
 fn memory_budget_bytes(
@@ -98,7 +101,20 @@ pub fn backend_memory_limit_bytes() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::memory_budget_bytes;
+    use super::{backend_env, memory_budget_bytes, worker_tree_budget_bytes};
+
+    #[test]
+    fn a_spent_tree_allocation_prevents_concurrent_workers_even_with_free_host_memory() {
+        let vars = serde_json::json!({
+            "MOLT_BACKEND_MEMORY_AVAILABLE_GB": "16",
+            "MOLT_BACKEND_MEMORY_RESERVE_GB": "4",
+            "MOLT_BACKEND_TREE_SLICE_BYTES": "1",
+        });
+        let request = backend_env::BackendEnvironment::from_request(vars.as_object().unwrap())
+            .expect("valid worker resource request");
+        let _scope = backend_env::enter(std::sync::Arc::new(request));
+        assert_eq!(worker_tree_budget_bytes(), Some(0));
+    }
 
     #[test]
     fn admitted_cap_and_raw_availability_have_distinct_reserve_semantics() {

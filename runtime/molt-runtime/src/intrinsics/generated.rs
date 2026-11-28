@@ -2100,6 +2100,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_def_namespace),
     },
     IntrinsicSpec {
+        name: "molt_class_finish_statement",
+        symbol: "molt_class_finish_statement",
+        arity: 3,
+        defaults: &[],
+        public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_finish_statement),
+    },
+    IntrinsicSpec {
         name: "molt_class_frame_enter",
         symbol: "molt_class_frame_enter",
         arity: 3,
@@ -2130,6 +2138,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
         public: None,
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_new),
+    },
+    IntrinsicSpec {
+        name: "molt_class_prepare_statement",
+        symbol: "molt_class_prepare_statement",
+        arity: 3,
+        defaults: &[],
+        public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_prepare_statement),
     },
     IntrinsicSpec {
         name: "molt_class_set_base",
@@ -5372,14 +5388,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_encodings_aliases_map),
     },
     IntrinsicSpec {
-        name: "molt_enum_auto_value",
-        symbol: "molt_enum_auto_value",
-        arity: 1,
-        defaults: &[],
-        public: None,
-        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_auto_value),
-    },
-    IntrinsicSpec {
         name: "molt_enum_flag_and",
         symbol: "molt_enum_flag_and",
         arity: 2,
@@ -5434,14 +5442,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
         public: None,
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_init_member),
-    },
-    IntrinsicSpec {
-        name: "molt_enum_is_auto",
-        symbol: "molt_enum_is_auto",
-        arity: 1,
-        defaults: &[],
-        public: None,
-        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_is_auto),
     },
     IntrinsicSpec {
         name: "molt_enum_is_descriptor",
@@ -18877,4 +18877,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x0700e6a562ff02e1;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x91aa5ffbb4205776;

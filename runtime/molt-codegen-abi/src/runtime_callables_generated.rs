@@ -665,10 +665,12 @@ pub enum RuntimeCallable {
     molt_class_body_builtins = 0xFFFFFFBABE7A0D14,
     molt_class_builder_check = 0xFFFFFF9A9C603326,
     molt_class_def_namespace = 0xFFFFFFEFB7EC77E9,
+    molt_class_finish_statement = 0xFFFFFF622F6826E4,
     molt_class_frame_enter = 0xFFFFFF4F79C25B61,
     molt_class_frame_exit = 0xFFFFFF0B2FE8ACE1,
     molt_class_frame_set_location = 0xFFFFFFDE65B14444,
     molt_class_new = 0xFFFFFFEF9D0BB4F8,
+    molt_class_prepare_statement = 0xFFFFFF989D54028F,
     molt_class_set_base = 0xFFFFFF415A643EC8,
     molt_classmethod_get = 0xFFFFFFFAD6DE981B,
     molt_classmethod_init = 0xFFFFFF9F1AB0C76E,
@@ -1095,7 +1097,6 @@ pub enum RuntimeCallable {
     molt_email_utils_parsedate_to_datetime = 0xFFFFFFF83BFB3AD7,
     molt_email_utils_parsedate_tz = 0xFFFFFF58CE6239FA,
     molt_encodings_aliases_map = 0xFFFFFFD2EA4FF0CB,
-    molt_enum_auto_value = 0xFFFFFF55104218A4,
     molt_enum_flag_and = 0xFFFFFFDA202C64DD,
     molt_enum_flag_contains = 0xFFFFFFF3B29C25C2,
     molt_enum_flag_decompose = 0xFFFFFF29A7C03064,
@@ -1103,7 +1104,6 @@ pub enum RuntimeCallable {
     molt_enum_flag_or = 0xFFFFFFCAE1C7B50D,
     molt_enum_flag_xor = 0xFFFFFF0B1D8954D6,
     molt_enum_init_member = 0xFFFFFFB00546CB0E,
-    molt_enum_is_auto = 0xFFFFFFFCABD33F60,
     molt_enum_is_descriptor = 0xFFFFFF708B303016,
     molt_enum_str_value = 0xFFFFFF28A687B7B6,
     molt_enumerate_builtin = 0xFFFFFFE2191484A3,
@@ -3841,10 +3841,12 @@ const _: () = {
     assert!(RuntimeCallable::molt_class_body_builtins.key() == runtime_callable_key("molt_class_body_builtins"));
     assert!(RuntimeCallable::molt_class_builder_check.key() == runtime_callable_key("molt_class_builder_check"));
     assert!(RuntimeCallable::molt_class_def_namespace.key() == runtime_callable_key("molt_class_def_namespace"));
+    assert!(RuntimeCallable::molt_class_finish_statement.key() == runtime_callable_key("molt_class_finish_statement"));
     assert!(RuntimeCallable::molt_class_frame_enter.key() == runtime_callable_key("molt_class_frame_enter"));
     assert!(RuntimeCallable::molt_class_frame_exit.key() == runtime_callable_key("molt_class_frame_exit"));
     assert!(RuntimeCallable::molt_class_frame_set_location.key() == runtime_callable_key("molt_class_frame_set_location"));
     assert!(RuntimeCallable::molt_class_new.key() == runtime_callable_key("molt_class_new"));
+    assert!(RuntimeCallable::molt_class_prepare_statement.key() == runtime_callable_key("molt_class_prepare_statement"));
     assert!(RuntimeCallable::molt_class_set_base.key() == runtime_callable_key("molt_class_set_base"));
     assert!(RuntimeCallable::molt_classmethod_get.key() == runtime_callable_key("molt_classmethod_get"));
     assert!(RuntimeCallable::molt_classmethod_init.key() == runtime_callable_key("molt_classmethod_init"));
@@ -4271,7 +4273,6 @@ const _: () = {
     assert!(RuntimeCallable::molt_email_utils_parsedate_to_datetime.key() == runtime_callable_key("molt_email_utils_parsedate_to_datetime"));
     assert!(RuntimeCallable::molt_email_utils_parsedate_tz.key() == runtime_callable_key("molt_email_utils_parsedate_tz"));
     assert!(RuntimeCallable::molt_encodings_aliases_map.key() == runtime_callable_key("molt_encodings_aliases_map"));
-    assert!(RuntimeCallable::molt_enum_auto_value.key() == runtime_callable_key("molt_enum_auto_value"));
     assert!(RuntimeCallable::molt_enum_flag_and.key() == runtime_callable_key("molt_enum_flag_and"));
     assert!(RuntimeCallable::molt_enum_flag_contains.key() == runtime_callable_key("molt_enum_flag_contains"));
     assert!(RuntimeCallable::molt_enum_flag_decompose.key() == runtime_callable_key("molt_enum_flag_decompose"));
@@ -4279,7 +4280,6 @@ const _: () = {
     assert!(RuntimeCallable::molt_enum_flag_or.key() == runtime_callable_key("molt_enum_flag_or"));
     assert!(RuntimeCallable::molt_enum_flag_xor.key() == runtime_callable_key("molt_enum_flag_xor"));
     assert!(RuntimeCallable::molt_enum_init_member.key() == runtime_callable_key("molt_enum_init_member"));
-    assert!(RuntimeCallable::molt_enum_is_auto.key() == runtime_callable_key("molt_enum_is_auto"));
     assert!(RuntimeCallable::molt_enum_is_descriptor.key() == runtime_callable_key("molt_enum_is_descriptor"));
     assert!(RuntimeCallable::molt_enum_str_value.key() == runtime_callable_key("molt_enum_str_value"));
     assert!(RuntimeCallable::molt_enumerate_builtin.key() == runtime_callable_key("molt_enumerate_builtin"));

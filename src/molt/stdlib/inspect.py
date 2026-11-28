@@ -9,6 +9,7 @@ Pure-forwarding shims eliminated per MOL-215 where argument signatures permit.
 from __future__ import annotations
 
 from typing import Any
+from collections import namedtuple as _namedtuple
 from functools import partial as _partial
 import collections.abc as _collections_abc
 import types as _types
@@ -31,11 +32,13 @@ __all__ = [
     "GEN_CREATED",
     "GEN_RUNNING",
     "GEN_SUSPENDED",
+    "FullArgSpec",
     "Parameter",
     "Signature",
     "cleandoc",
     "currentframe",
     "getdoc",
+    "getfullargspec",
     "getmembers",
     "getgeneratorlocals",
     "getasyncgenlocals",
@@ -361,7 +364,7 @@ class Signature:
         return f"({', '.join(parts)})"
 
 
-def _signature_from_intrinsic(obj: Any) -> Signature | None:
+def _signature_from_intrinsic(obj: Any, *, include_annotations: bool) -> Signature | None:
     payload = _MOLT_INSPECT_SIGNATURE_DATA(obj)
     if payload is None:
         return None
@@ -376,6 +379,7 @@ def _signature_from_intrinsic(obj: Any) -> Signature | None:
     ) = payload
     if kwdefaults is None:
         kwdefaults = {}
+    annotations = getattr(obj, "__annotations__", {}) if include_annotations else {}
     params: list[Parameter] = []
     default_start = len(arg_names) - len(defaults)
     for idx, name in enumerate(arg_names):
@@ -387,15 +391,15 @@ def _signature_from_intrinsic(obj: Any) -> Signature | None:
             if idx < posonly
             else Parameter.POSITIONAL_OR_KEYWORD
         )
-        params.append(Parameter(name, kind, default))
+        params.append(Parameter(name, kind, default, annotations.get(name, _empty)))
     if vararg:
-        params.append(Parameter(vararg, Parameter.VAR_POSITIONAL, _empty))
+        params.append(Parameter(vararg, Parameter.VAR_POSITIONAL, annotation=annotations.get(vararg, _empty)))
     for name in kwonly_names:
         default = kwdefaults.get(name, _empty)
-        params.append(Parameter(name, Parameter.KEYWORD_ONLY, default))
+        params.append(Parameter(name, Parameter.KEYWORD_ONLY, default, annotations.get(name, _empty)))
     if varkw:
-        params.append(Parameter(varkw, Parameter.VAR_KEYWORD, _empty))
-    return Signature(params)
+        params.append(Parameter(varkw, Parameter.VAR_KEYWORD, annotation=annotations.get(varkw, _empty)))
+    return Signature(params, annotations.get("return", _empty))
 
 
 def _signature_bind_bound_method(sig: Signature) -> Signature:
@@ -410,18 +414,25 @@ def _signature_bind_bound_method(sig: Signature) -> Signature:
     return Signature(ordered[1:], getattr(sig, "return_annotation", _empty))
 
 
-def signature(obj: Any) -> Signature:
+def _signature_from_callable(
+    obj: Any, *, skip_bound_arg: bool, include_annotations: bool
+) -> Signature:
     # Managed methods forward their function's metadata. Resolve that function
     # before reading the forwarded attributes, then bind exactly once. Native
     # callable roles use their own receiver-aware Clinic signature in runtime.
     if _molt_is_bound_method(obj):
-        return _signature_bind_bound_method(signature(obj.__func__))
+        sig = _signature_from_callable(
+            obj.__func__,
+            skip_bound_arg=skip_bound_arg,
+            include_annotations=include_annotations,
+        )
+        return _signature_bind_bound_method(sig) if skip_bound_arg else sig
     sig = getattr(obj, "__signature__", None)
     if sig is not None and not isinstance(sig, Signature):
         raise TypeError(f"unexpected object {sig!r} in __signature__ attribute")
     if isinstance(sig, Signature):
         return sig
-    intrinsic_sig = _signature_from_intrinsic(obj)
+    intrinsic_sig = _signature_from_intrinsic(obj, include_annotations=include_annotations)
     if intrinsic_sig is not None:
         return intrinsic_sig
     if not callable(obj):
@@ -430,12 +441,88 @@ def signature(obj: Any) -> Signature:
     if not isinstance(obj, type):
         call_attr = getattr(obj, "__call__", None)
         if call_attr is not None and call_attr is not obj:
-            return signature(call_attr)
+            return _signature_from_callable(
+                call_attr,
+                skip_bound_arg=skip_bound_arg,
+                include_annotations=include_annotations,
+            )
     if isinstance(obj, type):
         if obj is type:
             raise ValueError(f"no signature found for builtin {obj!r}")
         raise ValueError(f"no signature found for builtin type {obj!r}")
     raise ValueError(f"no signature found for {obj!r}")
+
+
+def signature(obj: Any) -> Signature:
+    return _signature_from_callable(obj, skip_bound_arg=True, include_annotations=False)
+
+
+# Adapted from CPython 3.15.2 Lib/inspect.py (PSF-2.0).
+FullArgSpec = _namedtuple(
+    "FullArgSpec",
+    "args varargs varkw defaults kwonlyargs kwonlydefaults annotations",
+)
+
+
+def _getfullargspec(func: Any, annotation_format: Any) -> FullArgSpec:
+    """Return argument names, defaults and value annotations, including bound self."""
+    try:
+        # The annotationlib lowering owns non-value annotation formats.
+        if annotation_format == 2:
+            raise ValueError("The VALUE_WITH_FAKE_GLOBALS format is for internal use only")
+        if annotation_format != 1:
+            raise ValueError(f"Unsupported format {annotation_format!r}")
+        sig = _signature_from_callable(func, skip_bound_arg=False, include_annotations=True)
+    except Exception as ex:
+        raise TypeError("unsupported callable") from ex
+
+    args = []
+    varargs = None
+    varkw = None
+    posonlyargs = []
+    kwonlyargs = []
+    annotations = {}
+    defaults = ()
+    kwdefaults = {}
+
+    if sig.return_annotation is not sig.empty:
+        annotations["return"] = sig.return_annotation
+
+    for param in sig.parameters.values():
+        kind = param.kind
+        name = param.name
+        if kind == POSITIONAL_ONLY:
+            posonlyargs.append(name)
+            if param.default is not param.empty:
+                defaults += (param.default,)
+        elif kind == POSITIONAL_OR_KEYWORD:
+            args.append(name)
+            if param.default is not param.empty:
+                defaults += (param.default,)
+        elif kind == VAR_POSITIONAL:
+            varargs = name
+        elif kind == KEYWORD_ONLY:
+            kwonlyargs.append(name)
+            if param.default is not param.empty:
+                kwdefaults[name] = param.default
+        elif kind == VAR_KEYWORD:
+            varkw = name
+
+        if param.annotation is not param.empty:
+            annotations[name] = param.annotation
+
+    return FullArgSpec(
+        posonlyargs + args, varargs, varkw, defaults or None,
+        kwonlyargs, kwdefaults or None, annotations,
+    )
+
+
+if _sys.version_info >= (3, 15):
+    def getfullargspec(func: Any, *, annotation_format: Any = 1) -> FullArgSpec:
+        return _getfullargspec(func, annotation_format)
+else:
+    def getfullargspec(func: Any) -> FullArgSpec:
+        return _getfullargspec(func, 1)
 
 
 globals().pop("_require_intrinsic", None)

@@ -427,6 +427,15 @@ owner = "runtime/molt-passes/src/tir/cache.rs"
 summary = "MiB limit of the in-memory TIR cache; unset falls through to the memory-derived default."
 
 [[variable]]
+name = "MOLT_BACKEND_TREE_SLICE_BYTES"
+audience = "internal"
+kind = "int"
+output_neutral = true
+default = ""
+owner = "runtime/molt-passes/src/memory_budget.rs"
+summary = "Bytes of the caller's guarded allocation available to the backend coordinator and its workers at dispatch. Worker admission charges the coordinator's live resident bytes against this slice independently of host headroom."
+
+[[variable]]
 name = "MOLT_BENCH_CODON_TAQ_FILE"
 audience = "developer"
 kind = "path"

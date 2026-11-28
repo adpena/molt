@@ -16,11 +16,24 @@ class Meta(type):
     @classmethod
     def __prepare__(mcls, name, bases, **kwargs):
         events.append("prepare")
-        return {}
+        return TrackingNamespace()
 
 
-class Mixed(Adapter(), metaclass=Meta):
-    pass
+class TrackingNamespace(dict):
+    def __setitem__(self, key, value):
+        if key == "__orig_bases__":
+            events.append(("original bases stored", value[0] is adapter))
+        return super().__setitem__(key, value)
+
+
+adapter = Adapter()
+
+
+class Mixed(adapter, metaclass=Meta):
+    events.append(("body before original bases", "__orig_bases__" not in locals()))
+
+
+print("original base identity", Mixed.__orig_bases__[0] is adapter)
 
 
 print("events", events)

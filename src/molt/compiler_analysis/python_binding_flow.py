@@ -759,6 +759,7 @@ def _join_binding_payloads(
     telemetry: _StatePool | None = None,
 ) -> tuple[PythonStaticValue, StaticExpressionResult]:
     """Join normal payloads through one exact, ordered static/result authority."""
+    witnesses = telemetry is not None and telemetry.retain_string_witnesses
     if len(alternatives) == 2:
         left, right = alternatives
         left_normal = bool(left[0] & ~UNBOUND_IDENTITY)
@@ -773,7 +774,9 @@ def _join_binding_payloads(
                 telemetry.join_payload_identity_skips += 1
             return left[1:]
         first_static, first_result = left[1:]
-        static_value = join_python_static_values(first_static, right[1])
+        static_value = join_python_static_values(
+            first_static, right[1], retain_string_witnesses=witnesses
+        )
         results = (first_result, right[2])
     else:
         normal_payloads = tuple(
@@ -785,8 +788,10 @@ def _join_binding_payloads(
             return None, UNKNOWN_EXPRESSION_RESULT
         static_value = normal_payloads[0][0]
         for candidate, _result in normal_payloads[1:]:
-            static_value = join_python_static_values(static_value, candidate)
-            if static_value is None:
+            static_value = join_python_static_values(
+                static_value, candidate, retain_string_witnesses=witnesses
+            )
+            if static_value is None and not witnesses:
                 break
         results = tuple(result for _static_value, result in normal_payloads)
     if telemetry is not None:
@@ -873,6 +878,7 @@ type _BindingUpdate = tuple[
 
 class _StatePool:
     def __init__(self) -> None:
+        self.retain_string_witnesses = False
         initial = _BindingState()
         self._states: list[_BindingState] = [initial]
         self._ids: dict[_BindingState, int] = {initial: 0}
@@ -4324,6 +4330,49 @@ class _Analyzer:
             attribute_hooks=frozenset(),
         )
 
+    def _record_function_wrapper(
+        self,
+        owner: PythonSourceKey,
+        protocol: PythonElementProtocol,
+        function: StaticExpressionResult,
+    ) -> None:
+        previous = self.transfer.source_elements.get(owner)
+        origins = function.source_origins | (
+            previous.origins if previous else frozenset()
+        )
+        self.transfer.source_elements[owner] = PythonSourceElement(
+            owner, protocol, origins
+        )
+
+    def _possible_function_wrappers(
+        self,
+        expression: ast.expr,
+        constructor: StaticExpressionResult,
+        function: StaticExpressionResult,
+    ) -> frozenset[PythonSourceKey]:
+        # Wrapper construction can execute Python while reading annotations
+        # or metadata. Its successful builtin path still publishes a
+        # descriptor with the original callable as its referent.
+        origins = set()
+        for identity, projection in (
+            (
+                PythonIdentity.BUILTIN_CLASSMETHOD,
+                PythonSourceProjection.DECORATOR_POSSIBLE_CLASS_METHOD,
+            ),
+            (
+                PythonIdentity.BUILTIN_STATICMETHOD,
+                PythonSourceProjection.DECORATOR_POSSIBLE_STATIC_METHOD,
+            ),
+        ):
+            if constructor.identities & int(identity):
+                owner = python_source_projection_key(expression, projection)
+                protocol = PythonElementProtocol(
+                    BUILTIN_RETURN_CAPTURES[int(identity)][1]
+                )
+                self._record_function_wrapper(owner, protocol, function)
+                origins.add(owner)
+        return frozenset(origins)
+
     def _fresh_function_wrapper_result(
         self,
         constructor: StaticExpressionResult,
@@ -4370,13 +4419,7 @@ class _Analyzer:
                 return None
         owner = self._node_key(expression)
         protocol = PythonElementProtocol(capture[1])
-        previous = self.transfer.source_elements.get(owner)
-        origins = function.source_origins | (
-            previous.origins if previous else frozenset()
-        )
-        self.transfer.source_elements[owner] = PythonSourceElement(
-            owner, protocol, origins
-        )
+        self._record_function_wrapper(owner, protocol, function)
         return StaticExpressionResult(
             identities=int(capture[0]),
             source_origins=frozenset({owner}),
@@ -4547,7 +4590,11 @@ class _Analyzer:
             effects | (previous.effects if previous is not None else NO_EFFECTS),
             static_value
             if previous is None
-            else join_python_static_values(previous.static_value, static_value),
+            else join_python_static_values(
+                previous.static_value,
+                static_value,
+                retain_string_witnesses=self.states.retain_string_witnesses,
+            ),
             binding_invalidated
             or (previous is not None and previous.binding_invalidated),
             binding_is_bound and (previous is None or previous.binding_is_bound),
@@ -6360,6 +6407,9 @@ class _Analyzer:
                             node, unbound=True
                         ),
                         dispatch=dispatch,
+                        frame=scope.source
+                        if scope.kind in {"function", "lambda"}
+                        else None,
                     )
                 )
                 result_override = replace(
@@ -6847,7 +6897,9 @@ class _Analyzer:
                 identities = left.identities | right.identities
                 effects = test.effects | left.effects | right.effects
                 static_value = join_python_static_values(
-                    left.static_value, right.static_value
+                    left.static_value,
+                    right.static_value,
+                    retain_string_witnesses=self.states.retain_string_witnesses,
                 )
                 result_override = join_static_expression_results(
                     (left.result, right.result)
@@ -8955,10 +9007,15 @@ class _Analyzer:
                         ),
                     )
                     state_id = self._apply_effects(state_id, decorator_effects)
+                    wrapper_origins = self._possible_function_wrappers(
+                        expression, constructor, function_result
+                    )
+                    decorated = self._apply_source_decorator(
+                        expression, constructor, function_result, scope
+                    )
                     function_result = replace(
-                        self._apply_source_decorator(
-                            expression, constructor, function_result, scope
-                        ),
+                        decorated,
+                        source_origins=decorated.source_origins | wrapper_origins,
                         identities=function_result.identities | OTHER_IDENTITY,
                         deferred_complete=False,
                         attribute_hooks=None,
@@ -9202,6 +9259,17 @@ class _Analyzer:
                     )
                 )
                 prior_class = self.transfer.source_classes.get(owner_key)
+                metaclasses = frozenset().union(
+                    *(
+                        value.source_origins
+                        for keyword, value in zip(
+                            node.keywords,
+                            argument_results[len(node.bases) :],
+                            strict=True,
+                        )
+                        if keyword.arg == "metaclass"
+                    )
+                )
                 self.transfer.source_classes[owner_key] = PythonSourceClass(
                     owner_key,
                     plain_preparation
@@ -9215,6 +9283,9 @@ class _Analyzer:
                         for name in plain_attributes
                         if prior_class is None or name in prior_class.plain_attributes
                     ),
+                    metaclasses
+                    if prior_class is None
+                    else metaclasses | prior_class.metaclass_origins,
                 )
                 source_namespace = self.transfer.source_namespaces.setdefault(
                     owner_key, {}
@@ -9828,18 +9899,31 @@ class _Analyzer:
         else:
             kind = FunctionKind.GENERATOR if yields else FunctionKind.SYNC
         arguments = node.args
+        positional = (*arguments.posonlyargs, *arguments.args)
+        required = frozenset(
+            self._node_key(arg)
+            for arg in (
+                *positional[: len(positional) - len(arguments.defaults)],
+                *(
+                    arg
+                    for arg, default in zip(
+                        arguments.kwonlyargs, arguments.kw_defaults, strict=True
+                    )
+                    if default is None
+                ),
+            )
+        )
         declaration = PythonSourceCallableDeclaration(
             owner,
             kind,
-            tuple(
-                self._node_key(arg) for arg in (*arguments.posonlyargs, *arguments.args)
-            ),
+            tuple(self._node_key(arg) for arg in positional),
             self._node_key(arguments.vararg) if arguments.vararg is not None else None,
             tuple(
                 (arg.arg, self._node_key(arg))
                 for arg in (*arguments.args, *arguments.kwonlyargs)
             ),
             self._node_key(arguments.kwarg) if arguments.kwarg is not None else None,
+            required,
         )
         self.transfer.source_callable_declarations[owner] = declaration
         return declaration
@@ -9993,6 +10077,7 @@ class _Analyzer:
             slot: (slot, UNBOUND_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT, 0)
             for slot in scope.slots.values()
         }
+        contextual = False
         for parameter, parameter_node in zip(parameters, parameter_nodes, strict=True):
             slot = scope.slots.get(parameter)
             if slot is not None:
@@ -10009,6 +10094,7 @@ class _Analyzer:
                     )
                 )
                 if argument_value is not None:
+                    contextual |= parameter_source in self._activation_argument_values
                     default_result = (
                         join_static_expression_results(
                             tuple(
@@ -10041,6 +10127,8 @@ class _Analyzer:
         self._observed_stack.append(frame)
         previous_frame = self._active_lexical_frame
         self._active_lexical_frame = frame
+        previous_witness_mode = self.states.retain_string_witnesses
+        self.states.retain_string_witnesses = contextual
         try:
             flow = self.exec_statements(body, state_id, scope)
             if job.annotation_scope:
@@ -10071,6 +10159,7 @@ class _Analyzer:
                 ),
             )
         finally:
+            self.states.retain_string_witnesses = previous_witness_mode
             self._seal_lexical_history(frame)
             self._active_lexical_frame = previous_frame
             self._observed_stack.pop()

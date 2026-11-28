@@ -788,6 +788,28 @@ def _star_local_names(
 _MappingSlot: TypeAlias = tuple[ast.AST, str]
 
 
+def _mapping_observation(value: ast.AST, parent: ast.AST | None) -> bool:
+    """Whether this syntax can observe the mapping without exposing it."""
+    if isinstance(parent, ast.Compare):
+        # Rich comparisons can pass the mapping to the other operand.
+        # Membership borrows the container only when the mapping is on the right.
+        left = parent.left
+        for operation, right in zip(parent.ops, parent.comparators, strict=True):
+            if not isinstance(operation, (ast.Is, ast.IsNot)) and (
+                left is value
+                or (right is value and not isinstance(operation, (ast.In, ast.NotIn)))
+            ):
+                return False
+            left = right
+        return True
+    if isinstance(parent, (ast.For, ast.comprehension)):
+        return parent.iter is value
+    if isinstance(parent, ast.Assert):
+        # The message is retained in the exception's arguments.
+        return parent.test is value
+    return isinstance(parent, ast.Expr)
+
+
 class _MappingFlow:
     """Which names a function writes through: one module's parameter and
     local write summaries, to a fixed point over the module's own functions.
@@ -951,9 +973,12 @@ class _MappingFlow:
         self, value: ast.AST, parent: ast.AST | None
     ) -> tuple[_MappingSlot, ...] | None:
         """The write effect of a use, or the slots whose effects it inherits."""
-        if isinstance(
-            parent, (ast.Expr, ast.Compare, ast.comprehension, ast.For, ast.Assert)
+        # A selected arm forwards the mapping itself to the conditional's consumer.
+        while isinstance(parent, ast.IfExp) and (
+            value is parent.body or value is parent.orelse
         ):
+            value, parent = parent, self.parents.get(parent)
+        if _mapping_observation(value, parent):
             return ()
         if isinstance(parent, ast.Subscript) and parent.value is value:
             return () if isinstance(parent.ctx, ast.Load) else None
@@ -2225,7 +2250,7 @@ class _NamespaceWriteCollector:
     def _reads_whole(value: ast.AST, parent: ast.AST | None) -> bool:
         """Membership, iteration and copying read a mapping or list whole."""
 
-        return isinstance(parent, (ast.Compare, ast.comprehension, ast.For)) or (
+        return _mapping_observation(value, parent) or (
             isinstance(parent, ast.Call)
             and isinstance(parent.func, ast.Name)
             and parent.func.id in _WHOLE_READ_CALLS

@@ -63,6 +63,23 @@ def test_class_code_locations_and_first_line_follow_the_cpython_code_owner():
     assert not any("class_frame" in op for op in main)
 
 
+def test_class_location_survives_synthetic_exception_checks() -> None:
+    source = (
+        "class Subject:\n    def method(self, value=(1, 2, 3)):\n        return value\n"
+    )
+    _, ir = compile_source(source, (3, 15))
+    main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    definitions = {op["out"]: op for op in main if op.get("out")}
+    location_indices = [
+        definitions[op["args"][0]]["value"]
+        for op in main
+        if op.get("s_value") == "molt_class_frame_set_location"
+    ]
+    assert len(location_indices) >= 2
+    assert len(set(location_indices)) == len(location_indices)
+    assert sum(op["kind"] == "check_exception" for op in main) > len(location_indices)
+
+
 def test_multiline_frame_reads_publish_the_expression_position():
     source = "def sample(frame):\n    return (\n        frame.f_lineno,\n        frame.f_lasti,\n    )\n"
     _, ir = compile_source(source, (3, 12))
@@ -920,7 +937,7 @@ def test_annotation_evaluator_publishes_versioned_argument_and_real_class_cell(
         ]
     else:
         # Type-alias creation makes class construction dynamic. Follow the
-        # actual namespace through argument assembly to its metaclass consumer.
+        # prepared namespace from its class body to final publication.
         ((store_index, store),) = [
             (index, op)
             for index, op in enumerate(main_ops)
@@ -936,23 +953,17 @@ def test_annotation_evaluator_publishes_versioned_argument_and_real_class_cell(
             (call_index,) = namespace_builders
             assert store_index < call_index
         else:
-            ((push_index, push),) = [
-                (index, op)
-                for index, op in enumerate(main_ops)
-                if op.kind == "CALLARGS_PUSH_POS" and op.args[1] == namespace
-            ]
-            ((call_index, call),) = [
-                (index, op)
-                for index, op in enumerate(main_ops)
-                if op.kind == "CALL_BIND" and op.args[1] == push.args[0]
-            ]
-            positional = [
-                op.args[1]
-                for op in main_ops[:call_index]
-                if op.kind == "CALLARGS_PUSH_POS" and op.args[0] == call.args[1]
-            ]
-            assert len(positional) == 3 and positional[2] == namespace
-            assert store_index < push_index < call_index
+            namespace_read = main_definitions[namespace.name]
+            assert namespace_read.kind == "INDEX"
+            prepared, field = namespace_read.args
+            assert main_definitions[field.name].args == [0]
+            (prepare_index,) = runtime_calls(main_ops, "molt_class_prepare_statement")
+            (call_index,) = runtime_calls(main_ops, "molt_class_finish_statement")
+            prepare = main_ops[prepare_index]
+            finish = main_ops[call_index]
+            assert prepare.result == prepared
+            assert finish.args[1:] == [*prepare.args[1:3], prepared]
+            assert prepare_index < store_index < call_index
     assert transported_cell == published_cell
 
 

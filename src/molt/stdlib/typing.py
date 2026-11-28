@@ -13,7 +13,6 @@ import sys as _sys
 import builtins as _builtins
 from types import BuiltinFunctionType as _BuiltinFunctionType
 from types import FunctionType as _FunctionType
-from types import ModuleType
 from types import GenericAlias as _RuntimeGenericAlias
 
 
@@ -39,6 +38,7 @@ _MOLT_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release")
 TYPE_CHECKING = False
 
 __all__ = [
+    "AbstractSet",
     "Annotated",
     "Any",
     "AsyncGenerator",
@@ -58,13 +58,17 @@ __all__ = [
     "Generic",
     "Hashable",
     "IO",
+    "ItemsView",
     "Iterable",
     "Iterator",
+    "KeysView",
     "Literal",
     "Never",
     "Mapping",
+    "MappingView",
     "MutableMapping",
     "MutableSequence",
+    "MutableSet",
     "NamedTuple",
     "NewType",
     "NoReturn",
@@ -95,6 +99,7 @@ __all__ = [
     "TypeVar",
     "TypeVarTuple",
     "TypedDict",
+    "ValuesView",
     "Union",
     "NotRequired",
     "cast",
@@ -292,51 +297,6 @@ class _SpecialGenericAlias(_TypingBase):
 
     def __subclasscheck__(self, subclass: object) -> bool:
         origin = self.__origin__
-        if isinstance(origin, type) and isinstance(subclass, type):
-            return issubclass(subclass, origin)
-        return False
-
-
-class _LazySpecialGenericAlias(_TypingBase):
-    __slots__ = ("_origin_name", "_name", "_origin_cache")
-
-    def __init__(self, origin_name: str, name: str) -> None:
-        self._origin_name = origin_name
-        self._name = name
-        self._origin_cache = None
-
-    def _origin(self) -> object:
-        if self._origin_cache is None:
-            abc_mod = _load_collections_abc()
-            origin = getattr(abc_mod, self._origin_name, None)
-            if origin is None:
-                raise RuntimeError(
-                    f"typing missing _collections_abc.{self._origin_name}"
-                )
-            self._origin_cache = origin
-        return self._origin_cache
-
-    @property
-    def __origin__(self) -> object:
-        return self._origin()
-
-    def __repr__(self) -> str:
-        return f"typing.{self._name}"
-
-    def __getitem__(self, params: object) -> "_GenericAlias":
-        return _GenericAlias(self._origin(), params, self._name)
-
-    def __call__(self, *_args: object, **_kwargs: object) -> object:
-        raise TypeError(f"Cannot instantiate {self!r}")
-
-    def __instancecheck__(self, instance: object) -> bool:
-        origin = self._origin()
-        if isinstance(origin, type):
-            return isinstance(instance, origin)
-        return False
-
-    def __subclasscheck__(self, subclass: object) -> bool:
-        origin = self._origin()
         if isinstance(origin, type) and isinstance(subclass, type):
             return issubclass(subclass, origin)
         return False
@@ -639,7 +599,7 @@ class _CallableAlias(_TypingBase):
     __slots__ = ("__args__", "__origin__", "__parameters__")
 
     def __init__(self, arglist: object, ret: object) -> None:
-        self.__origin__ = getattr(_load_collections_abc(), "Callable")
+        self.__origin__ = _collections_abc_module.Callable
         # CPython flattens an argument list: Callable[[int], str].__args__ is
         # (int, str). Ellipsis, a ParamSpec and Concatenate stay one argument.
         if isinstance(arglist, list):
@@ -792,72 +752,34 @@ NotRequired = _SpecialForm(
 )
 
 
-_ABC_CACHE = None
-
-
-def _load_collections_abc() -> ModuleType:
-    global _ABC_CACHE
-    cached = _ABC_CACHE
-    if isinstance(cached, ModuleType):
-        return cached
-    abc_mod = _typing_cast(ModuleType, _collections_abc_module)
-    if getattr(abc_mod, "__name__", None) == "_abc":
-        raise RuntimeError("typing requires _collections_abc, not _abc")
-    required_names = (
-        "AsyncGenerator",
-        "AsyncIterable",
-        "AsyncIterator",
-        "Awaitable",
-        "Callable",
-        "Collection",
-        "Container",
-        "Coroutine",
-        "Generator",
-        "Hashable",
-        "Iterable",
-        "Iterator",
-        "Mapping",
-        "MutableMapping",
-        "MutableSequence",
-        "Reversible",
-        "Sequence",
-        "Sized",
-        "ByteString",
-    )
-    missing = [name for name in required_names if getattr(abc_mod, name, None) is None]
-    if missing:
-        raise RuntimeError(f"typing missing _collections_abc.{missing[0]}")
-    _ABC_CACHE = abc_mod
-    return abc_mod
-
-
-_abc_module = _load_collections_abc()
-Hashable = _SpecialGenericAlias(getattr(_abc_module, "Hashable"), "Hashable")
-Awaitable = _SpecialGenericAlias(getattr(_abc_module, "Awaitable"), "Awaitable")
-Coroutine = _SpecialGenericAlias(getattr(_abc_module, "Coroutine"), "Coroutine")
-AsyncIterable = _SpecialGenericAlias(
-    getattr(_abc_module, "AsyncIterable"), "AsyncIterable"
-)
-AsyncIterator = _SpecialGenericAlias(
-    getattr(_abc_module, "AsyncIterator"), "AsyncIterator"
-)
-AsyncGenerator = _SpecialGenericAlias(
-    getattr(_abc_module, "AsyncGenerator"), "AsyncGenerator"
-)
-Iterable = _SpecialGenericAlias(getattr(_abc_module, "Iterable"), "Iterable")
-Iterator = _SpecialGenericAlias(getattr(_abc_module, "Iterator"), "Iterator")
-Generator = _SpecialGenericAlias(getattr(_abc_module, "Generator"), "Generator")
-Reversible = _SpecialGenericAlias(getattr(_abc_module, "Reversible"), "Reversible")
-Sized = _SpecialGenericAlias(getattr(_abc_module, "Sized"), "Sized")
-Container = _SpecialGenericAlias(getattr(_abc_module, "Container"), "Container")
-Collection = _SpecialGenericAlias(getattr(_abc_module, "Collection"), "Collection")
-Mapping = _SpecialGenericAlias(getattr(_abc_module, "Mapping"), "Mapping")
-MutableMapping = _LazySpecialGenericAlias("MutableMapping", "MutableMapping")
-Sequence = _SpecialGenericAlias(getattr(_abc_module, "Sequence"), "Sequence")
+# CPython Lib/typing.py exports these aliases over the collections ABCs.
+Hashable = _SpecialGenericAlias(_collections_abc_module.Hashable, "Hashable")
+Awaitable = _SpecialGenericAlias(_collections_abc_module.Awaitable, "Awaitable")
+Coroutine = _SpecialGenericAlias(_collections_abc_module.Coroutine, "Coroutine")
+AsyncIterable = _SpecialGenericAlias(_collections_abc_module.AsyncIterable, "AsyncIterable")
+AsyncIterator = _SpecialGenericAlias(_collections_abc_module.AsyncIterator, "AsyncIterator")
+AsyncGenerator = _SpecialGenericAlias(_collections_abc_module.AsyncGenerator, "AsyncGenerator")
+Iterable = _SpecialGenericAlias(_collections_abc_module.Iterable, "Iterable")
+Iterator = _SpecialGenericAlias(_collections_abc_module.Iterator, "Iterator")
+Generator = _SpecialGenericAlias(_collections_abc_module.Generator, "Generator")
+Reversible = _SpecialGenericAlias(_collections_abc_module.Reversible, "Reversible")
+Sized = _SpecialGenericAlias(_collections_abc_module.Sized, "Sized")
+Container = _SpecialGenericAlias(_collections_abc_module.Container, "Container")
+Collection = _SpecialGenericAlias(_collections_abc_module.Collection, "Collection")
+AbstractSet = _SpecialGenericAlias(_collections_abc_module.Set, "AbstractSet")
+MutableSet = _SpecialGenericAlias(_collections_abc_module.MutableSet, "MutableSet")
+Mapping = _SpecialGenericAlias(_collections_abc_module.Mapping, "Mapping")
+MutableMapping = _SpecialGenericAlias(_collections_abc_module.MutableMapping, "MutableMapping")
+MappingView = _SpecialGenericAlias(_collections_abc_module.MappingView, "MappingView")
+KeysView = _SpecialGenericAlias(_collections_abc_module.KeysView, "KeysView")
+ItemsView = _SpecialGenericAlias(_collections_abc_module.ItemsView, "ItemsView")
+ValuesView = _SpecialGenericAlias(_collections_abc_module.ValuesView, "ValuesView")
+Sequence = _SpecialGenericAlias(_collections_abc_module.Sequence, "Sequence")
 MutableSequence = _SpecialGenericAlias(
-    getattr(_abc_module, "MutableSequence"), "MutableSequence"
+    _collections_abc_module.MutableSequence, "MutableSequence"
 )
-ByteString = _SpecialGenericAlias(getattr(_abc_module, "ByteString"), "ByteString")
+ByteString = _SpecialGenericAlias(_collections_abc_module.ByteString, "ByteString")
+
 
 _types_mod = _sys.modules.get("types")
 if _types_mod is not None:
@@ -1554,7 +1476,7 @@ def get_origin(tp: object) -> object | None:
     if isinstance(tp, _ConcatenateGenericAlias):
         return Concatenate
     if isinstance(tp, _CallableAlias):
-        return getattr(_load_collections_abc(), "Callable")
+        return tp.__origin__
     if _UnionType is not None and isinstance(tp, _UnionType):
         return _UnionType
     return getattr(tp, "__origin__", None)

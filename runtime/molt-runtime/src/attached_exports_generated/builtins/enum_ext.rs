@@ -51,14 +51,6 @@ pub unsafe extern "C" fn molt_enum_flag_decompose(__context: u64, value_bits: u6
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_enum_flag_decompose_attached_body(_py, value_bits)
 }
-#[unsafe(export_name = "molt_enum_auto_value__molt_context_66fa900595616b00")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_enum_auto_value(__context: u64, count_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_enum_auto_value);
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_enum_auto_value_attached_body(_py, count_bits)
-}
 #[unsafe(export_name = "molt_enum_is_descriptor__molt_context_66fa900595616b00")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_enum_is_descriptor(__context: u64, obj_bits: u64) -> u64 {
@@ -68,14 +60,6 @@ pub unsafe extern "C" fn molt_enum_is_descriptor(__context: u64, obj_bits: u64) 
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_enum_is_descriptor_attached_body(_py, obj_bits)
-}
-#[unsafe(export_name = "molt_enum_is_auto__molt_context_66fa900595616b00")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_enum_is_auto(__context: u64, obj_bits: u64) -> u64 {
-    molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_enum_is_auto);
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_enum_is_auto_attached_body(_py, obj_bits)
 }
 #[unsafe(export_name = "molt_enum_str_value__molt_context_66fa900595616b00")]
 #[allow(clippy::missing_safety_doc)]

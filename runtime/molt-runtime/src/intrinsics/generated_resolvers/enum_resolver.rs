@@ -4,7 +4,6 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
     match symbol {
         "molt_enum_init_member" => Some(crate::molt_enum_init_member as *const ()),
-        "molt_enum_auto_value" => Some(crate::molt_enum_auto_value as *const ()),
         "molt_enum_flag_and" => Some(crate::molt_enum_flag_and as *const ()),
         "molt_enum_flag_contains" => Some(crate::molt_enum_flag_contains as *const ()),
         "molt_enum_flag_decompose" => Some(crate::molt_enum_flag_decompose as *const ()),
@@ -12,7 +11,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
         "molt_enum_flag_or" => Some(crate::molt_enum_flag_or as *const ()),
         "molt_enum_flag_xor" => Some(crate::molt_enum_flag_xor as *const ()),
         "molt_enum_str_value" => Some(crate::molt_enum_str_value as *const ()),
-        "molt_enum_is_auto" => Some(crate::molt_enum_is_auto as *const ()),
         "molt_enum_is_descriptor" => Some(crate::molt_enum_is_descriptor as *const ()),
         _ => None,
     }

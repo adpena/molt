@@ -69,16 +69,11 @@ pub unsafe extern "C" fn molt_type_init(
 }
 #[unsafe(export_name = "molt_type_prepare__molt_context_66fa900595616b00")]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_type_prepare(
-    __context: u64,
-    _cls_bits: u64,
-    _name_bits: u64,
-    _bases_bits: u64,
-) -> u64 {
+pub unsafe extern "C" fn molt_type_prepare(__context: u64) -> u64 {
     molt_runtime_core::call_census::hit(molt_runtime_core::call_census::id::molt_type_prepare);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_type_prepare_attached_body(_py, _cls_bits, _name_bits, _bases_bits)
+    molt_type_prepare_attached_body(_py)
 }
 #[unsafe(export_name = "molt_type_mro__molt_context_66fa900595616b00")]
 #[allow(clippy::missing_safety_doc)]

@@ -131,7 +131,19 @@ _METHODS_BY_KIND: Final[dict[ExpressionKind, dict[str, bool]]] = {
     },
     "tuple": dict.fromkeys(("count", "index"), False),
     "str": dict.fromkeys(
-        ("find", "split", "replace", "startswith", "endswith", "count", "join"), False
+        (
+            "find",
+            "split",
+            "replace",
+            "startswith",
+            "endswith",
+            "count",
+            "join",
+            "lstrip",
+            "rstrip",
+            "strip",
+        ),
+        False,
     ),
     "bytes": dict.fromkeys(
         ("find", "split", "replace", "startswith", "endswith", "count", "join"), False
@@ -776,6 +788,56 @@ _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
 )
 
 
+# Bound the number of retained expression facts and the bytes copied while
+# computing them. A larger result keeps its exact list and element types.
+_MAX_SPLIT_FACT_ITEMS: Final = 32
+_MAX_TEXT_FACT_LENGTH: Final = 4096
+
+
+def _split_items(
+    receiver: StaticExpressionResult,
+    separator: StaticExpressionResult | None,
+    maxsplit: StaticExpressionResult | None,
+) -> tuple[ExpressionSequenceItem, ...] | None:
+    text = receiver.value
+    if (
+        not receiver.value_known
+        or type(text) not in {str, bytes}
+        or separator is not None
+        and not separator.value_known
+        or maxsplit is not None
+        and (not maxsplit.value_known or type(maxsplit.value) not in {int, bool})
+    ):
+        return None
+    delimiter = separator.value if separator is not None else None
+    count = maxsplit.value if maxsplit is not None else -1
+    assert isinstance(count, int)
+    # Across native and wasm, keep the ssize_t conversion and errors at runtime.
+    if not -(1 << 31) <= count < (1 << 31):
+        return None
+    limit = _MAX_SPLIT_FACT_ITEMS
+    bounded = limit if count < 0 else min(count, limit)
+    if isinstance(text, str):
+        if len(text) > _MAX_TEXT_FACT_LENGTH or (
+            delimiter is not None and (type(delimiter) is not str or not delimiter)
+        ):
+            return None
+        parts = text.split(delimiter, bounded)
+    elif isinstance(text, bytes):
+        if len(text) > _MAX_TEXT_FACT_LENGTH or (
+            delimiter is not None and (type(delimiter) is not bytes or not delimiter)
+        ):
+            return None
+        parts = text.split(delimiter, bounded)
+    else:
+        return None
+    if len(parts) > limit:
+        return None
+    return tuple(
+        ExpressionSequenceItem(StaticExpressionResult.scalar(part)) for part in parts
+    )
+
+
 def builtin_method_call_shape(
     receiver: StaticExpressionResult,
     method: str,
@@ -1134,9 +1196,13 @@ def builtin_method_call_shape(
             if maxsplit is not None and not _index_callback_free(maxsplit):
                 effects |= EXECUTES_ARBITRARY_PYTHON
             element = _normal_result(text_kind, release_may_call=False)
+            items = _split_items(receiver, separator, maxsplit) if valid else None
             return shape(
                 _normal_result(
                     "list",
+                    items=items,
+                    length=None if items is None else len(items),
+                    truth=None if items is None else bool(items),
                     # split constructs an exact list containing only exact
                     # str/bytes/bytearray values. Retiring that normal result
                     # cannot invoke element finalizers or weakref callbacks.
@@ -1148,6 +1214,34 @@ def builtin_method_call_shape(
                 None,
                 valid,
             )
+        if text_kind == "str" and method in {"strip", "lstrip", "rstrip"}:
+            valid = arguments_complete and not node.keywords and len(positional) <= 1
+            result = _normal_result("str", release_may_call=False)
+            characters = positional[0].value if positional else None
+            if (
+                valid
+                and receiver.value_known
+                and isinstance(receiver.value, str)
+                and len(receiver.value) <= _MAX_TEXT_FACT_LENGTH
+                and (not positional or positional[0].value_known)
+                and (
+                    characters is None
+                    or isinstance(characters, str)
+                    and len(characters) <= _MAX_TEXT_FACT_LENGTH
+                )
+            ):
+                text = receiver.value
+                trimmed = (
+                    text.strip(characters)
+                    if method == "strip"
+                    else text.lstrip(characters)
+                    if method == "lstrip"
+                    else text.rstrip(characters)
+                )
+                result = StaticExpressionResult.scalar(
+                    trimmed, evaluation_required=True
+                )
+            return shape(result, base_effects | ALLOCATES, None, valid)
         if method in {"find", "count"}:
             valid = (
                 arguments_complete and not node.keywords and 1 <= len(positional) <= 3

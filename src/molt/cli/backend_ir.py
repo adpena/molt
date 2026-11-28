@@ -41,7 +41,7 @@ from molt.native_callable_abi import (
 from molt.native_callable_exports import NativeCallableExport
 
 from molt import file_publication
-from molt.cli.cache_keys import _json_ir_default
+from molt.cli.cache_keys import FunctionDigests, _json_ir_default
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
     _source_tree_fingerprint_transaction,
@@ -104,7 +104,7 @@ class FrontendDeclarationTable:
     declaration_only: frozenset[str]
 
 
-@dataclass(frozen=True)
+@dataclass
 class _PreparedBackendIR:
     ir: dict[str, Any]
     function_metadata: dict[str, FunctionAssemblyMetadata]
@@ -126,6 +126,11 @@ class _PreparedBackendIR:
     module_lowering_inputs: Mapping[str, _ModuleLoweringContext] = field(
         default_factory=dict
     )
+
+    def take_function_digests(self) -> FunctionDigests:
+        digests = FunctionDigests(self.function_digest_seeds)
+        self.function_digest_seeds = ()
+        return digests
 
 
 def _build_version_info_ops(

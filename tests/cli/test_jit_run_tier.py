@@ -15,6 +15,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import msgpack
 import pytest
 
 from molt._wasm_abi_generated import compiled_execution_symbol
@@ -887,7 +888,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
         read_checkout_owner,
         scratch_state_root,
     )
-    from molt.cli import jit_pipeline
+    from molt.cli import backend_execution, jit_pipeline
     from molt.cli.rust_cpu_policy import RustCpuPolicy
 
     compiler = tmp_path / "compiler"
@@ -958,12 +959,25 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
         ),
     )
 
+    main_function = {
+        "name": "molt_main",
+        "return_abi": "value",
+        "ops": [{"kind": "ret_void"}],
+    }
+    functions = [main_function]
+
     def prepare(
         command: list[str], *, env: ProcessEnvironment, **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         assert isinstance(env, ProcessEnvironment)
         assert env["MOLT_STDLIB_OBJ"] == str(cache.stdlib_object_path)
         assert "--prepare-jit-application" in command
+        lease_path = Path(command[command.index("--ir-file") + 1])
+        lease = msgpack.unpackb(lease_path.read_bytes(), raw=False)
+        assert [msgpack.unpackb(body) for body in lease["function_bodies"]] == [
+            main_function
+        ]
+        assert functions == []
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(jit_pipeline, "_run_completed_command", prepare)
@@ -971,9 +985,9 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
         jit_pipeline, "_validate_shared_stdlib_output_for_link", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        jit_pipeline,
-        "_write_backend_ir_lease",
-        lambda *_: SimpleNamespace(path=tmp_path / "lease"),
+        backend_execution,
+        "backend_ir_lease_dir",
+        lambda _: tmp_path / "ir-leases",
     )
     monkeypatch.setattr(
         jit_pipeline,
@@ -1052,7 +1066,9 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
             entry_module="main", source_path=tmp_path / "app.py"
         ),
         prepared_frontend_pipeline_bundle=bundle,
-        prepared_backend_ir=_PreparedBackendIR(ir={}, function_metadata={}),
+        prepared_backend_ir=_PreparedBackendIR(
+            ir={"functions": functions}, function_metadata={}
+        ),
         profile="dev",
         json_output=True,
         target=admit_target("native"),

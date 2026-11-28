@@ -5319,7 +5319,7 @@ def test_source_demand_activation_joins_each_new_incidence_once(tmp_path, monkey
     facts = stdlib_module_intrinsic_facts(
         "entry",
         tmp_path / "entry.py",
-        source="def target(): pass\n",
+        source="def target(arg): return arg\n",
         target_python=TargetPythonVersion(3, 12, 0),
     )
     scan = facts.import_evidence.source_scan
@@ -5347,14 +5347,16 @@ def test_source_demand_activation_joins_each_new_incidence_once(tmp_path, monkey
     monkeypatch.setattr(authority, "activate", observe)
     value = ("entry", owner)
     for index in range(16):
-        authority.demand(value, "call", (str(index),))
+        authority.demand(value, "call", ((0, str(index)),))
         authority.drain()
         # A dependency wake without new facts must not replay historical work.
         authority.queue_value(value)
         authority.drain()
     assert len(visits) == 16
     assert set(visits.values()) == {1}
-    assert queued_bodies == [("entry", owner, (str(index),)) for index in range(16)]
+    assert queued_bodies == [
+        ("entry", owner, ((0, str(index)),)) for index in range(16)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -5861,6 +5863,22 @@ def test_target_version_fact_keeps_unknown_and_invalidated_values(prefix, query)
     assert result.truth is None and result.evaluation_required
 
 
+def _proven_descriptor_origins(
+    index: python_binding_flow.PythonBindingIndex,
+) -> tuple[python_binding_flow.PythonSourceElement, ...]:
+    from molt.compiler_analysis.python_source_keys import PythonSourceProjection
+
+    possible = {
+        PythonSourceProjection.DECORATOR_POSSIBLE_CLASS_METHOD,
+        PythonSourceProjection.DECORATOR_POSSIBLE_STATIC_METHOD,
+    }
+    return tuple(
+        element
+        for element in index.source_elements
+        if element.owner[-1] not in possible
+    )
+
+
 @pytest.mark.parametrize("constructor", ["classmethod", "staticmethod"])
 def test_retained_descriptor_fresh_function_construction_keeps_effects(constructor):
     from molt.compiler_analysis.python_effects_generated import (
@@ -5900,7 +5918,7 @@ def test_retained_descriptor_unproven_constructor_or_function_stays_broad(source
     assert not any(
         element.protocol
         in {PythonElementProtocol.CLASS_METHOD, PythonElementProtocol.STATIC_METHOD}
-        for element in index.source_elements
+        for element in _proven_descriptor_origins(index)
     )
 
 
@@ -5913,7 +5931,7 @@ def test_retained_descriptor_older_function_metadata_is_not_fresh_acquisition():
     index = analyze_python_source_bindings(source)
     assert not any(
         element.protocol == PythonElementProtocol.CLASS_METHOD
-        for element in index.source_elements
+        for element in _proven_descriptor_origins(index)
     )
 
 
@@ -5937,7 +5955,7 @@ def test_retained_descriptor_function_lookup_obeys_function_scope(body, retained
     assert (
         any(
             element.protocol is PythonElementProtocol.CLASS_METHOD
-            for element in index.source_elements
+            for element in _proven_descriptor_origins(index)
         )
         is retained
     )
@@ -5955,7 +5973,7 @@ def test_retained_descriptor_outer_cell_remains_unproven():
     )
     assert not any(
         element.protocol is PythonElementProtocol.CLASS_METHOD
-        for element in index.source_elements
+        for element in _proven_descriptor_origins(index)
     )
 
 
@@ -5986,7 +6004,7 @@ def test_native_class_preparation_is_independent_of_prior_import_or_callback(
         )
         retained = any(
             x.protocol is PythonElementProtocol.CLASS_METHOD
-            for x in index.source_elements
+            for x in _proven_descriptor_origins(index)
         )
         assert retained is (entry == 0 or model is PythonClassPreparation.MOLT_NATIVE)
         assert (
@@ -6011,7 +6029,8 @@ def test_native_class_preparation_preserves_custom_prepare_callback(header):
         ),
     )
     assert not any(
-        x.protocol is PythonElementProtocol.CLASS_METHOD for x in index.source_elements
+        x.protocol is PythonElementProtocol.CLASS_METHOD
+        for x in _proven_descriptor_origins(index)
     )
 
 
@@ -6135,7 +6154,7 @@ def test_retained_descriptor_defaults_use_evaluated_immutable_value_fact(
     assert (
         any(
             e.protocol is PythonElementProtocol.CLASS_METHOD
-            for e in index.source_elements
+            for e in _proven_descriptor_origins(index)
         )
         is retained
     )

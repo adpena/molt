@@ -80,12 +80,12 @@ pub(super) struct WorkerPermit {
 impl WorkerPermit {
     /// Block until a worker fits the current request's budget.
     pub(super) fn acquire() -> Self {
-        let budget = molt_passes::memory_budget::worker_tree_budget_bytes();
         let mut state = ADMISSION
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
+            let budget = molt_passes::memory_budget::worker_tree_budget_bytes();
             if let Some(reservation) = state.try_admit(budget) {
                 return Self {
                     reservation: Some(reservation),

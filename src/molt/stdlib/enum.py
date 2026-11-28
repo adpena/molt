@@ -27,7 +27,6 @@ __all__ = [
 ]
 
 _enum_init_member = _require_intrinsic("molt_enum_init_member")
-_enum_auto_value = _require_intrinsic("molt_enum_auto_value")
 _enum_flag_and = _require_intrinsic("molt_enum_flag_and")
 _enum_flag_contains = _require_intrinsic("molt_enum_flag_contains")
 _enum_flag_decompose = _require_intrinsic("molt_enum_flag_decompose")
@@ -36,12 +35,16 @@ _enum_flag_or = _require_intrinsic("molt_enum_flag_or")
 _enum_flag_xor = _require_intrinsic("molt_enum_flag_xor")
 _enum_str_value = _require_intrinsic("molt_enum_str_value")
 _enum_is_descriptor = _require_intrinsic("molt_enum_is_descriptor")
-_enum_is_auto = _require_intrinsic("molt_enum_is_auto")
+
+
+_AUTO_NULL = object()
 
 
 class _AutoValue:
-    __slots__ = ()
-    _molt_auto = True
+    __slots__ = ("value",)
+
+    def __init__(self) -> None:
+        self.value = _AUTO_NULL
 
 
 def auto() -> _AutoValue:
@@ -50,12 +53,6 @@ def auto() -> _AutoValue:
 
 def _is_descriptor(obj: object) -> bool:
     return bool(_enum_is_descriptor(obj))
-
-
-def _is_auto_value(obj: object) -> bool:
-    if isinstance(obj, _AutoValue):
-        return True
-    return bool(_enum_is_auto(obj))
 
 
 def _is_dunder(name: str) -> bool:
@@ -98,6 +95,10 @@ class _EnumDict(dict):
         # excluding dunders/sunders/descriptors/callables.
         self._member_names: dict[str, None] = {}
         self._ignore: list[str] = []
+        self._last_values: list[Any] = []
+        self._generate_next_value: Any = None
+        self._auto_called = False
+        self._start = 1
 
     def __setitem__(self, key: str, value: Any) -> None:
         if key == "_ignore_":
@@ -106,6 +107,12 @@ class _EnumDict(dict):
             if already:
                 raise ValueError(f"_ignore_ cannot specify already set names: {already!r}")
             self._ignore = value
+        elif key == "_generate_next_value_":
+            if self._auto_called:
+                raise TypeError("_generate_next_value_ must be defined before members")
+            self._generate_next_value = (
+                value.__func__ if isinstance(value, staticmethod) else value
+            )
         elif key in self._ignore or _is_sunder(key) or _is_dunder(key):
             pass
         elif key in self._member_names:
@@ -115,6 +122,25 @@ class _EnumDict(dict):
         elif _is_descriptor(value) or callable(value):
             pass
         else:
+            single_auto = isinstance(value, _AutoValue)
+            elements = (value,) if single_auto else value
+            if type(elements) is tuple and any(
+                isinstance(element, _AutoValue) for element in elements
+            ):
+                resolved = []
+                for element in elements:
+                    if isinstance(element, _AutoValue):
+                        if element.value is _AUTO_NULL:
+                            element.value = self._generate_next_value(
+                                key, self._start, len(self._member_names), self._last_values[:]
+                            )
+                            self._auto_called = True
+                        element = element.value
+                        self._last_values.append(element)
+                    resolved.append(element)
+                value = resolved[0] if single_auto else tuple(resolved)
+            else:
+                self._last_values.append(value)
             self._member_names[key] = None
         super().__setitem__(key, value)
 
@@ -128,10 +154,15 @@ class EnumType(type):
     def __prepare__(mcls, name, bases, **kwargs):
         # Custom namespace so the class body's member assignments are captured
         # in definition order (required to resolve canonical vs. alias members).
-        return _EnumDict()
+        namespace = _EnumDict()
+        if bases:
+            generate = getattr(bases[-1], "_generate_next_value_", None)
+            if generate is not None:
+                namespace["_generate_next_value_"] = generate
+        return namespace
 
     def __new__(
-        mcls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs
+        mcls, name: str, bases: tuple[type, ...], namespace: _EnumDict, **kwargs
     ):
         # Enum consumes ignored scratch bindings in the live body mapping,
         # including aliases obtained through vars(), before copying it.
@@ -140,24 +171,7 @@ class EnumType(type):
             ignored = ignored.replace(",", " ").split()
         for key in [*ignored, "_ignore_"]:
             namespace.pop(key, None)
-        # Member names in definition order. When the body executed under our
-        # _EnumDict (the normal `class X(Enum): ...` path) it already filtered
-        # dunders/sunders/descriptors/callables; the functional API hands us a
-        # plain dict, so reproduce the same filter as a fallback.
-        ordered_member_names = getattr(namespace, "_member_names", None)
-        if ordered_member_names is not None:
-            member_names = [key for key in ordered_member_names if key not in ignored]
-        else:
-            member_names = [
-                key
-                for key, value in namespace.items()
-                if not _is_sunder(key)
-                and not _is_dunder(key)
-                and not key.startswith("_")
-                and not _is_descriptor(value)
-                and not callable(value)
-                and key not in ignored
-            ]
+        member_names = [key for key in namespace._member_names if key not in ignored]
         members: list[tuple[str, Any]] = [(key, namespace[key]) for key in member_names]
         # Members must not remain as plain class attributes; they are replaced
         # by the member objects below (and aliases by their canonical member).
@@ -171,33 +185,7 @@ class EnumType(type):
         # to its CANONICAL member only.
         cls._member_map_: dict[str, Any] = {}
         cls._value2member_map_: dict[Any, Any] = {}
-        flag_type = globals().get("Flag")
-        is_flag = False
-        if flag_type is not None:
-            for base in bases:
-                if isinstance(base, type) and issubclass(base, flag_type):
-                    is_flag = True
-                    break
-        str_enum_type = globals().get("StrEnum")
-        is_str_enum = False
-        if str_enum_type is not None:
-            for base in bases:
-                if isinstance(base, type) and issubclass(base, str_enum_type):
-                    is_str_enum = True
-                    break
-        auto_count = 0
-        flag_count = 0
-        for member_name, raw_value in members:
-            if _is_auto_value(raw_value):
-                if is_str_enum:
-                    raw_value = _enum_str_value(member_name)
-                elif is_flag:
-                    raw_value = 1 << flag_count
-                    flag_count += 1
-                else:
-                    auto_count += 1
-                    raw_value = int(_enum_auto_value(auto_count - 1))
-            value = raw_value
+        for member_name, value in members:
             # Alias resolution: if this value is already bound to a canonical
             # member, the new name aliases that member (CPython semantics).
             # The alias is recorded in _member_map_ and as a class attribute so
@@ -276,11 +264,12 @@ class EnumType(type):
                 and names
                 and not isinstance(names[0], tuple)
             ):
-                names = [(n, i + start) for i, n in enumerate(names)]
-            namespace = {}
+                names = [(name, auto()) for name in names]
+            bases = (cls,)
+            namespace = cls.__class__.__prepare__(value, bases)
+            namespace._start = start
             for member_name, member_value in names:
                 namespace[member_name] = member_value
-            bases = () if cls is Enum else (cls,)
             new_cls = cls.__class__.__new__(cls.__class__, value, bases, namespace)
             if module is not None:
                 new_cls.__module__ = module
@@ -308,6 +297,19 @@ class Enum(metaclass=EnumType):
     _name_: str | None
     _value_: Any
 
+    @staticmethod
+    def _generate_next_value_(name, start, count, last_values):
+        if not last_values:
+            return start
+        try:
+            value = sorted(last_values)[-1]
+        except TypeError:
+            raise TypeError("unable to sort non-numeric values") from None
+        try:
+            return value + 1
+        except TypeError:
+            raise TypeError(f"unable to increment {value!r}") from None
+
     def __new__(cls, value: Any):
         obj = object.__new__(cls)
         obj._value_ = value
@@ -334,6 +336,16 @@ class Enum(metaclass=EnumType):
     def __hash__(self) -> int:
         return hash(self._value_)
 
+    # CPython 3.15.2 Lib/enum.py preserves the canonical member on copies.
+    def __reduce_ex__(self, proto):
+        return self.__class__, (self._value_,)
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __copy__(self):
+        return self
+
 
 class IntEnum(int, Enum):
     def __new__(cls, value: Any):
@@ -343,6 +355,16 @@ class IntEnum(int, Enum):
 
 
 class Flag(Enum):
+    @staticmethod
+    def _generate_next_value_(name, start, count, last_values):
+        if not count:
+            return start if start is not None else 1
+        value = max(last_values)
+        try:
+            return 1 << value.bit_length()
+        except Exception:
+            raise TypeError(f"invalid flag value {value!r}") from None
+
     def __or__(self, other: Any) -> "Flag":
         if isinstance(other, Flag):
             result_val = int(_enum_flag_or(int(self._value_), int(other._value_)))

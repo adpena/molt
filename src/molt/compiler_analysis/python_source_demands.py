@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_string_facts import (
+    SourceStringArguments,
+)
 from molt.compiler_analysis.python_function_kind import (
     IMPLICIT_DESCRIPTOR_NAMES,
     FunctionKind,
@@ -114,7 +117,7 @@ class SourceCandidate(NamedTuple):
         "class_descriptor",
         "static_descriptor",
         "property_descriptor",
-        "bound_class_method",
+        "bound_method",
         "bound_static_method",
         "namespace",
         "namespace_get",
@@ -170,6 +173,11 @@ def _candidate_order(value: object) -> tuple[object, ...]:
 class SourceMember:
     owner: SourceCandidate
     name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassMetaclasses:
+    owner: PythonSourceKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +280,7 @@ SourceValue = tuple[
     | SourceMember
     | _ClassMemberLookup
     | _ClassMemberProviders
+    | _ClassMetaclasses
     | SourceCacheItem
     | SourceReturn
     | SourceCallArguments
@@ -287,9 +296,87 @@ _OperandDeltas = dict[SourceValue, set[SourceCandidate]]
 
 class SourceDemand(NamedTuple):
     phase: SourceDemandPhase
-    arguments: tuple[str, ...]
+    arguments: SourceStringArguments
     argument_count: int | None
     consumer: str
+
+
+# Reading a callable retains its definition. Its caller and argument facts
+# cannot change that obligation, including when the read came from a factory.
+_READ_PHASES = frozenset({"read", "factory"})
+_READ_DEMAND = SourceDemand("read", (), None, "")
+
+
+class _SourceDemandIncidences:
+    """Intern semantic demands and join their incidence by slot.
+
+    A bounded dense prefix handles frequent shared demands. A sparse tail
+    keeps one unusual late slot from widening every row in a large program.
+    Reads take a row snapshot because propagation can queue another demand.
+    """
+
+    _DENSE_SLOTS = 4096
+
+    def __init__(self) -> None:
+        self._slots: dict[SourceDemand, int] = {}
+        self._demands: list[SourceDemand] = []
+        self._admitted: dict[SourceValue, int] = {}
+        self._pending: dict[SourceValue, int] = {}
+        self._tail: dict[SourceValue, set[int]] = {}
+        self._tail_pending: dict[SourceValue, set[int]] = {}
+
+    def __contains__(self, value: SourceValue) -> bool:
+        return value in self._admitted or value in self._tail
+
+    def add(self, value: SourceValue, demand: SourceDemand) -> bool:
+        slot = self._slots.get(demand)
+        if slot is None:
+            slot = len(self._demands)
+            self._slots[demand] = slot
+            self._demands.append(demand)
+        if slot >= self._DENSE_SLOTS:
+            tail = self._tail.setdefault(value, set())
+            if slot in tail:
+                return False
+            tail.add(slot)
+            self._tail_pending.setdefault(value, set()).add(slot)
+            return True
+        bit = 1 << slot
+        present = self._admitted.get(value, 0)
+        if present & bit:
+            return False
+        self._admitted[value] = present | bit
+        self._pending[value] = self._pending.get(value, 0) | bit
+        return True
+
+    def _members(self, bits: int, tail: tuple[int, ...] = ()) -> Iterator[SourceDemand]:
+        while bits:
+            first = bits & -bits
+            yield self._demands[first.bit_length() - 1]
+            bits ^= first
+        for slot in tail:
+            yield self._demands[slot]
+
+    def demands(self, value: SourceValue) -> Iterator[SourceDemand]:
+        tail = self._tail.get(value)
+        return self._members(
+            self._admitted.get(value, 0), () if tail is None else tuple(sorted(tail))
+        )
+
+    def take_pending(
+        self, value: SourceValue, *, include_existing: bool
+    ) -> tuple[Iterator[SourceDemand], Iterator[SourceDemand]]:
+        pending = self._pending.pop(value, 0)
+        existing = self._admitted.get(value, 0) & ~pending if include_existing else 0
+        tail = self._tail.get(value)
+        if tail is None:
+            return self._members(existing), self._members(pending)
+        tail_pending = self._tail_pending.pop(value, set())
+        tail_existing = tuple(sorted(tail - tail_pending)) if include_existing else ()
+        return (
+            self._members(existing, tail_existing),
+            self._members(pending, tuple(sorted(tail_pending))),
+        )
 
 
 type NativeActivation = tuple[SourceCandidate, SourceDemand]
@@ -337,6 +424,12 @@ class _SourceNamespace:
 _EMPTY_NAMESPACE = _SourceNamespace()
 
 
+class _SourceDemandEffects(NamedTuple):
+    admit_imports: Callable[[str, tuple[str, ...]], None]
+    queue_body: Callable[[str, PythonSourceKey, SourceStringArguments], None]
+    require_runtime_import_protocol: Callable[[str], None]
+
+
 class PythonSourceDemands:
     """One incremental source-value activation worklist for import discovery.
 
@@ -349,12 +442,12 @@ class PythonSourceDemands:
         self,
         *,
         admit_imports: Callable[[str, tuple[str, ...]], None],
-        queue_body: Callable[[str, PythonSourceKey, tuple[str, ...]], None],
+        queue_body: Callable[[str, PythonSourceKey, SourceStringArguments], None],
         require_runtime_import_protocol: Callable[[str], None],
     ) -> None:
-        self.admit_imports = admit_imports
-        self.queue_body = queue_body
-        self.require_runtime_import_protocol = require_runtime_import_protocol
+        self._invocation_effects: _SourceDemandEffects | None = _SourceDemandEffects(
+            admit_imports, queue_body, require_runtime_import_protocol
+        )
         self._consumer: str | None = None
         # Reading a callable requires its executable body at publication
         # even when this incidence does not execute it or scan its imports.
@@ -393,12 +486,7 @@ class PythonSourceDemands:
             set
         )
         self.declaration_users: dict[SourceValue, set[SourceValue]] = defaultdict(set)
-        self.value_phases: defaultdict[SourceValue, set[SourceDemand]] = defaultdict(
-            set
-        )
-        self.pending_phases: defaultdict[SourceValue, set[SourceDemand]] = defaultdict(
-            set
-        )
+        self._incidences = _SourceDemandIncidences()
         self.elements: dict[SourceValue, PythonSourceElement] = {}
         self.cache_origins: dict[SourceCacheItem, set[tuple[SourceValue, bool]]] = {}
         self.cache_reads: dict[
@@ -413,6 +501,12 @@ class PythonSourceDemands:
             ],
         ] = {}
         self.calls: dict[SourceValue, PythonSourceCall] = {}
+        self._string_body_demands: set[SourceValue] = set()
+        # A contextual scan can add a real argument even when the joined call
+        # row also has unknown executions. Retain only those additions.
+        self._contextual_call_strings: dict[
+            SourceValue, set[tuple[str | None, ...]]
+        ] = {}
         self.callables: dict[SourceValue, int] = {}
         self.call_imports: dict[SourceValue, frozenset[SourceImportCall]] = {}
         self.admitted_call_imports: set[tuple[SourceValue, PythonIdentity, str]] = set()
@@ -475,8 +569,8 @@ class PythonSourceDemands:
         self.value_jobs: dict[SourceValue, bool] = {}
         # Body scans by class representative, and every argument tuple that
         # activated each body, so a changed parameter fact re-maps them.
-        self.body_jobs: dict[SourceValue, set[tuple[str, ...]]] = {}
-        self.body_activations: dict[SourceValue, set[tuple[str, ...]]] = {}
+        self.body_jobs: dict[SourceValue, set[SourceStringArguments]] = {}
+        self.body_activations: dict[SourceValue, set[SourceStringArguments]] = {}
         # Incidences with the same demand share their activation frontier,
         # even when a candidate arrives through multiple source expressions.
         self.activated: dict[SourceDemand, set[SourceCandidate]] = {}
@@ -488,6 +582,27 @@ class PythonSourceDemands:
         self.native_activations: dict[SourceValue, set[NativeActivation]] = {}
         self.queue: deque[SourceValue] = deque()
         self.exports: dict[str, SourceAllExports] = {}
+
+    def begin_invocation(
+        self,
+        *,
+        admit_imports: Callable[[str, tuple[str, ...]], None],
+        queue_body: Callable[[str, PythonSourceKey, SourceStringArguments], None],
+        require_runtime_import_protocol: Callable[[str], None],
+    ) -> None:
+        assert self._invocation_effects is None
+        self._invocation_effects = _SourceDemandEffects(
+            admit_imports, queue_body, require_runtime_import_protocol
+        )
+
+    def finish_invocation(self) -> None:
+        """Release the completed graph pass's scheduling callbacks."""
+        self._invocation_effects = None
+
+    def _effects(self) -> _SourceDemandEffects:
+        effects = self._invocation_effects
+        assert effects is not None, "source demand effects require an active graph pass"
+        return effects
 
     def queue_value(self, value: SourceValue, *, refresh: bool = True) -> None:
         if isinstance(value[1], _ClassMemberProviders):
@@ -504,24 +619,28 @@ class PythonSourceDemands:
         self,
         value: SourceValue,
         phase: SourceDemandPhase,
-        arguments: tuple[str, ...] = (),
+        arguments: SourceStringArguments = (),
         *,
         argument_count: int | None = None,
         consumer: str | None = None,
     ) -> None:
-        phases = self.value_phases[value]
-        incidence = SourceDemand(
-            phase, arguments, argument_count, consumer or self._consumer or value[0]
+        incidence = (
+            _READ_DEMAND
+            if phase in _READ_PHASES
+            else SourceDemand(
+                phase, arguments, argument_count, consumer or self._consumer or value[0]
+            )
         )
-        if incidence not in phases:
-            phases.add(incidence)
-            self.pending_phases[value].add(incidence)
+        if self._incidences.add(value, incidence):
             # Method and store demands also determine receiver binding
             # and escape in the attribute transfer.
-            needs_candidates = (
-                phase in {"method", "mutate"} or value not in self.value_candidates
-            )
-            self.queue_value(value, refresh=needs_candidates)
+            known = self.value_candidates.get(value)
+            if known is None or phase in {"method", "mutate"}:
+                self.queue_value(value)
+            elif known:
+                self.queue_value(value, refresh=False)
+            # An empty producer has nothing to activate. Its first candidate
+            # publication picks up all demands that arrived while it was empty.
 
     def watch(
         self, origin: SourceValue, user: SourceValue
@@ -610,11 +729,27 @@ class PythonSourceDemands:
             value = ("", item)
             # Publication alone does not read a cache entry. The first
             # demand or dependent initializes the entry from all its origins.
-            if value in self.value_candidates or value in self.value_phases:
+            if value in self.value_candidates or value in self._incidences:
                 self.queue_value(value)
 
-    def accept(self, module_name: str, scan: _ImportScanRequests) -> None:
+    def accept(
+        self,
+        module_name: str,
+        scan: _ImportScanRequests,
+        *,
+        source_owner: PythonSourceKey | None = None,
+        source_arguments: SourceStringArguments = (),
+    ) -> None:
         self.modules.add(module_name)
+        if (
+            source_owner is not None
+            and not source_arguments
+            and any(
+                site.request is None and site.source[-1] == "Call"
+                for site in scan.source_sites
+            )
+        ):
+            self._request_body_strings((module_name, source_owner))
         # Ordinary initialization can publish its admitted source namespace too.
         # This is may-provenance, not proof of cache presence or execution order.
         publication = {((module_name, None), False)}
@@ -635,7 +770,7 @@ class PythonSourceDemands:
             changed, added = namespace.add(names, exposure)
             if new or changed:
                 self._invalidate_value(value)
-                for incidence in tuple(self.value_phases.get(value, ())):
+                for incidence in self._incidences.demands(value):
                     if incidence.phase in {
                         "escape",
                         "expose",
@@ -662,13 +797,14 @@ class PythonSourceDemands:
                         for name in info.plain_attributes
                         if name in prior.plain_attributes
                     ),
+                    metaclass_origins=prior.metaclass_origins | info.metaclass_origins,
                 )
             self._publish(self.classes, value, info)
         for owner, bases in scan.source_values.bases:
             value = (module_name, owner)
             previous_bases = self.bases.get(value, frozenset())
             if self._publish(self.bases, value, previous_bases | bases):
-                for incidence in tuple(self.value_phases.get(value, ())):
+                for incidence in self._incidences.demands(value):
                     if incidence.phase in {"descriptor", "escape", "expose"}:
                         for base in bases - previous_bases:
                             self.demand(
@@ -712,6 +848,20 @@ class PythonSourceDemands:
         for call in scan.source_values.calls:
             value = (module_name, call.owner)
             previous = self.calls.get(value)
+            if (
+                source_arguments
+                and call.frame == source_owner
+                and any(text is not None for text in call.argument_strings)
+                and (
+                    previous is None
+                    or call.argument_strings != previous.argument_strings
+                )
+            ):
+                variants = self._contextual_call_strings.setdefault(value, set())
+                if call.argument_strings not in variants:
+                    variants.add(call.argument_strings)
+                    if value in self.value_candidates:
+                        self.queue_value(value)
             if previous is not None:
                 call = call.join(previous)
             if self._publish(self.calls, value, call) and (
@@ -825,7 +975,7 @@ class PythonSourceDemands:
                     | result.yielded
                     | result.yielded_exposed
                 ) - old
-                for incidence in tuple(self.value_phases.get(value, ())):
+                for incidence in self._incidences.demands(value):
                     if incidence.phase in {"escape", "expose"}:
                         for source in added:
                             self.demand(
@@ -1231,6 +1381,16 @@ class PythonSourceDemands:
                         property_results=property_results,
                     )
                 )
+            if owner.kind == "value":
+                meta_members, meta_properties = self._metaclass_members(
+                    owner, name, value
+                )
+                # A reached data descriptor executes before the class MRO.
+                # Keeping ordinary candidates also covers unknown metaclasses
+                # and conditional namespace writes.
+                members.update(meta_members)
+                members.update(meta_properties)
+                property_results.update(meta_properties)
         result = _ClassMemberResult(frozenset(members), frozenset(property_results))
         previous = self._class_members.get(lookup)
         if result != previous:
@@ -1247,6 +1407,45 @@ class PythonSourceDemands:
                 for user in self.operand_users.get(value, ()):
                     self.queue_value(user)
         return result
+
+    def _metaclass_members(
+        self, owner: SourceCandidate, name: str, user: SourceValue
+    ) -> tuple[set[SourceCandidate], set[SourceCandidate]]:
+        members: set[SourceCandidate] = set()
+        properties: set[SourceCandidate] = set()
+        assert owner.source is not None
+        info = self.classes.get(owner.value)
+        if info is not None and info.plain_metaclass:
+            return members, properties
+        for meta in tuple(
+            self.watch((owner.module, _ClassMetaclasses(owner.source)), user)
+        ):
+            for source in self._class_member_providers(meta.value, name, user):
+                for member in self.select_member(
+                    SourceCandidate(*source), name, user, binding_owner=meta
+                ):
+                    if member.kind == "property_descriptor":
+                        getter = member._replace(kind="value")
+                        self._bind_receiver(getter, owner)
+                        self.activate(getter, "call", argument_count=0)
+                        properties.update(
+                            self.watch(
+                                (getter.module, SourceReturn(getter.value)), user
+                            )
+                        )
+                    else:
+                        if (
+                            member.kind == "value"
+                            and member.source is not None
+                            and member.source[-1]
+                            in {"FunctionDef", "AsyncFunctionDef", "Lambda"}
+                        ):
+                            self._bind_receiver(member, owner)
+                            member = member._replace(
+                                kind="bound_method", receiver=owner.value
+                            )
+                        members.add(member)
+        return members, properties
 
     def _invalidate_member_providers(self, value: SourceValue) -> None:
         pending = [value]
@@ -1379,12 +1578,12 @@ class PythonSourceDemands:
         strict = element is not None and element.protocol is PythonElementProtocol.SUPER
         methods = tuple(
             incidence
-            for incidence in self.value_phases.get(user, ())
+            for incidence in self._incidences.demands(user)
             if incidence.phase == "method"
         )
         # The attribute is a store target (`x.name = v`, `setattr`).
         stored = any(
-            incidence.phase == "mutate" for incidence in self.value_phases.get(user, ())
+            incidence.phase == "mutate" for incidence in self._incidences.demands(user)
         )
         selected: set[SourceCandidate] = set()
         binding_changed = False
@@ -1583,14 +1782,14 @@ class PythonSourceDemands:
         if owner.kind in {
             "class_descriptor",
             "static_descriptor",
-            "bound_class_method",
+            "bound_method",
         }:
             if name == "__func__" or (
-                name == "__wrapped__" and owner.kind != "bound_class_method"
+                name == "__wrapped__" and owner.kind != "bound_method"
             ):
                 return {owner._replace(kind="value", receiver=None)}
             if (
-                owner.kind == "bound_class_method"
+                owner.kind == "bound_method"
                 and name == "__self__"
                 and owner.receiver is not None
             ):
@@ -1676,7 +1875,7 @@ class PythonSourceDemands:
             # Final namespace facts supply candidates, not initialization-order
             # proof. A cycle may read a later export while the hook is installed.
             for origin in namespace.get("__getattr__", ()):
-                self.demand((owner_module, origin), "call", (name,))
+                self.demand((owner_module, origin), "call", ((0, name),))
                 result.update(
                     self.watch(
                         (owner_module, SourceReturn((owner_module, origin))), user
@@ -1691,7 +1890,7 @@ class PythonSourceDemands:
                         )
                         result.add(
                             candidate._replace(
-                                kind="bound_class_method", receiver=binding_owner.value
+                                kind="bound_method", receiver=binding_owner.value
                             )
                         )
                     elif candidate.kind == "static_descriptor":
@@ -1724,7 +1923,7 @@ class PythonSourceDemands:
             child = f"{owner_module}.{name}"
             if from_import:
                 self.imported_modules.add(child)
-                self.admit_imports(user[0], (child,))
+                self._effects().admit_imports(user[0], (child,))
             if child in self.modules or child in self.imported_modules:
                 result.update(self.watch((child, None), user))
         elif owner_source[-1] == "ClassDef":
@@ -1827,13 +2026,13 @@ class PythonSourceDemands:
         self,
         origin: SourceCandidate,
         phase: SourceDemandPhase,
-        arguments: tuple[str, ...] = (),
+        arguments: SourceStringArguments = (),
         *,
         argument_count: int | None = None,
         consumer: str | None = None,
     ) -> None:
         consumer = consumer or self._consumer or origin.module
-        if phase in {"read", "factory"}:
+        if phase in _READ_PHASES:
             if (
                 origin.identity is None
                 and origin.source is not None
@@ -1897,7 +2096,7 @@ class PythonSourceDemands:
         self,
         origin: SourceCandidate,
         phase: SourceDemandPhase,
-        arguments: tuple[str, ...],
+        arguments: SourceStringArguments,
         argument_count: int | None,
     ) -> None:
         module_name, owner = origin.value
@@ -1972,7 +2171,7 @@ class PythonSourceDemands:
             )
             return
         if (
-            origin.kind == "bound_class_method"
+            origin.kind == "bound_method"
             and phase in {"escape", "expose"}
             and origin.receiver is not None
         ):
@@ -1997,7 +2196,7 @@ class PythonSourceDemands:
                 int(origin.identity), argument_count if phase == "call" else None
             ):
                 assert self._consumer is not None
-                self.require_runtime_import_protocol(self._consumer)
+                self._effects().require_runtime_import_protocol(self._consumer)
             return
         if phase in {
             "context_enter",
@@ -2222,7 +2421,83 @@ class PythonSourceDemands:
             self.body_activations.setdefault(origin.value, set()).add(arguments)
             self._schedule_body(origin.value, arguments)
 
-    def _schedule_body(self, value: SourceValue, arguments: tuple[str, ...]) -> None:
+    def _request_body_strings(self, value: SourceValue) -> None:
+        if value in self._string_body_demands:
+            return
+        self._string_body_demands.add(value)
+        # Calling-protocol selection already subscribed these sites to the
+        # declaration. A newly observed import sink wakes the same callers.
+        for user in self.declaration_users.get(value, ()):
+            call = self.calls.get(user)
+            if call is not None and call.arguments:
+                self.queue_value(user)
+
+    def _transfer_call_strings(
+        self,
+        call: PythonSourceCall,
+        site: SourceValue,
+        callee: SourceCandidate,
+        selection: SourceValue,
+    ) -> None:
+        target = callee.value
+        declaration = self.declarations.get(target)
+        if (
+            declaration is None
+            or declaration.kind is not FunctionKind.SYNC
+            or not call.arguments
+            or any(name is None for name, _, _ in call.arguments)
+        ):
+            return
+        names = tuple(name for name, _, _ in call.arguments)
+        slots = dict.fromkeys(declaration.positional)
+        slots.update(dict.fromkeys(formal for _, formal in declaration.keywords))
+        indices = {formal: index for index, formal in enumerate(slots)}
+        for receiver_bound in self._receiver_offsets(callee, selection):
+            bindings = self._argument_bindings(declaration, names, receiver_bound)
+            if len(bindings) != len(names):
+                continue
+            direct = {formal: index for formal, index, packed in bindings if not packed}
+            positional = declaration.positional
+            if receiver_bound and (
+                positional
+                and positional[0] in direct
+                or not positional
+                and declaration.vararg is None
+            ):
+                continue
+            supplied = direct.keys() | (
+                {positional[0]} if receiver_bound and positional else set()
+            )
+            if (
+                len(direct) != sum(not packed for _, _, packed in bindings)
+                or not declaration.required <= supplied
+            ):
+                continue
+            operands = sorted(
+                (indices[formal], index) for formal, index in direct.items()
+            )
+            if call.frame is not None and any(
+                index >= len(call.argument_strings)
+                or call.argument_strings[index] is None
+                for _, index in operands
+            ):
+                self._request_body_strings((site[0], call.frame))
+            for strings in (
+                call.argument_strings,
+                *self._contextual_call_strings.get(site, ()),
+            ):
+                actuals = tuple(
+                    (slot, text)
+                    for slot, index in operands
+                    if index < len(strings) and (text := strings[index]) is not None
+                )
+                if actuals:
+                    self.body_activations.setdefault(target, set()).add(actuals)
+                    self._schedule_body(target, actuals)
+
+    def _schedule_body(
+        self, value: SourceValue, arguments: SourceStringArguments
+    ) -> None:
         """Scan a body once per argument class (``python_parameter_classes``)."""
         module_name, owner = value
         if (classes := self.activation_partitions.get(value)) is not None:
@@ -2235,7 +2510,7 @@ class PythonSourceDemands:
             self._request(module_name, request)
         for write in self.owner_attribute_writes.pop(value, ()):
             self._watch_attribute_write(module_name, write)
-        self.queue_body(module_name, cast(PythonSourceKey, owner), arguments)
+        self._effects().queue_body(module_name, cast(PythonSourceKey, owner), arguments)
 
     def _record_namespace_write(
         self,
@@ -2425,7 +2700,28 @@ class PythonSourceDemands:
                 SourceCandidate(module_name, source, identity=identity)
                 for identity in PythonIdentity(identities)
             )
-        if isinstance(source, SourceCacheItem):
+        if isinstance(source, _ClassMetaclasses):
+            owner = (module_name, source.owner)
+            self.watch(owner, value)
+            info = self.classes.get(owner)
+            if info is not None and not info.plain_metaclass:
+                for origin in info.metaclass_origins:
+                    candidates.update(
+                        meta
+                        for meta in self.watch((module_name, origin), value)
+                        if meta.kind == "value" and self._source_class_candidate(meta)
+                    )
+                for origin in self.bases.get(owner, ()):
+                    for base_module, base_source in self._watch_inherited_sources(
+                        (module_name, origin), value
+                    ):
+                        if base_source is not None:
+                            candidates.update(
+                                self.watch(
+                                    (base_module, _ClassMetaclasses(base_source)), value
+                                )
+                            )
+        elif isinstance(source, SourceCacheItem):
             for origin, contained in tuple(self.cache_origins.get(source, ())):
                 candidates.update(
                     item._replace(contained=item.contained or contained)
@@ -2500,7 +2796,7 @@ class PythonSourceDemands:
             if source.owner.kind == "instance":
                 for callee in candidates:
                     self.watch(callee.value, value)
-                    if callee.kind not in {"bound_class_method", "bound_static_method"}:
+                    if callee.kind not in {"bound_method", "bound_static_method"}:
                         self._bind_receiver(callee, source.owner)
         elif source is not None and source[-1] == "arg":
             candidates.update(self.pending_arguments.pop(value, ()))
@@ -2766,7 +3062,9 @@ class PythonSourceDemands:
                                     (value, candidate.identity, imported)
                                     for imported in added_imports
                                 )
-                                self.admit_imports(module_name, added_imports)
+                                self._effects().admit_imports(
+                                    module_name, added_imports
+                                )
                             for imported in transfer.returned_modules:
                                 candidates.update(self.watch((imported, None), value))
                             for source in transfer.returned_exposed:
@@ -2854,6 +3152,10 @@ class PythonSourceDemands:
                                 selection=attribute,
                             )
                         )
+                        if candidate.value in self._string_body_demands:
+                            self._transfer_call_strings(
+                                call, value, candidate, attribute
+                            )
         elif value in self.attributes:
             for name, owners in self.attributes[value].items():
                 if name in {"__builtins__", "f_builtins"}:
@@ -2929,13 +3231,17 @@ class PythonSourceDemands:
         known: set[SourceCandidate] | frozenset[SourceCandidate],
         added: set[SourceCandidate] | frozenset[SourceCandidate],
     ) -> None:
+        # Keep the pending incidence until the producer has an answer.
+        if not known:
+            return
         # A demand-only wake joins existing candidates without evaluating their
         # producer. A changed publication visits only its new incidences.
-        new_phases = self.pending_phases.pop(value, None)
-        if added and (phases := self.value_phases.get(value)):
-            for incidence in phases.difference(new_phases or ()):
-                self._activate_new_candidates(value, added, incidence)
-        for incidence in new_phases or ():
+        existing, pending = self._incidences.take_pending(
+            value, include_existing=bool(added)
+        )
+        for incidence in existing:
+            self._activate_new_candidates(value, added, incidence)
+        for incidence in pending:
             self._activate_new_candidates(value, known, incidence)
 
     def _activate_new_candidates(
@@ -2957,7 +3263,7 @@ class PythonSourceDemands:
         self, candidate: SourceCandidate, selection: SourceValue
     ) -> tuple[bool, ...]:
         bound = candidate in self.receiver_bound_members.get(selection, ())
-        if candidate.kind == "bound_class_method" or (
+        if candidate.kind == "bound_method" or (
             bound and candidate not in self.unbound_members.get(selection, ())
         ):
             return (True,)
@@ -3513,7 +3819,7 @@ class PythonSourceDemands:
                     user,
                     owner.kind == "instance"
                     and callee.kind != "bound_static_method"
-                    or callee.kind == "bound_class_method",
+                    or callee.kind == "bound_method",
                 )
                 self.activate(callee, "call", consumer=user[0])
                 result.update(self._returned_values(callee, user))
@@ -3697,7 +4003,7 @@ class PythonSourceDemands:
         if (
             selection is not None
             and declaration is not None
-            and callee.kind in {"value", "bound_class_method", "bound_static_method"}
+            and callee.kind in {"value", "bound_method", "bound_static_method"}
         ):
             projection = self._project_call_result(
                 callee, selection, user, self.calls[user], declaration
@@ -3968,7 +4274,7 @@ class PythonSourceDemands:
                     payload,
                     callback.value,
                     user,
-                    callback.kind == "bound_class_method",
+                    callback.kind == "bound_method",
                 )
                 if callback.namespace_mutation is not None:
                     if callback.kind == "namespace_write_descriptor":

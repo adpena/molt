@@ -54,9 +54,9 @@ crate::builtins::methods::native_method_table!(type_method_bits, publish_type_me
         )),
         crate::NameId::DunderPrepare => Some(builtin_func_bits(
             _py,
-            NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).type_obj, crate::NameId::DunderPrepare),
+            NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).type_obj, crate::NameId::DunderPrepare).with_text_signature("($cls, name, bases, /, **kwds)"),
             fn_ref!(molt_type_prepare),
-            3,
+            0,
         )),
         crate::NameId::DunderInstancecheck => Some(builtin_func_bits(
             _py,

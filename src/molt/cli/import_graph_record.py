@@ -68,11 +68,13 @@ from molt.compiler_analysis.python_import_redirects import (
 )
 from molt.compiler_analysis.python_string_facts import (
     PythonStringBound,
+    SourceStringArguments,
+    decode_source_string_arguments,
 )
 from molt.target_python import TargetPythonVersion, _parse_source_for_target
 
 _MAX_BYTES = 16 * 1024 * 1024
-_SCHEMA = 8
+_SCHEMA = 9
 _KIND = "import-graph"
 _T = TypeVar("_T")
 
@@ -398,7 +400,7 @@ class _SourceRequestCoordinate:
     is_package: bool
     mode: ImportScanMode
     owner: PythonSourceKey | None
-    arguments: tuple[str, ...]
+    arguments: SourceStringArguments
     body_roots: tuple[str, ...]
     target_python: TargetPythonVersion
     target_sys_platform: str | None
@@ -723,7 +725,11 @@ def _store_import_graph(
     encoded = _bytes(payload)
     if len(encoded) <= _MAX_BYTES:
         plan.import_query_closure.validate(plan.scan_authority)
-        frontend_record_files().put(_KIND, key, encoded)
+        records = frontend_record_files()
+        if records.put(_KIND, key, encoded):
+            # The checked graph is a complete stage product. Commit its index
+            # before lowering or codegen can fail or interrupt the operation.
+            records.save()
 
 
 def _replay(context: ImportGraphContext) -> _ImportPlan | None:
@@ -839,6 +845,10 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         for source in query_sources
     ):
         return None
+    source_leases = {
+        path: resolver.import_query_source_lease(snapshot)
+        for path, snapshot in snapshots.items()
+    }
     result_locations = {
         sha: PythonSourceLocations() if lines is None else lines.locations()
         for sha, lines in source_lines.items()
@@ -940,7 +950,8 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         snapshot = snapshots[path]
         common = _table_row(query_contexts, context_id)
         premise = premise_for(source.module, premise_id)
-        changed = snapshot.sha256 != source.sha256
+        lease = source_leases[path]
+        changed = lease.source_sha256 != source.sha256
         if changed and premise is not None and premise.foreign_universe is not None:
             if path not in name_universes:
                 name_universes[path] = python_namespace_name_universe(snapshot.text)
@@ -958,14 +969,14 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         result_digest = _table_row(result_digests, digest)
         query = ImportScanQuery(
             path,
-            resolver.import_query_source_lease(snapshot),
+            lease,
             None,
             source.module,
             source.package,
             mode,
             purpose,
             owner,
-            _texts(arguments),
+            decode_source_string_arguments(arguments),
             context.target_python,
             context.target_sys_platform,
             premise,
@@ -1044,7 +1055,7 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
                         locations.key(
                             name, decode_python_source_key(_map(item)["source"])
                         ),
-                        _texts(_map(item)["arguments"]),
+                        decode_source_string_arguments(_map(item)["arguments"]),
                     )
                     for item in _list(row["deferred_bodies"])
                 ),

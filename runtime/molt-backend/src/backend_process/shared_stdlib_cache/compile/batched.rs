@@ -112,7 +112,9 @@ impl PlannedStdlibArchive {
         log_prefix: &str,
         cache: Option<&NativeObjectCache>,
         publish: impl FnOnce(&[MappedObject], &StdlibArchiveProvenance) -> io::Result<()>,
-        worker: impl Fn(&[u8], &str, &std::path::Path) -> io::Result<NativeWorkerOrigin> + Sync + Send,
+        worker: impl Fn(NativeBatchObjectJob, &str, &std::path::Path) -> io::Result<NativeWorkerOrigin>
+        + Sync
+        + Send,
     ) -> io::Result<()> {
         if cache.is_none() {
             eprintln!(
@@ -122,6 +124,7 @@ impl PlannedStdlibArchive {
         let content_key = cache
             .and_then(|_| self.archive_key())
             .map(|key| bytes_to_lower_hex(&key));
+        release_native_backend_batch_memory_to_os();
         let stdlib_tmp_dir = create_native_batch_temp_dir()?;
         let compile_result = (|| -> io::Result<()> {
             let total = self.batches.len();
@@ -148,13 +151,12 @@ impl PlannedStdlibArchive {
                 // The job is self-contained and hashed above; the worker reads
                 // it from stdin, and only a failure writes it to disk for replay.
                 let object_path = stdlib_tmp_dir.join(format!("batch_{index}.o"));
-                let job = batch.job.encode()?;
                 eprintln!(
                     "{log_prefix}: compiling stdlib object miss {}/{}",
                     index + 1,
                     total
                 );
-                let origin = worker(&job, &format!("batch_{index}.msgpack"), &object_path)?;
+                let origin = worker(batch.job, &format!("batch_{index}.msgpack"), &object_path)?;
                 // A constituent is independently closed and verified. Publish
                 // it before waiting for sibling jobs, so a failed or cancelled
                 // archive build retains completed work for the next request.

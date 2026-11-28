@@ -44,14 +44,18 @@ fn object_bytes(symbol: &str) -> Vec<u8> {
     object.write().unwrap()
 }
 
-fn emit(job: &[u8], name: &str, output: &std::path::Path) -> io::Result<NativeWorkerOrigin> {
+fn emit(
+    job: NativeBatchObjectJob,
+    name: &str,
+    output: &std::path::Path,
+) -> io::Result<NativeWorkerOrigin> {
     let bytes = object_bytes(name);
     std::fs::write(output, &bytes)?;
     Ok(NativeWorkerOrigin {
         schema: "molt.native-worker-origin.v2".into(),
         process_id: std::process::id(),
         scope: Some("a".repeat(64)),
-        input: ContentIdentity::of_bytes(job),
+        input: ContentIdentity::of_bytes(&job.encode()?),
         output: ContentIdentity::of_bytes(&bytes),
     })
 }

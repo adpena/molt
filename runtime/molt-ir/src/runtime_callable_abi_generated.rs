@@ -1368,6 +1368,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_class_finish_statement",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_class_frame_enter",
         arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -1385,6 +1390,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_class_new",
         arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_class_prepare_statement",
+        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -3453,11 +3463,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_enum_auto_value",
-        arity: 1,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_enum_flag_and",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -3490,11 +3495,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_enum_init_member",
         arity: 3,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_enum_is_auto",
-        arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -15766,6 +15766,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_class_def_namespace__molt_context_66fa900595616b00",
         },
+        "molt_class_finish_statement" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_class_finish_statement__molt_context_66fa900595616b00",
+        },
         "molt_class_frame_enter" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_class_frame_enter__molt_context_66fa900595616b00",
@@ -15785,6 +15789,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_class_new" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_class_new__molt_context_66fa900595616b00",
+        },
+        "molt_class_prepare_statement" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_class_prepare_statement__molt_context_66fa900595616b00",
         },
         "molt_class_set_base" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -17806,10 +17814,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_encodings_aliases_map__molt_context_66fa900595616b00",
         },
-        "molt_enum_auto_value" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_enum_auto_value__molt_context_66fa900595616b00",
-        },
         "molt_enum_create" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_enum_create__molt_context_66fa900595616b00",
@@ -17841,10 +17845,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_enum_init_member" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_enum_init_member__molt_context_66fa900595616b00",
-        },
-        "molt_enum_is_auto" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_enum_is_auto__molt_context_66fa900595616b00",
         },
         "molt_enum_is_descriptor" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

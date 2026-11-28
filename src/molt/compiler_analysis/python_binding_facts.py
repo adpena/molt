@@ -66,12 +66,20 @@ class PythonStringAlternatives:
     values: frozenset[str]
 
 
+@dataclass(frozen=True, slots=True)
+class PythonStringWitnesses:
+    """Known spellings on some normal paths, with other values possible."""
+
+    values: frozenset[str]
+
+
 PythonStringValue: TypeAlias = str | PythonStringAlternatives
 
 
 PythonStaticValue: TypeAlias = (
     PythonStringValue
     | PythonStringBound
+    | PythonStringWitnesses
     | int
     | tuple[str, ...]
     | PythonParameterRef
@@ -89,8 +97,26 @@ def finite_python_strings(value: PythonStaticValue) -> tuple[str, ...] | None:
 
 
 def join_python_static_values(
-    left: PythonStaticValue, right: PythonStaticValue
+    left: PythonStaticValue,
+    right: PythonStaticValue,
+    *,
+    retain_string_witnesses: bool = False,
 ) -> PythonStaticValue:
+    if retain_string_witnesses and (
+        isinstance(left, PythonStringWitnesses)
+        or isinstance(right, PythonStringWitnesses)
+        or isinstance(left, (str, PythonStringAlternatives))
+        != isinstance(right, (str, PythonStringAlternatives))
+    ):
+        values = set()
+        for operand in (left, right):
+            if type(operand) is str:
+                values.add(operand)
+            elif isinstance(operand, (PythonStringAlternatives, PythonStringWitnesses)):
+                values.update(operand.values)
+        return (
+            PythonStringWitnesses(frozenset(values)) if 0 < len(values) <= 8 else None
+        )
     """Retain small finite string sets at control-flow joins."""
     if left is None or right is None:
         return None
@@ -118,6 +144,8 @@ def python_static_value_key(value: PythonStaticValue) -> tuple[object, ...]:
         return ("parameter", value.name)
     if isinstance(value, PythonStringAlternatives):
         return ("string-alternatives", value.values)
+    if isinstance(value, PythonStringWitnesses):
+        return ("string-witnesses", value.values)
     if isinstance(value, PythonStringBound):
         return ("string-bound", value)
     key = literal_identity_key(value)
@@ -175,9 +203,16 @@ class PythonSourceCall(NamedTuple):
     bound_update_keys: tuple[str, ...] | None = None
     unbound_update_keys: tuple[str, ...] | None = None
     dispatch: PythonSourceCallDispatch = PythonSourceCallDispatch.OPEN
+    frame: PythonSourceKey | None = None
 
     def has_valid_source_form(self) -> bool:
         if self.owner[-1] == "Call":
+            if self.frame is not None and self.frame[-1] not in {
+                "FunctionDef",
+                "AsyncFunctionDef",
+                "Lambda",
+            }:
+                return False
             if self.dispatch is PythonSourceCallDispatch.SOURCE_FUNCTION:
                 return bool(self.callees) and not self.arguments
             if self.dispatch is PythonSourceCallDispatch.ITEMGETTER_INTEGER_KEYS:
@@ -197,9 +232,12 @@ class PythonSourceCall(NamedTuple):
             and self.bound_update_keys is None
             and self.unbound_update_keys is None
             and self.dispatch is PythonSourceCallDispatch.OPEN
+            and self.frame is None
         )
 
     def join(self, prior: PythonSourceCall) -> PythonSourceCall:
+        if self.frame != prior.frame:
+            raise ValueError("source call changed lexical frame")
         return self._replace(
             callees=self.callees | prior.callees,
             intrinsic_result=self.intrinsic_result | prior.intrinsic_result,
@@ -255,6 +293,7 @@ class PythonSourceClass(NamedTuple):
     owner: PythonSourceKey
     plain_metaclass: bool
     plain_attributes: tuple[str, ...]
+    metaclass_origins: frozenset[PythonSourceKey] = frozenset()
 
 
 class PythonSourceCallableDeclaration(NamedTuple):
@@ -266,6 +305,7 @@ class PythonSourceCallableDeclaration(NamedTuple):
     vararg: PythonSourceKey | None = None
     keywords: tuple[tuple[str, PythonSourceKey], ...] = ()
     kwarg: PythonSourceKey | None = None
+    required: frozenset[PythonSourceKey] = frozenset()
 
 
 class PythonClassPreparation(StrEnum):

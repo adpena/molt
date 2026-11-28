@@ -142,6 +142,7 @@
       "diagnostic_bypass": false,
       "keys": [
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+        "MOLT_BACKEND_TREE_SLICE_BYTES",
         "MOLT_CLI_MEMORY_AVAILABLE_GB",
         "MOLT_MEMORY_AVAILABLE_GB",
         "MOLT_BACKEND_MAX_PROCESS_RSS_GB",

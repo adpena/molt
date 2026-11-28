@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_string_facts import (
+    SourceStringArguments,
+)
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import ast
@@ -61,7 +64,7 @@ _ImportScanCacheKey = tuple[
     bool,
     ImportScanMode,
     PythonSourceKey | None,
-    tuple[str, ...],
+    SourceStringArguments,
     str,
     str | None,
     str,
@@ -1077,7 +1080,7 @@ class _ModuleResolutionCache:
         is_package: bool = False,
         import_scan_mode: ImportScanMode = "full",
         source_owner: PythonSourceKey | None = None,
-        source_arguments: tuple[str, ...] = (),
+        source_arguments: SourceStringArguments = (),
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         runtime_import_custody: _RuntimeImportScanCustody | None = None,
         ast_digest_admission: _PythonAstDigestAdmission | None = None,

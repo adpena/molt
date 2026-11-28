@@ -2040,6 +2040,20 @@ def sample_processes_windows() -> dict[int, ProcessSample]:
     return samples
 
 
+def current_process_resident_bytes() -> int | None:
+    """Sample just this process for callers delegating a memory allocation."""
+    pid = os.getpid()
+    if is_windows_process_model():
+        kib = windows_process_resident_kb(pid, windows_current_process_started_at_ns())
+    elif sys.platform == "darwin":
+        kib = _darwin_proc_resident_kb(pid)
+    elif sys.platform.startswith("linux"):
+        kib = _linux_proc_rss_kb(pid)
+    else:
+        return None
+    return kib * 1024 if kib else None
+
+
 def is_windows_process_model() -> bool:
     return os.name == "nt"
 

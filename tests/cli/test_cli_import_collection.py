@@ -29488,6 +29488,7 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
     backend_output = tmp_path / "output.o"
     baseline_digest = BACKEND_EXECUTION._backend_codegen_env_digest(is_wasm=False)
     monkeypatch.setenv("MOLT_BACKEND_MEMORY_AVAILABLE_GB", "18")
+    monkeypatch.setenv("MOLT_BACKEND_TREE_SLICE_BYTES", "123456789")
     monkeypatch.setenv("MOLT_BACKEND_MAX_PROCESS_RSS_GB", "18")
     monkeypatch.setenv("MOLT_BACKEND_MEMORY_RESERVE_GB", "4")
     monkeypatch.setenv("RAYON_NUM_THREADS", "2")
@@ -29513,6 +29514,7 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
     assert request_bytes is not None
     payload = json.loads(request_bytes)
     assert payload["env"]["MOLT_BACKEND_MEMORY_AVAILABLE_GB"] == "18"
+    assert payload["env"]["MOLT_BACKEND_TREE_SLICE_BYTES"] == "123456789"
     assert payload["env"]["MOLT_BACKEND_MAX_PROCESS_RSS_GB"] == "18"
     assert payload["env"]["MOLT_BACKEND_MEMORY_RESERVE_GB"] == "4"
     assert payload["env"]["RAYON_NUM_THREADS"] == "2"

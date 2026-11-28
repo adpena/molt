@@ -78,6 +78,26 @@ fn names(document: &BackendIrDocument) -> Vec<&str> {
 }
 
 #[test]
+fn malformed_body_is_rejected_before_reading_the_rest_of_the_lease() {
+    use std::io::{self, Read};
+
+    struct UnreadTail;
+    impl Read for UnreadTail {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other(
+                "attempted to read beyond the invalid body",
+            ))
+        }
+    }
+
+    // Map with a body list first. Its sole bin contains MessagePack's
+    // reserved 0xc1 marker. No digest list is needed to reject that body.
+    let prefix = b"\x82\xaffunction_bodies\x91\xc4\x01\xc1";
+    let result = AddressedProgram::from_msgpack_reader(&mut (&prefix[..]).chain(UnreadTail));
+    assert!(matches!(result, Err(error) if error.contains("function body")));
+}
+
+#[test]
 fn digest_domain_matches_the_cli_producer() {
     // Independent oracle: hashlib.sha256(b"molt.function-body.msgpack.v1\0" +
     // body).hexdigest() in CPython, for the empty body and the empty map.

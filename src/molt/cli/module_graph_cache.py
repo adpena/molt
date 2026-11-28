@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.python_string_facts import (
+    SourceStringArguments,
+    encode_source_string_arguments,
+)
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt import compiler_process
@@ -964,7 +968,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 # 55: bounded string spellings inform import and namespace invalidation.
 # 56: generic positional argument exposure retains its qualified call site.
 # 70: import-cache subscriptions publish the selected value's source origin.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 72
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 73
 
 
 def _import_scan_cache_key(
@@ -974,7 +978,7 @@ def _import_scan_cache_key(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
     snapshot: _module_source.PythonSourceSnapshot | None = None,
@@ -1149,7 +1153,7 @@ def _write_persisted_import_scan_alias(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     source_owner: PythonSourceKey | None,
-    source_arguments: tuple[str, ...],
+    source_arguments: SourceStringArguments,
     namespace_premise: PythonNamespacePremise | None,
     same_as_premise: PythonNamespacePremise | None,
     native_support_function_roots: tuple[str, ...],
@@ -1198,7 +1202,7 @@ class _ImportScanAdmission(NamedTuple):
     is_package: bool
     import_scan_mode: ImportScanMode
     source_owner: PythonSourceKey | None
-    source_arguments: tuple[str, ...]
+    source_arguments: SourceStringArguments
     body_selection: ModuleBodySelection
     target_sys_platform: str | None
     target_python: TargetPythonVersion
@@ -1260,7 +1264,7 @@ def _read_persisted_import_scan_record(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
     snapshot: _module_source.PythonSourceSnapshot | None = None,
@@ -1390,7 +1394,8 @@ def _decode_import_scan_payload(
         != (
             list(admission.source_owner) if admission.source_owner is not None else None
         )
-        or payload.get("source_arguments") != list(admission.source_arguments)
+        or payload.get("source_arguments")
+        != encode_source_string_arguments(admission.source_arguments)
     ):
         return None
     if (
@@ -1562,6 +1567,7 @@ def _decode_import_scan_payload(
                     if unbound_keys is None
                     else _source_cache_sorted_strings(unbound_keys),
                     PythonSourceCallDispatch(dispatch),
+                    _decode_optional_source_key(frame),
                 )
                 for (
                     source,
@@ -1572,7 +1578,8 @@ def _decode_import_scan_payload(
                     bound_keys,
                     unbound_keys,
                     dispatch,
-                ) in _source_cache_rows(raw_values["calls"], 8)
+                    frame,
+                ) in _source_cache_rows(raw_values["calls"], 9)
             ),
             tuple(
                 PythonSourceCallableDeclaration(
@@ -1588,9 +1595,10 @@ def _decode_import_scan_payload(
                         for name, arg in _source_cache_rows(keywords, 2)
                     ),
                     _decode_optional_source_key(kwarg),
+                    _source_cache_origins(required),
                 )
-                for owner, kind, positional, vararg, keywords, kwarg in _source_cache_rows(
-                    raw_values["declarations"], 6
+                for owner, kind, positional, vararg, keywords, kwarg, required in _source_cache_rows(
+                    raw_values["declarations"], 7
                 )
             ),
             tuple(
@@ -1704,9 +1712,10 @@ def _decode_import_scan_payload(
                     decode_python_source_key(owner),
                     _source_cache_bool(plain),
                     _source_cache_sorted_strings(attributes),
+                    _source_cache_origins(metaclasses),
                 )
-                for owner, plain, attributes in _source_cache_rows(
-                    raw_values["classes"], 3
+                for owner, plain, attributes, metaclasses in _source_cache_rows(
+                    raw_values["classes"], 4
                 )
             ),
             activation_partitions=tuple(
@@ -1789,7 +1798,8 @@ def _decode_import_scan_payload(
             or kwarg is not None
             and kwarg[-1] != "arg"
             or len({name for name, _ in keywords}) != len(keywords)
-            for owner, _, positional, vararg, keywords, kwarg in values.declarations
+            or not required <= set(positional) | {arg for _, arg in keywords}
+            for owner, _, positional, vararg, keywords, kwarg, required in values.declarations
         ):
             return None
         if len({item.owner for item in values.functions}) != len(
@@ -1928,7 +1938,7 @@ def _import_scan_payload(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     native_support_function_roots: tuple[str, ...] = (),
     scan: _ImportScanRequests,
     source_sha256: str,
@@ -2019,6 +2029,7 @@ def _import_scan_payload(
                     item.bound_update_keys,
                     item.unbound_update_keys,
                     item.dispatch,
+                    locations.optional(item.frame),
                 )
                 for item in scan.source_values.calls
             ],
@@ -2044,6 +2055,7 @@ def _import_scan_payload(
                     locations.optional(item.vararg),
                     [(name, locations.key(key)) for name, key in item.keywords],
                     locations.optional(item.kwarg),
+                    locations.ordered(item.required),
                 )
                 for item in scan.source_values.declarations
             ],
@@ -2083,7 +2095,12 @@ def _import_scan_payload(
                 for source, keys, origins, contents in scan.source_values.cache_writes
             ],
             "classes": [
-                item._replace(owner=locations.key(item.owner))
+                (
+                    locations.key(item.owner),
+                    item.plain_metaclass,
+                    item.plain_attributes,
+                    locations.ordered(item.metaclass_origins),
+                )
                 for item in scan.source_values.classes
             ],
             "native_initializers": [
@@ -2157,7 +2174,7 @@ def _write_persisted_import_scan(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
     scan: _ImportScanRequests,

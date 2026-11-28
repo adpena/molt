@@ -5,6 +5,9 @@ from __future__ import annotations
 import ast
 import contextvars
 from collections.abc import Callable
+from molt.compiler_analysis.python_string_facts import (
+    SourceStringArguments,
+)
 from molt.python_private_names import (
     python_import_binding,
     python_source_field,
@@ -17,6 +20,7 @@ from typing import Literal, NamedTuple, cast, get_args
 from weakref import ReferenceType, ref
 
 from molt.compiler_analysis.python_lexical_scope import (
+    function_parameter_nodes,
     python_execution_regions,
     definition_lexical_regions,
     python_scope_declarations,
@@ -58,6 +62,7 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonParameterRef,
     finite_python_strings,
     PythonStringValue,
+    PythonStringWitnesses,
 )
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
@@ -617,7 +622,7 @@ def _collect_static_source_execution_requests(
     *,
     is_package: bool,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     import_scan_mode: ImportScanMode = "full",
     module_name: str | None = None,
     namespace_premise: PythonNamespacePremise | None = None,
@@ -837,14 +842,12 @@ def _source_argument_values(admission, source_owner, source_arguments):
         raise ValueError("argument facts require a function source owner")
     # Select typed parameter identities; the canonical binding analysis owns
     # their scalar facts and all subsequent writes, callbacks and completions.
-    parameters = (*node.args.posonlyargs, *node.args.args)
-    if len(source_arguments) > len(parameters):
-        return ()
+    parameters = function_parameter_nodes(node.args)
+    if source_arguments[-1][0] >= len(parameters):
+        raise ValueError("source argument slot is outside its declaration")
     return tuple(
-        zip(
-            (python_node_source_key(parameter) for parameter in parameters),
-            source_arguments,
-        )
+        (python_node_source_key(parameters[slot]), value)
+        for slot, value in source_arguments
     )
 
 
@@ -876,7 +879,7 @@ def _static_scan_nodes(
     *,
     include_function_bodies: bool,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     namespace_premise: PythonNamespacePremise | None = None,
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -961,7 +964,7 @@ def _scan_nodes_for_import_mode(
     *,
     module_name: str | None = None,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     namespace_premise: PythonNamespacePremise | None = None,
     target_sys_platform: str | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -986,7 +989,7 @@ def _collect_imports(
     is_package: bool = False,
     *,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     import_scan_mode: ImportScanMode = "full",
     namespace_premise: PythonNamespacePremise | None = None,
     target_sys_platform: str | None = None,
@@ -1588,6 +1591,53 @@ def _collect_imports(
             seen.add(current.id)
             current = local_expr_bindings[current.id]
         return current
+
+    def _absolute_import_name_witnesses(
+        payload: _StaticImportCallPayload,
+    ) -> tuple[str, ...]:
+        """A witnessed name adds source custody while runtime still binds it."""
+        expression = payload.name
+        if (
+            not source_arguments
+            or payload.callable.behavior is not PythonImportBehavior.LEAF
+            or payload.requires_runtime_binding
+            or expression is None
+        ):
+            return ()
+
+        def values(node: ast.expr) -> tuple[str, ...]:
+            fact = binding_index.static_value(node)
+            if isinstance(fact, PythonStringWitnesses):
+                return tuple(sorted(fact.values))
+            return finite_python_strings(fact) or ()
+
+        if not isinstance(expression, ast.JoinedStr):
+            found = values(expression)
+        else:
+            prefix: list[str] = []
+            suffix: list[str] = []
+            alternatives: tuple[str, ...] = ()
+            for item in expression.values:
+                if isinstance(item, ast.Constant) and type(item.value) is str:
+                    literal = item.value
+                elif (
+                    isinstance(item, ast.FormattedValue)
+                    and item.conversion in {-1, 115}
+                    and item.format_spec is None
+                ):
+                    literal = _resolve_string_constant(item.value, source_bindings)
+                    if literal is None:
+                        if alternatives or not (alternatives := values(item.value)):
+                            # Independent alternatives may be correlated. A
+                            # complete cross product would invent import edges.
+                            return ()
+                        continue
+                else:
+                    return ()
+                (suffix if alternatives else prefix).append(literal)
+            before, after = "".join(prefix), "".join(suffix)
+            found = tuple(before + value + after for value in alternatives)
+        return tuple(name for name in found if name and not name.startswith("."))
 
     def _static_import_call_payload(
         call: ast.Call,
@@ -2292,7 +2342,7 @@ def _collect_imports(
             record_site(node, None)
         else:
             modules = _resolve_static_import_call(payload, source_bindings)
-            imports.extend(modules)
+            imports.extend(modules or _absolute_import_name_witnesses(payload))
             if _source_bindings is not None:
                 returned = tuple(
                     dict.fromkeys(
@@ -2857,7 +2907,7 @@ def _collect_imports_for_graph(
     is_package: bool = False,
     *,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     import_scan_mode: ImportScanMode = "full",
     namespace_premise: PythonNamespacePremise | None = None,
     target_sys_platform: str | None = None,
@@ -3145,7 +3195,7 @@ def _collect_import_scan_requests(
     is_package: bool,
     module_name: str,
     source_owner: PythonSourceKey | None = None,
-    source_arguments: tuple[str, ...] = (),
+    source_arguments: SourceStringArguments = (),
     import_scan_mode: ImportScanMode,
     namespace_premise: PythonNamespacePremise | None = None,
     target_sys_platform: str | None = None,

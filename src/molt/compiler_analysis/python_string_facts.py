@@ -2,6 +2,38 @@
 
 import ast
 from dataclasses import dataclass
+from typing import TypeAlias
+
+
+# Sorted by the formal's lexical slot, including keyword-only parameters.
+# Omitted slots carry no value assertion (in particular, a bound receiver).
+SourceStringArguments: TypeAlias = tuple[tuple[int, str], ...]
+
+
+def encode_source_string_arguments(
+    arguments: SourceStringArguments,
+) -> list[list[int | str]]:
+    return [[slot, value] for slot, value in arguments]
+
+
+def decode_source_string_arguments(raw: object) -> SourceStringArguments:
+    if not isinstance(raw, list):
+        raise ValueError("source string arguments must be an array")
+    arguments = []
+    previous = -1
+    for row in raw:
+        if (
+            not isinstance(row, list)
+            or len(row) != 2
+            or type(row[0]) is not int
+            or row[0] <= previous
+            or type(row[1]) is not str
+        ):
+            raise ValueError("source string arguments must have distinct ordered slots")
+        slot, value = row
+        arguments.append((slot, value))
+        previous = slot
+    return tuple(arguments)
 
 
 @dataclass(frozen=True, slots=True, order=True)

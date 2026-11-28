@@ -5951,8 +5951,13 @@ def test_async_for_termination_matches_canonical_exception_class() -> None:
         ("def probe(iterator):\n    yield from iterator\n", "molt_iterator_throw", 2),
         (
             "def probe(base):\n    class Inner(base):\n        pass\n    return Inner\n",
-            "molt_types_bootstrap",
-            0,
+            "molt_class_prepare_statement",
+            3,
+        ),
+        (
+            "def probe(base):\n    class Inner(base):\n        pass\n    return Inner\n",
+            "molt_class_finish_statement",
+            3,
         ),
     ],
 )

@@ -1240,8 +1240,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # ``needs_classcell`` so it can be threaded into method closures; do not
         # re-declare it here or the pre-created cell would be lost.
         dynamic_bases_tuple: MoltValue | None = None
-        dynamic_meta: MoltValue | None = None
-        dynamic_prepared_kwds: MoltValue | None = None
+        prepared_class: MoltValue | None = None
         dynamic_kwds: MoltValue | None = None
         if dynamic_build:
             if node.keywords:
@@ -1278,116 +1277,17 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE, "Unsupported class bases"
                 )
-            types_bootstrap = self._emit_intrinsic_call(
-                "molt_types_bootstrap", [], type_hint="dict"
+            kwds = (
+                dynamic_kwds
+                if dynamic_kwds is not None
+                else self._emit_const_value(None)
             )
-            resolve_key = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["resolve_bases"], result=resolve_key)
+            prepared_class = self._emit_intrinsic_call(
+                "molt_class_prepare_statement",
+                [name_val, dynamic_bases_tuple, kwds],
+                type_hint="tuple",
             )
-            resolve_bases_func = MoltValue(self.next_var(), type_hint="function")
-            self.emit(
-                MoltOp(
-                    kind="INDEX",
-                    args=[types_bootstrap, resolve_key],
-                    result=resolve_bases_func,
-                )
-            )
-            resolve_args = MoltValue(self.next_var(), type_hint="callargs")
-            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=resolve_args))
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_POS",
-                    args=[resolve_args, dynamic_bases_tuple],
-                    result=MoltValue("none"),
-                )
-            )
-            dynamic_bases_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="CALL_BIND",
-                    args=[resolve_bases_func, resolve_args],
-                    result=dynamic_bases_tuple,
-                )
-            )
-
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            kwds_val = dynamic_kwds if dynamic_kwds is not None else none_val
-
-            prepare_key = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["prepare_class"], result=prepare_key)
-            )
-            prepare_class_func = MoltValue(self.next_var(), type_hint="function")
-            self.emit(
-                MoltOp(
-                    kind="INDEX",
-                    args=[types_bootstrap, prepare_key],
-                    result=prepare_class_func,
-                )
-            )
-            prepare_args = MoltValue(self.next_var(), type_hint="callargs")
-            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=prepare_args))
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_POS",
-                    args=[prepare_args, name_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_POS",
-                    args=[prepare_args, dynamic_bases_tuple],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_POS",
-                    args=[prepare_args, kwds_val],
-                    result=MoltValue("none"),
-                )
-            )
-            prepared_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="CALL_BIND",
-                    args=[prepare_class_func, prepare_args],
-                    result=prepared_tuple,
-                )
-            )
-
-            zero_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
-            one_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one_val))
-            two_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[2], result=two_val))
-
-            dynamic_meta = MoltValue(self.next_var(), type_hint="type")
-            self.emit(
-                MoltOp(
-                    kind="INDEX", args=[prepared_tuple, zero_val], result=dynamic_meta
-                )
-            )
-            namespace_val = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(
-                MoltOp(
-                    kind="INDEX", args=[prepared_tuple, one_val], result=namespace_val
-                )
-            )
-            dynamic_prepared_kwds = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="INDEX",
-                    args=[prepared_tuple, two_val],
-                    result=dynamic_prepared_kwds,
-                )
-            )
-
-            dynamic_namespace = namespace_val
+            dynamic_namespace = self._emit_tuple_item(prepared_class, 0, "Any")
 
         if dynamic_namespace is None and materialize_namespace:
             dynamic_namespace = MoltValue(self.next_var(), type_hint="dict")
@@ -1408,17 +1308,18 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # LOAD_NAME).  The straight-line arms below ALSO bind through
         # ``_class_ns_store`` (via ``bind_class_name``) so there is exactly one
         # code path that publishes a class-body name.
+        body_local_names = frozenset(self._collect_assigned_names(node.body))
         class_ns_scope = _ClassNsScope(
             ns=dynamic_namespace,
             attr_values=class_attr_values,
-            names=(set(class_attr_values) | self._collect_assigned_names(node.body)),
+            names=set(class_attr_values) | body_local_names,
             class_name=node.name,
             module_name=module_name,
             class_node=node,
             class_cell=classcell_val,
             draft=draft,
             annotation_namespace_required=annotation_namespace_required,
-            local_names=frozenset(self._collect_assigned_names(node.body)),
+            local_names=body_local_names,
             global_names=frozenset(self._collect_global_decls(node.body)),
             nonlocal_names=frozenset(self._collect_nonlocal_decls(node.body)),
             enclosing_locals=(
@@ -1631,68 +1532,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 assert self.try_end_labels.pop() == frame_scope.cleanup_label
 
         if dynamic_build:
-            if (
-                dynamic_meta is None
-                or dynamic_bases_tuple is None
-                or dynamic_namespace is None
-            ):
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE, "Unsupported dynamic class build"
-                )
-            callargs = MoltValue(self.next_var(), type_hint="callargs")
-            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_POS",
-                    args=[callargs, name_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_POS",
-                    args=[callargs, dynamic_bases_tuple],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_POS",
-                    args=[callargs, dynamic_namespace],
-                    result=MoltValue("none"),
-                )
-            )
-            if dynamic_prepared_kwds is not None:
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                kwds_is_none = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(
-                        kind="IS",
-                        args=[dynamic_prepared_kwds, none_val],
-                        result=kwds_is_none,
-                    )
-                )
-                self.emit(
-                    MoltOp(kind="IF", args=[kwds_is_none], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_EXPAND_KWSTAR",
-                        args=[callargs, dynamic_prepared_kwds],
-                        result=MoltValue(self.next_var(), type_hint="None"),
-                    )
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            assert prepared_class is not None and dynamic_bases_tuple is not None
             # A user metaclass may return an arbitrary object.
-            class_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="CALL_BIND",
-                    args=[dynamic_meta, callargs],
-                    result=class_val,
-                )
+            class_val = self._emit_intrinsic_call(
+                "molt_class_finish_statement",
+                [name_val, dynamic_bases_tuple, prepared_class],
+                type_hint="Any",
             )
             if classcell_val is not None:
                 self._verify_classcell_result(class_id.name, classcell_val, class_val)

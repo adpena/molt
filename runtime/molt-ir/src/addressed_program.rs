@@ -15,6 +15,7 @@
 
 use crate::deterministic_hash::{HashMap, HashSet};
 use std::fmt;
+use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -139,13 +140,82 @@ impl Serialize for WireBytesRef<'_> {
     }
 }
 
+/// Decode and admit one body while the lease is read. The decoder can reuse
+/// its wire buffer for the next body once the typed function owns its data.
+struct AdmittedBody(FunctionDigest, Arc<FunctionIR>);
+
+impl<'de> Deserialize<'de> for AdmittedBody {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = AdmittedBody;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("one MessagePack binary function body")
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<AdmittedBody, E> {
+                let digest = FunctionDigest::of_body(bytes);
+                let function = rmp_serde::from_slice(bytes)
+                    .map_err(|error| E::custom(format!("function body {digest}: {error}")))?;
+                validate_function_transport_contract(&function)
+                    .map_err(|error| E::custom(format!("invalid SimpleIR contract: {error}")))?;
+                Ok(AdmittedBody(digest, Arc::new(function)))
+            }
+
+            fn visit_byte_buf<E: serde::de::Error>(
+                self,
+                bytes: Vec<u8>,
+            ) -> Result<AdmittedBody, E> {
+                self.visit_bytes(&bytes)
+            }
+        }
+
+        deserializer.deserialize_byte_buf(Visitor)
+    }
+}
+
+struct AdmittedBodies(HashMap<FunctionDigest, Arc<FunctionIR>>);
+
+impl<'de> Deserialize<'de> for AdmittedBodies {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = AdmittedBodies;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a sequence of MessagePack function bodies")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<AdmittedBodies, A::Error> {
+                let mut bodies = HashMap::default();
+                while let Some(AdmittedBody(digest, function)) = sequence.next_element()? {
+                    if bodies.insert(digest, function).is_some() {
+                        return Err(serde::de::Error::custom(format!(
+                            "function body {digest} is shipped twice"
+                        )));
+                    }
+                }
+                Ok(AdmittedBodies(bodies))
+            }
+        }
+
+        deserializer.deserialize_seq(Visitor)
+    }
+}
+
 /// The lease map. Keys are in lexical order, as the CLI writes them.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LeaseWire {
     #[serde(default)]
     code_slots: CodeSlotBindings,
-    function_bodies: Vec<WireBytes>,
+    function_bodies: AdmittedBodies,
     function_digests: WireBytes,
     #[serde(default)]
     module_registry: Option<ModuleRegistryIR>,
@@ -198,31 +268,30 @@ pub struct AddressedProgram {
 }
 
 impl AddressedProgram {
-    /// Decode one lease and require that the reader holds nothing after it.
-    /// The lease is read whole, then decoded from memory: one buffered read
-    /// rather than one reader call per MessagePack marker.
+    /// Decode one lease from a bounded reader and require EOF after it.
     pub fn from_msgpack_reader(reader: &mut impl std::io::Read) -> Result<Self, String> {
-        let mut bytes = Vec::new();
-        reader
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-        Self::from_msgpack_bytes(&bytes)
-    }
-
-    /// Decode one lease that is exactly `bytes`.
-    pub fn from_msgpack_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let mut deserializer = rmp_serde::Deserializer::new(std::io::Cursor::new(bytes));
+        let mut reader = BufReader::with_capacity(64 * 1024, reader);
+        let mut deserializer = rmp_serde::Deserializer::new(&mut reader);
         let wire = LeaseWire::deserialize(&mut deserializer).map_err(|error| error.to_string())?;
-        if usize::try_from(deserializer.position()).ok() != Some(bytes.len()) {
+        if !reader
+            .fill_buf()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+        {
             return Err("trailing bytes after the IR value".to_string());
         }
         Self::admit(wire)
     }
 
+    /// Decode one lease that is exactly `bytes`.
+    pub fn from_msgpack_bytes(mut bytes: &[u8]) -> Result<Self, String> {
+        Self::from_msgpack_reader(&mut bytes)
+    }
+
     fn admit(wire: LeaseWire) -> Result<Self, String> {
         let LeaseWire {
             code_slots,
-            function_bodies,
+            function_bodies: AdmittedBodies(shipped),
             function_digests,
             module_registry,
             profile,
@@ -237,22 +306,11 @@ impl AddressedProgram {
                 ));
             }
         }
-        let mut shipped =
-            HashMap::with_capacity_and_hasher(function_bodies.len(), Default::default());
-        for WireBytes(body) in function_bodies {
-            let digest = FunctionDigest::of_body(&body);
-            if !listed.contains(&digest) {
+        for digest in shipped.keys() {
+            if !listed.contains(digest) {
                 return Err(format!(
                     "shipped function body {digest} is not in the program's digest list"
                 ));
-            }
-            let function: FunctionIR = rmp_serde::from_slice(&body)
-                .map_err(|error| format!("function body {digest}: {error}"))?;
-            drop(body);
-            validate_function_transport_contract(&function)
-                .map_err(|error| format!("invalid SimpleIR contract: {error}"))?;
-            if shipped.insert(digest, Arc::new(function)).is_some() {
-                return Err(format!("function body {digest} is shipped twice"));
             }
         }
         Ok(Self {

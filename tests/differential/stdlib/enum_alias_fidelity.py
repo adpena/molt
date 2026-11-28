@@ -13,6 +13,7 @@ includes alias, read-only), value lookup, name lookup, membership, and
 multiple interleaved aliases.
 """
 
+from copy import copy, deepcopy
 from enum import Enum
 
 
@@ -119,3 +120,13 @@ except ValueError as exc:
     detail = str(exc).split(": ", 1)[1]
     print("unique alias type:", type(exc).__name__)
     print("unique alias detail:", detail)
+
+
+
+keys = {Color.CRIMSON: {Color.EMERALD}}
+copied = deepcopy(keys)
+print("copy alias", copy(Color.CRIMSON) is Color.RED)
+print("deepcopy alias", deepcopy(Color.CRIMSON) is Color.RED)
+print("nested copy", next(iter(copied)) is Color.RED, next(iter(copied[Color.RED])) is Color.GREEN)
+factory, values = Color.CRIMSON.__reduce_ex__(4)
+print("reduction", factory is Color, values, factory(*values) is Color.RED)

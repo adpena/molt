@@ -13,6 +13,7 @@ import io
 import json
 import os
 import struct
+from weakref import ref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -287,6 +288,8 @@ _CACHED = {
         ([_needs([1]), _COMPILED], [[1]], None),
         # Every body is resident; the lease ships none.
         ([_needs([]), _COMPILED], [[]], None),
+        # A cold daemon receives one complete lease and its caller can retire the bodies.
+        ([_needs([0, 1, 2]), _COMPILED], [[0, 1, 2]], None),
         # A body was evicted after the probe; the second lease ships every body.
         ([_needs([1]), _needs([0]), _COMPILED], [[1], [0, 1, 2]], None),
         # A complete lease cannot miss: a daemon that still asks is an error.
@@ -306,10 +309,15 @@ def test_daemon_client_ships_only_the_bodies_the_daemon_lacks(
     contract = resolve_backend_artifact_contract(
         target=admit_target("wasm"), emit_mode="wasm"
     )
+
+    class Body(dict):
+        pass
+
     functions = [
-        {"name": f"f{index}", "ops": [{"kind": "ret_void"}]} for index in range(3)
+        Body(name=f"f{index}", ops=[{"kind": "ret_void"}]) for index in range(3)
     ]
     program = _program(functions)
+    residents = tuple(ref(function) for function in functions)
     bodies = [msgpack.packb(function, use_bin_type=True) for function in functions]
     pending = list(replies)
     shipped = []
@@ -321,7 +329,12 @@ def test_daemon_client_ships_only_the_bodies_the_daemon_lacks(
         else:
             lease = msgpack.unpackb(Path(job["ir_path"]).read_bytes(), raw=False)
             assert lease["function_digests"] == bytes.fromhex(program.digest_hex())
-            shipped.append([bodies.index(body) for body in lease["function_bodies"]])
+            positions = [bodies.index(body) for body in lease["function_bodies"]]
+            shipped.append(positions)
+            if len(positions) == len(bodies):
+                assert all(body() is None for body in residents)
+            else:
+                assert all(body() is not None for body in residents)
         import copy
         import hashlib
 

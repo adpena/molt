@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import sys
+from types import ModuleType
 
 import pytest
 from tests.process_guard_common import run_guarded_test_process
@@ -1447,6 +1449,84 @@ def test_foreign_namespace_escape_follows_parameter_write_summaries(
         if write.construct == "namespace"
     ]
     assert bool(namespace_rows) is written, namespace_rows
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [("return namespace['value']", (3, 3)), ("namespace['value'] = 7", (None, 7))],
+)
+def test_conditional_namespace_alias_inherits_consumer_write_effect(
+    monkeypatch: pytest.MonkeyPatch, operation: str, expected: tuple[int | None, int]
+) -> None:
+    source = (
+        "import sys\n"
+        "def read_or_write(module_name):\n"
+        "    namespace = sys.modules[module_name].__dict__\n"
+        "    namespace = {} if namespace is None else namespace\n"
+        f"    {operation}\n"
+    )
+    module = ModuleType("_molt_conditional_namespace_fixture")
+    module.value = 3
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    scope: dict = {}
+    exec(source, scope)
+    result = scope["read_or_write"](module.__name__)
+    assert (result, module.value) == expected
+
+    writes = [
+        write
+        for write in _summary(source).foreign_writes
+        if write.construct == "namespace"
+    ]
+    assert bool(writes) is (module.value != 3)
+    assert _reflections(source) == {None}
+
+
+@pytest.mark.parametrize(
+    ("body", "mutates"),
+    [
+        ("    return namespace is None\n", False),
+        ("    return 'value' in namespace\n", False),
+        (
+            "    return (namespace if name else {}) == Writer()\n",
+            True,
+        ),
+        ("    return namespace in Writer()\n", True),
+        (
+            "    try:\n"
+            "        assert False, namespace\n"
+            "    except AssertionError as error:\n"
+            "        error.args[0]['value'] = 7\n",
+            True,
+        ),
+    ],
+)
+def test_namespace_observation_classifies_operands_by_their_role(
+    monkeypatch: pytest.MonkeyPatch, body: str, mutates: bool
+) -> None:
+    source = (
+        "import sys\n"
+        "class Writer:\n"
+        "    def __eq__(self, namespace):\n"
+        "        namespace['value'] = 7\n"
+        "        return False\n"
+        "    __contains__ = __eq__\n"
+        "def observe(name):\n"
+        "    namespace = sys.modules[name].__dict__\n"
+        f"{body}"
+    )
+    module = ModuleType("_molt_namespace_observation_fixture")
+    module.value = 3
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    scope: dict = {}
+    exec(source, scope)
+    scope["observe"](module.__name__)
+    assert module.value == (7 if mutates else 3)
+
+    writes = any(
+        row.construct == "namespace" for row in _summary(source).foreign_writes
+    )
+    assert writes is mutates
 
 
 @pytest.mark.parametrize(

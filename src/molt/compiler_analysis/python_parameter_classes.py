@@ -50,6 +50,9 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Final
 
+from molt.compiler_analysis.python_string_facts import (
+    SourceStringArguments,
+)
 from molt.compiler_analysis.python_identity_catalog_generated import (
     BUILTIN_CALLER_FRAME_IDENTITIES,
     BUILTIN_EXCEPTION_CLASS_IDENTITIES,
@@ -165,16 +168,19 @@ class ParameterLiteralPlan:
 
 
 def representative_arguments(
-    arguments: tuple[str, ...], classes: Sequence[ParameterLiteralClass]
-) -> tuple[str, ...]:
+    arguments: SourceStringArguments, classes: Sequence[ParameterLiteralClass]
+) -> SourceStringArguments:
     """Map each collapsible argument outside its literal set to the sentinel."""
-    if len(arguments) > len(classes):
-        return arguments
     return tuple(
-        UNMATCHED_ARGUMENT
-        if literal_class is not None and argument not in literal_class
-        else argument
-        for argument, literal_class in zip(arguments, classes, strict=False)
+        (
+            slot,
+            UNMATCHED_ARGUMENT
+            if slot < len(classes)
+            and (literal_class := classes[slot]) is not None
+            and argument not in literal_class
+            else argument,
+        )
+        for slot, argument in arguments
     )
 
 

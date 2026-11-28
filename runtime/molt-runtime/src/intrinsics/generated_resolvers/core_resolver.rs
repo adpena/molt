@@ -121,6 +121,8 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
         "molt_static_cells_bind" => Some(crate::molt_static_cells_bind as *const ()),
         "molt_build_class_builtin" => Some(crate::molt_build_class_builtin as *const ()),
         "molt_class_builder_check" => Some(crate::molt_class_builder_check as *const ()),
+        "molt_class_prepare_statement" => Some(crate::molt_class_prepare_statement as *const ()),
+        "molt_class_finish_statement" => Some(crate::molt_class_finish_statement as *const ()),
         "molt_class_body_builtins" => Some(crate::molt_class_body_builtins as *const ()),
         "molt_code_set_class_body" => Some(crate::molt_code_set_class_body as *const ()),
         "molt_class_frame_enter" => Some(crate::molt_class_frame_enter as *const ()),

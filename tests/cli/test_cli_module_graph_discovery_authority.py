@@ -959,7 +959,7 @@ def test_context_requests_reuse_the_parsed_source_record(tmp_path, monkeypatch):
             is_package=False,
             import_scan_mode="module_init",
             source_owner=owner,
-            source_arguments=(argument,),
+            source_arguments=((0, argument),),
             resolution_cache=cache,
             project_root=None,
         )
@@ -1342,14 +1342,14 @@ def test_scan_authority_projects_and_merges_exact_body_contexts(tmp_path):
         path,
         "module_init",
         body_selection=ModuleBodySelection("complete_source"),
-        deferred_owners=frozenset({(owner, ("left",))}),
+        deferred_owners=frozenset({(owner, ((0, "left"),))}),
     )
     right = _ModuleSourceScanAuthority(
         "api",
         path,
         "module_init",
         body_selection=ModuleBodySelection("complete_source"),
-        deferred_owners=frozenset({(owner, ("right",)), (owner, ())}),
+        deferred_owners=frozenset({(owner, ((0, "right"),)), (owner, ())}),
     )
     authority = _ModuleGraphScanAuthority((left,)).merged(
         _ModuleGraphScanAuthority((right,))
@@ -1360,8 +1360,8 @@ def test_scan_authority_projects_and_merges_exact_body_contexts(tmp_path):
     )
     assert authority.payload({"api": "api.py"})[0]["deferred_bodies"] == [
         {"source": list(owner), "arguments": []},
-        {"source": list(owner), "arguments": ["left"]},
-        {"source": list(owner), "arguments": ["right"]},
+        {"source": list(owner), "arguments": [[0, "left"]]},
+        {"source": list(owner), "arguments": [[0, "right"]]},
     ]
 
 
@@ -4356,3 +4356,96 @@ def test_resolved_mutators_invalidate_only_their_reached_module(
     unrelated = sources["unrelated"].namespace_premise
     assert recipient is not None and recipient.foreign_writes is None
     assert unrelated is not None and unrelated.foreign_writes == ()
+
+
+@pytest.mark.parametrize("binding", ["ordinary", "meta", "inherited_meta"])
+def test_literal_keyword_reaches_computed_import_through_bound_methods(
+    tmp_path: Path, binding: str
+) -> None:
+    import sys
+
+    sources = {
+        "entry.py": (
+            "from factory import optimize, parse\n"
+            "value = optimize(parse().copy())\n"
+            "print(value.sql(dialect=' spark ,opt=true'))\n"
+            "try:\n"
+            "    value.sql(policy=None, dialect='unused', wrong_arg='invalid')\n"
+            "except TypeError:\n"
+            "    pass\n"
+        ),
+        "factory.py": (
+            "from provider import Concrete\n"
+            "def parse():\n"
+            "    return Concrete()\n"
+            "def optimize(expression, schema=None):\n"
+            "    return expression\n"
+        ),
+        "provider.py": (
+            "import importlib\n"
+            "class TagType(type):\n"
+            "    def __instancecheck__(cls, candidate):\n"
+            "        return candidate is None\n"
+            "class Tag(metaclass=TagType):\n"
+            "    pass\n"
+            "class Dialect:\n"
+            "    @classmethod\n"
+            "    def get_or_raise(cls, dialect):\n"
+            "        if isinstance(dialect, str):\n"
+            "            name, *options = dialect.split(',')\n"
+            "            return cls.get(name.strip())\n"
+            "        raise ValueError(dialect)\n"
+            "    @classmethod\n"
+            "    def get(cls, key, default=None):\n"
+            "        return cls._try_load(key)\n"
+            "    @classmethod\n"
+            "    def _try_load(cls, name):\n"
+            "        if isinstance(name, Tag):\n"
+            "            name = name.value\n"
+            "        return importlib.import_module(f'dialects.{name}').answer\n"
+            "class Expression:\n"
+            "    def copy(self):\n"
+            "        return self\n"
+            "    def sql(self, policy=None, *, dialect=''):\n"
+            "        return Dialect.get_or_raise(dialect)\n"
+            "class Concrete(Expression):\n"
+            "    pass\n"
+        ),
+        "dialects/__init__.py": "",
+        "dialects/spark.py": "answer = 42\n",
+        "dialects/unused.py": "raise AssertionError('invalid call reached a body')\n",
+    }
+    if binding != "ordinary":
+        source = sources["provider.py"]
+        before, rest = source.split("class Dialect:\n", 1)
+        split = rest.index("    @classmethod\n    def get(")
+        after = rest.index("class Expression:")
+        held = rest[split:after]
+        # The metaclass classmethod binds to Meta. A regular method binds to
+        # the actual class object, whose fallback again looks up on Meta.
+        held = held.replace("    @classmethod\n    def get(", "    def get(", 1)
+        base = "class Dialect(metaclass=Meta):\n"
+        if binding == "inherited_meta":
+            base = "class Base(metaclass=Meta):\n    pass\nclass Dialect(Base):\n"
+        sources["provider.py"] = (
+            before + "class Meta(type):\n" + held + base + rest[:split] + rest[after:]
+        )
+    for name, text in sources.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    entry = tmp_path / "entry.py"
+    observed = run_guarded_test_process(
+        [sys.executable, "-B", str(entry)], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert observed.returncode == 0, observed.stderr
+    assert observed.stdout == "42\n"
+
+    stdlib = module_graph_discovery._module_resolution._stdlib_root_path()
+    for _ in range(2):
+        graph = module_graph_discovery._discover_module_graph(
+            entry, [tmp_path, stdlib], [tmp_path], stdlib, tmp_path, {"importlib"}
+        )
+        assert {name for name in graph.graph if name.startswith("dialects.")} == {
+            "dialects.spark"
+        }
