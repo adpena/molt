@@ -33,6 +33,10 @@ from molt.cli.python_import_topology import ExactEntryKind
 from molt.compiler_analysis import python_imports
 from molt.compiler_analysis import python_source_keys
 from molt.compiler_analysis import python_effects
+from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingIndex,
+    PythonBindingPolicy,
+)
 from molt.compiler_analysis.python_imports import (
     INVALID_VALUE,
     NONE_VALUE,
@@ -592,6 +596,63 @@ def test_relative_dependency_requests_demand_canonical_binding_facts_once(
     }
     assert len(calls) == 1
     assert calls[0].analyze_deferred_bodies is not module_only
+    assert calls[0].deferred_binding_path == (None if module_only else frozenset())
+
+
+def test_relative_import_demands_its_deferred_lexical_ancestors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "pkg" / "entry.py"
+    path.parent.mkdir()
+    path.write_text(
+        "async def outer():\n"
+        "    def nested():\n"
+        "        class C:\n"
+        "            from .child import member\n"
+        "    def unused():\n"
+        "        return 42\n",
+        encoding="utf-8",
+    )
+    analyze = python_import_resolution.analyze_python_bindings
+    selected = []
+
+    def record(
+        tree: ast.Module,
+        *,
+        source_digest: str,
+        ast_digest_admission: python_source_keys._PythonAstDigestAdmission | None,
+        policy: PythonBindingPolicy,
+    ) -> PythonBindingIndex:
+        demanded = policy.deferred_binding_path
+        assert demanded is not None
+        selected.append(
+            {
+                node.name
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+                and python_source_keys.python_node_source_key(node) in demanded
+            }
+        )
+        return analyze(
+            tree,
+            source_digest=source_digest,
+            ast_digest_admission=ast_digest_admission,
+            policy=policy,
+        )
+
+    monkeypatch.setattr(python_import_resolution, "analyze_python_bindings", record)
+    assert local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(
+            False,
+            False,
+            True,
+            purpose="source_dependency",
+            unknown_relative_sources="local_inventory",
+        ),
+    ) == {"pkg.child", "pkg.child.member", "pkg.entry"}
+    assert selected == [{"outer", "nested"}]
 
 
 def test_python_source_snapshot_caches_its_ast_digest(

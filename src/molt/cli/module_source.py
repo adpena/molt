@@ -3,7 +3,7 @@ from __future__ import annotations
 from molt.typed_cache import typed_cache
 
 import ast
-from molt.python_canonical_ast import canonical_module_digest, canonical_python_module
+from molt.python_canonical_ast import canonical_python_module
 import functools
 import hashlib
 import io
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         PythonNamespacePremise,
         SourceModuleNames,
     )
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 
 
 class PythonSourceChangedError(ValueError):
@@ -142,13 +143,15 @@ class PythonSourceSnapshot:
         return self._tree
 
     @functools.cached_property
-    def _ast_digest(self) -> str:
-        return canonical_module_digest(self.tree)
+    def ast_admission(self) -> _PythonAstDigestAdmission:
+        from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+        return _PythonAstDigestAdmission(self.tree)
 
     @property
     def ast_digest(self) -> str:
         self.report_input()
-        return self._ast_digest
+        return self.ast_admission.digest
 
 
 @dataclass(frozen=True)

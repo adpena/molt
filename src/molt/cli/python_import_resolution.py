@@ -9,7 +9,7 @@ import sys
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from threading import RLock
-from typing import Literal
+from typing import Final, Literal
 from collections.abc import Iterable
 
 from molt.cli.module_source import PythonSourceSnapshot
@@ -50,6 +50,9 @@ from molt.compiler_analysis.python_imports import (
 )
 
 from molt.compiler_analysis.python_lexical_scope import python_eager_nodes
+
+
+_IMPORT_PROJECTION_SCHEMA: Final = 2
 
 
 def python_package_child_names(
@@ -109,6 +112,7 @@ def _local_import_binding_policy() -> PythonBindingPolicy:
 def local_import_analysis_identity() -> tuple[object, ...]:
     """Use the parser and binding authority's own versions in persisted graphs."""
     return (
+        _IMPORT_PROJECTION_SCHEMA,
         sys.implementation.name,
         tuple(sys.version_info),
         python_binding_flow._ANALYSIS_SCHEMA,
@@ -738,13 +742,23 @@ def analyze_local_imports(
         target_python=binding_policy.target_python,
     )
     binding_index: PythonBindingIndex | None = None
+    # Lexical relative statements name their sites. Unknown importer aliases
+    # can reach any body and retain the complete binding query.
+    nodes = None if policy.module_level_only else tuple(ast.walk(tree))
+    dynamic_imports = (
+        None
+        if nodes is None
+        else python_dynamic_import_facts_required(tree, nodes=nodes)
+    )
 
     def bindings() -> PythonBindingIndex:
         nonlocal binding_index
         if binding_index is None:
+            admission = source.ast_admission
             binding_index = analyze_python_bindings(
                 tree,
-                source_digest=source.ast_digest,
+                source_digest=admission.digest,
+                ast_digest_admission=admission,
                 policy=python_namespace_binding_policy(
                     replace(
                         binding_policy,
@@ -753,6 +767,11 @@ def analyze_local_imports(
                         module_is_package=path.name == "__init__.py",
                         module_execution_kind="imported",
                         analyze_deferred_bodies=not policy.module_level_only,
+                        deferred_binding_path=(
+                            admission.relative_import_binding_path
+                            if dynamic_imports is False
+                            else None
+                        ),
                         include_import_discovery=policy.purpose == "source_dependency",
                     ),
                     namespace_premise,
@@ -773,15 +792,12 @@ def analyze_local_imports(
             )
         )
 
-    nodes = (
-        python_eager_nodes(
+    if nodes is None:
+        nodes = python_eager_nodes(
             tree,
             target_python=binding_policy.target_python,
             fact_result=lambda node: bindings().expression_result(node),
         )
-        if policy.module_level_only
-        else tuple(ast.walk(tree))
-    )
     requests: list[LocalPythonImportRequest] = []
     discovery_requests: list[LocalPythonImportRequest] = []
     diagnostics: list[LocalPythonImportDiagnostic] = []
@@ -896,7 +912,9 @@ def analyze_local_imports(
                 )
             )
 
-    if python_dynamic_import_facts_required(tree, nodes=nodes):
+    if dynamic_imports is None:
+        dynamic_imports = python_dynamic_import_facts_required(tree, nodes=nodes)
+    if dynamic_imports:
         for node in nodes:
             if not isinstance(node, ast.Call):
                 continue

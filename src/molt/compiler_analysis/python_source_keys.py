@@ -434,6 +434,9 @@ class _PythonAstDigestAdmission:
     _deferred_binding_parents: Mapping[PythonSourceKey, PythonSourceKey | None] = field(
         init=False, repr=False, compare=False
     )
+    relative_import_binding_path: frozenset[PythonSourceKey] = field(
+        init=False, repr=False, compare=False
+    )
 
     module_setup_nodes: tuple[ast.stmt, ...] = field(
         init=False, repr=False, compare=False
@@ -547,6 +550,7 @@ class _PythonAstDigestAdmission:
         coordinates: dict[ast.AST, PythonSourceKey] = {}
         deferred: dict[PythonSourceKey, ast.AST] = {}
         deferred_binding_parents: dict[PythonSourceKey, PythonSourceKey | None] = {}
+        relative_import_owners: set[PythonSourceKey] = set()
         pending: deque[tuple[ast.AST, PythonSourceKey | None]] = deque(
             [(self.tree, None)]
         )
@@ -555,6 +559,8 @@ class _PythonAstDigestAdmission:
             if node in coordinates:
                 continue
             key = coordinates[node] = python_node_source_key(node)
+            if isinstance(node, ast.ImportFrom) and node.level and parent is not None:
+                relative_import_owners.add(parent)
             if isinstance(node, deferred_kinds):
                 deferred[key] = node
                 deferred_binding_parents[key] = parent
@@ -570,6 +576,13 @@ class _PythonAstDigestAdmission:
             "_deferred_binding_parents",
             MappingProxyType(deferred_binding_parents),
         )
+        required = set(relative_import_owners)
+        for owner in relative_import_owners:
+            ancestor = deferred_binding_parents[owner]
+            while ancestor is not None and ancestor not in required:
+                required.add(ancestor)
+                ancestor = deferred_binding_parents[ancestor]
+        object.__setattr__(self, "relative_import_binding_path", frozenset(required))
 
     def deferred_binding_path(
         self, owner: PythonSourceKey

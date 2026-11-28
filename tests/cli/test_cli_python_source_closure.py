@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import hashlib
@@ -17,6 +18,11 @@ from molt.cli.python_import_resolution import (
     PythonImportPolicy,
 )
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingIndex,
+    PythonBindingPolicy,
+)
+from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 from tests.process_guard_common import install_module_view
 from tests.module_isolation import forget_module
 
@@ -1286,9 +1292,20 @@ def test_graph_binding_policy_and_identity_share_host_source_semantics(
     policies = []
     analyze = resolution.analyze_python_bindings
 
-    def record(tree, *, source_digest, policy):
+    def record(
+        tree: ast.Module,
+        *,
+        source_digest: str,
+        ast_digest_admission: _PythonAstDigestAdmission | None,
+        policy: PythonBindingPolicy,
+    ) -> PythonBindingIndex:
         policies.append(policy)
-        return analyze(tree, source_digest=source_digest, policy=policy)
+        return analyze(
+            tree,
+            source_digest=source_digest,
+            ast_digest_admission=ast_digest_admission,
+            policy=policy,
+        )
 
     monkeypatch.setattr(resolution, "analyze_python_bindings", record)
     assert leaf in local_python_import_closure(tmp_path, (seed,)).paths
