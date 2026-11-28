@@ -31,7 +31,7 @@ pub(crate) struct Position<'a, B: CodegenBuilder> {
     pub(crate) source: BlockId,
     pub(crate) op_index: usize,
     pub(crate) frame: super::frame::ActiveFrame<B::Slot>,
-    pub(crate) initial_homes: &'a super::frame::HomeInitializations,
+    pub(crate) unowned_homes: &'a super::frame::UnownedHomeReleases,
     pub(crate) exception_level: Option<(super::exception_levels::Event, B::Slot)>,
     /// A compiled poll's raw frame address from its physical parameter.
     pub(crate) poll_frame: Option<B::Word>,
@@ -325,9 +325,8 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                 self.frame_op(b, op, at.frame, at.poll_frame, false);
             }
             OpCode::Copy => {
-                let initializes_home = op.origin == Some(molt_ir::OpKind::FrameHomeStore)
-                    && at.initial_homes.contains(&(at.source, at.op_index));
-                if !self.frame_op(b, op, at.frame, at.poll_frame, initializes_home)
+                let previous_unowned = at.unowned_homes.contains(&(at.source, at.op_index));
+                if !self.frame_op(b, op, at.frame, at.poll_frame, previous_unowned)
                     && !self.preserved_op(b, op, at.frame.record())
                     && !op
                         .origin
@@ -834,8 +833,8 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         let len = b.constant(func.name.len() as u64);
         (stride, verbose, name, len)
     });
-    let initial_homes = if trace.is_none() {
-        layout.initial_home_stores(func, &rpo, &exception_targets)
+    let unowned_homes = if trace.is_none() {
+        layout.unowned_home_releases(func, &rpo, &exception_targets, plan)
     } else {
         Default::default()
     };
@@ -864,7 +863,7 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             source: id,
             op_index: 0,
             frame,
-            initial_homes: &initial_homes,
+            unowned_homes: &unowned_homes,
             exception_level: None,
             poll_frame,
             blocks: &blocks,

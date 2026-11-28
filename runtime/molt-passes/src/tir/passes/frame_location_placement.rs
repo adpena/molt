@@ -152,79 +152,67 @@ pub(super) fn direct_frame_runtime(op: &TirOp) -> bool {
     )
 }
 
-/// The slot facts right after this activation's own entry. A fresh
-/// synchronous activation starts with every home unbound (the home arena
-/// zeroes them); a resumed or inherited activation starts unknown.
-fn entry_slots(func: &TirFunction, count: usize) -> Slots {
-    let fresh =
-        func.execution_context == ExecutionContextPolicy::Local && !func.has_state_machine();
-    vec![fresh; count]
+#[derive(Clone, Copy)]
+enum BindingRelease {
+    NotARelease,
+    Proven,
+    Unknown,
 }
 
-/// Classify a binding release and update the slot facts.
-///
-/// Only this activation's own home operations and a `frame_locals_set` write
-/// its homes in a body admitted for this analysis. The closed-program frame
-/// writer fact is checked by `binding_releases` before using this transfer.
+/// Both consumers use the same writes and kill points. The property of
+/// a plain stored value is selected by the consumer: finalizer freedom is
+/// weaker than an absence of any reference to release.
 fn slot_transfer(
     op: &TirOp,
-    func: &TirFunction,
-    types: &HashMap<ValueId, TirType>,
     slots: &mut Slots,
-) -> SlotRelease {
-    if op.opcode != OpCode::Copy {
-        return SlotRelease::NotABindingRelease;
+    plain_proven: impl FnOnce(ValueId) -> bool,
+    take_proven: bool,
+) -> BindingRelease {
+    use molt_ir::OpKind;
+
+    if direct_frame_runtime(op)
+        || matches!(
+            op.origin,
+            Some(
+                OpKind::TraceEnterSlot
+                    | OpKind::TraceExit
+                    | OpKind::FrameLocalsSet
+                    | OpKind::FrameContextSet
+            )
+        )
+    {
+        slots.fill(false);
+        return BindingRelease::NotARelease;
     }
-    let Some(kind) = op.origin else {
-        return SlotRelease::NotABindingRelease;
+    let Some(kind) = op
+        .origin
+        .filter(|&kind| op.opcode == OpCode::Copy && is_frame_home_kind(kind))
+    else {
+        return BindingRelease::NotARelease;
     };
-    match kind {
-        molt_ir::OpKind::TraceEnterSlot => {
-            let count = slots.len();
-            *slots = entry_slots(func, count);
-            return SlotRelease::NotABindingRelease;
-        }
-        molt_ir::OpKind::FrameLocalsSet => {
-            slots.iter_mut().for_each(|slot| *slot = false);
-            return SlotRelease::NotABindingRelease;
-        }
-        _ => {}
-    }
-    if !is_frame_home_kind(kind) {
-        return SlotRelease::NotABindingRelease;
-    }
-    let Some(slot) = home_slot(op).filter(|slot| *slot < slots.len()) else {
-        // An unaddressable home is never proven: every slot becomes unknown.
-        slots.iter_mut().for_each(|slot| *slot = false);
-        return if copy_kind_is_binding_release_table(kind) {
-            SlotRelease::MayFinalize
+    let release = copy_kind_is_binding_release_table(kind);
+    let Some(slot) = home_slot(op).and_then(|slot| slots.get_mut(slot)) else {
+        slots.fill(false);
+        return if release {
+            BindingRelease::Unknown
         } else {
-            SlotRelease::NotABindingRelease
+            BindingRelease::NotARelease
         };
     };
-    let release = if !copy_kind_is_binding_release_table(kind) {
-        SlotRelease::NotABindingRelease
-    } else if slots[slot] {
-        SlotRelease::FinalizerFree
-    } else {
-        SlotRelease::MayFinalize
-    };
-    slots[slot] = match kind {
-        molt_ir::OpKind::FrameHomeStore => op
-            .operands
-            .first()
-            .is_some_and(|value| types.contains_key(value)),
-        molt_ir::OpKind::FrameHomeClear | molt_ir::OpKind::FrameHomeTake => true,
+    let previous = *slot;
+    *slot = match kind {
+        OpKind::FrameHomeStore => op.operands.first().copied().is_some_and(plain_proven),
+        OpKind::FrameHomeClear => true,
+        // A take can fail and leave a raw integer installed. It remains
+        // finalizer-free but may subsequently materialize an owned box.
+        OpKind::FrameHomeTake => take_proven || previous,
         _ => false,
     };
-    release
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SlotRelease {
-    NotABindingRelease,
-    FinalizerFree,
-    MayFinalize,
+    match (release, previous) {
+        (false, _) => BindingRelease::NotARelease,
+        (true, true) => BindingRelease::Proven,
+        (true, false) => BindingRelease::Unknown,
+    }
 }
 
 /// Meet incoming slot facts into `target`'s entry: a fact holds only if it
@@ -261,7 +249,7 @@ fn reaching_slot_entries<T: Copy + Eq>(
     labels: &HashMap<i64, BlockId>,
     initial: Vec<T>,
     meet: impl Fn(T, T) -> T + Copy,
-    transfer: impl Fn(&TirOp, &mut Vec<T>),
+    transfer: impl Fn(BlockId, usize, &TirOp, &mut Vec<T>),
 ) -> HashMap<BlockId, Vec<T>> {
     let mut entry: HashMap<BlockId, Vec<T>> = HashMap::default();
     // Before the activation's own entry operation nothing is proven.
@@ -277,11 +265,11 @@ fn reaching_slot_entries<T: Copy + Eq>(
                 pending.push(succ);
             }
         };
-        for op in &block.ops {
-            if let Some(handler) = check_handler(op, labels) {
+        for (index, op) in block.ops.iter().enumerate() {
+            if let Some(handler) = dominators::exception_transfer_target(op, labels) {
                 propagate(handler, &slots);
             }
-            transfer(op, &mut slots);
+            transfer(bid, index, op, &mut slots);
         }
         for succ in dominators::terminator_successors(&block.terminator) {
             if func.blocks.contains_key(&succ) {
@@ -300,38 +288,92 @@ pub(super) fn binding_releases(
     labels: &HashMap<i64, BlockId>,
     order: &[BlockId],
 ) -> HashMap<(BlockId, usize), bool> {
-    // A frame proxy can replace even a previously proven scalar with a
-    // reference-bearing value. All consumers share this admission decision.
     if func.frame_locals_exposed() {
         return HashMap::default();
     }
-    // A frame proxy can replace even a previously proven scalar with a
-    // reference-bearing value. All consumers share this admission decision.
-    if func.frame_locals_exposed() {
+    let transfer = |_, _, op: &TirOp, slots: &mut Slots| {
+        if op.origin == Some(molt_ir::OpKind::TraceEnterSlot) {
+            slots.fill(
+                func.execution_context == ExecutionContextPolicy::Local
+                    && !func.has_state_machine(),
+            );
+            BindingRelease::NotARelease
+        } else {
+            slot_transfer(op, slots, |value| types.contains_key(&value), true)
+        }
+    };
+    binding_release_facts(func, labels, order, transfer)
+}
+
+/// Previous homes that cannot own a reference in the terminal machine
+/// representation. Callers must select a locally owned synchronous record.
+/// The home arena is usable and zeroed only after the entry's exception check
+/// falls through. The exceptional edge receives the pre-check facts.
+pub fn unowned_home_releases(
+    func: &TirFunction,
+    labels: &HashMap<i64, BlockId>,
+    order: &[BlockId],
+    boxed_refcount_is_noop: impl Fn(ValueId) -> bool,
+) -> HashSet<(BlockId, usize)> {
+    use molt_ir::OpKind;
+
+    let entry = &func.blocks[&func.entry_block];
+    if func.frame_locals_exposed()
+        || func.execution_context != ExecutionContextPolicy::Local
+        || entry.ops.first().and_then(|op| op.origin) != Some(OpKind::TraceEnterSlot)
+        || !entry
+            .ops
+            .get(1)
+            .is_some_and(|op| op.opcode == OpCode::CheckException && !op.is_async_work_poll())
+    {
+        return HashSet::default();
+    }
+    let transfer = |block, index, op: &TirOp, slots: &mut Slots| {
+        if block == func.entry_block && index == 1 {
+            slots.fill(true);
+            BindingRelease::NotARelease
+        } else {
+            slot_transfer(op, slots, &boxed_refcount_is_noop, false)
+        }
+    };
+    binding_release_facts(func, labels, order, transfer)
+        .into_iter()
+        .filter_map(|(site, proven)| proven.then_some(site))
+        .collect()
+}
+
+fn binding_release_facts(
+    func: &TirFunction,
+    labels: &HashMap<i64, BlockId>,
+    order: &[BlockId],
+    transfer: impl Fn(BlockId, usize, &TirOp, &mut Slots) -> BindingRelease,
+) -> HashMap<(BlockId, usize), bool> {
+    let count = slot_count(func);
+    if count == 0 {
         return HashMap::default();
     }
     let entry = reaching_slot_entries(
         func,
         labels,
-        vec![false; slot_count(func)],
+        vec![false; count],
         |a, b| a && b,
-        |op, state| {
-            slot_transfer(op, func, types, state);
+        |block, index, op, slots| {
+            transfer(block, index, op, slots);
         },
     );
     let mut releases = HashMap::default();
-    for bid in order {
-        let Some(mut slots) = entry.get(bid).cloned() else {
+    for &block in order {
+        let Some(mut slots) = entry.get(&block).cloned() else {
             continue;
         };
-        for (index, op) in func.blocks[bid].ops.iter().enumerate() {
-            match slot_transfer(op, func, types, &mut slots) {
-                SlotRelease::NotABindingRelease => {}
-                SlotRelease::FinalizerFree => {
-                    releases.insert((*bid, index), true);
+        for (index, op) in func.blocks[&block].ops.iter().enumerate() {
+            match transfer(block, index, op, &mut slots) {
+                BindingRelease::NotARelease => {}
+                BindingRelease::Proven => {
+                    releases.insert((block, index), true);
                 }
-                SlotRelease::MayFinalize => {
-                    releases.insert((*bid, index), false);
+                BindingRelease::Unknown => {
+                    releases.insert((block, index), false);
                 }
             }
         }
@@ -485,7 +527,7 @@ pub(super) fn held_call_arguments(
         &labels,
         vec![None; tracked_slots.len()],
         |a, b| if a == b { a } else { None },
-        transfer,
+        |_, _, op, state| transfer(op, state),
     );
     for id in order {
         if outside.contains(&id) {

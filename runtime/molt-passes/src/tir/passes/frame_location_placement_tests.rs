@@ -289,3 +289,69 @@ fn a_closed_caller_home_holds_only_the_reaching_boxed_view() {
     );
     assert!(held_call_arguments(&func, &sites, &aliases, &HashMap::default()).is_empty());
 }
+
+#[test]
+fn physical_home_releases_distinguish_backedges_from_exceptional_observations() {
+    let mut func = lift(
+        "local",
+        serde_json::json!([
+            {"kind":"const","value":7,"out":"small"},
+            {"kind":"frame_home_store","value":0,"args":["small"],"out":"initial"},
+            {"kind":"loop_start"},
+            {"kind":"loop_break_if_false","args":["p"]},
+            {"kind":"frame_home_store","value":0,"args":["small"],"out":"iteration"},
+            {"kind":"call","s_value":"callback","args":[],"out":"ignored"},
+            {"kind":"check_exception","exception_edge":"origin","value":7},
+            {"kind":"loop_continue"},
+            {"kind":"loop_end"},
+            {"kind":"frame_home_store","value":0,"args":["p"],"out":"reference"},
+            {"kind":"check_exception","exception_edge":"origin","value":8},
+            {"kind":"frame_home_store","value":0,"args":["small"],"out":"success"},
+            {"kind":"jump","value":10},
+            {"kind":"label","value":7},
+            {"kind":"frame_home_store","value":0,"args":["small"],"out":"before_reference"},
+            {"kind":"jump","value":10},
+            {"kind":"label","value":8},
+            {"kind":"frame_home_store","value":0,"args":["small"],"out":"after_reference"},
+            {"kind":"jump","value":10},
+            {"kind":"label","value":10},
+        ]),
+    );
+    let labels = dominators::exception_label_to_block(&func);
+    let order = dominators::executable_reverse_postorder(&func);
+    let scalar = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::ConstInt)
+        .unwrap()
+        .results[0];
+
+    let proven = unowned_home_releases(&func, &labels, &order, |value| value == scalar);
+    assert_eq!(proven.len(), 4, "{proven:?}");
+    assert!(proven.iter().any(|&(block, _)| block == labels[&7]));
+    assert!(!proven.iter().any(|&(block, _)| block == labels[&8]));
+    let failed_entry = labels[&9];
+    // Model a consumer on the failed-entry edge. The normal check seed must
+    // never certify the arena reached by that edge.
+    let store = func.blocks[&labels[&7]]
+        .ops
+        .iter()
+        .find(|op| op.origin == Some(molt_ir::OpKind::FrameHomeStore))
+        .unwrap()
+        .clone();
+    func.blocks
+        .get_mut(&failed_entry)
+        .unwrap()
+        .ops
+        .insert(0, store);
+    let proven = unowned_home_releases(&func, &labels, &order, |value| value == scalar);
+    assert!(!proven.iter().any(|&(block, _)| block == failed_entry));
+    let no_carrier_proof = unowned_home_releases(&func, &labels, &order, |_| false);
+    assert_eq!(no_carrier_proof.len(), 1);
+    func.attrs.insert(
+        molt_ir::tir::function::FRAME_LOCALS_EXPOSED_ATTR.into(),
+        AttrValue::Bool(true),
+    );
+    assert!(unowned_home_releases(&func, &labels, &order, |value| value == scalar).is_empty());
+}
