@@ -19,6 +19,7 @@ from molt import input_report
 from molt.cli.atomic_io import _atomic_write_text
 from molt.file_publication import PublicationDurability
 from molt.default_paths import _default_molt_cache
+from molt.process_environment import ProcessEnvironment
 from molt.cli.module_source import PythonSourceChangedError, PythonSourceSnapshot
 from molt.compiler_analysis.python_namespace_graph import (
     NO_GRAPH_NAMESPACE_WRITES,
@@ -248,6 +249,14 @@ def local_python_import_graph_transaction(*, fresh: bool = False) -> Generator[N
         yield
     finally:
         _GRAPH_TRANSACTION.reset(previous_context)
+
+
+def compiler_tool_source_cache_root(compiler_root: Path) -> Path:
+    """Keep the compiler's source graph independent of the application cache."""
+    return _default_molt_cache(
+        cwd=compiler_root,
+        environ=ProcessEnvironment(os.environ).without(("MOLT_CACHE",)),
+    )
 
 
 def python_source_closure_cache_path(

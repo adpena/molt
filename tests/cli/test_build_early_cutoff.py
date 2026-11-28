@@ -873,9 +873,21 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
         )
         receipt = publication_receipt_path(plan.outputs["manifest"])
         products = plan.build_products(module, receipt)
-        for role, path in products.items():
-            if path != module:
-                path.write_text(f"{role} of {source}", encoding="utf-8")
+        from molt.artifact_publication import publication_locks
+        from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+        # Exercise the actual journal inventory before the output family changes.
+        with publication_locks(products.values()):
+            if split:
+                with OwnedTemporaryDirectory.for_publication(
+                    module, purpose="wasm-merge"
+                ) as stage:
+                    merged = Path(stage) / module.name
+                    merged.write_bytes(module.read_bytes())
+                    assert merged.read_bytes()
+            for role, path in products.items():
+                if path != module:
+                    path.write_text(f"{role} of {source}", encoding="utf-8")
         consumer = (
             plan.outputs.get("app") if split and not request.require_linked else linked
         )

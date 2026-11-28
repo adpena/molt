@@ -798,6 +798,13 @@ def scan_import_directory(
     return _scan_without_listing_input(path)
 
 
+def scan_publication_journals(
+    path: Path,
+) -> AbstractContextManager[Iterator[os.DirEntry[str]]]:
+    """Read the recovery namespace, whose custody is replayed under publication locks."""
+    return _scan_without_listing_input(path)
+
+
 def probe_directory_readable(path: Path) -> None:
     """Observe whether one entry can be read, independent of what it names."""
     with _scan_without_listing_input(path) as entries:

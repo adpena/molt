@@ -1214,10 +1214,9 @@ def resolve_observed(
     Only named product roots and the successfully published outputs (the
     selected output and the product family published beside it), each with
     the receipt, journals, lock and stages its publication keeps beside it,
-    are products. The publication lists each output's directory for its own
-    journals, so an observed listing of that directory is custody; a reader
-    that consumes the listing, such as the import topology, reports it
-    explicitly. Pre-syscall audit events cannot prove write or
+    are products. Publication journal scans report custody at their own
+    boundary. Independent listings of the same directory are still inputs.
+    Pre-syscall audit events cannot prove write or
     directory-creation ownership. Explicit input reports are never excluded,
     even for a published output.
     """
@@ -1226,7 +1225,6 @@ def resolve_observed(
     from molt.checkout_state import is_checkout_state_control_file
 
     outputs = tuple(Path(os.path.realpath(path)) for path in published_outputs)
-    output_parents = {resolved_host_path_key(output.parent) for output in outputs}
     observed = sorted(ledger.observed)
     resolved_paths = {name: os.path.realpath(name) for _kind, name in observed}
     custody = _publication_custody(set(resolved_paths.values()), outputs)
@@ -1284,7 +1282,7 @@ def resolve_observed(
     for kind, name in observed:
         resolved = resolved_paths[name]
         real = resolved_host_path_key(resolved)
-        if resolved in custody or (kind == "directory" and real in output_parents):
+        if resolved in custody:
             continue
         # A guarded child stamps the use of every checkout-state root its
         # environment selects (caches, scratch, targets, images); concurrent
@@ -1532,11 +1530,9 @@ def check(
             result.verify_paths()
         recorded_output = payload["output"]
         selection = BuildOutputSelection.from_dict(recorded_output["selection"])
-        selection.verify()
-        if stat_token(selection.path) != StatToken.from_payload(
-            recorded_output["token"]
-        ):
-            return f"output {selection.path} changed"
+        tokens = [
+            ("output", selection.path, StatToken.from_payload(recorded_output["token"]))
+        ]
         consumer = _record_path(recorded_output["consumer"])
         products = recorded_output["products"]
         if not isinstance(products, list):
@@ -1547,47 +1543,55 @@ def check(
                 return "unreadable record: invalid product role"
             product_path = _record_path(product)
             product_roles[role] = product_path
-            if stat_token(product_path) != StatToken.from_payload(token):
-                return f"product {product_path} changed"
+            tokens.append(("product", product_path, StatToken.from_payload(token)))
         product_paths = set(product_roles.values())
         recorded_linked = recorded_output.get("linked_selection")
+        linked_selection = None
         if linked_output is not None:
             if recorded_linked is None:
                 return "no named WASM link output for this request"
             linked_selection = BuildOutputSelection.from_dict(recorded_linked)
             if linked_selection.output != linked_output:
                 return "named WASM link output differs from the request"
-            linked_selection.verify()
             if linked_selection.path not in product_paths:
                 return "unreadable record: named WASM link output is not a product"
         elif recorded_linked is not None:
             return "unexpected named WASM link output"
         if consumer != selection.path and consumer not in product_paths:
             return "unreadable record: consumer is not a product"
-        changed = _first_change(
-            payload["files"], payload["directories"], payload["probes"]
-        )
-        if changed is not None:
-            return changed
-        topologies = payload["import_topologies"]
-        if not isinstance(topologies, list):
-            return "unreadable record: invalid import topologies"
-        if topologies:
-            from molt.cli.python_import_topology import PythonImportTopology
+        from molt.artifact_publication import publication_locks
 
-            for topology in topologies:
-                PythonImportTopology.from_record(topology)
-        if time.time_ns() - metadata.st_mtime_ns > _RECORD_REFRESH_INTERVAL_NS:
-            os.utime(path)
-        if result is not None:
-            if isinstance(result, NativeBuildResult):
-                if result.binary.path != selection.path or product_roles:
-                    return "native JSON result differs from output selection"
-            else:
-                result.verify_publication(selection.path, consumer, product_roles)
-            for selection_claim in claims:
-                selection_claim.verify()
-            result.verify()
+        with publication_locks(member for _role, member, _token in tokens):
+            selection.verify()
+            if linked_selection is not None:
+                linked_selection.verify()
+            for role, member, expected in tokens:
+                if stat_token(member) != expected:
+                    return f"{role} {member} changed"
+            changed = _first_change(
+                payload["files"], payload["directories"], payload["probes"]
+            )
+            if changed is not None:
+                return changed
+            topologies = payload["import_topologies"]
+            if not isinstance(topologies, list):
+                return "unreadable record: invalid import topologies"
+            if topologies:
+                from molt.cli.python_import_topology import PythonImportTopology
+
+                for topology in topologies:
+                    PythonImportTopology.from_record(topology)
+            if time.time_ns() - metadata.st_mtime_ns > _RECORD_REFRESH_INTERVAL_NS:
+                os.utime(path)
+            if result is not None:
+                if isinstance(result, NativeBuildResult):
+                    if result.binary.path != selection.path or product_roles:
+                        return "native JSON result differs from output selection"
+                else:
+                    result.verify_publication(selection.path, consumer, product_roles)
+                for selection_claim in claims:
+                    selection_claim.verify()
+                result.verify()
         return BuildRecordHit(
             selection.path, result, consumer, tuple(product_roles.items())
         )

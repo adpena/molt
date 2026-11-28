@@ -415,10 +415,12 @@ def _write_journal_copies(payload: Mapping[str, Any]) -> None:
 
 
 def _publication_directory_residue(parent: Path) -> _PublicationDirectoryResidue:
+    from molt.input_report import scan_publication_journals
+
     journals: list[Path] = []
     journal_stages: list[Path] = []
     try:
-        with os.scandir(parent) as children:
+        with scan_publication_journals(parent) as children:
             for child in children:
                 target = None
                 if _PUBLICATION_JOURNAL_NAME_RE.fullmatch(child.name):

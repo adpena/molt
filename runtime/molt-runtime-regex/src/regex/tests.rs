@@ -560,6 +560,8 @@ fn test_match_charclass_literal_and_escaped_range_endpoints() {
     // literal expected sets distinguish ranges from endpoints and literal '-'.
     for (pattern, expected) in [
         (r"[\101-\132]", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        (r"[\x41-\x5a]", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        (r"[\u0041-\U0000005A]", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
         (r"[\101-Z]", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
         (r"[A-\132]", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
         (r"[\t-\r]", "\t\n\x0b\x0c\r"),
@@ -588,6 +590,9 @@ fn test_match_charclass_literal_and_escaped_range_endpoints() {
     }
     assert!(do_fullmatch(r"[^\101-\132]", "M").is_none());
     assert!(do_fullmatch(r"[^\101-\132]", "m").is_some());
+    assert!(do_fullmatch(r"[\x00-\x20\x7F]", "t").is_none());
+    assert!(do_fullmatch(r"[\x00-\x20\x7F]", "\x7f").is_some());
+    assert!(do_fullmatch(r"\xA5\u0041\U0001f600", "¥A😀").is_some());
 }
 
 #[test]

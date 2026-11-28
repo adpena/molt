@@ -510,9 +510,30 @@ class OwnedTemporaryDirectory:
     """One host-correct directory allocation and its identity-fenced lifetime."""
 
     def __init__(self, *, prefix: str = "tmp", dir: str | Path | None = None) -> None:
-        self._path = new_temporary_directory(
-            Path(tempfile.gettempdir()) if dir is None else Path(dir), prefix=prefix
+        self._initialize(
+            new_temporary_directory(
+                Path(tempfile.gettempdir()) if dir is None else Path(dir), prefix=prefix
+            )
         )
+
+    @classmethod
+    def for_publication(
+        cls, destination: Path, *, purpose: str
+    ) -> OwnedTemporaryDirectory:
+        """Own and report a private staging tree beside its publication."""
+        from molt import input_report
+        from molt.file_publication import staged_file_path
+
+        stage = staged_file_path(destination, purpose=purpose, suffix=".stage")
+        mode = windows_temporary_directory_mode(0o700) if os.name == "nt" else 0o700
+        stage.mkdir(mode=mode)
+        owner = cls.__new__(cls)
+        owner._initialize(stage)
+        input_report.report_build_stage(stage)
+        return owner
+
+    def _initialize(self, path: Path) -> None:
+        self._path = path
         self.name = str(self._path)
         self._identity = _live_identity(self._path)
         self._finalizer = weakref.finalize(

@@ -619,6 +619,41 @@ impl ReParser {
     // Escape sequence
     // -----------------------------------------------------------------------
 
+    fn parse_fixed_width_escape(&mut self, kind: char) -> Result<u32, String> {
+        let width = match kind {
+            'x' => 2,
+            'u' => 4,
+            'U' => 8,
+            _ => unreachable!("non-hexadecimal escape"),
+        };
+        let start = self.pos - 2;
+        let mut value = 0;
+        for _ in 0..width {
+            let Some(digit) = self
+                .raw_peek()
+                .and_then(char::from_u32)
+                .and_then(|ch| ch.to_digit(16))
+            else {
+                let escape: String = self.chars[start..self.pos]
+                    .iter()
+                    .copied()
+                    .filter_map(char::from_u32)
+                    .collect();
+                return Err(format!("incomplete escape {escape} at position {start}"));
+            };
+            self.raw_next()?;
+            value = value * 16 + digit;
+        }
+        // Surrogates are representable in Python strings, even though they
+        // are not Rust Unicode scalar values.
+        if value > 0x10ffff {
+            return Err(format!(
+                "bad escape \\{kind}{value:0width$x} at position {start}"
+            ));
+        }
+        Ok(value)
+    }
+
     pub(super) fn parse_escape(&mut self) -> Result<ReNode, String> {
         let ch = self.raw_next()?;
         if self.is_bytes && matches!(char::from_u32(ch), Some('u' | 'U' | 'N')) {
@@ -635,6 +670,9 @@ impl ReParser {
                 chars: vec![],
                 categories: vec![Category::from_escape(char::from_u32(ch).unwrap())],
             }),
+            Some(kind @ ('x' | 'u' | 'U')) => {
+                Ok(ReNode::Literal(vec![self.parse_fixed_width_escape(kind)?]))
+            }
             Some('n') => Ok(ReNode::Literal(vec![u32::from('\n')])),
             Some('t') => Ok(ReNode::Literal(vec![u32::from('\t')])),
             Some('r') => Ok(ReNode::Literal(vec![u32::from('\r')])),
@@ -741,6 +779,9 @@ impl ReParser {
                     Some('d' | 'D' | 's' | 'S' | 'w' | 'W') => Ok(ClassItem::Category(
                         Category::from_escape(char::from_u32(esc).unwrap()),
                     )),
+                    Some(kind @ ('x' | 'u' | 'U')) => {
+                        Ok(ClassItem::Char(self.parse_fixed_width_escape(kind)?))
+                    }
                     Some('n') => Ok(ClassItem::Char(u32::from('\n'))),
                     Some('t') => Ok(ClassItem::Char(u32::from('\t'))),
                     Some('r') => Ok(ClassItem::Char(u32::from('\r'))),
