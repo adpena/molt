@@ -2832,3 +2832,67 @@ def test_new_query_does_not_hide_a_removed_explicit_seed(tmp_path: Path) -> None
         left.unlink()
         with pytest.raises(FileNotFoundError, match="missing Python tooling source"):
             local_python_import_closure(tmp_path, (left, right))
+
+
+def test_wasm_tool_graph_reuses_analyses_across_application_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import non_native_output
+
+    root = tmp_path / "compiler"
+    tools = root / "tools"
+    tools.mkdir(parents=True)
+    (root / "src").mkdir()
+    link = tools / "wasm_link.py"
+    deployment = tools / "deployment.py"
+    helper = tools / "object_layout.py"
+    for owner in (link, deployment):
+        owner.write_text("import object_layout\n", encoding="utf-8")
+    helper.write_text("OFFSET = 1\n", encoding="utf-8")
+
+    artifact_root = tmp_path / "artifact"
+    artifact_root.mkdir()
+    first_app_cache = tmp_path / "first-app"
+    next_app_cache = tmp_path / "next-app"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
+    monkeypatch.setenv("MOLT_CACHE", str(first_app_cache))
+    monkeypatch.setattr(non_native_output, "__file__", str(deployment))
+    first = non_native_output._wasm_tool_source_identities(root, link)
+
+    # A new application uses an empty cache and a fresh process graph. The
+    # selected compiler's persisted analyses should require no new binding work.
+    monkeypatch.setenv("MOLT_CACHE", str(next_app_cache))
+    monkeypatch.setattr(graph, "_PROCESS_GRAPH_ENTRIES", {})
+
+    analyzed: list[Path] = []
+    analyze = graph.analyze_local_imports
+
+    def analyze_and_record(
+        source: graph.PythonSourceSnapshot,
+        module_source: LocalPythonModuleSource,
+        policy: PythonImportPolicy,
+        *,
+        expected_nonliteral_dynamic_imports: int | None = None,
+        nonliteral_dynamic_import_targets: tuple[str, ...] = (),
+        namespace_premise: PythonNamespacePremise | None = None,
+    ) -> LocalPythonImportAnalysis:
+        analyzed.append(source.path)
+        return analyze(
+            source,
+            module_source,
+            policy,
+            expected_nonliteral_dynamic_imports=expected_nonliteral_dynamic_imports,
+            nonliteral_dynamic_import_targets=nonliteral_dynamic_import_targets,
+            namespace_premise=namespace_premise,
+        )
+
+    monkeypatch.setattr(graph, "analyze_local_imports", analyze_and_record)
+    assert non_native_output._wasm_tool_source_identities(root, link) == first
+    assert not analyzed
+    assert not (first_app_cache / "python_source_closure").exists()
+    assert not (next_app_cache / "python_source_closure").exists()
+
+    helper.write_text("OFFSET = 2\n", encoding="utf-8")
+    changed = non_native_output._wasm_tool_source_identities(root, link)
+    assert all(left != right for left, right in zip(first, changed, strict=True))
+    assert set(analyzed) == {helper}

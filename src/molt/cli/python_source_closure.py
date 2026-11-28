@@ -250,22 +250,29 @@ def local_python_import_graph_transaction(*, fresh: bool = False) -> Generator[N
         _GRAPH_TRANSACTION.reset(previous_context)
 
 
-def python_source_closure_cache_path(project_root: Path) -> Path:
+def python_source_closure_cache_path(
+    project_root: Path, *, cache_root: Path | None = None
+) -> Path:
     """Keep project-scoped analysis hints under the shared mutable-cache authority.
 
     Callers supply the resolved source root, which namespaces relative entry
     names but never becomes a write destination. Source bytes, import policy
     and analysis identity still decide reuse; cache placement grants no source
-    authority.
+    authority. A tool owner may provide its cache root when the caller's
+    application cache has a separate lifetime.
     """
     namespace = hashlib.sha256(os.fsencode(project_root)).hexdigest()
-    return _default_molt_cache() / "python_source_closure" / f"{namespace}.json"
+    root = _default_molt_cache() if cache_root is None else cache_root
+    return root / "python_source_closure" / f"{namespace}.json"
 
 
 def _read_graph_cache(
     project_root: Path,
+    *,
+    cache_path: Path | None = None,
 ) -> tuple[_StoredGraphEntries, bool]:
-    cache_path = python_source_closure_cache_path(project_root)
+    if cache_path is None:
+        cache_path = python_source_closure_cache_path(project_root)
     try:
         source = cache_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
@@ -392,8 +399,11 @@ def _remember_process_graph_entries(
 def _write_graph_cache(
     project_root: Path,
     entries: _StoredGraphEntries,
+    *,
+    cache_path: Path | None = None,
 ) -> None:
-    cache_path = python_source_closure_cache_path(project_root)
+    if cache_path is None:
+        cache_path = python_source_closure_cache_path(project_root)
     payload = {
         "schema_version": _GRAPH_CACHE_SCHEMA_VERSION,
         "entries": {
@@ -715,6 +725,7 @@ def local_python_import_closure(
     policy: PythonImportPolicy = _EXECUTABLE_TOOL_IMPORT_POLICY,
     search_roots: tuple[Path, ...] | None = None,
     source_roots: tuple[Path, ...] | None = None,
+    cache_root: Path | None = None,
 ) -> LocalPythonSourceClosure:
     """Return the policy projection of one source-byte-keyed dependency graph.
 
@@ -783,11 +794,12 @@ def local_python_import_closure(
     query = (seed_paths, policy)
     # Cache placement and manifest contracts cannot share an operation receipt
     # accidentally. Source-byte and topology reuse ends with this transaction.
+    cache_path = python_source_closure_cache_path(root, cache_root=cache_root)
     domain_key = (
         root,
         roots,
         admitted_source_roots,
-        python_source_closure_cache_path(root),
+        cache_path,
         (manifest_record[0], manifest_record[1])
         if manifest_record is not None
         else None,
@@ -796,7 +808,7 @@ def local_python_import_closure(
     domain = transaction.domains.get(domain_key) if transaction is not None else None
     if domain is None:
         resolver = LocalPythonModuleResolver(roots, source_roots=admitted_source_roots)
-        persisted_entries, cache_pruned = _read_graph_cache(root)
+        persisted_entries, cache_pruned = _read_graph_cache(root, cache_path=cache_path)
         domain = _GraphDomain(
             root,
             resolver,
@@ -1010,7 +1022,7 @@ def local_python_import_closure(
     if domain.coverage_store is not None:
         domain.coverage_store.flush()
     if domain.cache_pruned or next_entries != domain.persisted_entries:
-        _write_graph_cache(root, next_entries)
+        _write_graph_cache(root, next_entries, cache_path=cache_path)
     _remember_process_graph_entries(root, next_entries)
     domain.entries = next_entries
     domain.persisted_entries = next_entries

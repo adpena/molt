@@ -2133,16 +2133,18 @@ def _prepare_host_precompile_routing(
 
     monkeypatch.setattr(nno, "_collect_wasm_module_import_names", imports)
     monkeypatch.setattr(nno, "_validate_wasm_structural", lambda _path: None)
-    monkeypatch.setattr(
-        nno,
-        "local_python_import_closure",
-        lambda *_args: LocalPythonSourceClosure(
+
+    def empty_link_tool_graph(
+        _root: Path, _seeds: tuple[Path, ...], *, cache_root: Path
+    ) -> LocalPythonSourceClosure:
+        return LocalPythonSourceClosure(
             paths=(),
             source_sha256={},
             content_digest=hashlib.sha256(b"").hexdigest(),
             source_bytes=0,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(nno, "local_python_import_closure", empty_link_tool_graph)
     monkeypatch.setattr(
         nno, "_wasm_export_function_signatures", lambda *_args, **_kwargs: {}
     )

@@ -106,6 +106,8 @@ from molt.cli.output import (
     subprocess_output_text,
 )
 from molt.cli.python_source_closure import local_python_import_closure
+from molt.default_paths import _default_molt_cache
+from molt.process_environment import ProcessEnvironment
 from molt.cli.runtime_wasm_generation import RuntimeWasmGeneration, RuntimeWasmTrust
 from molt.cli.runtime_wasm_validation import (
     _validate_wasm_structural,
@@ -760,8 +762,18 @@ def _wasm_tool_source_identities(molt_root: Path, tool: Path) -> tuple[str, str]
         # parsing its own Python again. The build observation covers that
         # inventory through the verifier's reads in the same operation.
         return admission.fingerprint, admission.fingerprint
-    link_sources = local_python_import_closure(molt_root, (tool,))
-    deployment_sources = local_python_import_closure(molt_root, (Path(__file__),))
+    # These dependency analyses belong to the compiler's Python tools. An
+    # application's cache selection must not evict unchanged link inputs.
+    graph_cache_root = _default_molt_cache(
+        cwd=molt_root,
+        environ=ProcessEnvironment(os.environ).without(("MOLT_CACHE",)),
+    )
+    link_sources = local_python_import_closure(
+        molt_root, (tool,), cache_root=graph_cache_root
+    )
+    deployment_sources = local_python_import_closure(
+        molt_root, (Path(__file__),), cache_root=graph_cache_root
+    )
     if input_report.active():
         for path, digest in {
             **link_sources.source_sha256,
@@ -1070,6 +1082,8 @@ def _prepare_non_native_build_result_in_generation(
                     native_artifact_plan.runtime_export_symbols()
                 )
             # Re-admit the selected runtime against the emitted import obligations.
+            # The successful admission also supplies the bytes for the link key.
+            runtime_admission_started_ns = time.time_ns()
             if ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(
                 required_runtime_exports
             ):
@@ -1263,6 +1277,15 @@ def _prepare_non_native_build_result_in_generation(
                 observed_link_inputs = {
                     str(item.identity.path): item for item in link_observations
                 }
+                observed_link_inputs.update(
+                    (
+                        str(member.path),
+                        StableRegularFileObservation(
+                            member, runtime_admission_started_ns
+                        ),
+                    )
+                    for member in runtime_link_members
+                )
                 expected_input_args = [
                     argument
                     for identity in admitted_link_inputs

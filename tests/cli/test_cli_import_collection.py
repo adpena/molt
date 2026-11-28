@@ -23621,7 +23621,7 @@ def _install_fake_wasm_link_runner(
     monkeypatch.setattr(
         cli_non_native_output,
         "local_python_import_closure",
-        lambda _root, _entries: LocalPythonSourceClosure(
+        lambda _root, _entries, *, cache_root: LocalPythonSourceClosure(
             paths=(),
             source_sha256={},
             content_digest=hashlib.sha256(b"").hexdigest(),
@@ -23726,9 +23726,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     closure_digests: dict[Path, str] = {}
 
     def capture_closure(
-        root: Path, seeds: tuple[Path, ...]
+        root: Path, seeds: tuple[Path, ...], *, cache_root: Path
     ) -> LocalPythonSourceClosure:
-        closure = local_python_import_closure(root, seeds)
+        assert cache_root != isolated_molt_cache
+        closure = local_python_import_closure(
+            root, seeds, cache_root=isolated_molt_cache
+        )
         (seed,) = seeds
         assert closure.paths == (seed,)
         closure_digests[seed] = closure.content_digest
@@ -23742,14 +23745,20 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     fingerprints: list[dict[str, Any]] = []
     real_link_fingerprint = cli_link_fingerprints._link_fingerprint
 
-    def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
-        assert wasm_link not in kwargs["inputs"]
-        by_role = {
-            fact["role"]: fact for fact in kwargs["tool_facts"] if "role" in fact
-        }
-        optimizer = [
-            fact for fact in kwargs["tool_facts"] if fact.get("tool") == "wasm-opt"
-        ]
+    def capture_link_fingerprint(
+        *,
+        project_root: Path,
+        inputs: list[Path],
+        link_cmd: list[str],
+        tool_facts: Sequence[Mapping[str, object]] = (),
+        stored_fingerprint: dict[str, object] | None = None,
+        runtime_binding: NativeRuntimeCodegenBinding | None = None,
+        observed_inputs: Mapping[str, build_record.StableRegularFileObservation]
+        | None = None,
+    ) -> dict[str, str | None] | None:
+        assert wasm_link not in inputs
+        by_role = {fact["role"]: fact for fact in tool_facts if "role" in fact}
+        optimizer = [fact for fact in tool_facts if fact.get("tool") == "wasm-opt"]
         assert len(optimizer) == 1
         assert set(optimizer[0]) == {"tool", "sha256", "binaryen_version"}
         assert by_role["wasm-link-source-closure"] == {
@@ -23761,14 +23770,30 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
             == closure_digests[deployment_source]
         )
         assert by_role["wasm-native-link-plan"]["role"] == "wasm-native-link-plan"
-        assert "--native-link-plan" not in kwargs["link_cmd"]
-        assert "--runtime-generation" not in kwargs["link_cmd"]
-        assert "--runtime-family-digest" not in kwargs["link_cmd"]
-        assert runtime_wasm not in kwargs["inputs"]
-        assert runtime_reloc_wasm in kwargs["inputs"]
-        result = real_link_fingerprint(**kwargs)
-        assert result is not None
-        fingerprints.append(result)
+        assert "--native-link-plan" not in link_cmd
+        assert "--runtime-generation" not in link_cmd
+        assert "--runtime-family-digest" not in link_cmd
+        assert runtime_wasm not in inputs
+        assert runtime_reloc_wasm in inputs
+        assert observed_inputs is not None
+        observation = observed_inputs[str(runtime_reloc_wasm)]
+        assert observation.identity.path == runtime_reloc_wasm
+        assert runtime_state.runtime_wasm_pair is not None
+        assert (
+            observation.identity
+            is runtime_state.runtime_wasm_pair.reloc_member_identity
+        )
+        result = real_link_fingerprint(
+            project_root=project_root,
+            inputs=inputs,
+            link_cmd=link_cmd,
+            tool_facts=tool_facts,
+            stored_fingerprint=stored_fingerprint,
+            runtime_binding=runtime_binding,
+            observed_inputs=observed_inputs,
+        )
+        if result is not None:
+            fingerprints.append(result)
         return result
 
     monkeypatch.setattr(
