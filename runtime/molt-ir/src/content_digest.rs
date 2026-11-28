@@ -35,6 +35,14 @@ impl Write for Sha256Writer<'_> {
     }
 }
 
+pub(crate) fn stream_digest(
+    write_value: impl FnOnce(&mut dyn Write) -> Result<(), String>,
+) -> Result<[u8; 32], String> {
+    let mut digest = Sha256::new();
+    write_value(&mut Sha256Writer(&mut digest))?;
+    Ok(digest.finalize().into())
+}
+
 impl CompilationCacheKey {
     pub fn new(domain: &[u8]) -> Self {
         let mut key = Self {
@@ -60,12 +68,15 @@ impl CompilationCacheKey {
         label: &[u8],
         write_value: impl FnOnce(&mut dyn Write) -> Result<(), String>,
     ) -> Result<(), String> {
-        let mut field_digest = Sha256::new();
-        write_value(&mut Sha256Writer(&mut field_digest))?;
+        self.precomputed_digest_field(label, &stream_digest(write_value)?);
+        Ok(())
+    }
+
+    /// Add the digest of a field that another consumer already hashed.
+    pub fn precomputed_digest_field(&mut self, label: &[u8], digest: &[u8; 32]) {
         self.digest.update([1]);
         Self::length_delimited(&mut self.digest, label);
-        Self::length_delimited(&mut self.digest, &field_digest.finalize());
-        Ok(())
+        Self::length_delimited(&mut self.digest, digest);
     }
 
     pub fn finish_bytes(self) -> [u8; 32] {
@@ -100,6 +111,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             streamed.finish_hex(),
+            "cc63090ca661f7363b8dc60dcb3a0d65b330eb25e33f654bbbb591fbf6b874be"
+        );
+        let payload = <[u8; 32]>::from(Sha256::digest([7; 32]));
+        let mut precomputed = CompilationCacheKey::new(b"typed-field-test-v1");
+        precomputed.precomputed_digest_field(b"value", &payload);
+        assert_eq!(
+            precomputed.finish_hex(),
             "cc63090ca661f7363b8dc60dcb3a0d65b330eb25e33f654bbbb591fbf6b874be"
         );
     }

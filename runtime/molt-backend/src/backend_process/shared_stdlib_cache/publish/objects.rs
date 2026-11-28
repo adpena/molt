@@ -229,14 +229,9 @@ impl NativeObjectCache {
         // its entire ordered payload, never a hand-maintained field subset.
         let table = molt_ir::FunctionTable::of(job.ir.declarations());
         for function in job.ir.declarations() {
-            let mut function_digest = Sha256::new();
-            molt_backend::ir::write_function_ir_contract(
-                function,
-                &table,
-                &mut DigestWriter(&mut function_digest),
-            )
-            .map_err(io::Error::other)?;
-            digest.update(function_digest.finalize());
+            let contract = molt_ir::ir::FunctionIrContractDigest::of(function, &table)
+                .map_err(io::Error::other)?;
+            digest.update(contract.as_bytes());
         }
         Ok(digest.finalize().into())
     }

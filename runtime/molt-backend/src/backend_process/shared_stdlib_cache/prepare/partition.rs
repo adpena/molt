@@ -29,17 +29,21 @@ pub(crate) fn prepare_stdlib_partition(
         request.entry_module,
         request.explicit_stdlib_modules,
         module_registry_roots,
+        molt_backend::tir::cache::CompilationCache::open_backend_namespace().as_mut(),
     );
     ensure_output_parent_dir(stdlib_path.to_str().unwrap_or(""))?;
 
-    let current_partition_manifest =
-        shared_stdlib_partition_manifest(&partition.stdlib_funcs, &partition.module_context)
-            .map_err(|err| {
-                io::Error::new(
-                    err.kind(),
-                    format!("failed to compute shared stdlib partition manifest: {err}"),
-                )
-            })?;
+    let current_partition_manifest = shared_stdlib_partition_manifest(
+        &partition.stdlib_funcs,
+        partition.stdlib_contracts.as_deref(),
+        &partition.module_context,
+    )
+    .map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("failed to compute shared stdlib partition manifest: {err}"),
+        )
+    })?;
     let split_function_names =
         shared_stdlib_split_function_names(&partition.user_remaining, &partition.stdlib_funcs);
     if let Err(err) =

@@ -65,7 +65,17 @@ pub fn is_user_owned_function(
 /// exactly once.
 pub fn partition_user_owned_functions(
     ir: &mut crate::ir::SimpleIR,
+    is_user_owned: impl FnMut(&crate::ir::FunctionIR) -> bool,
+) -> (Vec<crate::ir::FunctionIR>, Vec<crate::ir::FunctionIR>) {
+    partition_user_owned_functions_with(ir, is_user_owned, |_| {})
+}
+
+/// Report each stdlib row's source ID in projection order before remapping
+/// references and appending any external declarations.
+pub fn partition_user_owned_functions_with(
+    ir: &mut crate::ir::SimpleIR,
     mut is_user_owned: impl FnMut(&crate::ir::FunctionIR) -> bool,
+    mut stdlib_source: impl FnMut(crate::FunctionId),
 ) -> (Vec<crate::ir::FunctionIR>, Vec<crate::ir::FunctionIR>) {
     use crate::function_table::{FunctionId, project_document, remap_function_ids};
     let user_names: BTreeSet<String> = ir
@@ -105,6 +115,7 @@ pub fn partition_user_owned_functions(
         if user_names.contains(&function.name) {
             user.push((id, function));
         } else if !duplicate[index] {
+            stdlib_source(id);
             stdlib.push((id, function));
         }
     }
