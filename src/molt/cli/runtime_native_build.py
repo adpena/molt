@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Collection, Mapping, Sequence
+from typing import Callable, Collection, Mapping, Sequence
 
 from molt.cargo_execution_policy import source_build_disabled_reason
 from molt.cli.artifact_state import _build_state_root
@@ -404,6 +404,9 @@ def _maybe_start_native_runtime_lib_ready_async(
     )
 
 
+PrepareNativeRuntimeBuild = Callable[[RuntimeCargoPlan, Callable[[], bool]], bool]
+
+
 def _ensure_runtime_lib_ready(
     runtime_state: _RuntimeArtifactState,
     *,
@@ -416,6 +419,7 @@ def _ensure_runtime_lib_ready(
     resolved_modules: Collection[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     consume: NativeRuntimeGenerationConsumer | None = None,
+    prepare_runtime_build: PrepareNativeRuntimeBuild | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -434,6 +438,7 @@ def _ensure_runtime_lib_ready(
         stage_timings_ms=stage_timings_ms,
         runtime_state=runtime_state,
         consume=consume,
+        prepare_runtime_build=prepare_runtime_build,
     )
 
 
@@ -451,6 +456,7 @@ def _ensure_native_runtime_lib_ready_for_codegen(
     resolved_modules: set[str] | frozenset[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     consume: NativeRuntimeGenerationConsumer | None = None,
+    prepare_runtime_build: PrepareNativeRuntimeBuild | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -511,6 +517,7 @@ def _ensure_native_runtime_lib_ready_for_codegen(
             resolved_modules=resolved_modules,
             stage_timings_ms=stage_timings_ms,
             consume=consume,
+            prepare_runtime_build=prepare_runtime_build,
         )
     except NativeRuntimeGenerationConsumerError as exc:
         runtime_state.revoke_native_runtime_admission()
@@ -1263,7 +1270,11 @@ def _build_native_runtime_under_lock(plan: _NativeRuntimeBuildPlan) -> bool:
     return _publish_native_runtime_build(plan, build)
 
 
-def _ensure_stored_native_runtime(plan: _NativeRuntimeBuildPlan) -> bool:
+def _ensure_stored_native_runtime(
+    plan: _NativeRuntimeBuildPlan,
+    *,
+    prepare_runtime_build: PrepareNativeRuntimeBuild | None,
+) -> bool:
     """Accept this plan's stored product, or build and publish it once.
 
     A miss takes the identity's build lock, so a concurrent checkout with the
@@ -1285,6 +1296,14 @@ def _ensure_stored_native_runtime(plan: _NativeRuntimeBuildPlan) -> bool:
         generation = _read_stored_native_runtime(plan)
         return None if generation is None else plan.accept(generation)
 
+    def build() -> bool:
+        def materialize() -> bool:
+            return _build_native_runtime_under_lock(plan)
+
+        if prepare_runtime_build is None:
+            return materialize()
+        return prepare_runtime_build(plan.cargo_plan, materialize)
+
     # A waiter waits while the build it waits for holds the lock (design 56,
     # section 2.8, molt.file_locks.lock_wait_s). Build failures are recorded
     # by the build itself; only store reads raise here.
@@ -1292,7 +1311,7 @@ def _ensure_stored_native_runtime(plan: _NativeRuntimeBuildPlan) -> bool:
         return plan.store.ensure(
             plan.build_identity.digest,
             read,
-            lambda: _build_native_runtime_under_lock(plan),
+            build,
         )
     except (ProductStoreError, OSError) as exc:
         return store_failure(exc)
@@ -1349,6 +1368,7 @@ def _ensure_runtime_lib(
     stage_timings_ms: dict[str, float] | None = None,
     runtime_state: _RuntimeArtifactState | None = None,
     consume: NativeRuntimeGenerationConsumer | None = None,
+    prepare_runtime_build: PrepareNativeRuntimeBuild | None = None,
 ) -> bool:
     del resolved_modules
     try:
@@ -1409,8 +1429,9 @@ def _ensure_runtime_lib(
             )
             if plan is None:
                 return False
-            ok = _ensure_stored_native_runtime(plan)
-            return ok
+            return _ensure_stored_native_runtime(
+                plan, prepare_runtime_build=prepare_runtime_build
+            )
     except BuildLockAcquisitionError as exc:
         _record_runtime_build_stage_ms(
             stage_timings_ms, "runtime_lib_build_lock", lock_start

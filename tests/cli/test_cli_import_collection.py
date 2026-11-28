@@ -22317,6 +22317,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     mode: Literal["native", "linked", "split"],
 ) -> None:
     from molt.cli import runtime_wasm_validation
+    from molt.cli.runtime_wasm_pair_build import _PreparedRuntimeWasmPair
     from molt.cli.runtime_wasm_generation import (
         RuntimeWasmCodegenUse,
         bind_runtime_wasm_codegen,
@@ -22346,7 +22347,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
 
     def prepare_runtime(
         state: cli_models._RuntimeArtifactState, **kwargs: object
-    ) -> Callable[[], bool]:
+    ) -> _PreparedRuntimeWasmPair:
         assert kwargs["bind_for_codegen"] is True
         assert kwargs["codegen_use"] is codegen_use
         assert kwargs["verify_before_materialization"] is True
@@ -22357,7 +22358,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             state.runtime_wasm_codegen_binding = binding
             return True
 
-        return bind_runtime
+        return _PreparedRuntimeWasmPair(bind_runtime)
 
     monkeypatch.setattr(
         cli_backend_compile, "_prepare_runtime_wasm_pair", prepare_runtime

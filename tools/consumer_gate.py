@@ -27,6 +27,7 @@ import argparse
 import functools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -205,12 +206,49 @@ def checkout_matches(root: Path, tree: str) -> bool:
     """Whether the checkout holds exactly ``tree``'s files: no file of the
     tree differs on disk and no untracked, unignored file exists. A scratch
     index holds the tree, so a new file of the change counts as tracked."""
+    live_index = Path(
+        _git(root, "rev-parse", "--path-format=absolute", "--git-path", "index")
+    )
     with tempfile.TemporaryDirectory(prefix="molt-consumer-gate-") as scratch:
-        env = dict(os.environ, GIT_INDEX_FILE=str(Path(scratch) / "index"))
-        _git(root, "read-tree", tree, env=env)
-        return not _git(root, "diff", "--name-only", env=env) and not _git(
-            root, "ls-files", "--others", "--exclude-standard", env=env
+        index = Path(scratch) / "index"
+        env = dict(os.environ, GIT_INDEX_FILE=str(index))
+        check_index = (
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.ignoreStat=false",
+            "-c",
+            "core.trustctime=true",
+            "-c",
+            "core.checkStat=default",
         )
+        # A one-tree merge preserves Git's stat data for identical entries.
+        # Keep the index timestamp so Git still checks racily clean entries.
+        try:
+            shutil.copy2(live_index, index)
+        except FileNotFoundError:
+            pass
+        else:
+            _git(
+                root,
+                *check_index,
+                "read-tree",
+                "--reset",
+                "--no-sparse-checkout",
+                tree,
+                env=env,
+            )
+            entries = _git(root, "-c", "core.quotePath=true", "ls-files", "-v", env=env)
+            if any(
+                entry and not entry.startswith("H ") for entry in entries.splitlines()
+            ):
+                # An exact receipt cannot trust assume-unchanged or skip-worktree.
+                index.unlink()
+        if not index.exists():
+            _git(root, *check_index, "read-tree", "--no-sparse-checkout", tree, env=env)
+        return not _git(
+            root, *check_index, "diff", "--name-only", env=env
+        ) and not _git(root, "ls-files", "--others", "--exclude-standard", env=env)
 
 
 def _needs_receipt(root: Path, changed: list[str]) -> bool:
@@ -727,8 +765,6 @@ def _failures_on_base(
     of ``base`` with its sources first on the import path, so the base's code,
     not this checkout's editable install, is under test. A test absent at the
     base is not a base failure."""
-    import shutil
-
     scratch = Path(tempfile.mkdtemp(prefix="consumer-gate-base-"))
     tree = scratch / "base"
     try:
