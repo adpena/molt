@@ -2867,9 +2867,24 @@ def test_wasm_tool_graph_reuses_analyses_across_application_caches(
     analyzed: list[Path] = []
     analyze = graph.analyze_local_imports
 
-    def analyze_and_record(source, *args, **kwargs):
+    def analyze_and_record(
+        source: graph.PythonSourceSnapshot,
+        module_source: LocalPythonModuleSource,
+        policy: PythonImportPolicy,
+        *,
+        expected_nonliteral_dynamic_imports: int | None = None,
+        nonliteral_dynamic_import_targets: tuple[str, ...] = (),
+        namespace_premise: PythonNamespacePremise | None = None,
+    ) -> LocalPythonImportAnalysis:
         analyzed.append(source.path)
-        return analyze(source, *args, **kwargs)
+        return analyze(
+            source,
+            module_source,
+            policy,
+            expected_nonliteral_dynamic_imports=expected_nonliteral_dynamic_imports,
+            nonliteral_dynamic_import_targets=nonliteral_dynamic_import_targets,
+            namespace_premise=namespace_premise,
+        )
 
     monkeypatch.setattr(graph, "analyze_local_imports", analyze_and_record)
     assert non_native_output._wasm_tool_source_identities(root, link) == first
