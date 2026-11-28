@@ -117,20 +117,22 @@ mod tests {
 
     #[test]
     fn frame_probe_helpers_key_callable_admission() {
-        let context = inkwell::context::Context::create();
-        let backend = LlvmBackend::new(&context, "frame_probe_admission");
         let reservation = FrameReservation::from_counts(2, 1).unwrap();
         let admitted = FrameProbe::Entry(FrameReservation {
             callable_admitted: true,
             ..reservation
         });
         let checked = FrameProbe::Entry(reservation);
-        let admitted_helper = backend.frame_probe_helper(admitted);
-        let checked_helper = backend.frame_probe_helper(checked);
-        assert_ne!(admitted_helper, checked_helper);
-        assert_eq!(admitted_helper, backend.frame_probe_helper(admitted));
-        assert_eq!(checked_helper, backend.frame_probe_helper(checked));
-        backend.module.verify().unwrap();
+        for [first, second] in [[admitted, checked], [checked, admitted]] {
+            let context = inkwell::context::Context::create();
+            let backend = LlvmBackend::new(&context, "frame_probe_admission");
+            let first_helper = backend.frame_probe_helper(first);
+            let second_helper = backend.frame_probe_helper(second);
+            assert_ne!(first_helper, second_helper);
+            assert_eq!(first_helper, backend.frame_probe_helper(first));
+            assert_eq!(second_helper, backend.frame_probe_helper(second));
+            backend.module.verify().unwrap();
+        }
     }
 }
 
