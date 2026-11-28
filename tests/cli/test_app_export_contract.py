@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
+from pathlib import Path
 
 import pytest
 
@@ -367,3 +369,69 @@ def test_closure_export_policy_follows_final_definition(final_capture):
     )
     if final_capture:
         assert binding["reason"] == "closure-callable-requires-module-dispatch"
+
+
+@pytest.mark.parametrize(
+    "case", ["rename", "existing", "missing", "wrong_kind", "collision", "foreign"]
+)
+def test_side_module_publication_uses_one_export_and_import_admission(
+    tmp_path: Path, case: str
+) -> None:
+    from molt.wasm_artifact import (
+        _build_wasm_sections,
+        _write_wasm_string,
+        parse_wasm_sections,
+        read_wasm_exports,
+    )
+    from tools.wasm_object_link import _publish_app_exports
+
+    _, contract = _frontend_ir_and_contract(
+        "pass" if case == "existing" else "def alpha(value): return value"
+    )
+    names_by_public = app_export_symbol_map(contract)
+    if case == "existing":
+        assert not names_by_public
+        public = symbol = ""
+    else:
+        [(public, symbol)] = names_by_public.items()
+    contract_path = tmp_path / "exports.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    app = tmp_path / "linked.wasm"
+    marker = b"unchanged code body"
+    namespace = "unknown_host" if case == "foreign" else "molt_runtime"
+    imports = b"\x01" + _write_wasm_string(namespace) + _write_wasm_string("hook")
+    imports += b"\x00\x00"
+    names = []
+    if case not in ("missing", "existing"):
+        kind = b"\x03" if case == "wrong_kind" else b"\x00"
+        names.append(_write_wasm_string(symbol) + kind + b"\x00")
+    if case == "collision":
+        names.append(_write_wasm_string(public) + b"\x00\x00")
+    app.write_bytes(
+        _build_wasm_sections(
+            [
+                (2, imports),
+                (7, bytes([len(names)]) + b"".join(names)),
+                (10, marker),
+                *(
+                    ()
+                    if case == "existing"
+                    else ((0, _write_wasm_string("name") + b"debug names"),)
+                ),
+            ]
+        )
+    )
+    original = app.read_bytes()
+    original_stat = app.stat()
+    assert _publish_app_exports(
+        app, contract_path, strip_debug=True, side_module=True
+    ) == (case in ("rename", "existing"))
+    if case == "rename":
+        assert [export.name for export in read_wasm_exports(app)] == [public]
+        assert tuple(parse_wasm_sections(app.read_bytes()))[2:] == ((10, marker),)
+    elif case == "existing":
+        assert app.read_bytes() == original
+        assert app.stat().st_ino == original_stat.st_ino
+        assert app.stat().st_mtime_ns == original_stat.st_mtime_ns
+    else:
+        assert not app.exists()

@@ -31,9 +31,11 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     render_source_extension_link_arguments,
 )
+from molt.file_publication import PublicationDurability
 from molt.wasm_artifact import (
+    WasmImport,
     _collect_wasm_export_names,
-    strip_wasm_publication_sections,
+    transform_wasm_publication_file,
 )
 from molt.wasm_optimizer_identity import (
     build_wasm_optimizer_attestation,
@@ -45,15 +47,7 @@ from molt.temporary_artifacts import OwnedTemporaryDirectory
 from tools import wasm_link_native_inputs as _native_inputs
 from tools.wasm_link_command import _run_external_tool
 from tools.wasm_link_fact_provider import make_rust_wasm_facts_provider
-from tools.wasm_link_format import (
-    _ESSENTIAL_EXPORTS,
-    _build_sections,
-    _parse_sections,
-    _read_string,
-    _read_varuint,
-    _write_string,
-    _write_varuint,
-)
+from tools.wasm_link_format import _ESSENTIAL_EXPORTS
 from tools.wasm_link_optimizer_policy import _run_wasm_opt_via_optimize
 
 
@@ -163,70 +157,31 @@ def standard_object_exports(app_export_contract: Path) -> tuple[str, ...]:
     )
 
 
-def publish_app_export_names(data: bytes, app_export_contract: Path) -> bytes:
-    """Export each app function under its public name, not its symbol.
-
-    wasm-ld exports a definition under its symbol only. The contract maps
-    each public export name (external ABI) to the compiled symbol; this pass
-    renames those export entries. A public name another export already holds,
-    or a contract export the link did not keep, is refused.
-    """
-    public_by_symbol = {
-        symbol: public
-        for public, symbol in app_export_symbol_map(
-            load_app_export_contract(app_export_contract)
-        ).items()
-    }
-    if not public_by_symbol:
-        return data
-    sections = _parse_sections(data)
-    rebuilt: list[tuple[int, bytes]] = []
-    renamed: set[str] = set()
-    for section_id, payload in sections:
-        if section_id != 7:
-            rebuilt.append((section_id, bytes(payload)))
-            continue
-        count, offset = _read_varuint(payload, 0)
-        entries: list[tuple[str, int, int]] = []
-        for _ in range(count):
-            name, offset = _read_string(payload, offset)
-            kind = payload[offset]
-            index, offset = _read_varuint(payload, offset + 1)
-            entries.append((name, kind, index))
-        names = {name for name, _, _ in entries}
-        export = bytearray(_write_varuint(len(entries)))
-        for name, kind, index in entries:
-            public = public_by_symbol.get(name) if kind == 0 else None
-            if public is not None:
-                if public in names:
-                    raise ValueError(
-                        f"app export {public!r} collides with an existing export"
-                    )
-                renamed.add(name)
-                name = public
-            export.extend(_write_string(name))
-            export.append(kind)
-            export.extend(_write_varuint(index))
-        rebuilt.append((section_id, bytes(export)))
-    missing = sorted(set(public_by_symbol) - renamed)
-    if missing:
-        raise ValueError(
-            "the link kept no export for app symbol(s): " + ", ".join(missing)
-        )
-    return _build_sections(rebuilt)
-
-
 def _publish_app_exports(
-    staged: Path, app_export_contract: Path, *, strip_debug: bool = False
+    staged: Path,
+    app_export_contract: Path,
+    *,
+    strip_debug: bool = False,
+    side_module: bool = False,
 ) -> bool:
     try:
-        data = publish_app_export_names(staged.read_bytes(), app_export_contract)
-        if strip_debug:
-            data = strip_wasm_publication_sections(
-                data, final_artifact=True, preserve_debug=False
-            )
-        staged.write_bytes(data)
-    except ValueError as exc:
+        public_by_symbol = {
+            symbol: public
+            for public, symbol in app_export_symbol_map(
+                load_app_export_contract(app_export_contract)
+            ).items()
+        }
+        transform_wasm_publication_file(
+            staged,
+            rename_map=public_by_symbol,
+            final_artifact=strip_debug,
+            preserve_debug=not strip_debug,
+            require_function_exports=True,
+            validate_imports=_validate_side_module_imports if side_module else None,
+            # The caller durably commits the complete deployment generation.
+            durability=PublicationDurability.RECONSTRUCTIBLE,
+        )
+    except (OSError, ValueError) as exc:
         print(f"wasm app exports: {exc}", file=sys.stderr)
         staged.unlink(missing_ok=True)
         return False
@@ -252,10 +207,24 @@ def freestanding_import_error(data: bytes) -> str | None:
     return None
 
 
-def _debug_section_link_args(preserve_debug: bool) -> tuple[str, ...]:
+def _debug_section_link_args(
+    preserve_debug: bool, *, strip_names: bool = False
+) -> tuple[str, ...]:
     # Shortening relocated LEBs changes instruction offsets. Keep relocations
     # padded when the output must retain DWARF offsets.
-    return () if preserve_debug else ("--strip-debug", "--compress-relocations")
+    if preserve_debug:
+        return ()
+    if strip_names:
+        # The split publication already drops name and debug metadata. Let
+        # wasm-ld omit the generated name section while keeping the other
+        # optional synthetic sections and the producer's custom sections.
+        return (
+            "--strip-all",
+            "--keep-section=producers",
+            "--keep-section=target_features",
+            "--compress-relocations",
+        )
+    return ("--strip-debug", "--compress-relocations")
 
 
 def standard_object_link_command(
@@ -436,7 +405,7 @@ def side_module_link_command(
         "--no-export-dynamic",
         "--gc-sections",
         "--error-limit=0",
-        *_debug_section_link_args(preserve_debug),
+        *_debug_section_link_args(preserve_debug, strip_names=True),
         f"--export={main}",
         *(f"--export-if-defined={name}" for name in exports if name != main),
         "-o",
@@ -456,23 +425,19 @@ def side_module_link_command(
     )
 
 
-def side_module_import_error(module: Path) -> str | None:
-    """Why `module` is not a side module this host contract can place."""
-    from molt.wasm_artifact import parse_wasm_imports
-
+def _validate_side_module_imports(imports: Sequence[WasmImport]) -> None:
     unexpected = sorted(
         f"{entry.module}.{entry.name}"
-        for entry in parse_wasm_imports(module.read_bytes())
+        for entry in imports
         if not (
             entry.module in _SIDE_MODULE_IMPORT_MODULES
             or (entry.module == "env" and entry.name in _SIDE_MODULE_ENV_IMPORTS)
         )
     )
     if unexpected:
-        return "side module imports outside the runtime contract: " + ", ".join(
-            unexpected
+        raise ValueError(
+            "side module imports outside the runtime contract: " + ", ".join(unexpected)
         )
-    return None
 
 
 def link_side_module(
@@ -521,13 +486,8 @@ def link_side_module(
         staged.unlink(missing_ok=True)
         return 1
     if not _publish_app_exports(
-        staged, app_export_contract, strip_debug=not preserve_debug
+        staged, app_export_contract, strip_debug=not preserve_debug, side_module=True
     ):
-        return 1
-    error = side_module_import_error(staged)
-    if error is not None:
-        print(error, file=sys.stderr)
-        staged.unlink(missing_ok=True)
         return 1
     staged.replace(app)
     return 0
