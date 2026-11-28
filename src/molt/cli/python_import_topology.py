@@ -184,10 +184,11 @@ class PythonImportTopology:
     an import fact. Portable cache keys never contain these live stat tokens.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, deferred: bool = False) -> None:
         self._directories: dict[Path, _DirectoryObservation] = {}
         self._probes: dict[Path, PythonImportPath | None] = {}
         self._failure: str | None = None
+        self._deferred = deferred
 
     def record(self) -> dict[str, object]:
         """The semantic facts consumed, excluding disposable directory epochs."""
@@ -215,14 +216,16 @@ class PythonImportTopology:
         }
 
     @classmethod
-    def from_record(cls, payload: object) -> PythonImportTopology:
+    def from_record(
+        cls, payload: object, *, deferred: bool = False
+    ) -> PythonImportTopology:
         """Reobserve a persisted import topology; changed facts refuse admission."""
         if not isinstance(payload, dict) or set(payload) != {"probes", "directories"}:
             raise ValueError("invalid import topology record")
         probes, directories = payload["probes"], payload["directories"]
         if not isinstance(probes, list) or not isinstance(directories, list):
             raise ValueError("invalid import topology rows")
-        result = cls()
+        result = cls(deferred=deferred)
         probe_rows: list[tuple[Path, PythonImportPath | None]] = []
         for row in probes:
             if (
@@ -301,6 +304,27 @@ class PythonImportTopology:
             raise ValueError("noncanonical import topology record")
         return result
 
+    def report_replay(self) -> None:
+        """Publish topology observations only after the enclosing query is admitted."""
+        self._deferred = False
+        recorded = _input_report.report_import_topology(self)
+        for path, probe in self._probes.items():
+            if recorded:
+                _input_report.report_use(path, kind=_input_report.WorkerFactKind.PROBE)
+            else:
+                _input_report.report_probe(path)
+                if probe is None and self._directories[path.parent].state is not None:
+                    _input_report.report_directory(path.parent)
+        for path, directory in self._directories.items():
+            if directory.entries is None:
+                continue
+            if recorded:
+                _input_report.report_use(
+                    path, kind=_input_report.WorkerFactKind.DIRECTORY
+                )
+            else:
+                _input_report.report_directory(path)
+
     def _check(self) -> None:
         if self._failure is not None:
             raise PythonImportTopologyChangedError(self._failure)
@@ -347,9 +371,11 @@ class PythonImportTopology:
         # An absent parent is itself a negative lookup. Retain its existing
         # ancestor so creating or retargeting that path cannot grant old facts.
         if state is None and path.parent != path:
-            if self.probe(
-                path
-            ) is not None and not _input_report.report_import_topology(self):
+            if (
+                self.probe(path) is not None
+                and not self._deferred
+                and not _input_report.report_import_topology(self)
+            ):
                 # ENOTDIR: the blocking entry exists but is not a directory.
                 # Its containing directory is the generation boundary.
                 _input_report.report_directory(path.parent)
@@ -359,12 +385,12 @@ class PythonImportTopology:
         self, path: Path, observation: _DirectoryObservation
     ) -> tuple[os.DirEntry[str], ...]:
         if observation.entries is None:
-            recorded = _input_report.report_import_topology(self)
-            if recorded:
+            recorded = self._deferred or _input_report.report_import_topology(self)
+            if recorded and not self._deferred:
                 _input_report.report_use(
                     path, kind=_input_report.WorkerFactKind.DIRECTORY
                 )
-            else:
+            elif not recorded:
                 _input_report.report_directory(path)
             before, entries = self._stable_read(
                 path, lambda _: _read_entries(path, recorded=recorded)
@@ -382,6 +408,8 @@ class PythonImportTopology:
         self, path: Path, probe: _ProbeObservation, parent: _DirectoryObservation
     ) -> None:
         self._probes[path] = probe.value
+        if self._deferred:
+            return
         if _input_report.report_import_topology(self):
             _input_report.report_use(path, kind=_input_report.WorkerFactKind.PROBE)
         else:
@@ -491,7 +519,9 @@ class PythonImportTopology:
                 ):
                     continue
                 listed = bool(observation.exact_names or observation.name_queries)
-                recorded = listed and _input_report.report_import_topology(self)
+                recorded = listed and (
+                    self._deferred or _input_report.report_import_topology(self)
+                )
                 state, (entries, probes) = self._stable_read(
                     path,
                     lambda state: (

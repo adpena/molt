@@ -770,10 +770,13 @@ def _wasm_tool_source_identities(molt_root: Path, tool: Path) -> tuple[str, str]
     # application's cache selection must not evict unchanged link inputs.
     graph_cache_root = compiler_tool_source_cache_root(molt_root)
     link_sources = local_python_import_closure(
-        molt_root, (tool,), cache_root=graph_cache_root
+        molt_root, (tool,), cache_root=graph_cache_root, reuse_resolved_queries=True
     )
     deployment_sources = local_python_import_closure(
-        molt_root, (Path(__file__),), cache_root=graph_cache_root
+        molt_root,
+        (Path(__file__),),
+        cache_root=graph_cache_root,
+        reuse_resolved_queries=True,
     )
     if input_report.active():
         for path, digest in {

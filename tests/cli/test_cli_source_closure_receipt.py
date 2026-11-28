@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import os
 from pathlib import Path
+from typing import Never
 
 import pytest
 
@@ -86,6 +88,43 @@ def test_unchanged_request_cache_is_not_republished(tmp_path, monkeypatch):
         (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
     )
     assert set(payload["entries"]) == {"entry.py"}
+
+
+def test_resolved_query_replays_only_while_source_and_import_facts_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed = _write(tmp_path / "src/entry.py", "import helper\nimport late\n")
+    helper = _write(tmp_path / "src/helper.py", "VALUE = 1\n")
+    _write(
+        tmp_path / graph._DYNAMIC_IMPORT_MANIFEST,
+        'schema_version = 1\nsearch_roots = ["src"]\n'
+        'source_roots = ["src"]\nsource = []\n',
+    )
+
+    def closure() -> graph.LocalPythonSourceClosure:
+        return graph.local_python_import_closure(
+            tmp_path, (seed,), reuse_resolved_queries=True
+        )
+
+    before = closure()
+    with monkeypatch.context() as patch:
+
+        def unexpected_analysis(
+            _resolver: LocalPythonModuleResolver, _source: Path
+        ) -> Never:
+            pytest.fail("a current resolved query must bypass source analysis")
+
+        patch.setattr(LocalPythonModuleResolver, "capture_source", unexpected_analysis)
+        assert closure() == before
+    original = helper.stat()
+    helper.write_text("VALUE = 2\n", encoding="utf-8")
+    os.utime(helper, ns=(original.st_atime_ns, original.st_mtime_ns))
+    after_edit = closure()
+    assert after_edit.content_digest != before.content_digest
+    late = _write(tmp_path / "src/late.py", "VALUE = 3\n")
+    after_import = closure()
+    assert after_import.content_digest != after_edit.content_digest
+    assert late in after_import.paths
 
 
 def test_cache_keys_do_not_resolve_or_grant_source_authority(tmp_path, monkeypatch):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from collections.abc import Iterable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -21,6 +22,7 @@ from molt.file_publication import PublicationDurability
 from molt.default_paths import _default_molt_cache
 from molt.process_environment import ProcessEnvironment
 from molt.cli.module_source import PythonSourceChangedError, PythonSourceSnapshot
+from molt.cli.python_import_topology import PythonImportTopology
 from molt.compiler_analysis.python_namespace_graph import (
     NO_GRAPH_NAMESPACE_WRITES,
     PythonGraphNamespaceWrites,
@@ -71,6 +73,8 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
 _GRAPH_CACHE_SCHEMA_VERSION = 23
 _StoredGraphEntries = dict[str, dict[str, object]]
+_StoredQueries = dict[str, object]
+_SourceSelectors = dict[Path, input_report.ProbeOutcome]
 _StoredAnalysisGroup = tuple[list[str], object]
 _GraphDomainKey = tuple[
     Path,
@@ -152,6 +156,7 @@ class _GraphDomain:
     persisted_entries: _StoredGraphEntries
     entries: _StoredGraphEntries
     cache_pruned: bool
+    queries: _StoredQueries = field(default_factory=dict)
     snapshots: dict[Path, PythonSourceSnapshot] = field(default_factory=dict)
     coverage_store: FileDigestCache | None = None
     coverage_identities: dict[Path, StableRegularFileIdentity] = field(
@@ -163,6 +168,9 @@ class _GraphDomain:
         default_factory=dict
     )
     receipts: dict[_GraphQuery, LocalPythonSourceClosure] = field(default_factory=dict)
+    replayed: dict[int, tuple[object, LocalPythonSourceClosure]] = field(
+        default_factory=dict
+    )
     admitted: dict[int, _AdmittedImportProjection] = field(default_factory=dict)
 
     def capture(self, path: Path) -> PythonSourceSnapshot:
@@ -188,8 +196,7 @@ class _GraphDomain:
         identity = self.coverage_identities.get(path)
         if identity is None:
             label = "local Python source coverage"
-            assert self.coverage_store is not None
-            identity = self.coverage_store.identity(path, label=label)
+            identity = self.digest_store().identity(path, label=label)
             verify_stable_regular_file_identity(identity, label=label)
             self.coverage_identities[path] = identity
         if input_report.first_report(identity):
@@ -197,6 +204,13 @@ class _GraphDomain:
                 path, identity.stat_token(), identity.sha256
             )
         return identity.size, identity.sha256
+
+    def digest_store(self) -> FileDigestCache:
+        if self.coverage_store is None:
+            from molt.toolchain_facts import host_file_digest_cache
+
+            self.coverage_store = host_file_digest_cache(operation_local=True)
+        return self.coverage_store
 
     def relative_key(self, path: Path) -> str:
         if path not in self.relative_keys:
@@ -279,6 +293,7 @@ def _read_graph_cache(
     project_root: Path,
     *,
     cache_path: Path | None = None,
+    queries: _StoredQueries | None = None,
 ) -> tuple[_StoredGraphEntries, bool]:
     if cache_path is None:
         cache_path = python_source_closure_cache_path(project_root)
@@ -297,6 +312,8 @@ def _read_graph_cache(
     entries = payload.get("entries")
     if not isinstance(entries, dict):
         return {}, True
+    if queries is not None:
+        queries.update(_restore_graph_variants(payload.get("queries")) or {})
     decoded = {}
     for path, groups in entries.items():
         variants = _restore_graph_variants(groups)
@@ -410,6 +427,7 @@ def _write_graph_cache(
     entries: _StoredGraphEntries,
     *,
     cache_path: Path | None = None,
+    queries: _StoredQueries | None = None,
 ) -> None:
     if cache_path is None:
         cache_path = python_source_closure_cache_path(project_root)
@@ -419,6 +437,7 @@ def _write_graph_cache(
             source: _group_graph_variants(variants)
             for source, variants in entries.items()
         },
+        "queries": _group_graph_variants(queries or {}),
     }
     try:
         _atomic_write_text(
@@ -646,7 +665,10 @@ def _read_python_import_manifest(
 
 
 def _manifest_python_roots(
-    project_root: Path, manifest: _ImportManifest | None, field: str
+    project_root: Path,
+    manifest: _ImportManifest | None,
+    field: str,
+    selectors: _SourceSelectors | None,
 ) -> tuple[Path, ...] | None:
     if manifest is None or field not in manifest[2]:
         return None
@@ -666,13 +688,16 @@ def _manifest_python_roots(
             or ".." in PurePosixPath(value).parts
         ):
             raise ValueError(f"invalid Python tooling {field}: {value!r}")
-        candidate = (project_root / value).resolve()
+        selector = project_root / value
+        candidate = selector.resolve()
         _relative_cache_key(project_root, candidate)
         if not candidate.is_dir():
             raise ValueError(f"missing Python tooling {field} directory: {candidate}")
         if candidate in roots:
             raise ValueError(f"duplicate Python tooling {field} directory: {candidate}")
         roots.append(candidate)
+        if selectors is not None:
+            selectors[selector] = (os.fspath(candidate), stat.S_IFDIR)
     return tuple(roots)
 
 
@@ -680,9 +705,10 @@ def _read_dynamic_import_manifest(
     manifest_record: _ImportManifest | None,
     project_root: Path,
     resolver: LocalPythonModuleResolver,
-) -> tuple[tuple[Path, bytes] | None, dict[Path, tuple[int, tuple[str, ...]]]]:
+    selectors: _SourceSelectors | None = None,
+) -> tuple[tuple[Path, bytes] | None, dict[Path, tuple[int, tuple[str, ...]]], bool]:
     if manifest_record is None:
-        return None, {}
+        return None, {}, False
     manifest, content, payload = manifest_record
     rows = payload.get("source")
     if not isinstance(rows, list):
@@ -690,6 +716,7 @@ def _read_dynamic_import_manifest(
             f"Python tooling import manifest has no source rows: {manifest}"
         )
     overrides: dict[Path, tuple[int, tuple[str, ...]]] = {}
+    uses_recursive_manifest = False
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError(f"invalid Python tooling import manifest row: {manifest}")
@@ -707,12 +734,21 @@ def _read_dynamic_import_manifest(
             or not all(isinstance(module, str) for module in module_trees)
         ):
             raise ValueError(f"invalid Python tooling import manifest row: {manifest}")
-        source = (project_root / source_value).resolve()
+        selector = project_root / source_value
+        source = selector.resolve()
+        if selectors is not None:
+            observed = input_report.resolved_probe(selector)
+            if observed is not None and observed[0] != os.fspath(source):
+                raise PythonSourceChangedError(
+                    f"Python query input changed: {selector}"
+                )
+            selectors[selector] = observed
         resolver.module_identity(source)
         if source in overrides:
             raise ValueError(f"duplicate Python tooling import manifest row: {source}")
         targets = set(modules)
         for module_tree in module_trees:
+            uses_recursive_manifest = True
             tree_source = resolver.source_for_module(module_tree)
             if tree_source is None or tree_source.name != "__init__.py":
                 raise ValueError(
@@ -724,7 +760,104 @@ def _read_dynamic_import_manifest(
                 member = relative_python_module_name(child, package_dir)
                 targets.add(f"{module_tree}.{member}" if member else module_tree)
         overrides[source] = (expected, tuple(sorted(targets)))
-    return (manifest, content), overrides
+    return (manifest, content), overrides, uses_recursive_manifest
+
+
+def _closure_receipt(
+    root: Path, files: Mapping[Path, tuple[int, str]], topology_digest: str
+) -> LocalPythonSourceClosure:
+    paths = tuple(sorted(files, key=lambda path: path.as_posix()))
+    digest = hashlib.sha256(b"molt.local-python-source-closure.v2\0")
+    digest.update(topology_digest.encode("ascii"))
+    digest.update(b"\0")
+    hashes = {}
+    source_bytes = 0
+    for path in paths:
+        size, sha256 = files[path]
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(sha256))
+        hashes[path] = sha256
+        source_bytes += size
+    return LocalPythonSourceClosure(
+        paths, hashes, digest.hexdigest(), source_bytes, topology_digest
+    )
+
+
+def _replay_source_query(
+    domain: _GraphDomain,
+    seed_paths: tuple[Path, ...],
+    manifest: Path,
+    record: object,
+) -> LocalPythonSourceClosure | None:
+    if not isinstance(record, dict):
+        return None
+    if (cached := domain.replayed.get(id(record))) is not None:
+        _, result = cached
+        if manifest in result.source_sha256 and all(
+            seed in result.source_sha256 for seed in seed_paths
+        ):
+            return result
+        return None
+    files = record.get("files")
+    topology_digest = record.get("topology_digest")
+    if not isinstance(files, dict) or not isinstance(topology_digest, str):
+        return None
+    admitted = {}
+    label = "cached Python closure input"
+    try:
+        topology = PythonImportTopology.from_record(record["imports"], deferred=True)
+        store = domain.digest_store()
+        for name, sha256 in files.items():
+            path = domain.root / name
+            if (
+                path.relative_to(domain.root).as_posix() != name
+                or ".." in path.parts
+                or (path != manifest and not domain.resolver._owns_source(path))
+            ):
+                return None
+            identity = domain.coverage_identities.get(path)
+            if identity is None:
+                identity = store.identity(path, label=label)
+            if identity.sha256 != sha256:
+                return None
+            admitted[path] = identity
+        if manifest not in admitted or any(seed not in admitted for seed in seed_paths):
+            return None
+        topology.validate()
+        for identity in admitted.values():
+            verify_stable_regular_file_identity(identity, label=label)
+        result = _closure_receipt(
+            domain.root,
+            {path: (file.size, file.sha256) for path, file in admitted.items()},
+            topology_digest,
+        )
+        if result.content_digest != record.get("digest"):
+            return None
+    except (KeyError, OSError, TypeError, ValueError):
+        return None
+    topology.report_replay()
+    for path, identity in admitted.items():
+        if input_report.first_report(identity):
+            input_report.report_captured_file(
+                path, identity.stat_token(), identity.sha256
+            )
+    domain.coverage_identities.update(admitted)
+    domain.replayed[id(record)] = (record, result)
+    store.flush()
+    return result
+
+
+def _check_query_selectors(selectors: _SourceSelectors) -> None:
+    """Fence lexical seed and manifest selections independently of the graph."""
+    for selector, selected in selectors.items():
+        observed = (
+            input_report.report_probe(selector)
+            if input_report.active()
+            else input_report.resolved_probe(selector)
+        )
+        if observed != selected:
+            raise PythonSourceChangedError(f"Python query input changed: {selector}")
 
 
 def local_python_import_closure(
@@ -735,6 +868,7 @@ def local_python_import_closure(
     search_roots: tuple[Path, ...] | None = None,
     source_roots: tuple[Path, ...] | None = None,
     cache_root: Path | None = None,
+    reuse_resolved_queries: bool = False,
 ) -> LocalPythonSourceClosure:
     """Return the policy projection of one source-byte-keyed dependency graph.
 
@@ -753,12 +887,16 @@ def local_python_import_closure(
     No failed analysis becomes an empty closure. Cached grouped requests and
     symbolic coverage obligations always resolve against fresh topology outside
     the explicit build transaction, including previously missing members.
+    A tool may replay a closed file query when it has an explicit import
+    manifest and no direct recursive glob. Replay checks every source byte
+    identity and every import selection before admitting the same result.
     """
 
     root = project_root.resolve()
+    selectors: _SourceSelectors | None = {} if reuse_resolved_queries else None
     manifest_record = _read_python_import_manifest(root)
     declared_search_roots = _manifest_python_roots(
-        root, manifest_record, "search_roots"
+        root, manifest_record, "search_roots", selectors
     )
     roots = tuple(
         candidate.resolve()
@@ -776,7 +914,7 @@ def local_python_import_closure(
     if not roots:
         raise ValueError(f"project has no local Python source roots: {root}")
     declared_source_roots = _manifest_python_roots(
-        root, manifest_record, "source_roots"
+        root, manifest_record, "source_roots", selectors
     )
     if source_roots is None:
         admitted_source_roots = (
@@ -784,7 +922,8 @@ def local_python_import_closure(
         )
     else:
         admitted_source_roots = tuple(candidate.resolve() for candidate in source_roots)
-    seed_paths = tuple(sorted({seed.resolve() for seed in seeds}))
+    seed_selectors = {seed.absolute(): seed.resolve() for seed in seeds}
+    seed_paths = tuple(sorted(set(seed_selectors.values())))
     if any(
         not path.is_relative_to(root)
         for path in (*roots, *admitted_source_roots, *seed_paths)
@@ -817,29 +956,89 @@ def local_python_import_closure(
     domain = transaction.domains.get(domain_key) if transaction is not None else None
     if domain is None:
         resolver = LocalPythonModuleResolver(roots, source_roots=admitted_source_roots)
-        persisted_entries, cache_pruned = _read_graph_cache(root, cache_path=cache_path)
+        queries: _StoredQueries = {}
+        persisted_entries, cache_pruned = _read_graph_cache(
+            root, cache_path=cache_path, queries=queries
+        )
         domain = _GraphDomain(
             root,
             resolver,
             persisted_entries,
             _with_process_graph_entries(root, persisted_entries),
             cache_pruned,
+            queries=queries,
         )
         if transaction is not None:
             transaction.domains[domain_key] = domain
-    if query in domain.receipts:
+    if query in domain.receipts and selectors is None:
         return domain.receipts[query]
     resolver = domain.resolver
     capture = domain.capture
 
-    manifest, dynamic_import_overrides = (
-        _read_dynamic_import_manifest(manifest_record, root, resolver)
+    manifest, dynamic_import_overrides, uses_recursive_manifest = (
+        _read_dynamic_import_manifest(manifest_record, root, resolver, selectors)
         if not policy.module_level_only
-        else (None, {})
+        else (None, {}, False)
     )
     analysis_digest = hashlib.sha256(
         json.dumps(local_import_analysis_identity(), sort_keys=True).encode("utf-8")
     ).hexdigest()
+    proof_key: str | None = None
+    premises: str | None = None
+    if (
+        selectors is not None
+        and manifest is not None
+        and declared_search_roots is not None
+        and declared_source_roots is not None
+        and search_roots is None
+        and source_roots is None
+        and seed_paths
+        and all(seed.is_file() for seed in seed_paths)
+        and not uses_recursive_manifest
+    ):
+        selectors.update(
+            (selector, (os.fspath(resolved), stat.S_IFREG))
+            for selector, resolved in seed_selectors.items()
+        )
+        selectors[root / _DYNAMIC_IMPORT_MANIFEST] = (
+            os.fspath(manifest[0]),
+            stat.S_IFREG,
+        )
+        if query in domain.receipts:
+            _check_query_selectors(selectors)
+            return domain.receipts[query]
+        proof_key = hashlib.sha256(
+            json.dumps(
+                (
+                    [path.relative_to(root).as_posix() for path in seed_paths],
+                    asdict(policy),
+                ),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        premises = hashlib.sha256(
+            json.dumps(
+                (
+                    analysis_digest,
+                    hashlib.sha256(manifest[1]).hexdigest(),
+                    [os.fspath(path) for path in roots],
+                    [os.fspath(path) for path in admitted_source_roots],
+                    [
+                        (os.fspath(path), data)
+                        for path, data in sorted(dynamic_import_overrides.items())
+                    ],
+                )
+            ).encode()
+        ).hexdigest()
+        previous = domain.queries.get(proof_key)
+        if isinstance(previous, dict) and previous.get("premises") == premises:
+            result = _replay_source_query(domain, seed_paths, manifest[0], previous)
+            if result is not None:
+                _check_query_selectors(selectors)
+                domain.receipts[query] = result
+                return result
+    elif query in domain.receipts:
+        return domain.receipts[query]
     # Keep records from sibling policies/seeds. Each source/module/policy variant
     # replaces its byte generation; aliases share a snapshot, never an execution
     # context. Merging next_entries below retains every alias seen in this walk.
@@ -999,46 +1198,47 @@ def local_python_import_closure(
         covered = domain.inventory(policy)
         reached.update(covered.paths)
         topology_digest = covered.topology_digest
-        if domain.coverage_store is None:
-            from molt.toolchain_facts import host_file_digest_cache
-
-            domain.coverage_store = host_file_digest_cache(operation_local=True)
     if manifest is not None:
         manifest_path, manifest_content = manifest
         reached.add(manifest_path)
     else:
         manifest_path, manifest_content = None, b""
-    paths = tuple(sorted(reached, key=lambda path: path.as_posix()))
-    digest = hashlib.sha256(b"molt.local-python-source-closure.v2\0")
-    digest.update(topology_digest.encode("ascii"))
-    digest.update(b"\0")
-    hashes: dict[Path, str] = {}
-    source_bytes = 0
-    for path in paths:
-        if path == manifest_path:
-            size, sha256 = (
-                len(manifest_content),
-                hashlib.sha256(manifest_content).hexdigest(),
-            )
-        else:
-            size, sha256 = domain.source_identity(path)
-        digest.update(domain.relative_key(path).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(bytes.fromhex(sha256))
-        hashes[path] = sha256
-        source_bytes += size
+    files = {
+        path: (
+            (len(manifest_content), hashlib.sha256(manifest_content).hexdigest())
+            if path == manifest_path
+            else domain.source_identity(path)
+        )
+        for path in reached
+    }
+    result = _closure_receipt(root, files, topology_digest)
     resolver.import_topology.validate()
     if domain.coverage_store is not None:
         domain.coverage_store.flush()
-    if domain.cache_pruned or next_entries != domain.persisted_entries:
-        _write_graph_cache(root, next_entries, cache_path=cache_path)
+    query_changed = False
+    if proof_key is not None:
+        assert selectors is not None
+        _check_query_selectors(selectors)
+        projection = {
+            "premises": premises,
+            "files": {
+                domain.relative_key(path): sha256
+                for path, sha256 in result.source_sha256.items()
+            },
+            "imports": resolver.import_topology.record(),
+            "topology_digest": result.topology_digest,
+            "digest": result.content_digest,
+        }
+        query_changed = domain.queries.get(proof_key) != projection
+        domain.queries[proof_key] = projection
+    if domain.cache_pruned or query_changed or next_entries != domain.persisted_entries:
+        _write_graph_cache(
+            root, next_entries, cache_path=cache_path, queries=domain.queries
+        )
     _remember_process_graph_entries(root, next_entries)
     domain.entries = next_entries
     domain.persisted_entries = next_entries
     domain.cache_pruned = False
-    result = LocalPythonSourceClosure(
-        paths, hashes, digest.hexdigest(), source_bytes, topology_digest
-    )
     if transaction is not None:
         domain.receipts[query] = result
     return result
