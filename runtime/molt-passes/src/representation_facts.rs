@@ -746,7 +746,7 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::StorePackedBuffer2d
         | OpCode::ProbeInlineField
         | OpCode::FrameEntryAdmits
-        | OpCode::FrameArenaAdmits => (IntegerOperandObservation::Never, false),
+        | OpCode::FrameRegionAdmits => (IntegerOperandObservation::Never, false),
         OpCode::CheckedAdd | OpCode::CheckedMul => (binary, true),
         OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
             (binary, false)

@@ -56,6 +56,73 @@ fn make_call(callee: &str, out: ValueId) -> TirOp {
     }
 }
 
+#[test]
+fn frame_region_clear_fact_survives_only_nonraising_backedges() {
+    let mut func = TirFunction::new(
+        "frame_region_pending".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let entry = func.entry_block;
+    let header = func.fresh_block();
+    let latch = func.fresh_block();
+    let fallback = func.fresh_block();
+    let admitted = func.fresh_value();
+    func.value_types.insert(admitted, TirType::Bool);
+    let preheader = func.blocks.get_mut(&entry).unwrap();
+    preheader.ops.push(TirOp::new(
+        OpCode::FrameRegionAdmits,
+        vec![],
+        vec![admitted],
+    ));
+    preheader.terminator = Terminator::CondBranch {
+        cond: admitted,
+        then_block: header,
+        then_args: vec![],
+        else_block: fallback,
+        else_args: vec![],
+    };
+    let branch = |target| Terminator::Branch {
+        target,
+        args: vec![],
+    };
+    for (id, terminator) in [
+        (header, branch(latch)),
+        (latch, branch(header)),
+        (fallback, Terminator::Return { values: vec![] }),
+    ] {
+        func.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator,
+            },
+        );
+    }
+    let pending = |func: &TirFunction| {
+        super::flow::compute_block_entry_pending(func, &RaiseFacts::of(func), &HashMap::default())
+    };
+    let before = pending(&func);
+    assert!(!before[&header]);
+    assert!(!before[&latch]);
+    assert!(before[&fallback]);
+
+    let result = func.fresh_value();
+    func.value_types.insert(result, TirType::DynBox);
+    func.blocks
+        .get_mut(&latch)
+        .unwrap()
+        .ops
+        .push(make_call("callback", result));
+    let after = pending(&func);
+    assert!(after[&header]);
+    assert!(after[&latch]);
+    assert!(after[&fallback]);
+}
+
 fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> TirOp {
     TirOp {
         origin: None,

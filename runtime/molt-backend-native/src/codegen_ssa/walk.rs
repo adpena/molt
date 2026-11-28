@@ -61,7 +61,7 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
         }
         match op.opcode {
             OpCode::ExceptionPending => self.exception_pending_op(b, op),
-            OpCode::FrameEntryAdmits | OpCode::FrameArenaAdmits => self.frame_admits(b, op),
+            OpCode::FrameEntryAdmits | OpCode::FrameRegionAdmits => self.frame_admits(b, op),
             OpCode::TryAcquirePackedBuffer2d => self.acquire_packed_buffer(b, op),
             OpCode::SplicedFrameSlot => {
                 let slot = b.entry_slot("spliced_frame_identity");

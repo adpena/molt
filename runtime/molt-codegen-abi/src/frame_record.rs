@@ -78,7 +78,11 @@ impl FrameReservation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameProbe {
     Entry(FrameReservation),
-    Arena(u32),
+    Region {
+        arena_bytes: u32,
+        recursion_depth: u32,
+        virtual_exception_level: bool,
+    },
 }
 
 pub fn generate_frame_probe<B: FrameBuilder>(
@@ -92,15 +96,26 @@ pub fn generate_frame_probe<B: FrameBuilder>(
         FrameProbe::Entry(reservation) => {
             generate_frame_entry_admits(b, thread, function, code_slot, reservation)
         }
-        FrameProbe::Arena(bytes) => {
-            let fits = arena_admits(b, thread, bytes);
+        FrameProbe::Region {
+            arena_bytes,
+            recursion_depth,
+            virtual_exception_level,
+        } => {
             let result = b.local();
             let no = b.constant(0);
             b.set(result, no);
-            b.if_then(fits, |b| {
-                let yes = b.constant(1);
-                b.set(result, yes);
-            });
+            b.attempt(
+                |b| {
+                    require_clear_exception(b, thread);
+                    require_thread_capacity(b, thread, arena_bytes, recursion_depth);
+                    if virtual_exception_level {
+                        require_virtual_exception_level(b, thread);
+                    }
+                    let yes = b.constant(1);
+                    b.set(result, yes);
+                },
+                |_| {},
+            );
             b.get(result)
         }
     }
@@ -238,6 +253,40 @@ fn require_arena_space<B: FrameBuilder>(b: &mut B, thread: B::Word, end: B::Word
     b.require(fits);
 }
 
+fn require_clear_exception<B: FrameBuilder>(b: &mut B, thread: B::Word) {
+    let pending = b.load_word(thread, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET);
+    let pending = b.and(pending, 0xff);
+    let clear = compare_immediate(b, WordComparison::Equal, pending, 0);
+    b.require(clear);
+}
+
+fn require_thread_capacity<B: FrameBuilder>(
+    b: &mut B,
+    thread: B::Word,
+    arena_bytes: u32,
+    recursion_depth: u32,
+) {
+    if let Some(virtual_parents) = recursion_depth.checked_sub(1) {
+        let recursion =
+            crate::thread_record::generate_recursion_admits_after(b, thread, virtual_parents);
+        b.require(recursion);
+    }
+    if arena_bytes != 0 {
+        let fits = arena_admits(b, thread, arena_bytes);
+        b.require(fits);
+    }
+}
+
+fn require_virtual_exception_level<B: FrameBuilder>(b: &mut B, thread: B::Word) {
+    let admitted = crate::thread_record::generate_virtual_exception_level_admits(
+        b,
+        thread,
+        |b, at, offset| b.load_word(at, offset),
+        true,
+    );
+    b.require(admitted);
+}
+
 /// Check an optional region reservation and the identity of this callable.
 /// A probe does not take the handoff, write the arena, or invoke Python.
 pub fn generate_frame_entry_admits<B: FrameBuilder>(
@@ -252,33 +301,20 @@ pub fn generate_frame_entry_admits<B: FrameBuilder>(
     b.set(result, no);
     b.attempt(
         |b| {
-            if let Some(virtual_parents) = reservation.recursion_depth.checked_sub(1) {
-                let pending = b.load_word(thread, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET);
-                let pending = b.and(pending, 0xff);
-                let clear = compare_immediate(b, WordComparison::Equal, pending, 0);
-                b.require(clear);
-                let recursion = crate::thread_record::generate_recursion_admits_after(
+            if reservation.recursion_depth != 0 {
+                require_clear_exception(b, thread);
+                require_thread_capacity(
                     b,
                     thread,
-                    virtual_parents,
+                    reservation.arena_bytes,
+                    reservation.recursion_depth,
                 );
-                b.require(recursion);
-                if reservation.arena_bytes != 0 {
-                    let fits = arena_admits(b, thread, reservation.arena_bytes);
-                    b.require(fits);
-                }
             }
             if !reservation.callable_admitted {
                 checked_callable(b, function, code_slot);
             }
             if reservation.virtual_exception_level {
-                let admitted = crate::thread_record::generate_virtual_exception_level_admits(
-                    b,
-                    thread,
-                    |b, at, offset| b.load_word(at, offset),
-                    true,
-                );
-                b.require(admitted);
+                require_virtual_exception_level(b, thread);
             }
             let yes = b.constant(1);
             b.set(result, yes);

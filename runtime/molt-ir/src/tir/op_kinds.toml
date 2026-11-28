@@ -1543,7 +1543,7 @@ final_tir_opcodes = [
     "StorePackedBuffer2d",
     "ProbeInlineField",
     "FrameEntryAdmits",
-    "FrameArenaAdmits",
+    "FrameRegionAdmits",
     "StringLiteralCellReady",
     "IsInlineInt",
     "UnboxInlineInt",
@@ -3492,7 +3492,7 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
-name = "FrameArenaAdmits"
+name = "FrameRegionAdmits"
 may_call_python = false
 operand_arity = 0
 operand_independent_result_types = ["bool"]

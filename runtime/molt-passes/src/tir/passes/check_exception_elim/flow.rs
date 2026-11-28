@@ -1,6 +1,6 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, TirBlock};
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
@@ -58,6 +58,29 @@ pub(crate) fn polls_without_pending_exception(
     clean
 }
 
+/// A terminal read-only probe establishes a clear exception state on one
+/// edge. A shared successor needs a meet of both edges and is excluded.
+fn pending_clear_successor(block: &TirBlock) -> Option<BlockId> {
+    let Terminator::CondBranch {
+        cond,
+        then_block,
+        else_block,
+        ..
+    } = block.terminator
+    else {
+        return None;
+    };
+    let op = block.ops.last()?;
+    if then_block == else_block || op.results.as_slice() != [cond] {
+        return None;
+    }
+    match op.opcode {
+        OpCode::FrameRegionAdmits => Some(then_block),
+        OpCode::ExceptionPending => Some(else_block),
+        _ => None,
+    }
+}
+
 pub(super) fn compute_block_entry_pending(
     func: &TirFunction,
     raise: &RaiseFacts,
@@ -91,7 +114,12 @@ pub(super) fn compute_block_entry_pending(
         }
     }
     while let Some(id) = pending_exits.pop() {
-        func.blocks[&id].terminator.for_each_edge(|target, _| {
+        let block = &func.blocks[&id];
+        let cleared = pending_clear_successor(block);
+        block.terminator.for_each_edge(|target, _| {
+            if cleared == Some(target) {
+                return;
+            }
             if let Some(pending) = entry_pending.get_mut(&target)
                 && !*pending
             {

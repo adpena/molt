@@ -29,7 +29,14 @@ impl<'ctx> LlvmBackend<'ctx> {
                 u8::from(virtual_exception_level),
                 u8::from(callable_admitted),
             ),
-            FrameProbe::Arena(bytes) => format!("__molt_frame_arena_probe_{bytes}"),
+            FrameProbe::Region {
+                arena_bytes,
+                recursion_depth,
+                virtual_exception_level,
+            } => format!(
+                "__molt_frame_region_probe_{arena_bytes}_{recursion_depth}_{}",
+                u8::from(virtual_exception_level),
+            ),
         };
         self.site_helper(&name, 4, |b, words| {
             let &[thread, function, code] = words else {
