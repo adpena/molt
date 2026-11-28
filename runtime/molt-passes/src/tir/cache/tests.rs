@@ -1271,7 +1271,7 @@ fn idle_namespace_reactivation_obeys_the_collector_lock() {
     let tag = writer.cache_dir.join(CACHEDIR_TAG_FILE);
     let old = SystemTime::now() - 7 * Duration::from_secs(86400);
     set_mtime(&tag, old);
-    let lock = open_regular_member(
+    let (lock, _) = open_regular_member(
         &writer.cache_dir.join(CACHE_TRIM_LOCK_FILE),
         MemberAccess::Update,
     )
@@ -1286,7 +1286,7 @@ fn idle_namespace_reactivation_obeys_the_collector_lock() {
     assert!(reader.get(&key).is_none());
     drop(lock);
     assert_eq!(reader.get(&key).as_deref(), Some(b"value".as_slice()));
-    assert!(modified(&tag).unwrap() > old);
+    assert!(tag.metadata().unwrap().modified().unwrap() > old);
     drop(reader);
     std::fs::remove_dir_all(&root).unwrap();
 }
