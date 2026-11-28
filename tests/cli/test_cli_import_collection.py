@@ -3370,7 +3370,7 @@ def test_builtins_mapping_write_controls_runtime_import_support(
         "modify(key=input())\n"
         "import math\n"
     )
-    _assert_graph_import_finder(tmp_path, source, needs_finder)
+    _assert_graph_import_finder(tmp_path, source, needs_finder, load_finders=False)
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
@@ -3399,7 +3399,20 @@ def test_native_iterator_payload_reaches_namespace_writer(
         "modify(input())\n"
         "import math\n"
     )
-    _assert_graph_import_finder(tmp_path, source, needs_finder)
+    _assert_graph_import_finder(tmp_path, source, needs_finder, load_finders=False)
+
+
+@pytest.mark.usefixtures("isolated_frontend_state")
+def test_reached_import_writer_admits_native_finder_closure(tmp_path: Path) -> None:
+    # The demand cases above cover the writer shapes. This case exercises the
+    # native planner's subsequent admission of the real Python finder.
+    source = (
+        "import builtins\n"
+        "def redirect(*args): pass\n"
+        "builtins.__import__ = redirect\n"
+        "import math\n"
+    )
+    _assert_graph_import_finder(tmp_path, source, True)
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
@@ -22317,6 +22330,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     mode: Literal["native", "linked", "split"],
 ) -> None:
     from molt.cli import runtime_wasm_validation
+    from molt.cli.runtime_wasm_pair_build import _PreparedRuntimeWasmPair
     from molt.cli.runtime_wasm_generation import (
         RuntimeWasmCodegenUse,
         bind_runtime_wasm_codegen,
@@ -22346,7 +22360,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
 
     def prepare_runtime(
         state: cli_models._RuntimeArtifactState, **kwargs: object
-    ) -> Callable[[], bool]:
+    ) -> _PreparedRuntimeWasmPair:
         assert kwargs["bind_for_codegen"] is True
         assert kwargs["codegen_use"] is codegen_use
         assert kwargs["verify_before_materialization"] is True
@@ -22357,7 +22371,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             state.runtime_wasm_codegen_binding = binding
             return True
 
-        return bind_runtime
+        return _PreparedRuntimeWasmPair(bind_runtime)
 
     monkeypatch.setattr(
         cli_backend_compile, "_prepare_runtime_wasm_pair", prepare_runtime

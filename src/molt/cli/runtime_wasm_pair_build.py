@@ -59,6 +59,7 @@ from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
 from molt.cli.build_request import BuildProfile
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 from molt.cli.runtime_wasm_build import _materialize_runtime_wasm_member_from_target
 from molt.cli.runtime_wasm_build_spec import (
     _compute_runtime_wasm_build_spec,
@@ -1035,6 +1036,15 @@ def _ensure_installed_runtime_wasm(
     return True
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedRuntimeWasmPair:
+    materialize: Callable[[], bool]
+    cargo_plan: RuntimeCargoPlan | None = None
+
+    def __call__(self) -> bool:
+        return self.materialize()
+
+
 def _prepare_runtime_wasm_pair(
     runtime_state: _RuntimeArtifactState,
     *,
@@ -1052,7 +1062,7 @@ def _prepare_runtime_wasm_pair(
     bind_for_codegen: bool = False,
     codegen_use: RuntimeWasmCodegenUse | None = None,
     verify_before_materialization: bool = False,
-) -> Callable[[], bool] | None:
+) -> _PreparedRuntimeWasmPair | None:
     """Resolve one runtime request before either producer is materialized."""
     runtime_state.runtime_wasm_build_failure = None
     binding = runtime_state.runtime_wasm_codegen_binding
@@ -1100,16 +1110,18 @@ def _prepare_runtime_wasm_pair(
         )
         return None
     if installed is not None:
-        return partial(
-            _ensure_installed_runtime_wasm,
-            runtime_state,
-            installed,
-            project_root=project_root,
-            required_link_features=required_link_features,
-            required_exports=required_exports,
-            planned_exports=planned_exports,
-            bind_for_codegen=bind_for_codegen,
-            codegen_use=codegen_use,
+        return _PreparedRuntimeWasmPair(
+            partial(
+                _ensure_installed_runtime_wasm,
+                runtime_state,
+                installed,
+                project_root=project_root,
+                required_link_features=required_link_features,
+                required_exports=required_exports,
+                planned_exports=planned_exports,
+                bind_for_codegen=bind_for_codegen,
+                codegen_use=codegen_use,
+            )
         )
     ctx = _prepare_runtime_wasm_pair_build(
         runtime_state,
@@ -1129,13 +1141,16 @@ def _prepare_runtime_wasm_pair(
     )
     if ctx is None:
         return None
-    return partial(
-        _materialize_source_runtime_wasm_pair,
-        ctx,
-        binding=binding,
-        required_exports=required_exports,
-        bind_for_codegen=bind_for_codegen,
-        verify_inputs=verify_before_materialization,
+    return _PreparedRuntimeWasmPair(
+        partial(
+            _materialize_source_runtime_wasm_pair,
+            ctx,
+            binding=binding,
+            required_exports=required_exports,
+            bind_for_codegen=bind_for_codegen,
+            verify_inputs=verify_before_materialization,
+        ),
+        ctx.reloc_spec.cargo_plan if binding is None else None,
     )
 
 

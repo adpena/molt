@@ -48,6 +48,7 @@ from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.build_request import BuildProfile, BuildRequest, EmitMode
 from molt.compilation_target import Target, TargetKind, native_target_spec
+from molt.native_target import NativeTargetSpec
 from molt.cli.models import (
     ModuleReason,
     BinaryImageKind,
@@ -80,7 +81,6 @@ from molt.cli.project_roots import (
     _require_molt_root,
 )
 from molt.cli.config_resolution import (
-    AUTO_STDLIB_PROFILE,
     StdlibProfile,
     _resolve_target_python_version,
 )
@@ -1029,16 +1029,11 @@ def _prepare_build_inputs(
         return None, prepared_build_config_error
     assert prepared_build_config is not None
 
-    if (
-        requires_runtime
-        and stdlib_profile != AUTO_STDLIB_PROFILE
-        and target is not TargetKind.MLIR
-        and emit != "jit"
-    ):
-        from molt.cli.installed_runtime import require_installed_runtime_profile
+    if requires_runtime and target is not TargetKind.MLIR and emit != "jit":
+        from molt.cli.installed_runtime import admit_installed_runtime_coordinate
 
         try:
-            require_installed_runtime_profile(
+            installed = admit_installed_runtime_coordinate(
                 prepared_build_roots.molt_root,
                 target=target,
                 cargo_profile=prepared_build_config.runtime_cargo_profile,
@@ -1046,6 +1041,18 @@ def _prepare_build_inputs(
             )
         except (OSError, ValueError) as exc:
             return None, _fail(str(exc), json_output, command="build")
+        if (
+            installed is None
+            and isinstance(target, NativeTargetSpec)
+            and emit in (None, "bin")
+        ):
+            from molt.cli.wasm_toolchain import rust_target_readiness_error
+
+            readiness_error = rust_target_readiness_error(
+                target.triple, root=prepared_build_roots.molt_root
+            )
+            if readiness_error is not None:
+                return None, _fail(readiness_error, json_output, command="build")
 
     resolved_build_entry, resolved_build_entry_error = _resolve_build_entry(
         file_path=file_path,

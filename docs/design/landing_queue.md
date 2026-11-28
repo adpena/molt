@@ -559,6 +559,13 @@ byte comparison as `--check` against that retained render, then the resolver
 stages the complete produced families and commits with Git's merge message.
 The ordinary generated check gate still qualifies the resulting candidate.
 
+For the performance methodology lock, the resolver first merges the authored
+TOML scope with Git. The hash is recomputed after the affected generators run,
+so it locks the exact merged sources and their regenerated projections. If both
+parents independently changed compatibility and recorded different hashes, the
+merged methodology receives a new version. An unresolved authored conflict
+leaves the merge pending.
+
 Any source conflict leaves the merge and its index unchanged. An excluded
 generator conflict names its producer and manifest reason. Generator errors
 leave the merge pending with the original error; workers may fix sources and
@@ -730,8 +737,8 @@ Steps:
    batch whose base moved).
 3. **Base.** `git fetch origin main`; `B` = full SHA of `origin/main`.
 4. **Merge.** When `B` is not an ancestor of `HEAD`: `git merge --no-ff
-   --no-edit B`. Conflicts whose paths all have eligible generated owners go to
-   `resolve_generated_merge`; any source conflict runs `git merge --abort` and
+   --no-edit B`. The shared resolver checks generated outputs and the
+   methodology lock. Any unresolved source conflict runs `git merge --abort` and
    stops with the paths. No rebase: lane commit ids stay, so integrate's
    patch-id survival check (a rebase hazard) does not apply, and every lane
    commit is an ancestor of the result by construction. Main already holds

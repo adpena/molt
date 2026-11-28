@@ -12,7 +12,9 @@ from __future__ import annotations
 import sys
 import shutil
 import time
+from collections.abc import Sequence
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -533,6 +535,156 @@ def test_generated_ledger_merge_uses_the_merged_source_tree(
     record_property("merge_elapsed_seconds", elapsed)
     record_property("producer_renders", 1)
     print(f"generated merge {entry}: {elapsed:.6f}s; one producer render")
+
+
+@pytest.mark.parametrize(
+    ("current_version", "incoming_version", "conflict", "expected"),
+    [(8, 8, False, 9), (7, 8, False, 8), (7, 7, False, 7), (8, 8, True, None)],
+)
+def test_methodology_lock_follows_merged_authored_sources(
+    tmp_path: Path,
+    current_version: int,
+    incoming_version: int,
+    conflict: bool,
+    expected: int | None,
+) -> None:
+    import hashlib
+    import json
+    import tomllib
+
+    from tools import generated_merge
+
+    repo = tmp_path
+    (repo / "tools").mkdir()
+    (repo / "tools/generator_manifest.toml").write_text(
+        "generator = []\n", encoding="utf-8"
+    )
+    (repo / "config").mkdir()
+    lock = repo / "config/perf_methodology.toml"
+    header = 'schema = "molt-perf-methodology-v1"\nmechanics = []\n'
+    rows = '[[methodology]]\npath = "first"\nrole = "first phase"\n'
+    rows += '[[methodology]]\npath = "second"\nrole = "second phase"\n'
+
+    def digest(first: str, second: str) -> str:
+        payload = {
+            "schema": "molt-perf-methodology-v1",
+            "files": {
+                name: hashlib.sha256(value.encode()).hexdigest()
+                for name, value in (("first", first), ("second", second))
+            },
+        }
+        data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        return hashlib.sha256(data).hexdigest()
+
+    def write(version: int, first: str, second: str, description: str) -> None:
+        (repo / "first").write_text(first, encoding="utf-8")
+        (repo / "second").write_text(second, encoding="utf-8")
+        lock.write_text(
+            header
+            + f'version = {version}\ncontent_sha256 = "{digest(first, second)}"\n'
+            + rows.replace("first phase", description),
+            encoding="utf-8",
+        )
+
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    write(7, "base first", "base second", "first phase")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+    _git(repo, "branch", "lane")
+    write(current_version, "current first", "base second", "current phase")
+    _git(repo, "commit", "-qam", "current edit")
+    _git(repo, "switch", "-q", "lane")
+    role = "incoming phase" if conflict else "first phase"
+    write(incoming_version, "base first", "incoming second", role)
+    _git(repo, "commit", "-qam", "incoming edit")
+    _git(repo, "switch", "-q", "main")
+    assert _pending_merge(repo).returncode != 0
+    assert _git(repo, "diff", "--name-only", "--diff-filter=U").stdout.strip() == str(
+        lock.relative_to(repo).as_posix()
+    )
+    before = lock.read_bytes()
+
+    def git(args: Sequence[str]) -> CompletedProcess[str]:
+        return run_guarded_test_process(
+            ["git", *args], cwd=repo, capture_output=True, text=True
+        )
+
+    merged = generated_merge.resolve_generated_merge(git)
+    if expected is None:
+        assert not merged
+        assert lock.read_bytes() == before
+        assert _git(repo, "ls-files", "-u").stdout
+        return
+
+    assert merged
+    actual = tomllib.loads(lock.read_text(encoding="utf-8"))
+    assert actual["version"] == expected
+    assert actual["content_sha256"] == digest("current first", "incoming second")
+    assert actual["methodology"][0]["role"] == "current phase"
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    assert (
+        len(_git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()) == 3
+    )
+
+
+def test_methodology_hashes_the_regenerated_union(
+    generated_repo: tuple[Path, str, Path, Path],
+) -> None:
+    import hashlib
+    import json
+    import tomllib
+
+    from tools import generated_merge
+
+    repo, base, ledger, output = generated_repo
+    relative = output.relative_to(repo).as_posix()
+    lock = repo / "config/perf_methodology.toml"
+    ignore = repo / ".git/info/exclude"
+    ignore.write_text(
+        ignore.read_text(encoding="utf-8").replace(
+            "config/\n", "config/*\n!config/perf_methodology.toml\n"
+        ),
+        encoding="utf-8",
+    )
+
+    def digest() -> str:
+        schema = "molt-perf-methodology-v1"
+        files = {relative: hashlib.sha256(output.read_bytes()).hexdigest()}
+        data = json.dumps(
+            {"schema": schema, "files": files}, separators=(",", ":"), sort_keys=True
+        ).encode()
+        return hashlib.sha256(data).hexdigest()
+
+    def write(version: int) -> None:
+        lock.write_text(
+            'schema = "molt-perf-methodology-v1"\nmechanics = []\n'
+            f'version = {version}\ncontent_sha256 = "{digest()}"\n'
+            f'[[methodology]]\npath = "{relative}"\nrole = "input"\n',
+            encoding="utf-8",
+        )
+
+    _git(repo, "switch", "-qc", "lock-base", base)
+    write(7)
+    _git(repo, "add", "-f", lock.relative_to(repo).as_posix())
+    _git(repo, "commit", "-qm", "lock the generated input")
+    for branch in ("main", "lane"):
+        _git(repo, "switch", "-q", branch)
+        _git(repo, "rebase", "--onto", "lock-base", base)
+        write(8)
+        _git(repo, "commit", "-qam", "classify changed input")
+    _git(repo, "switch", "-q", "main")
+    assert _pending_merge(repo).returncode != 0
+    assert set(_git(repo, "diff", "--name-only", "--diff-filter=U").stdout.split()) == {
+        lock.relative_to(repo).as_posix(),
+        relative,
+    }
+    assert generated_merge.resolve_generated_merge(lambda args: _git(repo, *args))
+    _assert_generated_union(repo, ledger, output)
+    admitted = tomllib.loads(lock.read_text(encoding="utf-8"))
+    assert admitted["version"] == 9
+    assert admitted["content_sha256"] == digest()
 
 
 def test_generated_merge_preserves_source_conflicts_without_running_a_generator(

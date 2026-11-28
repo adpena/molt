@@ -72,6 +72,7 @@ def _run_completed_command(
     encoding: str = "utf-8",
     errors: str = "replace",
     progress_label: str | None = None,
+    cancellation_requested: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     guard_env = (
         None
@@ -103,6 +104,7 @@ def _run_completed_command(
             errors=errors,
             progress_label=keepalive_label,
             guard_loader=_load_cli_harness_memory_guard,
+            cancellation_requested=cancellation_requested,
         )
 
 

@@ -15,13 +15,13 @@ from molt.compilation_target import Target, TargetKind, admit_target
 
 from molt.cli.cache_keys import FunctionDigests
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 import hashlib
 import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -35,13 +35,19 @@ from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.build_output_layout import _resolve_build_output_layout
 from molt.cli.build_request import BuildRequest
-from molt.cli.models import _BackendCacheSetup
+from molt.cli.cargo_execution import _CargoPreparation
+from molt.cli.models import _BackendCacheSetup, _RuntimeArtifactState
+from molt.cli.output import CliFailure
 from molt.cli.project_roots import _find_project_root
 from molt.cli.runtime_paths import _cargo_target_root
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
+from molt.cli.runtime_native_build import PrepareNativeRuntimeBuild
+from molt.cli.runtime_wasm_pair_build import _PreparedRuntimeWasmPair
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
 from molt.host_tool_products import HostToolProduct
 from molt.source_root import compiler_source_root
+from molt.tool_releases import ToolDiscovery
 from tests.compiler_identity_helper import (
     compiler_build_admission,
     compiler_cargo_stdout,
@@ -193,8 +199,9 @@ def _record_backend_admission(
         stage_timings_ms: dict[str, float] | None = None,
         product: HostToolProduct = HostToolProduct.BACKEND,
         environment: Mapping[str, str] | None = None,
+        cargo_preparation: _CargoPreparation | None = None,
     ) -> cli_backend_binary._BackendBinaryEnsureResult:
-        del json_output, stage_timings_ms, environment
+        del json_output, stage_timings_ms, environment, cargo_preparation
         assert product is HostToolProduct.BACKEND
         admissions.append(
             {
@@ -301,12 +308,24 @@ def _build_backend_setup(
 
 
 @pytest.mark.parametrize(
-    "stage",
-    ["validator-readiness", "identity-provisioning", "combined-cdylib-validation"],
+    "stage,overlap",
+    [
+        ("validator-readiness", False),
+        ("identity-provisioning", False),
+        ("combined-cdylib-validation", False),
+        ("combined-cdylib-validation", True),
+    ],
 )
 def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
-    tmp_path, monkeypatch, capsys, stage, admitted_validator_for_backend_controls
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stage: Literal[
+        "validator-readiness", "identity-provisioning", "combined-cdylib-validation"
+    ],
+    overlap: bool,
+    admitted_validator_for_backend_controls: ToolDiscovery,
+) -> None:
     from types import SimpleNamespace
     from molt.cli.models import _RuntimeArtifactState
     from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
@@ -334,11 +353,18 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
             raise ToolReleaseError(reason)
         return admitted_validator_for_backend_controls
 
-    def compiler(*_args, **_kwargs):
+    def compiler(
+        *_args: object, cargo_preparation: _CargoPreparation | None, **_kwargs: object
+    ) -> cli_backend_binary._BackendBinaryEnsureResult:
         assert stage == "combined-cdylib-validation", (
             "runtime readiness must be established before admitting backend Cargo"
         )
-        return SimpleNamespace(binary=tmp_path / "backend")
+        if overlap:
+            assert cargo_preparation is not None
+            cargo_preparation.materialize()
+        return cli_backend_binary._BackendBinaryEnsureResult(
+            ok=True, binary=tmp_path / "backend"
+        )
 
     monkeypatch.setattr(runtime_wasm_validation, "require_pinned_tool", require)
     monkeypatch.setattr(
@@ -352,7 +378,7 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
 
     def prepare(
         runtime_state: _RuntimeArtifactState, **_kwargs: object
-    ) -> Callable[[], bool] | None:
+    ) -> _PreparedRuntimeWasmPair | None:
         assert stage != "validator-readiness", (
             "missing validator must not plan runtime Cargo"
         )
@@ -374,7 +400,7 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
         if stage == "identity-provisioning":
             refuse()
             return None
-        return refuse
+        return _PreparedRuntimeWasmPair(refuse, SimpleNamespace() if overlap else None)
 
     monkeypatch.setattr(cli_backend_compile, "_prepare_runtime_wasm_pair", prepare)
     prepared, error = _build_backend_setup(TargetKind.WASM, tmp_path, "llvm")
@@ -385,6 +411,60 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
     assert (failure["stage"], failure["summary"]) == (stage, reason)
     assert failure["evidence_path"] is not None
     assert asked == ["wasm-tools"]
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+def test_native_runtime_miss_shares_compiler_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overlap: bool
+) -> None:
+    from types import SimpleNamespace
+
+    _isolated_molt_root(tmp_path, monkeypatch)
+    plan = cast(RuntimeCargoPlan, SimpleNamespace())
+    operations: list[str] = []
+
+    def materialize() -> bool:
+        operations.append("runtime")
+        return False
+
+    def compiler(
+        *_args: object, cargo_preparation: _CargoPreparation | None, **_kwargs: object
+    ) -> cli_backend_binary._BackendBinaryEnsureResult:
+        assert cargo_preparation is not None and cargo_preparation.plan is plan
+        operations.append("compiler-start")
+        if overlap:
+            cargo_preparation.materialize()
+        operations.append("compiler-end")
+        return cli_backend_binary._BackendBinaryEnsureResult(
+            ok=True, binary=tmp_path / "backend"
+        )
+
+    def stage_runtime(
+        _state: _RuntimeArtifactState,
+        *,
+        prepare_runtime_build: PrepareNativeRuntimeBuild,
+        **_kwargs: object,
+    ) -> tuple[str, CliFailure]:
+        assert not prepare_runtime_build(plan, materialize)
+        return "", cli_backend_compile._fail(
+            "native runtime failed to materialize", True, command="build"
+        )
+
+    monkeypatch.setattr(
+        cli_backend_compile, "_ensure_selected_backend_binary", compiler
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_stage_runtime_callable_symbols_for_native_codegen",
+        stage_runtime,
+    )
+    prepared, error = _build_backend_setup(TargetKind.NATIVE, tmp_path, "cranelift")
+    assert prepared is None and error == 2
+    assert operations == (
+        ["compiler-start", "runtime", "compiler-end"]
+        if overlap
+        else ["compiler-start", "compiler-end", "runtime"]
+    )
 
 
 def _fake_backend_toolchain(
@@ -537,7 +617,9 @@ def test_prewarm_admits_the_backend_the_build_selects(
     monkeypatch.setattr(
         cli_backend_compile,
         "_prepare_runtime_wasm_pair",
-        lambda *_args, **_kwargs: unexpected_runtime_materialization,
+        lambda *_args, **_kwargs: _PreparedRuntimeWasmPair(
+            unexpected_runtime_materialization
+        ),
     )
     build_targets: list[Target] = []
     build_backends: list[str] = []

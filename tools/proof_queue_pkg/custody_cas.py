@@ -10,10 +10,13 @@ import os
 from pathlib import Path
 import stat
 import tempfile
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 import zlib
 
 from molt import file_publication
+
+if TYPE_CHECKING:
+    from molt.toolchain_identity import StableRegularFileObservation
 
 
 ARTIFACT_SCHEMA = "molt.proof-custody-artifact.v1"
@@ -319,6 +322,7 @@ def put_file(
     *,
     logical_name: str | None = None,
     executable: bool = False,
+    observed: StableRegularFileObservation | None = None,
 ) -> FileRef:
     """Publish immutable file bytes under their digest, never hard-linking source.
 
@@ -329,6 +333,10 @@ def put_file(
     alter custody. Its digest names exactly the published bytes. A source
     whose identity, size or timestamps change across the clone is refused,
     the rule GNU tar applies to a file that changes while it is read.
+
+    A caller that already captured the source can reuse a verified payload
+    at its content address. The source observation fences both reuse and
+    publication, and both paths verify the retained bytes.
     """
     source = source.resolve(strict=True)
     if not source.is_file():
@@ -337,6 +345,21 @@ def put_file(
     if not name or Path(name).name != name:
         raise ValueError("proof custody file logical name must be one path component")
     root = _canonical_root(root, create=True)
+    if observed is not None:
+        identity = observed.identity
+        if identity.path != source:
+            raise ValueError("proof custody observation belongs to another file")
+        previous = file_reference(
+            root,
+            sha256=identity.sha256,
+            size_bytes=identity.size,
+            logical_name=name,
+            executable=executable,
+        )
+        if Path(previous.path).exists():
+            verify_file_ref(previous.as_dict(), expected_root=root)
+            observed.verify(label="proof custody source")
+            return previous
     stage = Path(
         tempfile.mkdtemp(prefix=".custody-file-", dir=_cas_directory(root, "files"))
     )
@@ -349,6 +372,11 @@ def put_file(
             size = os.fstat(stream.fileno()).st_size
         if _source_identity(source) != before or size != before[2]:
             raise ValueError("proof custody source changed while being published")
+        if observed is not None and (sha256, size) != (
+            observed.identity.sha256,
+            observed.identity.size,
+        ):
+            raise ValueError("proof custody source disagrees with its observation")
         mode = "executable" if executable else "data"
         _cas_directory(root, "files", "sha256", mode, sha256[:2], sha256[2:])
         target = _file_path(root, sha256, name, executable)
@@ -365,6 +393,8 @@ def put_file(
         stage.rmdir()
     reference = FileRef(str(target), sha256, size, executable)
     verify_file_ref(reference.as_dict(), expected_root=root)
+    if observed is not None:
+        observed.verify(label="proof custody source")
     return reference
 
 

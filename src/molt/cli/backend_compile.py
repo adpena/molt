@@ -13,8 +13,9 @@ import sys
 import time
 from contextlib import nullcontext, ExitStack
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, ContextManager, Mapping
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Literal, Mapping
 
 from molt.backend_environment import (
     CodegenSelection,
@@ -60,6 +61,7 @@ from molt.cli.backend_execution import (
     _start_backend_daemon,
 )
 from molt.cli.build_locks import BuildLockAcquisitionError, _build_lock
+from molt.cli.cargo_execution import _CargoPreparation
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli.config_resolution import (
@@ -95,6 +97,7 @@ from molt.cli.runtime_callable_symbols import (
 )
 from molt.cli.runtime_features import SOURCE_EXTENSION_RUNTIME_FEATURES
 from molt.cli.runtime_native_build import _maybe_start_native_runtime_lib_ready_async
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 from molt.cli.runtime_native_codegen import (
     RuntimeCallableBinding,
     native_runtime_codegen_environment,
@@ -236,6 +239,7 @@ def _ensure_selected_backend_binary(
     cargo_timeout: float | None,
     json_output: bool,
     stage_timings_ms: dict[str, float] | None = None,
+    cargo_preparation: _CargoPreparation | None = None,
 ) -> _backend_binary._BackendBinaryEnsureResult:
     return _backend_binary._ensure_backend_binary(
         selection.binary,
@@ -246,6 +250,7 @@ def _ensure_selected_backend_binary(
         backend_features=selection.features,
         rust_cpu=selection.rust_cpu,
         stage_timings_ms=stage_timings_ms,
+        cargo_preparation=cargo_preparation,
     )
 
 
@@ -317,6 +322,60 @@ def _prepare_backend_setup(
         )
         if validator_error is not None:
             return None, validator_error
+    backend_selection = _select_backend_binary(
+        molt_root=molt_root,
+        backend_cargo_profile=backend_cargo_profile,
+        is_wasm=is_wasm,
+        codegen_backend=codegen.backend,
+        rust_cpu=rust_cpu,
+    )
+    backend_ensure_result: _backend_binary._BackendBinaryEnsureResult | None = None
+
+    def ensure_backend(
+        preparation: _CargoPreparation | None,
+    ) -> _backend_binary._BackendBinaryEnsureResult:
+        nonlocal backend_ensure_result
+        started = time.perf_counter()
+        result = _ensure_selected_backend_binary(
+            backend_selection,
+            molt_root=molt_root,
+            cargo_timeout=cargo_timeout,
+            json_output=json_output,
+            stage_timings_ms=stage_timings_ms,
+            cargo_preparation=preparation,
+        )
+        _record_pipeline_stage_ms(
+            stage_timings_ms,
+            "backend_setup_ensure_backend_binary"
+            if preparation is None
+            else "backend_setup_prerequisite_join",
+            started,
+        )
+        backend_ensure_result = result
+        return result
+
+    def prepare_runtime(
+        plan: RuntimeCargoPlan | None,
+        materialize: Callable[[], bool],
+        *,
+        stage: Literal[
+            "backend_setup_native_runtime_materialization",
+            "backend_setup_runtime_wasm_materialization",
+        ],
+    ) -> bool:
+        ready: bool | None = None
+
+        def build_runtime() -> None:
+            nonlocal ready
+            started = time.perf_counter()
+            ready = materialize()
+            _record_pipeline_stage_ms(stage_timings_ms, stage, started)
+
+        preparation = None if plan is None else _CargoPreparation(plan, build_runtime)
+        if ensure_backend(preparation) and ready is None:
+            build_runtime()
+        return ready is True
+
     runtime_callable_symbols_digest = ""
     callable_symbols_start = time.perf_counter()
     runtime_callable_symbols_digest, callable_symbols_error = (
@@ -330,13 +389,20 @@ def _prepare_backend_setup(
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
             stage_timings_ms=stage_timings_ms,
+            prepare_runtime_build=partial(
+                prepare_runtime, stage="backend_setup_native_runtime_materialization"
+            ),
         )
     )
     _record_pipeline_stage_ms(
         stage_timings_ms,
-        "backend_setup_runtime_callable_symbols",
+        "backend_setup_runtime_callable_symbols"
+        if backend_ensure_result is None
+        else "backend_setup_native_codegen_join",
         callable_symbols_start,
     )
+    if backend_ensure_result is not None and not backend_ensure_result:
+        return None, _fail(backend_ensure_result.message, json_output, command="build")
     if callable_symbols_error is not None:
         return None, callable_symbols_error
 
@@ -351,7 +417,8 @@ def _prepare_backend_setup(
             else {"runtime_wasm_failure": failure.json_payload()},
         )
 
-    materialize_runtime_wasm = None
+    runtime_wasm_codegen_digest = ""
+    runtime_ready = False
     if is_wasm and codegen.backend == "llvm" and not (split_runtime or linked):
         # An LLVM wasm32 object is published linked, or as a side module beside
         # its runtime (`--split-runtime`); an unlinked object runs nowhere.
@@ -389,41 +456,20 @@ def _prepare_backend_setup(
         )
         if materialize_runtime_wasm is None:
             return None, runtime_wasm_failure()
-    backend_selection = _select_backend_binary(
-        molt_root=molt_root,
-        backend_cargo_profile=backend_cargo_profile,
-        is_wasm=is_wasm,
-        codegen_backend=codegen.backend,
-        rust_cpu=rust_cpu,
-    )
-    backend_binary_start = time.perf_counter()
-    backend_ensure_result = _ensure_selected_backend_binary(
-        backend_selection,
-        molt_root=molt_root,
-        cargo_timeout=cargo_timeout,
-        json_output=json_output,
-        stage_timings_ms=stage_timings_ms,
-    )
-    _record_pipeline_stage_ms(
-        stage_timings_ms,
-        "backend_setup_ensure_backend_binary",
-        backend_binary_start,
-    )
+        runtime_ready = prepare_runtime(
+            materialize_runtime_wasm.cargo_plan,
+            materialize_runtime_wasm,
+            stage="backend_setup_runtime_wasm_materialization",
+        )
+    if backend_ensure_result is None:
+        backend_ensure_result = ensure_backend(None)
     if not backend_ensure_result:
         return None, _fail(backend_ensure_result.message, json_output, command="build")
     # The admitted generation, resolved once: every later step of this build
     # runs these bytes, whatever another build publishes meanwhile.
     backend_bin = backend_ensure_result.binary
     assert backend_bin is not None
-    runtime_wasm_codegen_digest = ""
-    if materialize_runtime_wasm is not None:
-        runtime_materialization_start = time.perf_counter()
-        runtime_ready = materialize_runtime_wasm()
-        _record_pipeline_stage_ms(
-            stage_timings_ms,
-            "backend_setup_runtime_wasm_materialization",
-            runtime_materialization_start,
-        )
+    if is_wasm:
         if not runtime_ready:
             return None, runtime_wasm_failure()
         binding = runtime_state.runtime_wasm_codegen_binding

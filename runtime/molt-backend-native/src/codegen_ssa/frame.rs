@@ -488,6 +488,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
                 return None;
             }
             reservation.virtual_exception_level = FramePrefix::requires_virtual_level(&op.attrs);
+            reservation.callable_admitted = FramePrefix::region_callable_admitted(&op.attrs);
             if FramePrefix::region_arena_admitted(&op.attrs) {
                 reservation.arena_bytes = 0;
             }
