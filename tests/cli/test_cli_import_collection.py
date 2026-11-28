@@ -23621,11 +23621,13 @@ def _install_fake_wasm_link_runner(
     monkeypatch.setattr(
         cli_non_native_output,
         "local_python_import_closure",
-        lambda _root, _entries, *, cache_root: LocalPythonSourceClosure(
-            paths=(),
-            source_sha256={},
-            content_digest=hashlib.sha256(b"").hexdigest(),
-            source_bytes=0,
+        lambda _root, _entries, *, cache_root, reuse_resolved_queries: (
+            LocalPythonSourceClosure(
+                paths=(),
+                source_sha256={},
+                content_digest=hashlib.sha256(b"").hexdigest(),
+                source_bytes=0,
+            )
         ),
     )
     return plans
@@ -23726,9 +23728,14 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     closure_digests: dict[Path, str] = {}
 
     def capture_closure(
-        root: Path, seeds: tuple[Path, ...], *, cache_root: Path
+        root: Path,
+        seeds: tuple[Path, ...],
+        *,
+        cache_root: Path,
+        reuse_resolved_queries: bool,
     ) -> LocalPythonSourceClosure:
         assert cache_root != isolated_molt_cache
+        assert reuse_resolved_queries
         closure = local_python_import_closure(
             root, seeds, cache_root=isolated_molt_cache
         )

@@ -38,7 +38,6 @@ from typing import BinaryIO, cast
 import pytest
 from molt._wasm_abi_generated import runtime_execution_abi
 from molt.capability_manifest import CapabilityManifest
-from molt.cli.python_source_closure import LocalPythonSourceClosure
 from molt.cli.runtime_identity_schema import (
     RuntimePublicationAction,
     RuntimePublicationInput,
@@ -2134,17 +2133,12 @@ def _prepare_host_precompile_routing(
     monkeypatch.setattr(nno, "_collect_wasm_module_import_names", imports)
     monkeypatch.setattr(nno, "_validate_wasm_structural", lambda _path: None)
 
-    def empty_link_tool_graph(
-        _root: Path, _seeds: tuple[Path, ...], *, cache_root: Path
-    ) -> LocalPythonSourceClosure:
-        return LocalPythonSourceClosure(
-            paths=(),
-            source_sha256={},
-            content_digest=hashlib.sha256(b"").hexdigest(),
-            source_bytes=0,
-        )
-
-    monkeypatch.setattr(nno, "local_python_import_closure", empty_link_tool_graph)
+    empty_tool_identity = hashlib.sha256(b"").hexdigest()
+    monkeypatch.setattr(
+        nno,
+        "_wasm_tool_source_identities",
+        lambda _root, _tool: (empty_tool_identity, empty_tool_identity),
+    )
     monkeypatch.setattr(
         nno, "_wasm_export_function_signatures", lambda *_args, **_kwargs: {}
     )
