@@ -111,6 +111,7 @@ def observed_run_outcome(
     | harness_memory_guard.GuardedCompletedProcess[bytes],
     *,
     captured_stderr: str | bytes | None,
+    require_peak_rss: bool = True,
     capture_output: bool = True,
     host_stderr: str | bytes | None = None,
 ) -> RunOutcome:
@@ -118,7 +119,8 @@ def observed_run_outcome(
 
     Native capture supplies the guard's child stderr. Manifest-bound WASM
     supplies its owned semantic capture after closure, retaining host diagnostics
-    separately. Every benchmark consumer uses this same completion policy.
+    separately. Timing consumers still enforce guard limits when the child
+    exits before an attributable RSS sample. Resource measurements require one.
     """
     if not isinstance(proc, harness_memory_guard.GuardedCompletedProcess):
         raise TypeError("measurement requires the shared guard's typed result")
@@ -148,7 +150,7 @@ def observed_run_outcome(
         status = "nonzero"
     elif (
         elapsed is None
-        or peak is None
+        or (require_peak_rss and peak is None)
         or (capture_output and (proc.stdout is None or captured_stderr is None))
     ):
         status = "error"
@@ -269,6 +271,7 @@ def _run_measured_command(
     return observed_run_outcome(
         proc,
         captured_stderr=child_stderr,
+        require_peak_rss=True,
         capture_output=capture_output,
         host_stderr=host_stderr,
     )

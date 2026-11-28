@@ -2596,15 +2596,15 @@ class _CallSemantics:
     borrowed_module_operand: int | None = None
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _FunctionJob:
     node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
-    parent_scope: _Scope
+    parent_scope_id: int
     outer_state_id: int
     module_history_start: int | None
     module_states: tuple[int, ...] | None
     module_base_bindings: tuple[tuple[int, IdentityMask], ...]
-    lexical_history: list[int] | None
+    lexical_history_index: int | None
     lexical_history_start: int
     lexical_base_bindings: tuple[tuple[int, IdentityMask], ...]
     parameter_defaults: tuple[tuple[str, StaticExpressionResult], ...]
@@ -2851,6 +2851,8 @@ class _ObservedStateFrame:
     # next completion flow built in this observation raises from it; one the
     # statement leaves unrouted raises from the statement itself.
     failed_store: int | None = None
+    # Allocated when a deferred child first reads this frame's history.
+    lexical_history_index: int | None = None
 
     def exceptional_state(self, pool: _StatePool) -> int:
         pool.observation_fold_calls += 1
@@ -3201,7 +3203,6 @@ class _InitializerPremiseReads:
 class _InitializerContinuation:
     completion: PythonCompletionFlow[int]
     observation: _ObservedStateFrame
-    history_job: int | None
 
 
 class _Analyzer:
@@ -3259,13 +3260,14 @@ class _Analyzer:
         self._deferred_queue_generation = 0
         self._replaying_deferred = False
         self._deferred_scope_writes: tuple[int, set[int]] | None = None
-        self._queued_function_jobs: dict[
-            tuple[PythonSourceKey, int, bool], _FunctionJob
-        ] = {}
+        self._queued_function_jobs: dict[tuple[PythonSourceKey, int, bool], int] = {}
         self._source_scopes: dict[
             tuple[PythonSourceKey, int | None, _ScopeKind], _Scope
         ] = {}
-        self._active_lexical_history: list[int] | None = None
+        self._active_lexical_frame: _ObservedStateFrame | None = None
+        # Only an executing frame owns a mutable list. Captured and completed
+        # histories use immutable tuples shared by later analysis branches.
+        self._lexical_histories: list[Sequence[int]] = []
         self.module_scope: _Scope | None = None
         self.module_slots: set[int] = set()
         self.module_slot_mask = 0
@@ -3346,35 +3348,44 @@ class _Analyzer:
             )
         finally:
             self._foreign_reads = source_reads
-        lexical_history = self._active_lexical_history if lexical_bindings else None
+        frame = self._active_lexical_frame if lexical_bindings else None
+        history_index = None
+        if frame is not None:
+            history_index = frame.lexical_history_index
+            if history_index is None:
+                history_index = frame.lexical_history_index = len(
+                    self._lexical_histories
+                )
+                self._lexical_histories.append(frame.states)
         job = _FunctionJob(
             node,
-            scope,
+            scope.scope_id,
             state_id,
             None
             if self._active_module_states is not None
             else len(self._module_history),
             self._active_module_states,
             module_bindings,
-            lexical_history,
-            len(lexical_history) if lexical_history is not None else 0,
+            history_index,
+            len(frame.states) if frame is not None else 0,
             lexical_bindings,
             parameter_defaults,
             annotation_scope,
         )
         key = (self._node_key(node), scope.scope_id, annotation_scope)
-        previous = self._queued_function_jobs.get(key)
-        if previous is None:
-            self._queued_function_jobs[key] = job
+        index = self._queued_function_jobs.get(key)
+        if index is None:
+            self._queued_function_jobs[key] = len(self.function_jobs)
             self.function_jobs.append(job)
             return
         # A source-owned definition has one lexical history owner even when
         # loop/finally predecessors visit its creation point repeatedly.
-        if previous.lexical_history is not lexical_history:
+        previous = self.function_jobs[index]
+        if previous.lexical_history_index != history_index:
             raise RuntimeError(
                 "deferred source definition changed lexical history owner"
             )
-        previous.outer_state_id = self.states.join(previous.outer_state_id, state_id)
+        outer_state = self.states.join(previous.outer_state_id, state_id)
 
         def merge_bindings[K](
             left: tuple[tuple[K, IdentityMask], ...],
@@ -3385,35 +3396,44 @@ class _Analyzer:
                 merged[name] = merged.get(name, NO_IDENTITIES) | identities
             return tuple(merged.items())
 
-        previous.module_base_bindings = merge_bindings(
-            previous.module_base_bindings, job.module_base_bindings
-        )
-        previous.lexical_base_bindings = merge_bindings(
-            previous.lexical_base_bindings, job.lexical_base_bindings
-        )
         defaults = dict(previous.parameter_defaults)
         for name, result in parameter_defaults:
             defaults[name] = join_static_expression_results(
                 (defaults.get(name, UNKNOWN_EXPRESSION_RESULT), result)
             )
-        previous.parameter_defaults = tuple(defaults.items())
-        previous.lexical_history_start = min(
-            previous.lexical_history_start, job.lexical_history_start
-        )
-        if previous.module_states is None or job.module_states is None:
-            if previous.module_states is not job.module_states:
+        module_states = previous.module_states
+        module_history_start = previous.module_history_start
+        if module_states is None or job.module_states is None:
+            if module_states is not job.module_states:
                 raise RuntimeError(
                     "deferred source definition changed module history owner"
                 )
-            assert previous.module_history_start is not None
+            assert module_history_start is not None
             assert job.module_history_start is not None
-            previous.module_history_start = min(
-                previous.module_history_start, job.module_history_start
-            )
+            module_history_start = min(module_history_start, job.module_history_start)
         else:
-            previous.module_states = tuple(
-                sorted(set((*previous.module_states, *job.module_states)))
-            )
+            module_states = tuple(sorted(set((*module_states, *job.module_states))))
+        self.function_jobs[index] = replace(
+            previous,
+            outer_state_id=outer_state,
+            module_base_bindings=merge_bindings(
+                previous.module_base_bindings, job.module_base_bindings
+            ),
+            lexical_base_bindings=merge_bindings(
+                previous.lexical_base_bindings, job.lexical_base_bindings
+            ),
+            parameter_defaults=tuple(defaults.items()),
+            lexical_history_start=min(
+                previous.lexical_history_start, job.lexical_history_start
+            ),
+            module_history_start=module_history_start,
+            module_states=module_states,
+        )
+
+    def _seal_lexical_history(self, frame: _ObservedStateFrame) -> None:
+        if (index := frame.lexical_history_index) is not None:
+            assert self._lexical_histories[index] is frame.states
+            self._lexical_histories[index] = tuple(frame.states)
 
     def _activation_slot_bindings(
         self,
@@ -7615,19 +7635,20 @@ class _Analyzer:
             # the same activation-history machinery as ordinary function jobs.
             previous_observers = self._observed_stack
             previous_modules = self._active_module_states
-            previous_history = self._active_lexical_history
+            previous_frame = self._active_lexical_frame
             previous_reads = self._binding_read_scopes
-            observed = [entry]
-            self._observed_stack = [_ObservedStateFrame(observed)]
+            frame = _ObservedStateFrame([entry])
+            self._observed_stack = [frame]
             self._active_module_states = (entry,)
-            self._active_lexical_history = observed
+            self._active_lexical_frame = frame
             self._binding_read_scopes = []
             try:
                 generate(0, entry)
             finally:
+                self._seal_lexical_history(frame)
                 self._observed_stack = previous_observers
                 self._active_module_states = previous_modules
-                self._active_lexical_history = previous_history
+                self._active_lexical_frame = previous_frame
                 self._binding_read_scopes = previous_reads
                 self._namespace_observation_epoch = immediate_observation
             return immediate_state, immediate_effects
@@ -9837,10 +9858,11 @@ class _Analyzer:
     ) -> dict[PythonSourceKey, PythonStringValue]:
         """Join a closed local helper's already observed direct callers."""
         node = job.node
+        parent_scope = self.scopes[job.parent_scope_id]
         if (
             job.annotation_scope
             or not isinstance(node, ast.FunctionDef)
-            or job.parent_scope.kind != "function"
+            or parent_scope.kind != "function"
             or self._opaque_activation_sources is None
             or self.policy.frame_locals_writer is not None
             or node.decorator_list
@@ -9858,7 +9880,7 @@ class _Analyzer:
         ):
             return {}
         source = self._node_key(node)
-        parent = job.parent_scope.source_node
+        parent = parent_scope.source_node
         if (
             not isinstance(parent, ast.FunctionDef)
             or len(parent.body) < 2
@@ -9949,7 +9971,7 @@ class _Analyzer:
         )
         name = "<lambda>" if isinstance(node, ast.Lambda) else node.name
         scope = self._new_scope(
-            parent=job.parent_scope,
+            parent=self.scopes[job.parent_scope_id],
             source_node=node,
             kind=kind,
             name=name,
@@ -10015,10 +10037,10 @@ class _Analyzer:
                 )
         updates.extend(locals_at_entry.values())
         state_id = self.states.set_bindings(state_id, updates)
-        observed: list[int] = [state_id]
-        self._observed_stack.append(_ObservedStateFrame(observed))
-        previous_history = self._active_lexical_history
-        self._active_lexical_history = observed
+        frame = _ObservedStateFrame([state_id])
+        self._observed_stack.append(frame)
+        previous_frame = self._active_lexical_frame
+        self._active_lexical_frame = frame
         try:
             flow = self.exec_statements(body, state_id, scope)
             if job.annotation_scope:
@@ -10049,7 +10071,8 @@ class _Analyzer:
                 ),
             )
         finally:
-            self._active_lexical_history = previous_history
+            self._seal_lexical_history(frame)
+            self._active_lexical_frame = previous_frame
             self._observed_stack.pop()
 
     def _seal_deferred_execution(
@@ -10366,17 +10389,14 @@ class _Analyzer:
             observation = _ObservedStateFrame([entry])
         else:
             source = continuation.observation
-            history = (
-                source.states.copy()
-                if continuation.history_job is None
-                else self.function_jobs[continuation.history_job].lexical_history
-            )
-            assert history is not None
+            history = source.states.copy()
             observation = replace(
                 source, states=history, folded_ids=source.folded_ids.copy()
             )
+            if (index := observation.lexical_history_index) is not None:
+                self._lexical_histories[index] = history
         self._observed_stack.append(observation)
-        self._active_lexical_history = observation.states
+        self._active_lexical_frame = observation
         try:
             module_flow = self.exec_statements(
                 self._module_tree.body,
@@ -10409,8 +10429,9 @@ class _Analyzer:
                         self._module_getattr_may_be_bound = True
 
         finally:
+            self._seal_lexical_history(observation)
             self._observed_stack.pop()
-            self._active_lexical_history = None
+            self._active_lexical_frame = None
         if (
             self._initializer_premise_reads is not None
             and self._foreign_reads is not None
@@ -10442,10 +10463,10 @@ class _Analyzer:
             module_state_start,
             job.module_base_bindings,
         )
-        if job.lexical_history is not None:
+        if job.lexical_history_index is not None:
             job_outer = self._overlay_future_states(
                 job_outer,
-                job.lexical_history,
+                self._lexical_histories[job.lexical_history_index],
                 job.lexical_history_start,
                 job.lexical_base_bindings,
             )
@@ -10702,12 +10723,12 @@ class _Analyzer:
         assert not self._binding_read_scopes and self._active_module_states is None
         if initializer_prefix:
             assert len(self._observed_stack) == 1
-            assert self._active_lexical_history is self._observed_stack[0].states
+            assert self._active_lexical_frame is self._observed_stack[0]
         else:
-            assert not self._observed_stack and self._active_lexical_history is None
+            assert not self._observed_stack and self._active_lexical_frame is None
         result = _copy_analysis_containers(self)
         result._observed_stack = []
-        result._active_lexical_history = None
+        result._active_lexical_frame = None
         result._initializer_premise_reads = None
         result._capture_initializer = None
         # Flow indexes are private. Lexical queries depend only on the admitted
@@ -10732,28 +10753,10 @@ class _Analyzer:
         result._source_scopes = {
             key: scopes[scope.scope_id] for key, scope in self._source_scopes.items()
         }
-        # Several jobs can read the same ancestor's observed states. Fork
-        # each list once and retain those aliases in the new worklist.
-        histories = {id(self._module_history): result._module_history}
-
-        def fork_job(job: _FunctionJob) -> _FunctionJob:
-            history = job.lexical_history
-            if history is not None:
-                owned = histories.get(id(history))
-                if owned is None:
-                    owned = histories[id(history)] = history.copy()
-                history = owned
-            return replace(
-                job,
-                parent_scope=scopes[job.parent_scope.scope_id],
-                lexical_history=history,
-            )
-
-        jobs = {id(job): fork_job(job) for job in self.function_jobs}
-        result.function_jobs = [jobs[id(job)] for job in self.function_jobs]
-        result._queued_function_jobs = {
-            key: jobs[id(job)] for key, job in self._queued_function_jobs.items()
-        }
+        # The shared descriptors carry stable owner indices. A checkpoint
+        # inside initialization snapshots only its one still-open history.
+        if initializer_prefix:
+            result._seal_lexical_history(self._observed_stack[0])
         return result
 
 
@@ -10890,7 +10893,7 @@ class _RecordedBindingTransfer:
         ):
             raise _BindingReplayRefused
         for later_job in work.function_jobs[index + 1 :]:
-            parent: _Scope | None = later_job.parent_scope
+            parent: _Scope | None = work.scopes[later_job.parent_scope_id]
             while parent is not None:
                 if state.scope_count <= parent.scope_id < record.scope_end:
                     raise _BindingReplayRefused
@@ -11072,14 +11075,6 @@ class _RebasableInitializer:
             return cls(prefix, reads, size)
         assert reads is not None and owner._foreign_reads is not None
         current = owner._observed_stack[0]
-        history_job = next(
-            (
-                index
-                for index, job in enumerate(owner.function_jobs)
-                if job.lexical_history is current.states
-            ),
-            None,
-        )
         reads = replace(
             reads,
             names=frozenset(owner._foreign_reads),
@@ -11097,7 +11092,6 @@ class _RebasableInitializer:
                     states=current.states.copy(),
                     folded_ids=current.folded_ids.copy(),
                 ),
-                history_job,
             ),
         )
 
@@ -11243,16 +11237,17 @@ def _rebase_binding_namespace(
     if not additions.isdisjoint(reads.deferred_names):
         if prefix._deferred_queue_generation != len(prefix.function_jobs):
             return None
-        for job in work.function_jobs:
+        for index, job in enumerate(work.function_jobs):
             module, lexical = work._activation_slot_bindings(
                 job.node,
-                job.parent_scope,
+                work.scopes[job.parent_scope_id],
                 job.outer_state_id,
                 annotation_scope=job.annotation_scope,
             )
             if lexical != job.lexical_base_bindings:
                 return None
-            job.module_base_bindings = module
+            if module != job.module_base_bindings:
+                work.function_jobs[index] = replace(job, module_base_bindings=module)
         if (
             len(work.slot_names) != appended_end
             or work.callback_slot_mask != prefix.callback_slot_mask
