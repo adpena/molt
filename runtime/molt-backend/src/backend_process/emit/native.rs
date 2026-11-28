@@ -44,12 +44,8 @@ pub(super) fn emit_native_target(
 
     let emitted =
         compile_native_application_artifact_to_path(ir, Path::new(output_file), compile_options)?;
-    let codegen = match emitted.workers {
-        Some(workers) => crate::backend_process::origin::CodegenOrigin::NativeWorkers { workers },
-        None => crate::backend_process::origin::CodegenOrigin::in_process(),
-    };
     Ok(crate::backend_process::origin::EmittedArtifact {
         output: emitted.output,
-        codegen,
+        codegen: emitted.codegen,
     })
 }

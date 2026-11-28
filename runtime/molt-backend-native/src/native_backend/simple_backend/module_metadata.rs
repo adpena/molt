@@ -531,7 +531,7 @@ impl NativeFinalFunctions {
 
     pub(super) fn from_terminal_wire(
         ir: SimpleIR,
-        wires: Vec<Option<Vec<u8>>>,
+        wires: Vec<Option<impl AsRef<[u8]>>>,
     ) -> Result<Self, String> {
         let mut symbols = BTreeSet::new();
         if ir
@@ -553,7 +553,7 @@ impl NativeFinalFunctions {
             let body = match (declaration.is_extern, wire) {
                 (true, None) => crate::tir::lower_from_simple::lower_to_tir(declaration),
                 (false, Some(bytes)) => {
-                    molt_ir::tir::serialize::deserialize_tir_function(&bytes, &|name| {
+                    molt_ir::tir::serialize::deserialize_tir_function(bytes.as_ref(), &|name| {
                         by_symbol.get(name).copied()
                     })
                     .filter(|body| {

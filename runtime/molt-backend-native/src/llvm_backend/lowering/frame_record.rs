@@ -10,38 +10,33 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::values::{BasicValue, IntValue, PointerValue};
-use molt_codegen_abi::frame_record::{FrameBuilder, FrameReservation};
+use molt_codegen_abi::frame_record::{FrameBuilder, FrameProbe, FrameReservation};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
 use molt_ir::frame_entry::FrameEntryKind;
 
 impl<'ctx> LlvmBackend<'ctx> {
-    pub(super) fn frame_entry_probe_helper(
-        &self,
-        reservation: FrameReservation,
-    ) -> FunctionValue<'ctx> {
-        self.site_helper(
-            &format!(
-                "__molt_frame_entry_probe_{}_{}_{}",
-                reservation.arena_bytes,
-                reservation.recursion_depth,
-                u8::from(reservation.virtual_exception_level),
+    pub(super) fn frame_probe_helper(&self, probe: FrameProbe) -> FunctionValue<'ctx> {
+        let name = match probe {
+            FrameProbe::Entry(FrameReservation {
+                arena_bytes,
+                recursion_depth,
+                virtual_exception_level,
+                callable_admitted,
+            }) => format!(
+                "__molt_frame_entry_probe_{arena_bytes}_{recursion_depth}_{}_{}",
+                u8::from(virtual_exception_level),
+                u8::from(callable_admitted),
             ),
-            4,
-            |b, words| {
-                let &[thread, function, code] = words else {
-                    unreachable!("frame entry probe arguments")
-                };
-                molt_codegen_abi::frame_record::generate_frame_entry_admits(
-                    b,
-                    thread,
-                    function,
-                    code,
-                    reservation,
-                )
-            },
-        )
+            FrameProbe::Arena(bytes) => format!("__molt_frame_arena_probe_{bytes}"),
+        };
+        self.site_helper(&name, 4, |b, words| {
+            let &[thread, function, code] = words else {
+                unreachable!("frame entry probe arguments")
+            };
+            molt_codegen_abi::frame_record::generate_frame_probe(b, thread, function, code, probe)
+        })
     }
 
     fn ensure_frame_helper(&self, helper: FrameBody) -> FunctionValue<'ctx> {
@@ -113,6 +108,29 @@ impl<'ctx> LlvmBackend<'ctx> {
         builder.position_at_end(entry);
         builder.build_unconditional_branch(body).unwrap();
         function
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_probe_helpers_key_callable_admission() {
+        let context = inkwell::context::Context::create();
+        let backend = LlvmBackend::new(&context, "frame_probe_admission");
+        let reservation = FrameReservation::from_counts(2, 1).unwrap();
+        let admitted = FrameProbe::Entry(FrameReservation {
+            callable_admitted: true,
+            ..reservation
+        });
+        let checked = FrameProbe::Entry(reservation);
+        let admitted_helper = backend.frame_probe_helper(admitted);
+        let checked_helper = backend.frame_probe_helper(checked);
+        assert_ne!(admitted_helper, checked_helper);
+        assert_eq!(admitted_helper, backend.frame_probe_helper(admitted));
+        assert_eq!(checked_helper, backend.frame_probe_helper(checked));
+        backend.module.verify().unwrap();
     }
 }
 

@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_metadata,
+    synthetic_workload,
+)
 from tools import bench_report as module
+from tools import output_startup_size_audit as output_audit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +63,8 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
                 "bench_sum.py": {
                     "molt_ok": True,
                     "molt_time_s": 0.50,
+                    "cpython_ok": True,
+                    "cpython_oracle": benchmark_oracle_metadata(),
                     "cpython_time_s": 1.00,
                     "molt_speedup": 2.0,
                 },
@@ -172,6 +179,8 @@ def test_bench_report_uses_docs_manifest_by_default_when_available(
                 "bench_sum.py": {
                     "molt_ok": True,
                     "molt_time_s": 0.25,
+                    "cpython_ok": True,
+                    "cpython_oracle": benchmark_oracle_metadata(),
                     "cpython_time_s": 1.00,
                     "molt_speedup": 4.0,
                 }
@@ -336,14 +345,19 @@ def test_failed_wasm_zero_time_is_not_reported_as_speed(
             "system": {"platform": "macos-14", "machine": "arm64", "python": "3.12.9"},
             "benchmarks": {
                 "ok.py": {
+                    "workload": synthetic_workload("ok.py"),
                     "molt_ok": True,
                     "molt_time_s": 0.50,
+                    "cpython_ok": True,
+                    "cpython_oracle": benchmark_oracle_metadata(),
                     "cpython_time_s": 1.00,
                     "molt_speedup": 2.0,
                 },
                 "failed.py": {
                     "molt_ok": True,
                     "molt_time_s": 0.25,
+                    "cpython_ok": True,
+                    "cpython_oracle": benchmark_oracle_metadata(),
                     "cpython_time_s": 1.00,
                     "molt_speedup": 4.0,
                 },
@@ -357,6 +371,7 @@ def test_failed_wasm_zero_time_is_not_reported_as_speed(
             "system": {"platform": "wasmtime", "machine": "wasm32", "python": "n/a"},
             "benchmarks": {
                 "ok.py": {
+                    "workload": synthetic_workload("ok.py"),
                     "molt_wasm_ok": True,
                     "molt_wasm_time_s": 2.00,
                     "molt_wasm_size_kb": 321.0,
@@ -418,6 +433,8 @@ def test_failed_native_stale_values_do_not_feed_report_ratios(
             "failed.py": {
                 "molt_ok": False,
                 "molt_time_s": 0.01,
+                "cpython_ok": True,
+                "cpython_oracle": benchmark_oracle_metadata(),
                 "cpython_time_s": 1.0,
                 "molt_speedup": 100.0,
                 "pypy_ok": False,
@@ -482,6 +499,8 @@ def _startup_audit_fixture() -> dict:
         }
 
     return {
+        "schema_version": output_audit.SCHEMA_VERSION,
+        "config": {"samples": 3},
         "recorded_at": "20260602T000000Z",
         "cases": [
             {
@@ -502,8 +521,15 @@ def _startup_audit_fixture() -> dict:
             }
         ],
         "baselines": {
-            "cpython": {"ok": True, "stats": {"median_s": 0.040}},
-            "c": {"ok": True, "stats": {"median_s": 0.003}},
+            "cpython": {
+                "ok": True,
+                "stats": {"median_s": 0.040, "count": 3, "samples_s": [0.04] * 3},
+                "cpython_oracle": benchmark_oracle_metadata(),
+            },
+            "c": {
+                "ok": True,
+                "stats": {"median_s": 0.003, "count": 3, "samples_s": [0.003] * 3},
+            },
         },
     }
 
@@ -530,6 +556,88 @@ def test_startup_section_renders_cold_start_and_size(
     assert "180.0" in section  # cold first-sighting ms
     assert "| OK |" in section
     assert "C 3.0ms, CPython 40.0ms" in section
+
+
+@pytest.mark.parametrize(
+    "mutation", ["historical_schema", "missing_oracle", "nonisolated"]
+)
+def test_startup_report_refuses_unqualified_cpython_baseline(mutation: str) -> None:
+    audit = _startup_audit_fixture()
+    cpython = audit["baselines"]["cpython"]
+    if mutation == "historical_schema":
+        audit["schema_version"] = "2.0"
+    elif mutation == "missing_oracle":
+        cpython.pop("cpython_oracle")
+    else:
+        cpython["cpython_oracle"]["cmd"] = [cpython["cpython_oracle"]["executable"]]
+
+    assert module._startup_baseline_ms(audit, "cpython") is None
+    assert module._startup_baseline_ms(audit, "c") == (3.0)
+
+
+@pytest.mark.parametrize("key", ["cpython", "c"])
+@pytest.mark.parametrize("mutation", ["failed", "partial", "missing_count"])
+def test_startup_headline_refuses_incomplete_baseline(key: str, mutation: str) -> None:
+    audit = _startup_audit_fixture()
+    baseline = audit["baselines"][key]
+    if mutation == "failed":
+        baseline["ok"] = False
+    elif mutation == "partial":
+        baseline["stats"]["count"] = 1
+        baseline["stats"]["samples_s"] = baseline["stats"]["samples_s"][:1]
+    else:
+        baseline["stats"].pop("count")
+    assert module._startup_baseline_ms(audit, key) is None
+
+
+@pytest.mark.parametrize("mutation", [None, "source", "argv"])
+def test_cross_artifact_ratios_require_the_same_admitted_workload(
+    tmp_path: Path,
+    mutation: str | None,
+) -> None:
+    workload = synthetic_workload("bench_join.py")
+    other = json.loads(json.dumps(workload))
+    if mutation == "source":
+        other["sources"][0]["sha256"] = "f" * 64
+    elif mutation == "argv":
+        other["run_args"] = ["different"]
+    native = {
+        "git_rev": "a" * 40,
+        "benchmarks": {
+            "bench_join.py": {
+                "workload": workload,
+                "molt_ok": True,
+                "molt_time_s": 2.0,
+                "cpython_ok": True,
+                "cpython_time_s": 1.0,
+                "cpython_oracle": benchmark_oracle_metadata(),
+                "molt_speedup": 0.5,
+            }
+        },
+    }
+    wasm = {
+        "git_rev": "a" * 40,
+        "benchmarks": {
+            "bench_join.py": {
+                "workload": other,
+                "molt_wasm_ok": True,
+                "molt_wasm_time_s": 0.125,
+            }
+        },
+    }
+    report = module._render_report_markdown(
+        tmp_path / "native.json", tmp_path / "wasm.json", native, wasm
+    )
+    expected = "8.00x" if mutation is None else "-"
+    assert f"Median wasm speedup vs CPython: {expected}." in report
+    row = [line for line in report.splitlines() if line.startswith("| bench_join |")][
+        -1
+    ]
+    assert (
+        row.endswith("| 0.06x | 0.12x |")
+        if mutation is None
+        else row.endswith("| - | - |")
+    )
 
 
 def test_startup_section_empty_when_audit_absent(

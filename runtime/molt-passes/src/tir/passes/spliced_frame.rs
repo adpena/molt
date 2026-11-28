@@ -334,29 +334,36 @@ fn poll_and_unlink(ops: &[TirOp]) -> bool {
         && unlink.runtime == Some(RuntimeFn::SplicedFramePop))
 }
 
+fn binding_alias(op: &TirOp) -> bool {
+    op.opcode == OpCode::Copy
+        && op.origin == Some(molt_ir::OpKind::BindingAlias)
+        && op.operands.len() == 1
+        && op.results.len() == 1
+}
+
 /// The complete cold service arm built by generator frame elision. Nothing
 /// else may run between the pending-work test and the delivery of that work.
 pub(super) fn poll_service(ops: &[TirOp]) -> Option<&TirOp> {
-    // A deferred slot-read credit may cover the entire publication. Retaining
-    // the already-held slot cannot call Python, and its matching retirement
-    // follows the original service and unlink.
-    let ops = if let [retain, bracket @ .., close, retire] = ops
-        && retain.opcode == OpCode::Copy
-        && retain.origin == Some(molt_ir::OpKind::BindingAlias)
-        && retain.operands.len() == 1
-        && retain.results.len() == 1
-        && retire.opcode == OpCode::DecRef
-        && close.opcode == OpCode::Copy
-        && close.origin == Some(molt_ir::OpKind::BindingAlias)
-        && close.operands == retain.results
-        && close.results.len() == 1
-        && retire.operands == close.results
-        && retire.results.is_empty()
-        && bracket.iter().any(|op| {
+    // The service can retain its already-held slot before publication.
+    // Before drop insertion the credit can still be live at the join.
+    // After retirement, the matching alias and drop follow the unlink.
+    let ops = if let [retain, service @ ..] = ops
+        && binding_alias(retain)
+        && service.iter().any(|op| {
             op.runtime == Some(RuntimeFn::SplicedFrameBindHome)
                 && op.operands.get(2) == retain.operands.first()
         }) {
-        bracket
+        if let [bracket @ .., close, retire] = service
+            && binding_alias(close)
+            && close.operands == retain.results
+            && retire.opcode == OpCode::DecRef
+            && retire.operands == close.results
+            && retire.results.is_empty()
+        {
+            bracket
+        } else {
+            service
+        }
     } else {
         ops
     };

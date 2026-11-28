@@ -29,6 +29,7 @@ fn check_exception(label: i64) -> TirOp {
     attrs.insert("value".into(), AttrValue::Int(label));
     let mut op = TirOp::new(OpCode::CheckException, vec![], vec![]);
     op.attrs = attrs;
+    op.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
     op
 }
 
@@ -272,7 +273,7 @@ fn a_path_without_a_definition_is_refused() {
 }
 
 #[test]
-fn a_join_entered_by_an_exception_edge_is_refused() {
+fn executable_exception_edges_carry_the_reaching_definition() {
     let Diamond {
         mut func,
         then_block,
@@ -281,8 +282,7 @@ fn a_join_entered_by_an_exception_edge_is_refused() {
         v1,
         v2,
     } = diamond(true);
-    // Both arms raise into a handler that reads the variable: the handler
-    // would need a block argument that exception edges cannot carry.
+    // Both arms transfer to a handler that reads the variable.
     let handler = func.fresh_block();
     func.label_id_map.insert(handler.0, 7);
     func.blocks.insert(
@@ -302,15 +302,46 @@ fn a_join_entered_by_an_exception_edge_is_refused() {
             .push(check_exception(7));
     }
     func.blocks.get_mut(&join).unwrap().terminator = Terminator::Return { values: vec![] };
-    let refusal = repair(
-        &mut func,
-        &[Variable {
-            names: vec![v1, v2],
-            ty: TirType::I64,
-        }],
-    )
-    .expect_err("the handler cannot take a new argument");
-    assert_eq!(refusal, RepairRefusal::JoinAtExceptionTarget);
+    let mut with_registration = func.clone();
+    let mut register = TirOp::new(OpCode::TryStart, vec![], vec![]);
+    register.attrs.insert("value".into(), AttrValue::Int(7));
+    with_registration
+        .blocks
+        .get_mut(&then_block)
+        .unwrap()
+        .ops
+        .push(register);
+    let variable = Variable {
+        names: vec![v1, v2],
+        ty: TirType::I64,
+    };
+    let mut without_payload_support = func.clone();
+    assert_eq!(
+        repair(
+            &mut without_payload_support,
+            std::slice::from_ref(&variable)
+        ),
+        Err(RepairRefusal::JoinAtExceptionTarget)
+    );
+    assert_eq!(
+        repair_with_exception_payloads(&mut with_registration, std::slice::from_ref(&variable)),
+        Err(RepairRefusal::JoinAtExceptionTarget)
+    );
+    let stats = repair_with_exception_payloads(&mut func, &[variable])
+        .expect("handler receives the currently reaching definition");
+    assert_eq!(stats.joins, 1);
+    for (block, value) in [(then_block, v1), (else_block, v2)] {
+        assert_eq!(
+            func.blocks[&block].ops.last().unwrap().exception_payload(),
+            &[value]
+        );
+    }
+    let joined = func.blocks[&handler].args[0].id;
+    assert!(matches!(
+        &func.blocks[&handler].terminator,
+        Terminator::Return { values } if values == &[joined]
+    ));
+    verify_function(&func).expect("exception payloads agree with the handler");
 }
 
 #[test]

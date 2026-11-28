@@ -25,6 +25,7 @@ from tools.bench_evidence import (  # noqa: E402
     comparable_metric_errors,
     workload_map_problems,
     metric_is_comparable,
+    metric_uses_cpython,
 )
 
 
@@ -187,7 +188,7 @@ def _compute_metric_diffs(
                 trend=_metric_trend(metric, old_val, new_val),
             )
         )
-    if rows:
+    if rows or metric_uses_cpython(metric):
         errors = comparable_metric_errors(
             {"benchmarks": new_bench}, {"benchmarks": old_bench}, metric=metric
         )

@@ -1,8 +1,7 @@
 use super::physical_runtime_symbol;
 use crate::test_support::native_object_symbols;
-use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR, stable_ic_site_id};
+use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 use molt_ir::OpKind;
-use std::collections::BTreeSet;
 
 const BOXED_ATTR_SYMBOL: &str = "molt_get_attr_name";
 const BOXED_ATTR_IC_SYMBOL: &str = "molt_get_attr_object_ic";
@@ -80,10 +79,21 @@ fn native_attribute_lanes_keep_one_owned_boxed_result_protocol() {
 }
 
 #[test]
-fn native_generic_attribute_spellings_have_distinct_stable_sites() {
-    let sites: BTreeSet<i64> = ["get_attr_generic_ptr", "get_attr_generic_obj"]
-        .into_iter()
-        .map(|kind| stable_ic_site_id("native_attr_authority", 17, kind))
-        .collect();
-    assert_eq!(sites.len(), 2);
+fn structural_nop_keeps_emitted_attribute_site_and_object() {
+    let mut source = attr_program(OpKind::GetAttrGenericObj);
+    source.functions[0].ops[0].source_op_idx = None;
+    let mut edited = source.clone();
+    edited.functions[0].ops.insert(0, OpIR::new(OpKind::Nop));
+
+    let cranelift = SimpleBackend::new().compile(source.clone());
+    assert_eq!(
+        cranelift.bytes,
+        SimpleBackend::new().compile(edited.clone()).bytes
+    );
+
+    #[cfg(feature = "llvm")]
+    {
+        let llvm = SimpleBackend::new().compile_llvm(source);
+        assert_eq!(llvm.bytes, SimpleBackend::new().compile_llvm(edited).bytes);
+    }
 }

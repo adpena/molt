@@ -15,7 +15,7 @@ pub(crate) fn preserve_native_batch_worker_failure_artifacts(
     job_name: &str,
     object_path: &Path,
 ) -> io::Result<PathBuf> {
-    let job: NativeBatchObjectJob = serde_json::from_slice(job_bytes).map_err(|err| {
+    let job = NativeBatchObjectJob::decode(job_bytes).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid failed native batch object job '{job_name}': {err}"),
@@ -41,7 +41,7 @@ pub(crate) fn preserve_native_batch_worker_failure_artifacts(
         .to_path_buf();
     std::fs::create_dir_all(&artifact_dir)?;
 
-    let copied_job = artifact_dir.join(format!("{job_stem}.json"));
+    let copied_job = artifact_dir.join(format!("{job_stem}.msgpack"));
     molt_artifact_publish::write_bytes_atomically(&copied_job, job_bytes)?;
 
     let callable_input = preserve_runtime_callable_input(&job, &artifact_dir)?;

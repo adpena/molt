@@ -16,6 +16,7 @@ from molt.native_target import NativeTargetSpec
 from typing import Any
 
 from molt.process_environment import ProcessEnvironment
+from molt.python_interpreter import benchmark_python_environment
 
 if TYPE_CHECKING:
     from molt.cli.source_package_seal import SourcePackageSeal
@@ -30,19 +31,25 @@ class MetricLane(Enum):
 class MetricPolicy:
     success_gates: tuple[str, ...]
     molt_lane: MetricLane | None = None
+    requires_cpython: bool = False
 
 
 METRIC_POLICIES: dict[str, MetricPolicy] = {
     "codon_time_s": MetricPolicy(("codon_ok",)),
+    "cpython_time_s": MetricPolicy(("cpython_ok",), requires_cpython=True),
     "molt_build_s": MetricPolicy((), MetricLane.NATIVE),
     "molt_size_kb": MetricPolicy((), MetricLane.NATIVE),
     "molt_median_s": MetricPolicy((), MetricLane.NATIVE),
     "molt_codon_ratio": MetricPolicy(("molt_ok", "codon_ok"), MetricLane.NATIVE),
-    "molt_cpython_ratio": MetricPolicy(("molt_ok",), MetricLane.NATIVE),
+    "molt_cpython_ratio": MetricPolicy(
+        ("molt_ok", "cpython_ok"), MetricLane.NATIVE, requires_cpython=True
+    ),
     "molt_nuitka_ratio": MetricPolicy(("molt_ok", "nuitka_ok"), MetricLane.NATIVE),
     "molt_pypy_ratio": MetricPolicy(("molt_ok", "pypy_ok"), MetricLane.NATIVE),
     "molt_pyodide_ratio": MetricPolicy(("molt_ok", "pyodide_ok"), MetricLane.NATIVE),
-    "molt_speedup": MetricPolicy(("molt_ok",), MetricLane.NATIVE),
+    "molt_speedup": MetricPolicy(
+        ("molt_ok", "cpython_ok"), MetricLane.NATIVE, requires_cpython=True
+    ),
     "molt_time_s": MetricPolicy(("molt_ok",), MetricLane.NATIVE),
     "molt_wasm_build_s": MetricPolicy((), MetricLane.WASM),
     "molt_wasm_size_kb": MetricPolicy((), MetricLane.WASM),
@@ -179,6 +186,13 @@ def comparable_metric_errors(
         current_cell, baseline_cell = current_cells[name], baseline_cells[name]
         if current_cell["workload"] != baseline_cell["workload"]:
             errors.append(f"{name}: workload identities differ")
+        if policy is not None and policy.requires_cpython:
+            errors.extend(
+                f"{name}: {problem}"
+                for problem in _cpython_comparison_problems(
+                    current_cell, baseline_cell, metric=metric
+                )
+            )
         if policy is None or policy.molt_lane is None:
             continue
         observed: list[dict[str, str] | None] = []
@@ -207,7 +221,10 @@ def comparable_metric_errors(
 
 
 def comparable_run_metadata_errors(
-    current: dict[str, Any], baseline: dict[str, Any]
+    current: dict[str, Any],
+    baseline: dict[str, Any],
+    *,
+    metric: str = "molt_time_s",
 ) -> list[str]:
     """Return fail-closed evidence-contract errors for benchmark comparisons."""
     errors: list[str] = []
@@ -227,17 +244,64 @@ def comparable_run_metadata_errors(
     # Timing mismatch already refuses the comparison; preserve its precise
     # diagnostic before examining the independent profile binding.
     if not errors:
-        errors.extend(comparable_metric_errors(current, baseline, metric="molt_time_s"))
+        errors.extend(comparable_metric_errors(current, baseline, metric=metric))
     return errors
 
 
-def metric_is_comparable(entry: dict[str, Any], metric: str) -> bool:
+def _cpython_comparison_problems(
+    current: Mapping[str, object], baseline: Mapping[str, object], *, metric: str
+) -> list[str]:
+    from tools.perf_schema import benchmark_python_metadata_problems
+
+    if not all(
+        valid_positive_number(cell.get(metric)) is not None
+        or valid_positive_number(cell.get("cpython_time_s")) is not None
+        for cell in (current, baseline)
+    ):
+        return []
+    current_oracle = current.get("cpython_oracle")
+    baseline_oracle = baseline.get("cpython_oracle")
+    problems = [
+        f"{role} {problem}"
+        for role, oracle in (("current", current_oracle), ("baseline", baseline_oracle))
+        for problem in benchmark_python_metadata_problems(oracle)
+    ]
+    if not problems and current_oracle != baseline_oracle:
+        problems.append("CPython oracle identities differ")
+    return problems
+
+
+def metric_uses_cpython(metric: str) -> bool:
     policy = METRIC_POLICIES.get(metric)
-    gates = policy.success_gates if policy is not None else ()
-    return all(entry.get(gate) is True for gate in gates)
+    return policy is not None and policy.requires_cpython
 
 
-def comparator_time(entry: dict[str, Any], lane: str) -> float | None:
+def metric_is_comparable(entry: Mapping[str, object], metric: str) -> bool:
+    if metric == "speedup":
+        # Retired individual-runner wire alias. Historical arbitrary numeric
+        # fields cannot bypass the canonical CPython metric's evidence contract.
+        return False
+    policy = METRIC_POLICIES.get(metric)
+    if policy is None:
+        return True
+    if not all(entry.get(gate) is True for gate in policy.success_gates):
+        return False
+    if policy.requires_cpython:
+        from tools.perf_schema import benchmark_python_metadata_problems
+
+        return not benchmark_python_metadata_problems(entry.get("cpython_oracle"))
+    return True
+
+
+def comparison_metric_value(entry: Mapping[str, object], metric: str) -> float | None:
+    if not metric_is_comparable(entry, metric):
+        return None
+    return valid_positive_number(entry.get(metric))
+
+
+def comparator_time(entry: Mapping[str, object], lane: str) -> float | None:
+    if lane == "cpython":
+        return comparison_metric_value(entry, "cpython_time_s")
     if not entry.get(f"{lane}_ok"):
         return None
     return valid_positive_number(entry.get(f"{lane}_time_s"))
@@ -249,10 +313,8 @@ def native_molt_time(entry: dict[str, Any]) -> float | None:
     return valid_positive_number(entry.get("molt_time_s"))
 
 
-def native_molt_speedup(entry: dict[str, Any]) -> float | None:
-    if not entry.get("molt_ok"):
-        return None
-    return valid_positive_number(entry.get("molt_speedup"))
+def native_molt_speedup(entry: Mapping[str, object]) -> float | None:
+    return comparison_metric_value(entry, "molt_speedup")
 
 
 def wasm_molt_time(entry: dict[str, Any]) -> float | None:
@@ -462,11 +524,78 @@ def workloads_comparable(left: object, right: object) -> bool:
     )
 
 
+class BenchmarkOracleMismatch(ValueError):
+    """A successful reference execution disagreed with the sealed oracle."""
+
+
 @dataclass(frozen=True)
 class BenchmarkInvocation:
     command: tuple[str, ...]
     environment: ProcessEnvironment
     cwd: Path | None
+
+
+def benchmark_reference_invocation(
+    command: Sequence[str],
+    script: Path,
+    environment: Mapping[str, str],
+    *,
+    run_args: Sequence[str] = (),
+    import_roots: Sequence[Path] = (),
+    cwd: Path | None = None,
+    reference_site: Path | None = None,
+    isolated: bool = True,
+) -> BenchmarkInvocation:
+    """Project admitted source roots into the existing reference launch protocol.
+
+    CPython is isolated, without site startup or bytecode writes. Other
+    comparators retain their separate startup/hash protocol explicitly.
+    """
+    env = benchmark_python_environment(environment)
+    if not command:
+        raise ValueError("benchmark reference command must not be empty")
+    if isolated:
+        from molt.python_interpreter import BENCHMARK_PYTHON_ARGUMENTS
+
+        prefix = tuple(command)
+        if prefix[1:] not in ((), BENCHMARK_PYTHON_ARGUMENTS):
+            raise ValueError(
+                "CPython reference requires a physical isolated command prefix"
+            )
+        prefix = (prefix[0], *BENCHMARK_PYTHON_ARGUMENTS)
+    else:
+        if reference_site is not None:
+            raise ValueError("a native reference wheel requires isolated CPython")
+        prefix = tuple(command)
+        env = env.updated({"PYTHONHASHSEED": "0"})
+        if import_roots:
+            prefix = (*prefix, "-P", "-S", "-B")
+    bootstrap = ""
+    if reference_site is not None:
+        env = env.without(("MSGPACK_PUREPYTHON",))
+        bootstrap = (
+            f"sys.path.insert(0, {str(reference_site)!r})\n"
+            "from msgpack import _cmsgpack, unpackb\n"
+            "if unpackb is not _cmsgpack.unpackb:\n"
+            "    raise RuntimeError('sealed MessagePack native decoder is inactive')\n"
+        )
+    if import_roots or reference_site is not None:
+        arguments = (
+            *prefix,
+            "-c",
+            "import runpy, sys\n" + bootstrap + "path, count, *args = sys.argv[1:]\n"
+            "count = int(count)\n"
+            "sys.path[:0] = args[:count]\n"
+            "sys.argv[:] = [path, *args[count:]]\n"
+            "runpy.run_path(path, run_name='__main__')\n",
+            str(script),
+            str(len(import_roots)),
+            *map(str, import_roots),
+            *run_args,
+        )
+    else:
+        arguments = (*prefix, str(script), *run_args)
+    return BenchmarkInvocation(arguments, env, cwd)
 
 
 @dataclass(frozen=True)
@@ -519,64 +648,44 @@ class AdmittedBenchmarkWorkload:
         )
 
     def reference_invocation(
-        self, command: Sequence[str], environment: Mapping[str, str]
+        self,
+        command: Sequence[str],
+        environment: Mapping[str, str],
+        *,
+        isolated: bool = True,
+        run_args: Sequence[str] | None = None,
     ) -> BenchmarkInvocation:
-        # A reference interpreter reads no Python settings of the harness
-        # (PYTHONPATH would load the checkout's sitecustomize before every
-        # sample); a fixed hash seed keeps its output comparable with Molt's.
-        env = ProcessEnvironment(environment)
-        env = env.without(
-            name for name in env if env.rule.key(name).startswith("PYTHON")
-        ).updated({"PYTHONHASHSEED": "0"})
-        flags: tuple[str, ...] = ()
+        roots: tuple[Path, ...] = ()
+        arguments = self.record["run_args"] if run_args is None else run_args
         if self._seal is not None:
-            # The compiler image remains independent. Application references
-            # load only their declared packages plus the selected stdlib.
-            env = env.updated(
-                {
-                    "PYTHONPATH": self._python_paths(),
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                }
-            )
-            flags = ("-P", "-S", "-B")
-        elif self._local_reference_roots or self._reference_site is not None:
-            # Match the admitted source lookup without running sitecustomize
-            # or relying on PYTHONPATH, which an isolated interpreter ignores.
-            roots = (self.execution_script.parent, *self._local_reference_roots)
-            prefix = ""
-            flags = ("-P", "-S", "-B")
-            if self._reference_site is not None:
-                if tuple(command) != self._reference_command:
-                    raise ValueError(
-                        "reference wheel belongs to a different CPython command"
-                    )
-                env = env.without(("MSGPACK_PUREPYTHON",))
-                flags = ("-I", "-S", "-B")
-                prefix = (
-                    f"sys.path.insert(0, {str(self._reference_site)!r})\n"
-                    "from msgpack import _cmsgpack, unpackb\n"
-                    "if unpackb is not _cmsgpack.unpackb:\n"
-                    "    raise RuntimeError('sealed MessagePack native decoder is inactive')\n"
+            if not isolated or tuple(arguments) != tuple(self.record["run_args"]):
+                raise ValueError(
+                    "sealed reference launch differs from its admitted protocol"
                 )
-            arguments = (
-                *command,
-                *flags,
-                "-c",
-                "import runpy, sys\n" + prefix + "path, count, *args = sys.argv[1:]\n"
-                "count = int(count)\n"
-                "sys.path[:0] = args[:count]\n"
-                "sys.argv[:] = [path, *args[count:]]\n"
-                "runpy.run_path(path, run_name='__main__')\n",
-                str(self.execution_script),
-                str(len(roots)),
-                *map(str, roots),
-                *self.record["run_args"],
-            )
-            return BenchmarkInvocation(arguments, env, self.source_cwd)
-        return BenchmarkInvocation(
-            (*command, *flags, str(self.execution_script), *self.record["run_args"]),
-            env,
-            self.source_cwd,
+            sealed = self.record["sealed_inputs"]
+            assert sealed is not None
+            roots = tuple(self.execution_root / root for root in sealed["python_roots"])
+        elif self._local_reference_roots or self._reference_site is not None:
+            roots = self._local_reference_roots
+            if (
+                self._reference_site is not None
+                and self.execution_script.parent not in roots
+            ):
+                roots = (self.execution_script.parent, *roots)
+        if (
+            self._reference_site is not None
+            and tuple(command) != self._reference_command
+        ):
+            raise ValueError("reference wheel belongs to a different CPython command")
+        return benchmark_reference_invocation(
+            command,
+            self.execution_script,
+            environment,
+            run_args=arguments,
+            import_roots=roots,
+            cwd=self.source_cwd,
+            reference_site=self._reference_site,
+            isolated=isolated,
         )
 
     def guest_invocation(
@@ -606,7 +715,9 @@ class AdmittedBenchmarkWorkload:
                 stderr_mode="exact",
             )
             if not verdict.equal:
-                raise ValueError("reference output differs from sealed semantic oracle")
+                raise BenchmarkOracleMismatch(
+                    "reference output differs from sealed semantic oracle"
+                )
 
 
 @contextmanager
@@ -833,8 +944,10 @@ def admit_benchmark_workload(
                 raise ValueError(f"benchmark source closure changed: {script}")
 
         reference_roots = (
-            search_roots[1:]
+            search_roots
             if any(not path.is_relative_to(script.parent) for path in closure.paths)
+            else (script.parent,)
+            if any(path != script for path in closure.paths)
             else ()
         )
         workload = AdmittedBenchmarkWorkload(

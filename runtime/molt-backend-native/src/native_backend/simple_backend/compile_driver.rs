@@ -423,7 +423,6 @@ impl SimpleBackend {
                     start.elapsed()
                 );
             }
-            let optimization_start = timing.then(std::time::Instant::now);
             llvm.module.verify().unwrap_or_else(|msg| {
                 panic!(
                     "LLVM module verification failed before optimization:\n{}",
@@ -431,6 +430,42 @@ impl SimpleBackend {
                 )
             });
 
+            let cache_start = timing.then(std::time::Instant::now);
+            // The archive owner already publishes partitioned worker objects
+            // in its constituent store. Keep one disk owner for those bytes.
+            let mut object_artifact = if self.program_scope == NativeProgramScope::WholeProgram
+                && !self.require_fresh_emission
+            {
+                llvm.object_artifact(&self.tir_cache)
+            } else {
+                None
+            };
+            if let Some((bytes, key)) = object_artifact
+                .as_mut()
+                .and_then(|cache| cache.restore().map(|bytes| (bytes, cache.key.clone())))
+            {
+                if let Some(start) = cache_start {
+                    eprintln!(
+                        "MOLT_BACKEND_TIMING: LLVM object cache hit in {:.2?} ({} bytes)",
+                        start.elapsed(),
+                        bytes.len()
+                    );
+                }
+                return CompileOutput {
+                    bytes,
+                    reused_object_key: Some(key),
+                };
+            }
+            if let Some(start) = cache_start
+                && object_artifact.is_some()
+            {
+                eprintln!(
+                    "MOLT_BACKEND_TIMING: LLVM object cache miss after {:.2?}",
+                    start.elapsed()
+                );
+            }
+
+            let optimization_start = timing.then(std::time::Instant::now);
             llvm.optimize().unwrap_or_else(|err| panic!("{err}"));
             llvm.module.verify().unwrap_or_else(|msg| {
                 panic!(
@@ -465,7 +500,13 @@ impl SimpleBackend {
                 );
             }
 
-            return CompileOutput { bytes };
+            if let Some(artifact) = object_artifact.as_mut() {
+                artifact.publish(&bytes);
+            }
+            return CompileOutput {
+                bytes,
+                reused_object_key: None,
+            };
         }
         let (func_count, total_ops) = self
             .emit_cranelift_program(program, timing)
@@ -485,7 +526,10 @@ impl SimpleBackend {
                 bytes.len()
             );
         }
-        CompileOutput { bytes }
+        CompileOutput {
+            bytes,
+            reused_object_key: None,
+        }
     }
 
     /// Preserve the full program's type flow at preparation time, then omit

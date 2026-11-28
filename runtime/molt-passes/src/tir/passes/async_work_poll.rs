@@ -527,27 +527,46 @@ fn has_conditional_latch_poll(
     false
 }
 
-/// Whether every target-required call and loop boundary already owns its final
-/// marked observation. Module transforms consume only this post-pipeline form;
-/// refusing unprepared input before mutation keeps SSA payload construction in
-/// the pre-SSA lowering authority.
-pub(crate) fn is_materialized(func: &TirFunction) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UncoveredPoll {
+    Call { block: BlockId, op_index: usize },
+    Latch { block: BlockId, header: BlockId },
+}
+
+/// Check required observations in the current CFG. A rejected rewrite
+/// retains the exact producer or edge whose async-work proof is missing.
+pub(crate) fn check_coverage(func: &TirFunction) -> Result<(), UncoveredPoll> {
     let mut analyses = AnalysisManager::new();
     let plan = placement_plan(func, &mut analyses);
-    let calls_ready = plan.call_sites.iter().all(|(block, index, _)| {
-        post_operation_observation(func, *block, *index, &plan.predecessors, &plan.raise)
+    for &(block, op_index, _) in &plan.call_sites {
+        if !post_operation_observation(func, block, op_index, &plan.predecessors, &plan.raise)
             .is_some_and(|observation| observation_is_marked(func, observation))
-    });
-    calls_ready
-        && plan.latch_sites.iter().all(|(latch, headers, _)| {
-            latch_check_site(func, *latch, &plan.predecessors, &plan.raise)
-                .is_some_and(|(block, index)| func.blocks[&block].ops[index].is_async_work_poll())
-                || super::spliced_frame::ends_with_poll_bracket(&func.blocks[latch].ops)
-                || has_conditional_latch_poll(func, *latch, &plan.predecessors)
-                || headers.iter().all(|header| {
-                    super::spliced_frame::starts_with_poll_bracket(&func.blocks[header].ops)
-                })
-        })
+        {
+            return Err(UncoveredPoll::Call { block, op_index });
+        }
+    }
+    for (latch, headers, _) in &plan.latch_sites {
+        if latch_check_site(func, *latch, &plan.predecessors, &plan.raise)
+            .is_some_and(|(block, index)| func.blocks[&block].ops[index].is_async_work_poll())
+            || super::spliced_frame::ends_with_poll_bracket(&func.blocks[latch].ops)
+            || has_conditional_latch_poll(func, *latch, &plan.predecessors)
+        {
+            continue;
+        }
+        if let Some(&header) = headers.iter().find(|header| {
+            !super::spliced_frame::starts_with_poll_bracket(&func.blocks[header].ops)
+        }) {
+            return Err(UncoveredPoll::Latch {
+                block: *latch,
+                header,
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn is_materialized(func: &TirFunction) -> bool {
+    check_coverage(func).is_ok()
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]

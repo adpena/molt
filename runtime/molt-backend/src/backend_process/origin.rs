@@ -55,6 +55,9 @@ pub(crate) enum CodegenOrigin {
     InProcess {
         process_id: u32,
     },
+    CachedObject {
+        cache_key: String,
+    },
     #[cfg(feature = "native-backend")]
     NativeWorkers {
         workers: Vec<crate::backend_process::native_batch::NativeWorkerOrigin>,
@@ -70,6 +73,7 @@ impl CodegenOrigin {
     fn retained_bytes(&self) -> usize {
         match self {
             Self::InProcess { .. } => 0,
+            Self::CachedObject { cache_key } => cache_key.capacity(),
             #[cfg(feature = "native-backend")]
             Self::NativeWorkers { workers } => {
                 workers.capacity()

@@ -94,7 +94,7 @@ fn failed_archive_retains_verified_constituents_and_retry_compiles_only_the_miss
                 Ok(())
             },
             |job, name, output| {
-                if name == "batch_1.json" {
+                if name == "batch_1.msgpack" {
                     return Err(io::Error::other("second worker failed"));
                 }
                 emit(job, name, output)
@@ -105,7 +105,7 @@ fn failed_archive_retains_verified_constituents_and_retry_compiles_only_the_miss
     assert!(!published.load(Ordering::SeqCst));
     assert!(!archive.exists(), "incomplete archives are never published");
     let (retained, original_origin) = cache.admit(&keys[0]).unwrap().unwrap();
-    assert_eq!(retained.as_ref(), object_bytes("batch_0.json"));
+    assert_eq!(retained.as_ref(), object_bytes("batch_0.msgpack"));
     assert!(cache.admit(&keys[1]).unwrap().is_none());
     drop(retained);
     let emitted = AtomicU64::new(0);
@@ -115,15 +115,15 @@ fn failed_archive_retains_verified_constituents_and_retry_compiles_only_the_miss
             Some(&cache),
             |objects, provenance| {
                 assert_eq!(objects.len(), 2);
-                assert_eq!(objects[0].as_ref(), object_bytes("batch_0.json"));
-                assert_eq!(objects[1].as_ref(), object_bytes("batch_1.json"));
+                assert_eq!(objects[0].as_ref(), object_bytes("batch_0.msgpack"));
+                assert_eq!(objects[1].as_ref(), object_bytes("batch_1.msgpack"));
                 assert_eq!(provenance.workers[0], original_origin);
                 assert_eq!(provenance.workers.len(), 2);
                 published.store(true, Ordering::SeqCst);
                 Ok(())
             },
             |job, name, output| {
-                assert_eq!(name, "batch_1.json", "completed job must be reused");
+                assert_eq!(name, "batch_1.msgpack", "completed job must be reused");
                 emitted.fetch_add(1, Ordering::SeqCst);
                 emit(job, name, output)
             },

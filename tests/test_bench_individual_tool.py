@@ -12,9 +12,12 @@ import pytest
 from tools import bench_individual as bench
 from molt.backend_daemon_custody import BackendDaemonObservation
 from molt.process_model import ProcessSample
+from molt.python_interpreter import BENCHMARK_PYTHON_ARGUMENTS
+from tests.tools.perf_scoreboard_fixtures import benchmark_oracle_interpreter
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REFERENCE_COMMAND = (str(Path(sys.executable).resolve()), *BENCHMARK_PYTHON_ARGUMENTS)
 
 
 @contextlib.contextmanager
@@ -29,6 +32,7 @@ def _admitted_workloads(scripts):
                     project_root=bench.REPO_ROOT,
                     run_args=[],
                     molt_args=bench.molt_args_for_benchmark(script),
+                    cpython_command=REFERENCE_COMMAND,
                 )
             )
             for script in scripts
@@ -78,6 +82,7 @@ def test_bench_individual_reuses_backend_daemon_by_default(
             timeout_build=1.0,
             timeout_run=1.0,
             workload=workloads["tests/benchmarks/bench_bytes_find.py"],
+            baseline=benchmark_oracle_interpreter(REFERENCE_COMMAND[0]),
         )
 
     assert cleanups == 0
@@ -140,6 +145,7 @@ def test_bench_individual_can_opt_into_cold_daemon_isolation(
             timeout_run=1.0,
             isolate_daemon=True,
             workload=workloads["tests/benchmarks/bench_bytes_find.py"],
+            baseline=benchmark_oracle_interpreter(REFERENCE_COMMAND[0]),
         )
 
     assert cleanups == 1
@@ -361,6 +367,7 @@ def test_bench_individual_rejects_partial_sample_failure(
             timeout_build=1.0,
             timeout_run=1.0,
             workload=workloads["tests/benchmarks/bench_bytes_find.py"],
+            baseline=benchmark_oracle_interpreter(REFERENCE_COMMAND[0]),
         )
 
     assert result["run_ok"] is False
@@ -405,6 +412,7 @@ def test_bench_individual_records_molt_run_failure_detail(
             timeout_build=1.0,
             timeout_run=1.0,
             workload=workloads["tests/benchmarks/bench_bytes_find.py"],
+            baseline=benchmark_oracle_interpreter(REFERENCE_COMMAND[0]),
         )
 
     assert result["run_ok"] is False
@@ -503,6 +511,7 @@ def test_bench_individual_custom_same_basename_keeps_cpython_reference(
             timeout_build=1.0,
             timeout_run=1.0,
             workload=workloads[str(custom)],
+            baseline=benchmark_oracle_interpreter(REFERENCE_COMMAND[0]),
         )
 
     assert result["reference_runtime"] == "cpython"
@@ -560,7 +569,9 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
             workload=workload,
         )
         run = bench.run_binary(binary, 4.0, limits=limits, workload=workload)
-        cpy = bench.run_cpython(str(script), 5.0, limits=limits, workload=workload)
+        cpy = bench.run_cpython(
+            REFERENCE_COMMAND, 5.0, limits=limits, workload=workload
+        )
 
     assert built_binary == binary
     assert build_err == ""
@@ -582,7 +593,7 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
     assert calls[0]["env"]["PYTHONPATH"] == str(bench.REPO_ROOT / "src")
     assert calls[1]["timeout"] == 4.0
     assert calls[2]["timeout"] == 5.0
-    assert calls[2]["cmd"] == [sys.executable, str(script)]
+    assert calls[2]["cmd"] == [*REFERENCE_COMMAND, str(script)]
 
 
 def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
@@ -627,7 +638,7 @@ def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
             "run_ok": True,
             "molt_time_s": 0.01,
             "cpython_time_s": 0.02,
-            "speedup": 2.0,
+            "molt_speedup": 2.0,
         }
 
     monkeypatch.setattr(
@@ -636,6 +647,8 @@ def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
         fake_repo_process_sentinel,
     )
     monkeypatch.setattr(bench, "BENCHMARKS", ["tests/benchmarks/bench_bytes_find.py"])
+    baseline = benchmark_oracle_interpreter()
+    monkeypatch.setattr(bench, "resolve_benchmark_python", lambda **_: baseline)
     monkeypatch.setattr(bench, "bench_one", fake_bench_one)
     monkeypatch.setattr(bench, "print_summary", lambda results: None)
     monkeypatch.setattr(
@@ -652,6 +665,9 @@ def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
     assert sentinel_calls[0]["limits"] is limits
     assert summary_calls == [limits]
     assert bench_calls[0]["limits"] is limits
+    assert bench_calls[0]["baseline"] is baseline
+    report = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert report["cpython_oracle"]["cmd"] == list(baseline.command)
     assert bench_calls[0]["samples"] == 1
     assert bench_calls[0]["warmup"] == 0
 
@@ -684,11 +700,13 @@ def test_individual_executes_admitted_guest_arguments(tmp_path, monkeypatch):
     with admit_benchmark_workload(
         script, project_root=tmp_path, run_args=["--count", "7"], molt_args=[]
     ) as admitted:
-        assert bench.run_cpython(str(script), 1, workload=admitted).stdout == "1\n"
+        assert (
+            bench.run_cpython(REFERENCE_COMMAND, 1, workload=admitted).stdout == "1\n"
+        )
         assert (
             bench.run_binary(tmp_path / "binary", 1, workload=admitted).stdout == "1\n"
         )
-    assert calls[0][0] == [sys.executable, str(script), "--count", "7"]
+    assert calls[0][0] == [*REFERENCE_COMMAND, str(script), "--count", "7"]
     assert calls[1][0] == [str(tmp_path / "binary"), "--count", "7"]
     assert all(options["encoding"] == "utf-8" for _, options in calls)
     assert all(options["errors"] == "surrogateescape" for _, options in calls)
@@ -714,7 +732,7 @@ def test_individual_actual_guard_preserves_distinct_invalid_output_bytes(
     with admit_benchmark_workload(
         script, project_root=tmp_path, run_args=[str(script)], molt_args=[]
     ) as workload:
-        reference = bench.run_cpython(str(script), 15, workload=workload)
+        reference = bench.run_cpython(REFERENCE_COMMAND, 15, workload=workload)
         guest = bench.run_binary(Path(sys.executable), 15, workload=workload)
     assert reference.ok and guest.ok
     for outcome in (reference, guest):
@@ -778,7 +796,7 @@ def test_individual_requires_complete_child_observation(
         script, project_root=tmp_path, run_args=[], molt_args=[]
     ) as workload:
         outcome = (
-            bench.run_cpython(str(script), 1, workload=workload)
+            bench.run_cpython(REFERENCE_COMMAND, 1, workload=workload)
             if runner == "reference"
             else bench.run_binary(tmp_path / "binary", 1, workload=workload)
         )
@@ -870,13 +888,22 @@ def test_individual_sealed_invocations_and_output_oracle(
 
     monkeypatch.setattr(bench.harness_memory_guard, "guarded_completed_process", run)
     monkeypatch.setenv("MOLT_SCRATCH_STORAGE", f"disk:{tmp_path}")
+    baseline = benchmark_oracle_interpreter(REFERENCE_COMMAND[0])
     with sealed_workload(tmp_path) as workload:
         if failure in {"reference", "reference_sample"}:
             with pytest.raises(ValueError, match="semantic oracle"):
-                bench.bench_one(str(workload.script), 2, 1, 1, 1, workload=workload)
+                bench.bench_one(
+                    str(workload.script),
+                    2,
+                    1,
+                    1,
+                    1,
+                    workload=workload,
+                    baseline=baseline,
+                )
         else:
             result = bench.bench_one(
-                str(workload.script), 2, 1, 1, 1, workload=workload
+                str(workload.script), 2, 1, 1, 1, workload=workload, baseline=baseline
             )
             assert result["molt_ok"] is (failure is None)
             assert result["output_match"] is (failure is None)
@@ -889,14 +916,13 @@ def test_individual_sealed_invocations_and_output_oracle(
             workload.execution_root / "packages"
         )
         assert all(kwargs["cwd"] == workload.execution_root for _, kwargs in calls)
-        references = [command for command, _ in calls if "-P" in command]
+        references = [command for command, _ in calls if "-I" in command]
         assert references
-        assert references[0] == [
-            sys.executable,
-            "-P",
-            "-S",
-            "-B",
+        assert references[0][:5] == [*REFERENCE_COMMAND, "-c"]
+        assert references[0][6:] == [
             str(workload.execution_script),
+            "1",
+            str(workload.execution_root / "packages"),
             "data/input.txt",
             "7",
         ]

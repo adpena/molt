@@ -101,14 +101,13 @@ fn decode_compile_native_worker(
     output_path: &Path,
 ) -> io::Result<NativeWorkerOrigin> {
     let mut reader = ContentReader::new(reader);
-    // serde_json::from_reader requires EOF: rejected suffixes never produce an origin.
-    let job: NativeBatchObjectJob = serde_json::from_reader(io::BufReader::new(&mut reader))
-        .map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid native batch object job: {err}"),
-            )
-        })?;
+    // Decode owns the EOF check. Rejected suffixes never produce an origin.
+    let job = NativeBatchObjectJob::decode(&mut reader).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid native batch object job: {err}"),
+        )
+    })?;
     let input = reader.identity();
     let output = compile_native_batch_object_job(job, output_path)?;
     Ok(NativeWorkerOrigin {

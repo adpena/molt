@@ -35,6 +35,38 @@ use crate::representation_plan::ProducerCarrierPlan;
 #[cfg(feature = "llvm")]
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 #[cfg(feature = "llvm")]
+use molt_tir::tir::{
+    cache::{CompilationCache, CompilationCacheWriteError},
+    pipeline_cache::TirCacheLocation,
+};
+
+/// A relocatable object admitted against the exact inputs to LLVM optimization
+/// and emission, using the same bounded store as cached TIR.
+#[cfg(feature = "llvm")]
+pub(crate) struct LlvmObjectArtifact {
+    store: CompilationCache,
+    pub(crate) key: String,
+}
+
+#[cfg(feature = "llvm")]
+impl LlvmObjectArtifact {
+    pub(crate) fn restore(&mut self) -> Option<Vec<u8>> {
+        self.store.get(&self.key).map(|bytes| bytes.to_vec())
+    }
+
+    pub(crate) fn publish(&mut self, bytes: &[u8]) {
+        match self.store.put(&self.key, bytes) {
+            Ok(()) => {}
+            Err(CompilationCacheWriteError::Integrity(error)) => {
+                panic!("LLVM object cache integrity failure: {error}");
+            }
+            Err(CompilationCacheWriteError::Unavailable(error)) => {
+                eprintln!("MOLT_CACHE: LLVM object cache unavailable: {error}");
+            }
+        }
+    }
+}
+#[cfg(feature = "llvm")]
 pub struct LlvmBackend<'ctx> {
     pub context: &'ctx Context,
     pub module: Module<'ctx>,
@@ -65,23 +97,27 @@ pub struct LlvmBackend<'ctx> {
     pub target: CodegenTarget,
     optimization: MoltOptLevel,
     machine: TargetMachine,
+    machine_cpu: String,
+    machine_features: String,
 }
 
 impl CodegenTarget {
     /// Create the module's target machine for layout, optimization, and emission.
-    fn create_target_machine(self, optimization: MoltOptLevel) -> TargetMachine {
+    fn create_target_machine(
+        self,
+        optimization: MoltOptLevel,
+        cpu: &str,
+        features: &str,
+    ) -> TargetMachine {
         use inkwell::targets::{CodeModel, Target};
 
-        self.initialize();
         let triple = self.triple();
         let target = Target::from_triple(&triple).expect("Failed to get target from triple");
-        let (cpu, features) = self.cpu_features();
-
         target
             .create_target_machine(
                 &triple,
-                &cpu,
-                &features,
+                cpu,
+                features,
                 optimization.machine_level(),
                 self.reloc_mode(),
                 CodeModel::Default,
@@ -172,9 +208,11 @@ impl<'ctx> LlvmBackend<'ctx> {
     ) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
-        module.set_triple(&target.triple());
         let symbols = crate::runtime_callable_symbols::RuntimeCallableSymbols::capture();
-        let machine = target.create_target_machine(optimization);
+        target.initialize();
+        let (machine_cpu, machine_features) = target.cpu_features();
+        let machine = target.create_target_machine(optimization, &machine_cpu, &machine_features);
+        module.set_triple(&machine.get_triple());
         module.set_data_layout(&machine.get_target_data().get_data_layout());
         let backend = Self {
             context,
@@ -189,6 +227,8 @@ impl<'ctx> LlvmBackend<'ctx> {
             target,
             optimization,
             machine,
+            machine_cpu,
+            machine_features,
         };
         backend.ensure_generated_object_abi_anchor();
         backend
@@ -388,6 +428,45 @@ impl<'ctx> LlvmBackend<'ctx> {
         }
 
         result
+    }
+
+    /// Lookup after lowering, where every upstream proof LLVM consumes is
+    /// already expressed as instructions, declarations or module metadata.
+    /// Target-machine inputs outside the bitcode enter the same key. The
+    /// normal backend namespace binds the statically linked LLVM producer.
+    pub(crate) fn object_artifact(
+        &self,
+        location: &TirCacheLocation,
+    ) -> Option<LlvmObjectArtifact> {
+        if molt_ir::backend_environment::compilation_diagnostics_requested() {
+            return None;
+        }
+        let store = match location {
+            TirCacheLocation::ProcessRoot => CompilationCache::open_backend_namespace()?,
+            TirCacheLocation::Root(root) => {
+                CompilationCache::open_backend_namespace_under(root.clone())
+            }
+            TirCacheLocation::Directory(_) => return None,
+        };
+        // Emission also ensures this anchor. Include it in the cached input
+        // if a future lowering path constructs or replaces the LLVM module.
+        self.ensure_generated_object_abi_anchor();
+        let key = self.object_input_key();
+        Some(LlvmObjectArtifact { store, key })
+    }
+
+    fn object_input_key(&self) -> String {
+        let mut key = molt_ir::content_digest::CompilationCacheKey::new(b"molt-llvm-object-v1");
+        key.field(
+            b"optimization-pipeline",
+            self.optimization.pipeline().as_bytes(),
+        );
+        key.field(b"triple", self.machine.get_triple().as_str().to_bytes());
+        key.field(b"cpu", self.machine_cpu.as_bytes());
+        key.field(b"cpu-features", self.machine_features.as_bytes());
+        let bitcode = self.module.write_bitcode_to_memory();
+        key.field(b"lowered-llvm-module", bitcode.as_slice());
+        key.finish_hex()
     }
 
     /// Emit the target object for publication by the caller.

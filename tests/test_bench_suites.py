@@ -202,7 +202,7 @@ def test_scoreboard_plan_is_exact_and_precedes_workload_side_effects(
         pytest.fail("metadata-only plan crossed the measurement boundary")
 
     for module, name in (
-        (perf_scoreboard, "_resolve_system_cpython"),
+        (perf_scoreboard, "_resolve_benchmark_cpython"),
         (perf_scoreboard, "wait_for_quiescence"),
         (perf_scoreboard_cli, "_observe_cpython_runtime"),
         (bench_evidence, "admit_benchmark_workload"),
@@ -270,7 +270,7 @@ def test_scoreboard_plan_summary_lists_each_benchmark_once(
     def unexpected_work(*args: object, **kwargs: object) -> None:
         pytest.fail("plan summary crossed the measurement boundary")
 
-    monkeypatch.setattr(perf_scoreboard, "_resolve_system_cpython", unexpected_work)
+    monkeypatch.setattr(perf_scoreboard, "_resolve_benchmark_cpython", unexpected_work)
     assert (
         perf_scoreboard.main(
             ["--plan", "--set", "smoke", "--backend", "native", "--backend", "llvm"]
@@ -315,7 +315,7 @@ def test_scoreboard_plan_refuses_ambiguous_or_incompatible_selection(
     def unexpected_work(*args: object, **kwargs: object) -> None:
         pytest.fail("invalid plan crossed the measurement boundary")
 
-    monkeypatch.setattr(perf_scoreboard, "_resolve_system_cpython", unexpected_work)
+    monkeypatch.setattr(perf_scoreboard, "_resolve_benchmark_cpython", unexpected_work)
     with pytest.raises(SystemExit):
         perf_scoreboard.main(["--plan", *args])
 
@@ -378,7 +378,7 @@ def test_scoreboard_signals_reads_real_evidence_before_all_workload_side_effects
         for module, name in (
             (bench_suites, "benchmark_inventory"),
             (perf_scoreboard, "_resolve_benchmark_set"),
-            (perf_scoreboard, "_resolve_system_cpython"),
+            (perf_scoreboard, "_resolve_benchmark_cpython"),
             (perf_scoreboard, "_git_rev"),
             (perf_scoreboard, "wait_for_quiescence"),
             (perf_scoreboard, "gather_provenance"),
@@ -564,17 +564,12 @@ def test_scoreboard_forwards_distinct_build_and_execution_timeouts(
         ]
         assert cast(list[str], invocation["argv"])[2:] == argv
 
+    from tests.tools.perf_scoreboard_fixtures import benchmark_oracle_interpreter
+
     oracle = perf_scoreboard.CpythonOracle(
-        cmd=(sys.executable,),
-        executable=sys.executable,
-        version="3.12.15",
-        implementation="CPython",
-        sys_platform=sys.platform,
-        machine="fixture",
-        arch="fixture",
-        pointer_bits=64,
+        benchmark_oracle_interpreter(sys.executable, "3.12.15")
     )
-    monkeypatch.setattr(perf_scoreboard, "_resolve_system_cpython", lambda _: oracle)
+    monkeypatch.setattr(perf_scoreboard, "_resolve_benchmark_cpython", lambda _: oracle)
     monkeypatch.setattr(
         perf_scoreboard,
         "wait_for_quiescence",

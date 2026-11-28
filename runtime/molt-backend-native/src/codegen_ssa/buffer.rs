@@ -16,7 +16,7 @@ use super::builder::{CodegenBuilder, IntBinary, MachineKind};
 use super::custody::Operands;
 use super::function::FunctionCx;
 use super::value_table::HeldCarrier;
-use crate::tir::ops::TirOp;
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 fn require<B: CodegenBuilder>(b: &mut B, condition: B::Predicate, slow: B::Block, name: &str) {
@@ -54,9 +54,20 @@ fn normalize<B: CodegenBuilder>(b: &mut B, index: B::Word, extent: B::Word) -> B
 fn can_access<B: CodegenBuilder>(operands: &Operands<'_, B>, op: &TirOp) -> bool {
     !MOLT_REFCOUNT_ATOMIC
         && operands.held(op.operands[0]) == HeldCarrier::Boxed
+        && (!leased(op)
+            || op.operands[1..3]
+                .iter()
+                .all(|&id| operands.held(id) == HeldCarrier::RawI64))
         && op.operands[1..]
             .iter()
             .all(|&id| matches!(operands.held(id), HeldCarrier::Boxed | HeldCarrier::RawI64))
+}
+
+fn leased(op: &TirOp) -> bool {
+    matches!(
+        op.opcode,
+        OpCode::LoadPackedBuffer2d | OpCode::StorePackedBuffer2d
+    )
 }
 
 fn checked_buffer<B: CodegenBuilder>(
@@ -115,14 +126,54 @@ fn checked_slot<B: CodegenBuilder>(
     let in_bounds = b.both(row_in, col_in);
     require(b, in_bounds, cold, "buffer_in_bounds");
 
+    let data = b.load_word(buffer, BUFFER2D_STORAGE_DATA_OFFSET);
+    packed_slot(b, data, row, col, cols)
+}
+
+fn packed_slot<B: CodegenBuilder>(
+    b: &mut B,
+    data: B::Word,
+    row: B::Word,
+    col: B::Word,
+    cols: B::Word,
+) -> B::Value {
     // The constructor checks rows * cols and allocates that many i64s.
     // Together the two bounds establish that this address is in storage.
     let row_base = b.int_binary(IntBinary::Mul, row, cols, false);
     let index = b.int_binary(IntBinary::Add, row_base, col, false);
     let offset = b.shift_left(index, 3);
-    let data = b.load_word(buffer, BUFFER2D_STORAGE_DATA_OFFSET);
     let address = b.int_binary(IntBinary::Add, data, offset, false);
     b.word_to_address(address)
+}
+
+fn access_slot<B: CodegenBuilder>(
+    b: &mut B,
+    operands: &Operands<'_, B>,
+    op: &TirOp,
+    extents: Option<[u64; 2]>,
+    miss: B::Block,
+) -> B::Value {
+    if leased(op) {
+        let word = |b: &mut B, index| {
+            let value = operands.resolve(b, op.operands[index]);
+            b.expect_word(value)
+        };
+        let data = word(b, 1);
+        let stride = word(b, 2);
+        let row = exact_i64(b, operands, op.operands[3], miss);
+        let col = exact_i64(b, operands, op.operands[4], miss);
+        return packed_slot(b, data, row, col, stride);
+    }
+    let owner = checked_buffer(b, operands, op.operands[0], miss);
+    checked_slot(
+        b,
+        operands,
+        owner,
+        op.operands[1],
+        op.operands[2],
+        extents,
+        miss,
+    )
 }
 
 fn load_packed_i64<B: CodegenBuilder>(
@@ -132,16 +183,7 @@ fn load_packed_i64<B: CodegenBuilder>(
     extents: Option<[u64; 2]>,
     miss: B::Block,
 ) -> B::Word {
-    let owner = checked_buffer(b, operands, op.operands[0], miss);
-    let slot = checked_slot(
-        b,
-        operands,
-        owner,
-        op.operands[1],
-        op.operands[2],
-        extents,
-        miss,
-    );
+    let slot = access_slot(b, operands, op, extents, miss);
     b.load_word(slot, 0)
 }
 
@@ -152,23 +194,67 @@ fn commit_packed_store<B: CodegenBuilder>(
     extents: Option<[u64; 2]>,
     miss: B::Block,
 ) {
-    let owner = checked_buffer(b, operands, op.operands[0], miss);
-    let slot = checked_slot(
+    let slot = access_slot(b, operands, op, extents, miss);
+    let value = exact_i64(
         b,
         operands,
-        owner,
-        op.operands[1],
-        op.operands[2],
-        extents,
+        *op.operands.last().expect("buffer store value"),
         miss,
     );
-    let value = exact_i64(b, operands, op.operands[3], miss);
     b.store_word(slot, 0, value);
 }
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    pub(super) fn acquire_packed_buffer(&mut self, b: &mut B, op: &TirOp) {
+        let operands = self.operands();
+        let zero = b.constant(0);
+        let no = b.bit_constant(false);
+        let (data, stride, hit) = if can_access(&operands, op) {
+            let cold = b.create_block("packed_region_miss");
+            let done = b.create_block("packed_region_view");
+            let data = b.append_block_param(done, MachineKind::Word);
+            let stride = b.append_block_param(done, MachineKind::Word);
+            let hit = b.append_block_param(done, MachineKind::Bit);
+            let buffer = checked_buffer(b, &operands, op.operands[0], cold);
+            let tag = b.load_word(buffer, BUFFER2D_STORAGE_TAG_OFFSET);
+            let packed_tag = b.constant(BUFFER2D_STORAGE_PACKED);
+            let packed = b.compare(WordComparison::Equal, tag, packed_tag);
+            require(b, packed, cold, "packed_region_storage");
+            let min_rows = exact_i64(b, &operands, op.operands[1], cold);
+            let min_cols = exact_i64(b, &operands, op.operands[2], cold);
+            let rows = b.load_word(buffer, BUFFER2D_ROWS_OFFSET);
+            let cols = b.load_word(buffer, BUFFER2D_COLS_OFFSET);
+            let rows_fit = b.compare(WordComparison::UnsignedLessThan, min_rows, rows);
+            let cols_fit = b.compare(WordComparison::UnsignedLessThan, min_cols, cols);
+            let extents_fit = b.both(rows_fit, cols_fit);
+            require(b, extents_fit, cold, "packed_region_bounds");
+            let backing = b.load_word(buffer, BUFFER2D_STORAGE_DATA_OFFSET);
+            let yes = b.bit_constant(true);
+            b.jump(
+                done,
+                &[b.word_value(backing), b.word_value(cols), b.bit_value(yes)],
+            );
+            b.switch_to_block(cold);
+            b.jump(
+                done,
+                &[b.word_value(zero), b.word_value(zero), b.bit_value(no)],
+            );
+            b.switch_to_block(done);
+            (data, stride, hit)
+        } else {
+            (b.word_value(zero), b.word_value(zero), b.bit_value(no))
+        };
+        self.bind(op.results[0], data, HeldCarrier::RawI64);
+        self.bind(op.results[1], stride, HeldCarrier::RawI64);
+        self.bind(op.results[2], hit, HeldCarrier::RawBool);
+    }
+
     fn buffer_extents(&self, op: &TirOp) -> Option<[u64; 2]> {
-        self.plan.packed_buffer_extents(self.func, op.operands[0])
+        if leased(op) {
+            None
+        } else {
+            self.plan.packed_buffer_extents(self.func, op.operands[0])
+        }
     }
 
     pub(super) fn try_buffer_load(&mut self, b: &mut B, op: &TirOp) {

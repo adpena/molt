@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 import contextlib
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import re
 import signal
 import subprocess
 import sys
+from threading import Event
 import time
 from typing import Any, Callable, Generator, Mapping, Sequence
 
@@ -17,6 +19,9 @@ from molt.source_root import compiler_source_root
 from molt.cargo_execution_policy import (
     _wrapper_is_sccache,
     cargo_compiler_wrappers,
+    cargo_job_groups_fit,
+    cargo_output_paths,
+    cargo_profile_directory,
     memory_bounded_cargo_jobs,
     normalize_cargo_environment,
     require_cargo_build_capacity,
@@ -26,13 +31,12 @@ from molt.cargo_execution_policy import (
 )
 from molt.exact_json import loads_exact
 from molt.dx import (
-    DEFAULT_SCCACHE_CACHE_SIZE,
     control_state_dir,
     development_artifact_env,
     development_artifacts_requested,
-    pinned_sccache,
 )
 from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+from molt.rust_toolchain import cargo_configuration_value
 from molt.cli import progress as _progress
 from molt.cli.command_runtime import _run_completed_command
 from molt.llvm_wasi_tools import llvm_linker_candidates
@@ -306,39 +310,12 @@ def _maybe_enable_sccache(env: ProcessEnvironmentBuilder) -> None:
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
     if mode in {"0", "false", "no", "off"}:
         return
-    forced = mode in {"1", "true", "yes", "on"}
-    sccache = pinned_sccache(env)
+    defaults = development_artifact_env(compiler_source_root(), env, create_dirs=False)
+    sccache = defaults.get("RUSTC_WRAPPER")
     if sccache is None:
-        if forced:
-            _sccache_diag(
-                "MOLT_USE_SCCACHE set but the pinned sccache release is not "
-                "provisioned under MOLT_TARGET_ROOT (config/tool_releases.toml); "
-                "using direct rustc."
-            )
         return
-    # sccache delivers 0 cache hits on this Windows host and crashes builds
-    # mid-compile (os error 10054), converting cacheable compiler builds into
-    # multi-minute timeouts + manual reruns. Default it OFF on Windows (no value
-    # lost) unless explicitly forced; power users can set MOLT_USE_SCCACHE=1.
-    if os.name == "nt" and not forced:
-        _sccache_diag(
-            "disabled by default on Windows (0 cache hits + mid-compile crashes here); "
-            "set MOLT_USE_SCCACHE=1 to force. Using direct rustc."
-        )
-        return
-    cache_env = ProcessEnvironmentBuilder(env)
-    if not cache_env.get("SCCACHE_DIR"):
-        # The DX authority owns the artifact root. Deriving it here fell back to
-        # the checkout, which put the cache, and the server temp dir pinned
-        # beside it, inside the checkout.
-        defaults = development_artifact_env(
-            compiler_source_root(), env, create_dirs=False
-        )
-        if "SCCACHE_DIR" not in defaults:
-            return  # The canonical selection declined the proposed DX default.
-        cache_env["SCCACHE_DIR"] = defaults["SCCACHE_DIR"]
-    cache_env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
-    env.update(cache_env)
+    for key in ("SCCACHE_DIR", "SCCACHE_CACHE_SIZE"):
+        env[key] = defaults[key]
     env["RUSTC_WRAPPER"] = sccache
     _adopt_normalized_cargo_environment(env)
     _sccache_diag(
@@ -505,6 +482,7 @@ def _run_cargo_attempt(
     tempfile_runner: _TempfileCargoRunner | None,
     progress_label: str | None,
     resolved_environment: bool = False,
+    cancellation_requested: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     normalized_env = (
         env if resolved_environment else normalize_cargo_environment(env, cwd=cwd)[0]
@@ -533,6 +511,7 @@ def _run_cargo_attempt(
         encoding="utf-8",
         errors="strict",
         progress_label=progress_label,
+        cancellation_requested=cancellation_requested,
     )
 
 
@@ -544,6 +523,12 @@ class CargoPlanExecutionError(ValueError):
         self.cargo_result = cargo_result
 
 
+@dataclass(frozen=True, slots=True)
+class _CargoPreparation:
+    plan: RuntimeCargoPlan
+    materialize: Callable[[], None]
+
+
 def _run_resolved_cargo_plan(
     plan: RuntimeCargoPlan,
     *,
@@ -552,6 +537,7 @@ def _run_resolved_cargo_plan(
     label: str,
     tempfile_runner: _TempfileCargoRunner | None = None,
     progress_label: str | None = None,
+    preparation: _CargoPreparation | None = None,
 ) -> CargoExecutionResult:
     """Execute one attested plan without changing its tools or environment."""
     status = (
@@ -561,16 +547,68 @@ def _run_resolved_cargo_plan(
     )
     with _progress.subprocess_status(status, announce=True) as keepalive_label:
         plan.verify()
-        started = time.perf_counter()
-        build = _run_cargo_attempt(
-            list(plan.command),
-            cwd=plan.project_root,
-            env=plan.environment,
-            timeout=timeout,
-            tempfile_runner=tempfile_runner,
-            progress_label=keepalive_label,
-            resolved_environment=True,
-        )
+
+        def run_timed_attempt(
+            cancellation_requested: Callable[[], bool] | None = None,
+        ) -> tuple[subprocess.CompletedProcess[Any], float]:
+            started = time.perf_counter()
+            build = _run_cargo_attempt(
+                list(plan.command),
+                cwd=plan.project_root,
+                env=plan.environment,
+                timeout=timeout,
+                tempfile_runner=tempfile_runner,
+                progress_label=keepalive_label,
+                resolved_environment=True,
+                cancellation_requested=cancellation_requested,
+            )
+            return build, time.perf_counter() - started
+
+        if preparation is None or not _cargo_plans_can_overlap(plan, preparation.plan):
+            build, duration = run_timed_attempt()
+        else:
+            # Keep signal handling and runtime publication on the owning thread.
+            # The worker executes just the compiler's already verified Cargo plan.
+            if tempfile_runner is not None:
+                raise ValueError(
+                    "Overlapping Cargo requires a cancellable command runner"
+                )
+            cancelled = Event()
+            admitted: Future[bool] = Future()
+            run_background_attempt = _progress.background_task(run_timed_attempt)
+
+            def run_admitted_attempt() -> (
+                tuple[subprocess.CompletedProcess[Any], float] | None
+            ):
+                try:
+                    with _build_slot(wait=False) as slot:
+                        admitted.set_result(slot is not None)
+                        if slot is not None:
+                            return run_background_attempt(cancelled.is_set)
+                except BaseException as exc:
+                    if not admitted.done():
+                        admitted.set_exception(exc)
+                    raise
+                return None
+
+            with ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="molt-cargo"
+            ) as worker:
+                pending = worker.submit(run_admitted_attempt)
+                try:
+                    if admitted.result():
+                        preparation.materialize()
+                    result = pending.result()
+                except BaseException as exc:
+                    cancelled.set()
+                    if pending.done() and not pending.cancelled():
+                        worker_error = pending.exception()
+                        if worker_error is not None and worker_error is not exc:
+                            exc.add_note(
+                                f"Parallel compiler Cargo failed: {worker_error}"
+                            )
+                    raise
+            build, duration = run_timed_attempt() if result is None else result
     wrappers = sccache_compiler_wrappers(plan.environment)
     wrapper = wrappers[0][1] if wrappers else None
     failure_kind = (
@@ -582,7 +620,7 @@ def _run_resolved_cargo_plan(
         build,
         index=1,
         wrapper=wrapper,
-        duration_seconds=time.perf_counter() - started,
+        duration_seconds=duration,
         failure_kind=failure_kind,
     )
     result = CargoExecutionResult(build, attempts=(attempt,), retry_reason=None)
@@ -597,6 +635,62 @@ def _run_resolved_cargo_plan(
             wrapper, label, cwd=plan.project_root, env=plan.environment
         )
     return result
+
+
+def _cargo_plans_can_overlap(
+    compiler: RuntimeCargoPlan, runtime: RuntimeCargoPlan
+) -> bool:
+    """Check both output coordinates and the joint memory budget."""
+    if _build_slot_count() < 2:
+        return False
+
+    def profile_directories(plan: RuntimeCargoPlan) -> set[Path]:
+        profile = cargo_profile_directory(plan.cargo_profile)
+        roots = cargo_output_paths(
+            plan.command, cwd=plan.project_root, env=plan.environment
+        )
+        # An explicitly selected host triple still uses its target directory.
+        # Cargo also takes host profile locks for build scripts and proc macros.
+        paths = [
+            path
+            for root in roots
+            for path in (root / profile, root / plan.target / profile)
+        ]
+        return {Path(os.fspath(path.resolve()).casefold()) for path in paths}
+
+    try:
+        jobs = []
+        for plan in (compiler, runtime):
+            configured = cargo_configuration_value(
+                plan.cli_configuration, "build", "jobs"
+            )
+            raw = str(
+                configured
+                if configured is not None
+                else plan.environment.get("CARGO_BUILD_JOBS", "")
+            )
+            raw = raw.strip().removeprefix("+")
+            if (
+                not raw.isascii()
+                or not raw.isdecimal()
+                or int(raw) < 1
+                or any(
+                    plan.environment.get(name)
+                    for name in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS")
+                )
+            ):
+                return False
+            jobs.append(int(raw))
+        compiler_dirs = profile_directories(compiler)
+        runtime_dirs = profile_directories(runtime)
+        return not any(
+            left.is_relative_to(right) or right.is_relative_to(left)
+            for left in compiler_dirs
+            for right in runtime_dirs
+        ) and cargo_job_groups_fit(jobs)
+    except (OSError, RuntimeError, ValueError):
+        # The two producers still own and diagnose admission in serial order.
+        return False
 
 
 def _run_cargo_with_sccache_retry(
@@ -683,16 +777,19 @@ def _build_slot_dir() -> Path:
     return control_state_dir(root, "molt-build-slots")
 
 
-@contextlib.contextmanager
-def _build_slot() -> Generator[int]:
-    build_slot_dir = _build_slot_dir()
+def _build_slot_count() -> int:
     max_slots_raw = os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", "").strip()
     try:
         max_slots = int(max_slots_raw) if max_slots_raw else _MAX_CONCURRENT_BUILDS
     except ValueError:
         max_slots = _MAX_CONCURRENT_BUILDS
-    max_slots = max(1, max_slots)
+    return max(1, max_slots)
 
+
+@contextlib.contextmanager
+def _build_slot(*, wait: bool = True) -> Generator[int | None]:
+    build_slot_dir = _build_slot_dir()
+    max_slots = _build_slot_count()
     while True:
         for slot_idx in range(max_slots):
             slot_path = build_slot_dir / f"slot-{slot_idx}.lock"
@@ -703,5 +800,8 @@ def _build_slot() -> Generator[int]:
                 yield slot_idx
             finally:
                 _release_file_lock(handle)
+            return
+        if not wait:
+            yield None
             return
         time.sleep(0.05)

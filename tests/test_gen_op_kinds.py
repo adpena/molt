@@ -804,6 +804,11 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         "TryBuffer2dLoadI64",
         # Writes one exact packed cell after all guards have passed.
         "TryBuffer2dStoreI64",
+        # Lease admission and access touch only their exact buffer.
+        "TryAcquirePackedBuffer2d",
+        "LoadPackedBuffer2d",
+        "StorePackedBuffer2d",
+        "FrameArenaAdmits",
         "ProbeInlineField",
         "FrameEntryAdmits",
         "StringLiteralCellReady",
@@ -1428,6 +1433,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "CodeIs": "bool",
         "FunctionClosure": "dynbox",
         "RecursionAdmits": "bool",
+        "FrameArenaAdmits": "bool",
         "GlobalSlotBase": "i64",
         "GlobalSlotGet": "dynbox",
         "ModuleSlot": "i64",
@@ -1464,6 +1470,9 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
             "CheckedMul": ["operand", "bool"],
             "TryBuffer2dLoadI64": ["i64", "bool"],
             "TryBuffer2dStoreI64": ["bool"],
+            "TryAcquirePackedBuffer2d": ["i64", "i64", "bool"],
+            "LoadPackedBuffer2d": ["i64", "bool"],
+            "StorePackedBuffer2d": ["bool"],
             "ProbeInlineField": ["dynbox"],
             "FrameEntryAdmits": ["bool"],
             "StringLiteralCellReady": ["bool"],
@@ -4047,6 +4056,9 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
         "StoreIndex",
         "TryBuffer2dLoadI64",
         "TryBuffer2dStoreI64",
+        "TryAcquirePackedBuffer2d",
+        "LoadPackedBuffer2d",
+        "StorePackedBuffer2d",
     }
     expected_module = {
         "ModuleCacheDel",

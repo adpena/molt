@@ -62,6 +62,10 @@ pub struct TirOptimizationResourcePlan {
 }
 
 pub struct CachedTirCustody {
+    // All bodies in this result were optimized under these conditions.
+    // Partitioning and module passes use the same authority.
+    target_info: TargetInfo,
+    target_contract: String,
     optimized_tir_by_name: BTreeMap<String, TirFunction>,
     finalization_cache: Option<CompilationCache>,
 }
@@ -70,6 +74,7 @@ impl std::fmt::Debug for CachedTirCustody {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CachedTirCustody")
+            .field("target_contract", &self.target_contract)
             .field("optimized_tir_by_name", &self.optimized_tir_by_name)
             .field("finalization_cache", &self.finalization_cache.is_some())
             .finish()
@@ -77,8 +82,11 @@ impl std::fmt::Debug for CachedTirCustody {
 }
 
 impl CachedTirCustody {
-    fn new() -> Self {
+    fn new(target_info: TargetInfo) -> Self {
+        let target_contract = tir_pipeline_target_fingerprint(&target_info);
         Self {
+            target_info,
+            target_contract,
             optimized_tir_by_name: BTreeMap::new(),
             finalization_cache: None,
         }
@@ -140,7 +148,6 @@ pub enum TirOwnedModulePipelineMode {
 pub struct TirOwnedModulePipelineOptions<'a> {
     /// Present only when this job owns and can resize the emitted program storage.
     pub cell_registry: Option<&'a mut molt_ir::ModuleRegistryIR>,
-    pub target_info: &'a TargetInfo,
     pub module_name: &'a str,
     pub non_inlinable: &'a HashSet<String>,
     pub missing_tir_context: &'a str,
@@ -203,19 +210,18 @@ pub fn content_hash_for_function(
     function_content_hash(
         func_ir,
         table,
-        &preparation_key_prefix(cache_flavor, target_info),
+        &preparation_key_prefix(cache_flavor, &tir_pipeline_target_fingerprint(target_info)),
     )
 }
 
 fn preparation_key_prefix(
     cache_flavor: TirPipelineCacheFlavor,
-    target_info: &TargetInfo,
+    target_contract: &str,
 ) -> CompilationCacheKey {
     let mut key = CompilationCacheKey::new(b"molt-cached-tir-prepared-function-key-v1");
     key.field(b"pipeline-semantic-epoch", TIR_PIPELINE_SEMANTIC_EPOCH);
     key.field(b"cache-flavor", cache_flavor.cache_discriminant());
-    let target_fingerprint = tir_pipeline_target_fingerprint(target_info);
-    key.field(b"target-contract", target_fingerprint.as_bytes());
+    key.field(b"target-contract", target_contract.as_bytes());
     key
 }
 
@@ -588,7 +594,7 @@ where
     let cache_reuse_allowed = !options.tir_dump
         && !options.tir_stats
         && !molt_ir::backend_environment::compilation_diagnostics_requested();
-    let mut cached_tir_custody = CachedTirCustody::new();
+    let mut cached_tir_custody = CachedTirCustody::new(options.target_info);
     let mut tir_cache = match &options.cache {
         TirCacheLocation::ProcessRoot => CompilationCache::open_backend_namespace(),
         TirCacheLocation::Root(root) => {
@@ -628,7 +634,8 @@ where
         );
         let batch_count = work_batches.len();
         let tir_start = std::time::Instant::now();
-        let cache_prefix = preparation_key_prefix(options.cache_flavor, &options.target_info);
+        let cache_prefix =
+            preparation_key_prefix(options.cache_flavor, &cached_tir_custody.target_contract);
         // Pool workers serve concurrent compiles, so each work item runs
         // under its own compile's backend request scope.
         let request = backend_env::carry();
@@ -708,7 +715,7 @@ where
                         request.enter(|| {
                             optimize_tir_input(
                                 input,
-                                &options.target_info,
+                                &cached_tir_custody.target_info,
                                 options.tir_dump,
                                 options.tir_stats,
                             )
@@ -789,7 +796,6 @@ fn has_final_tir_operations(body: &TirFunction) -> bool {
 pub fn partition_cached_functions_before_drops(
     ir: &mut crate::SimpleIR,
     cached_tir: &mut CachedTirCustody,
-    target_info: &TargetInfo,
     max_ops: usize,
 ) -> BTreeMap<String, String> {
     // Final-TIR consumers never project ordinary functions. Only the structural
@@ -837,6 +843,7 @@ pub fn partition_cached_functions_before_drops(
         if changed.contains(function.name.as_str()) {
             // Only stubs and chunks acquired new SSA boundaries. Use their
             // new parameter and dominance facts before terminal drop insertion.
+            let target_info = &cached_tir.target_info;
             let mut tir = super::lower_from_simple::lower_to_tir_for_target(function, target_info);
             super::type_refine::refine_types(&mut tir);
             super::passes::run_pipeline(&mut tir, target_info);
@@ -891,13 +898,13 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
         cached_tir,
         options.missing_tir_context,
     );
-    let target_contract = tir_pipeline_target_fingerprint(options.target_info);
+    let target_info = &cached_tir.target_info;
     // Finalization consumes this custody. Retire the resident cache before
     // LLVM/Cranelift codegen starts retaining its own module-sized products.
     let mut finalization_store = cached_tir.finalization_cache.take();
     let mut finalization_cache = finalization_store
         .as_mut()
-        .map(|store| super::drop_phase::FinalizationCache::new(store, &target_contract));
+        .map(|store| super::drop_phase::FinalizationCache::new(store, &cached_tir.target_contract));
     let table = molt_ir::FunctionTable::from_rows(tir_functions.iter().map(|(is_extern, func)| {
         let kind = if *is_extern {
             molt_ir::function_table::FunctionRowKind::Extern
@@ -922,7 +929,7 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
             let mut module = TirModule::from_document(options.module_name, table, bodies);
             let outcome = super::module_phase::run_module_pipeline(
                 &mut module,
-                options.target_info,
+                target_info,
                 options.non_inlinable,
                 options.linkage,
                 options.cell_registry,
@@ -948,7 +955,7 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
                     .filter_map(|(index, (external, body))| {
                         (!*external).then_some((molt_ir::FunctionId::from_index(index), body))
                     }),
-                options.target_info,
+                target_info,
                 options.linkage,
                 &table,
                 finalization_cache.as_mut(),
@@ -1175,7 +1182,6 @@ mod tests {
             TirOwnedModulePipelineMode::TerminalDropsOnly,
         ] {
             let directory = cache_dir.join(format!("{mode:?}"));
-            let target = projection_test_options(&directory).target_info;
             let non_inlinable = HashSet::default();
             let finish = |mut run: TirPipelineRun, diagnostics: bool| {
                 assert_eq!(run.cached_tir.finalization_cache.is_some(), !diagnostics);
@@ -1184,7 +1190,6 @@ mod tests {
                     &mut run.cached_tir,
                     TirOwnedModulePipelineOptions {
                         cell_registry: None,
-                        target_info: &target,
                         module_name: "projection_fixture",
                         non_inlinable: &non_inlinable,
                         missing_tir_context: "cold/warm final body verification",
@@ -1316,7 +1321,7 @@ mod tests {
         let target_info = TargetInfo::native_release_fast();
         let non_inlinable = HashSet::default();
         let cache = || {
-            let mut cache = CachedTirCustody::new();
+            let mut cache = CachedTirCustody::new(target_info.clone());
             for f in functions.iter().filter(|f| !f.is_extern) {
                 cache.insert(
                     f.name.clone(),
@@ -1343,7 +1348,6 @@ mod tests {
         ] {
             let options = || TirOwnedModulePipelineOptions {
                 cell_registry: None,
-                target_info: &target_info,
                 module_name: "owned_source",
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "owned source test",
@@ -1449,7 +1453,7 @@ mod tests {
                 profile: None,
             };
             crate::validate_simple_ir(&ir).expect("valid source before outlining");
-            let mut cache = CachedTirCustody::new();
+            let mut cache = CachedTirCustody::new(target.clone());
             for function in &ir.functions {
                 cache.insert(
                     function.name.clone(),
@@ -1462,7 +1466,7 @@ mod tests {
             // The source row is metadata only. It cannot supply the optimized
             // definition's size, ops or ids to the splitter.
             ir.functions[0].ops.clear();
-            let sources = partition_cached_functions_before_drops(&mut ir, &mut cache, &target, 3);
+            let sources = partition_cached_functions_before_drops(&mut ir, &mut cache, 3);
             assert!(ir.functions.iter().all(|f| f.ops.is_empty()));
             assert!(sources.keys().any(|chunk| {
                 cache.optimized_tir_by_name[chunk]
@@ -1492,7 +1496,6 @@ mod tests {
                 &mut cache,
                 TirOwnedModulePipelineOptions {
                     cell_registry: None,
-                    target_info: &target,
                     module_name: "split_test",
                     non_inlinable: &HashSet::default(),
                     missing_tir_context: "partition test",
@@ -1562,9 +1565,9 @@ mod tests {
         );
         assert!(has_final_tir_operations(&body));
         let before = body.operation_count();
-        let mut cache = CachedTirCustody::new();
+        let mut cache = CachedTirCustody::new(target);
         cache.insert("guarded_megafunction".into(), body);
-        let sources = partition_cached_functions_before_drops(&mut ir, &mut cache, &target, 1);
+        let sources = partition_cached_functions_before_drops(&mut ir, &mut cache, 1);
         assert!(
             sources.is_empty(),
             "a body SimpleIR cannot express is not split"
@@ -2119,7 +2122,6 @@ mod tests {
             &mut run.cached_tir,
             TirOwnedModulePipelineOptions {
                 cell_registry: None,
-                target_info: &target_info,
                 module_name: "fact_graph_module",
                 non_inlinable: &non_inlinable,
                 missing_tir_context: "source-file test",

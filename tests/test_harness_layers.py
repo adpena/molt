@@ -118,6 +118,8 @@ def test_run_cmd_uses_harness_memory_guard(
     # (developer_host_context drops that run context).
     for name in ("TMPDIR", "TMP", "TEMP"):
         monkeypatch.delenv(name, raising=False)
+    # The guarded-command fixture has no provisioned Cargo toolchain.
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
 
     proc = harness_layers._run_cmd(
         ["python3", "--version"],

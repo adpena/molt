@@ -78,7 +78,7 @@ mod tests {
             (0..8)
                 .map(|index| NativeBatchJobSpec {
                     input_key: None,
-                    job_name: format!("invalid-job-{index}.json"),
+                    job_name: format!("invalid-job-{index}.msgpack"),
                     job: crate::NativeBatchObjectJob {
                         ir: molt_backend::SimpleIR {
                             functions: Vec::new(),
@@ -105,7 +105,7 @@ mod tests {
             let error = run_native_application_batches(&dir.join("out.a"), specs(), "test", None)
                 .expect_err("every job is invalid");
             assert!(
-                error.to_string().contains("invalid-job-0.json"),
+                error.to_string().contains("invalid-job-0.msgpack"),
                 "reported {error}"
             );
         }

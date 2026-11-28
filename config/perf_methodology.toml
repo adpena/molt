@@ -80,8 +80,10 @@ schema = "molt-perf-methodology-v1"
 # Tool source closure keys use the selected per-file content digests.
 # v159: measured builds share public configuration/option normalization;
 # sealed recipe inputs and explicit deployment ownership replace batch defaults.
-version = 162
-content_sha256 = "843047bd9ee4f6bf29b9d7647f24a361c32112b74107a0abfd309348a1175808"
+# v162: exact managed isolated CPython, shared workload custody and parity,
+# complete baseline samples, and matching observed oracle identities for comparisons.
+version = 164
+content_sha256 = "36a89180658f811bf82bcc96dd137c38c83af5183c91e49d02fb2727c0075b4d"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -135,9 +137,13 @@ reason = "names suspect landings and restoration commands after a record is writ
 path = "src/molt/python_environment_identity.py"
 reason = "verifies the selected exact CPython denominator before samples"
 
-[[mechanics]]
+[[methodology]]
 path = "src/molt/python_interpreter.py"
-reason = "canonical physical interpreter selection; the observed denominator image is recorded"
+role = "admits exact managed CPython and defines isolated randomized-hash reference launch policy"
+
+[[methodology]]
+path = "src/molt/python_environment_location.py"
+role = "owns lexical virtual-environment placement admission before benchmark interpreter startup"
 
 [[methodology]]
 path = "src/molt/backend_executable_names.py"
@@ -274,9 +280,9 @@ reason = "provenance digest of the compiler bytes"
 path = "src/molt/dx.py"
 reason = "scratch directory location for safe_run's reports"
 
-[[mechanics]]
+[[methodology]]
 path = "src/molt/python_runtime_identity.py"
-reason = "provenance identity of the oracle interpreter"
+role = "validates loaded reference runtime byte identity before cross-scoreboard comparisons"
 
 [[mechanics]]
 path = "src/molt/target_python.py"
@@ -542,6 +548,26 @@ role = "selects the locked native wheel for the admitted benchmark reference"
 [[mechanics]]
 path = "src/molt/python_environment_contract.py"
 reason = "validates the already observed reference runtime and its wheel target"
+
+[[mechanics]]
+path = "src/molt/host_python.py"
+reason = "frontend version helpers for non-benchmark interpreter consumers; managed benchmark release policy is governed separately"
+
+[[mechanics]]
+path = "src/molt/uv_environment.py"
+reason = "development image helpers outside the benchmark managed-only lookup and measured launch"
+
+[[mechanics]]
+path = "src/molt/python_native_locations.py"
+reason = "native include and library location helpers not reached by benchmark lexical venv admission"
+
+[[mechanics]]
+path = "src/molt/python_capture.py"
+reason = "transports runtime probe output outside samples; governed runtime validation and digest own comparison eligibility"
+
+[[mechanics]]
+path = "src/molt/python_native_dependency_custody.py"
+reason = "collects native dependency observations outside samples; their retained bytes enter the governed runtime closure key"
 
 [[mechanics]]
 path = "src/molt/python_file_node_custody.py"

@@ -514,6 +514,10 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n")
 
     for key, description in (
+        (
+            "alias_read_only_access",
+            "A checked packed access that only reads backing storage.",
+        ),
         ("ownership_held_view", "A result held by another owner."),
         (
             "late_compiled_function_reference",

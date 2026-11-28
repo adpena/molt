@@ -54,16 +54,28 @@ fn cache_families_do_not_consume_unrelated_process_settings() {
         .stdout(std::fs::File::create(&stdout).expect("retain stdout"))
         .stderr(std::fs::File::create(&stderr).expect("retain stderr"));
     let mut child = command.spawn().expect("start isolated cache families");
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // libtest prints each test as it runs. Bound a stuck child without
+    // giving every test in the suite one shared wall-clock allowance.
+    let idle_budget = Duration::from_secs(30);
+    let mut last_progress = Instant::now();
+    let mut observed_stdout_len = 0;
     let status = loop {
         if let Some(status) = child.try_wait().expect("poll isolated cache families") {
             break status;
         }
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        let stdout_len = std::fs::metadata(&stdout)
+            .expect("observe child progress")
+            .len();
+        if stdout_len > observed_stdout_len {
+            observed_stdout_len = stdout_len;
+            last_progress = now;
+        }
+        if now.duration_since(last_progress) >= idle_budget {
             child.kill().expect("stop timed out owned child");
             child.wait().expect("reap timed out owned child");
             panic!(
-                "cache families timed out; evidence: {}",
+                "cache families made no progress for {idle_budget:?}; evidence: {}",
                 artifacts.path().display()
             );
         }

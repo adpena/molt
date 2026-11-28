@@ -49,6 +49,12 @@ from tools.bench_reporting import write_json  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.build_state_layout import project_build_state_root  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
+from molt.python_environment_identity import PythonIdentityVerifier  # noqa: E402
+from molt.python_interpreter import (  # noqa: E402
+    PythonInterpreter,
+    benchmark_python_metadata,
+    resolve_benchmark_python,
+)
 from tools import perf_authority  # noqa: E402
 from tools.safe_run import RunOutcome, observed_run_outcome  # noqa: E402
 from tools.compat.comparison import Outputs, compare_outputs  # noqa: E402
@@ -472,7 +478,7 @@ def run_binary(
 
 
 def run_cpython(
-    script: str,
+    cpython_command: tuple[str, ...],
     timeout_s: float,
     *,
     workload: AdmittedBenchmarkWorkload,
@@ -480,7 +486,7 @@ def run_cpython(
 ) -> RunOutcome:
     """Run CPython and retain its complete oracle-qualified output."""
     invocation = workload.reference_invocation(
-        [sys.executable],
+        cpython_command,
         harness_memory_guard.canonical_harness_env(os.environ, repo_root=REPO_ROOT),
     )
     res = harness_memory_guard.guarded_completed_process(
@@ -581,6 +587,7 @@ def bench_one(
     timeout_run: float,
     *,
     workload: AdmittedBenchmarkWorkload,
+    baseline: PythonInterpreter | None = None,
     isolate_daemon: bool = False,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> dict:
@@ -593,11 +600,19 @@ def bench_one(
     workload.verify()
     extra_args = workload.record["molt_args"]
     reference_contract = benchmark_reference_contract(script)
+    if reference_contract.external_baselines and baseline is None:
+        raise ValueError("CPython benchmark requires an admitted reference command")
+    cpython_command = baseline.command if baseline is not None else None
 
     result: dict = {
         "workload": workload.record,
         "reference_runtime": reference_contract.reference_runtime,
         "reference_reason": reference_contract.reason,
+        "cpython_oracle": (
+            benchmark_python_metadata(baseline)
+            if baseline is not None and reference_contract.external_baselines
+            else None
+        ),
         "build_ok": False,
         "build_time_s": None,
         "run_ok": False,
@@ -605,6 +620,7 @@ def bench_one(
         "cpython_stderr": None,
         "molt_time_s": None,
         "cpython_time_s": None,
+        "cpython_ok": None,
         "molt_samples_s": [],
         "molt_warmup_samples_s": [],
         "cpython_samples_s": None,
@@ -613,7 +629,6 @@ def bench_one(
         "molt_speedup": None,
         "molt_cpython_ratio": None,
         "molt_ok": False,
-        "speedup": None,
         "output_match": None,
         "molt_output": None,
         "cpython_output": None,
@@ -645,10 +660,10 @@ def bench_one(
         if binary is None:
             result["error"] = build_err
             print(f"  BUILD FAIL: {build_err}", file=sys.stderr)
-            if reference_contract.external_baselines:
+            if cpython_command is not None and reference_contract.external_baselines:
                 cp_batch = collect_samples(
                     lambda: run_cpython(
-                        script, timeout_run, limits=limits, workload=workload
+                        cpython_command, timeout_run, limits=limits, workload=workload
                     ),
                     samples=samples,
                     warmup=warmup,
@@ -656,10 +671,12 @@ def bench_one(
                 )
                 result["cpython_samples_s"] = cp_batch.times_s
                 result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
+                result["cpython_ok"] = cp_batch.ok
                 if cp_batch.ok:
                     cp_time = statistics.median(cp_batch.times_s)
                     result["cpython_time_s"] = round(cp_time, 6)
                     result["cpython_output"] = cp_batch.first_output
+                    result["cpython_stderr"] = cp_batch.samples[0].stderr
                 else:
                     result["cpython_failure_detail"] = cp_batch.failed_detail or None
                     if cp_batch.failed_outcome is not None:
@@ -699,9 +716,10 @@ def bench_one(
                 result["molt_ok"] = True
         else:
             # --- Run CPython (multiple samples, take median) ---
+            assert cpython_command is not None
             cp_batch = collect_samples(
                 lambda: run_cpython(
-                    script, timeout_run, limits=limits, workload=workload
+                    cpython_command, timeout_run, limits=limits, workload=workload
                 ),
                 samples=samples,
                 warmup=warmup,
@@ -709,6 +727,7 @@ def bench_one(
             )
             result["cpython_samples_s"] = cp_batch.times_s
             result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
+            result["cpython_ok"] = cp_batch.ok
             cpython_output = cp_batch.first_output
             if cp_batch.ok:
                 result["cpython_time_s"] = round(statistics.median(cp_batch.times_s), 6)
@@ -760,7 +779,6 @@ def bench_one(
                 result["cpython_time_s"],
                 direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
             )
-            result["speedup"] = round(speedup, 1) if speedup is not None else None
             result["molt_speedup"] = speedup
             result["molt_cpython_ratio"] = cpython_ratio_block["value"]
             result["ratio_directions"] = {
@@ -803,7 +821,9 @@ def print_summary(results: dict[str, dict]) -> None:
         cpy_str = (
             f"{r['cpython_time_s']:.4f}" if r["cpython_time_s"] is not None else "-"
         )
-        speedup_str = f"{r['speedup']:.1f}x" if r["speedup"] is not None else "-"
+        speedup_str = (
+            f"{r['molt_speedup']:.1f}x" if r["molt_speedup"] is not None else "-"
+        )
 
         if r["output_match"] is True:
             match_str = "YES"
@@ -950,6 +970,15 @@ def _main(workload_custody: ExitStack) -> None:
     print()
 
     bench_suites.validate_benchmark_selection([Path(script) for script in benchmarks])
+    baseline = None
+    if any(
+        benchmark_reference_contract(script).external_baselines for script in benchmarks
+    ):
+        with PythonIdentityVerifier() as verifier:
+            baseline = resolve_benchmark_python(
+                env=os.environ, cwd=REPO_ROOT, verifier=verifier
+            )
+    cpython_command = baseline.command if baseline is not None else None
     workloads = {
         script: workload_custody.enter_context(
             admit_benchmark_workload(
@@ -957,7 +986,7 @@ def _main(workload_custody: ExitStack) -> None:
                 project_root=REPO_ROOT,
                 run_args=bench_suites.application_run_args(script),
                 molt_args=molt_args_for_benchmark(script),
-                cpython_command=(sys.executable,),
+                cpython_command=cpython_command,
             )
         )
         for script in benchmarks
@@ -986,6 +1015,7 @@ def _main(workload_custody: ExitStack) -> None:
                 timeout_build=args.timeout_build,
                 timeout_run=args.timeout_run,
                 workload=workloads[script],
+                baseline=baseline,
                 isolate_daemon=args.isolate_daemon,
                 limits=limits,
             )
@@ -993,7 +1023,11 @@ def _main(workload_custody: ExitStack) -> None:
 
             # Quick inline status
             if result["build_ok"] and result["run_ok"]:
-                speedup = f" ({result['speedup']:.1f}x)" if result["speedup"] else ""
+                speedup = (
+                    f" ({result['molt_speedup']:.1f}x)"
+                    if result["molt_speedup"]
+                    else ""
+                )
                 cpython = (
                     f"{result['cpython_time_s']:.4f}s"
                     if result["cpython_time_s"] is not None
@@ -1016,13 +1050,16 @@ def _main(workload_custody: ExitStack) -> None:
     except (AttributeError, OSError):
         load_avg = None
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now(UTC).isoformat(),
         "git_rev": _git_rev(),
         "super_run": False,
         "samples": args.samples,
         "warmup": args.warmup,
         "timing_mode": "warm_throughput" if args.warmup > 0 else "cold_first_run",
+        "cpython_oracle": (
+            benchmark_python_metadata(baseline) if baseline is not None else None
+        ),
         "system": {
             "platform": platform.platform(),
             "python": sys.version.split()[0],

@@ -367,7 +367,7 @@ that clears below the CPython floor. Every CPython scoreboard emission path must
 before writing, including checkpoint partials, rebuild-summary rewrites, merge outputs, and
 final run artifacts.
 
-**Gates:** `uv run python tools/perf_scoreboard.py --self-test` passes
+**Gates:** `uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py --self-test` passes
 unchanged (proves the extraction is behavior-preserving); a new
 `tests/tools/test_perf_schema.py` round-trips every cell in the committed
 `bench/scoreboard/quiet_native.json` through `validate_cell()` (proves the contract
@@ -428,7 +428,7 @@ with one WASM-only RED and asserts the **Backend** board FAILs while the **CPyth
 
 1. Add a **perf tier** to `tools/ci_gate.py` (a new `Check` with `tier=` and the smoke
    gate command), so the unified driver knows about perf. The smoke gate command:
-   `python3 tools/perf_scoreboard.py --set smoke --backend native --backend llvm
+   `uv run --no-project python tools/venv_exec.py python -B tools/perf_scoreboard.py --set smoke --backend native --backend llvm
    --profile release-fast --gate-mode regression --baseline-from-merge-base`.
 2. Extend `.github/workflows/perf-gate.yml` with a PR smoke/regression tier once
    `perf_scoreboard.py` owns the merge-base comparison contract. The current
@@ -844,7 +844,11 @@ stay in sealed provenance. SQL fixture preparation extracts literal data on the
 host; it does not add guest eval/exec support.
 
 CPython references consume the sealed driver, declared package roots and cwd
-with `-P -S -B`, deterministic hashing and no inherited Python startup controls.
+with exact managed `-I -S -B`, randomized hashing and no inherited Python startup
+controls. The existing explicit-root launcher preserves package/data lookup;
+isolated mode ignores `PYTHONPATH` and `PYTHONHASHSEED`. Repeated parity must
+remain stable without changing the sealed golden bytes. Golden production uses
+the same lower-level projection before its oracle file exists.
 Molt builds use the same project with hermetic module roots; native/WASM guests
 receive its actual data arguments and cwd. The persistent compiler pool is bounded
 by project domains, and retry restarts the affected domain. Sibling producers

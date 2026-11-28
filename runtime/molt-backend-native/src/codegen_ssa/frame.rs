@@ -461,32 +461,47 @@ fn load_slow<B: super::CodegenBuilder>(b: &mut B, home: B::Word) -> B::Word {
 }
 
 impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
-    pub(crate) fn frame_entry_admits(&mut self, b: &mut B, op: &TirOp) {
+    pub(crate) fn frame_admits(&mut self, b: &mut B, op: &TirOp) {
         use super::builder::SiteBody;
         use super::value_table::HeldCarrier;
-        use molt_codegen_abi::frame_record::FrameReservation;
+        use molt_codegen_abi::frame_record::{FrameProbe, FrameReservation};
 
-        let reservation = FramePrefix::reservation_from_attrs(&op.attrs)
+        let plan = FramePrefix::reservation_from_attrs(&op.attrs)
             .and_then(|counts| FrameReservation::from_counts(counts.homes, counts.depth));
         let operands = self.operands();
-        let function = op.operands[0];
-        let admitted = if let (Some(AttrValue::Str(owner)), Some(mut reservation)) =
-            (op.attrs.get("s_value"), reservation)
-            && operands.held(function) == HeldCarrier::Boxed
-        {
+        let zero = b.constant(0);
+        let empty = b.word_value(zero);
+        let mut callable = empty;
+        let mut code = empty;
+        let probe = plan.and_then(|mut reservation| {
+            if op.opcode == OpCode::FrameArenaAdmits {
+                return (reservation.arena_bytes > 0)
+                    .then_some(FrameProbe::Arena(reservation.arena_bytes));
+            }
+            assert_eq!(op.opcode, OpCode::FrameEntryAdmits);
+            let (Some(AttrValue::Str(owner)), [function]) =
+                (op.attrs.get("s_value"), op.operands.as_slice())
+            else {
+                return None;
+            };
+            if operands.held(*function) != HeldCarrier::Boxed {
+                return None;
+            }
             reservation.virtual_exception_level = FramePrefix::requires_virtual_level(&op.attrs);
+            reservation.callable_admitted = FramePrefix::region_callable_admitted(&op.attrs);
+            if FramePrefix::region_arena_admitted(&op.attrs) {
+                reservation.arena_bytes = 0;
+            }
+            callable = operands.resolve(b, *function);
+            let slot = b.program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner);
+            code = b.word_value(slot);
+            Some(FrameProbe::Entry(reservation))
+        });
+        let admitted = if let Some(probe) = probe {
             let thread = b.thread_record_word();
-            let callable = operands.resolve(b, function);
-            let code = b.program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner);
-            let unused_admission = b.constant(0);
             let result = b.site(
-                SiteBody::FrameEntryProbe { reservation },
-                &[
-                    b.word_value(thread),
-                    callable,
-                    b.word_value(code),
-                    b.word_value(unused_admission),
-                ],
+                SiteBody::FrameProbe { probe },
+                &[b.word_value(thread), callable, code, empty],
             );
             b.low_bit(b.expect_word(result))
         } else {

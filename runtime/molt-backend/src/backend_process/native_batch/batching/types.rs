@@ -1,4 +1,5 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::io::BufRead as _;
+use std::{collections::BTreeSet, io, path::PathBuf};
 
 use molt_backend::{ModuleRegistryIR, NativeBackendModuleContext, SimpleIR};
 use serde::Deserialize as _;
@@ -27,7 +28,7 @@ pub(crate) struct NativeApplicationArtifactResult {
     pub(crate) function_count: usize,
     pub(crate) batch_count: usize,
     pub(crate) output: crate::backend_process::input::ContentIdentity,
-    pub(crate) workers: Option<Vec<super::super::worker::NativeWorkerOrigin>>,
+    pub(crate) codegen: crate::backend_process::origin::CodegenOrigin,
 }
 
 /// Source stdlib constituents keep their independent content keys. Application
@@ -130,16 +131,26 @@ pub(crate) struct NativeBatchObjectJob {
 }
 
 impl NativeBatchObjectJob {
-    /// Close the object input contract before serialization. The worker receives
-    /// exactly this projection, with no out-of-band whole-program context path.
-    /// The job's worker transport: the JSON a worker reads from stdin or from a
-    /// preserved replay file.
-    pub(crate) fn encode(&self) -> std::io::Result<Vec<u8>> {
-        serde_json::to_vec(self).map_err(std::io::Error::other)
+    /// The worker reads this same envelope from stdin and preserved replay files.
+    pub(crate) fn encode(&self) -> io::Result<Vec<u8>> {
+        rmp_serde::to_vec_named(self).map_err(io::Error::other)
     }
 
-    /// Project the whole-program `context` to the rows this job's object can
-    /// consume. The shared context is borrowed, never cloned per job.
+    pub(crate) fn decode(reader: impl io::Read) -> io::Result<Self> {
+        let mut reader = io::BufReader::new(reader);
+        let job = rmp_serde::from_read(&mut reader)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        if !reader.fill_buf()?.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "trailing bytes after native batch object job",
+            ));
+        }
+        Ok(job)
+    }
+
+    /// Close the object input contract before serialization by projecting just
+    /// the rows this job can consume. The worker has no other context path.
     pub(crate) fn close_dependencies(mut self, context: &NativeBackendModuleContext) -> Self {
         let mut names = NativeBackendModuleContext::object_dependencies(self.ir.declarations());
         if let Some(manifest) = &self.app_callable_manifest {

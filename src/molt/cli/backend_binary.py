@@ -30,6 +30,7 @@ from molt.cli.cargo_build_reads import cargo_build_reads, uncovered_build_inputs
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.cargo_execution import (
     CargoPlanExecutionError,
+    _CargoPreparation,
     _run_resolved_cargo_plan,
 )
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
@@ -943,6 +944,7 @@ def _ensure_backend_binary(
     stage_timings_ms: dict[str, float] | None = None,
     product: HostToolProduct = HostToolProduct.BACKEND,
     environment: Mapping[str, str] | None = None,
+    cargo_preparation: _CargoPreparation | None = None,
 ) -> _BackendBinaryEnsureResult:
     """Admit one stored host-tool generation, building and publishing it once.
 
@@ -1325,6 +1327,7 @@ def _ensure_backend_binary(
                 timeout=cargo_timeout,
                 json_output=json_output,
                 label=f"{tool_label} build",
+                preparation=cargo_preparation,
             )
         except (CargoPlanExecutionError, CompilerIdentityError) as exc:
             return _backend_ensure_failure(
@@ -1347,7 +1350,16 @@ def _ensure_backend_binary(
             )
         finally:
             _record_backend_binary_stage_ms(
-                stage_timings_ms, "backend_binary_cargo_build", stage_start
+                stage_timings_ms,
+                "backend_binary_cargo_build"
+                if cargo_preparation is None
+                else "backend_binary_cargo_preparation_join",
+                stage_start,
+            )
+        if stage_timings_ms is not None and cargo_preparation is not None:
+            # The runtime may hold the join open beyond the compiler attempt.
+            stage_timings_ms["backend_binary_cargo_build"] = round(
+                build.elapsed_s * 1000.0, 6
             )
         if build.returncode != 0:
             return _backend_ensure_failure(

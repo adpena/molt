@@ -57,6 +57,7 @@ pub struct FrameReservation {
     pub arena_bytes: u32,
     pub recursion_depth: u32,
     pub virtual_exception_level: bool,
+    pub callable_admitted: bool,
 }
 
 impl FrameReservation {
@@ -68,8 +69,47 @@ impl FrameReservation {
             arena_bytes: u32::try_from(bytes).ok()?,
             recursion_depth: depth,
             virtual_exception_level: false,
+            callable_admitted: false,
         })
     }
+}
+
+/// Which part of the shared frame-entry contract a site observes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameProbe {
+    Entry(FrameReservation),
+    Arena(u32),
+}
+
+pub fn generate_frame_probe<B: FrameBuilder>(
+    b: &mut B,
+    thread: B::Word,
+    function: B::Word,
+    code_slot: B::Word,
+    probe: FrameProbe,
+) -> B::Word {
+    match probe {
+        FrameProbe::Entry(reservation) => {
+            generate_frame_entry_admits(b, thread, function, code_slot, reservation)
+        }
+        FrameProbe::Arena(bytes) => {
+            let fits = arena_admits(b, thread, bytes);
+            let result = b.local();
+            let no = b.constant(0);
+            b.set(result, no);
+            b.if_then(fits, |b| {
+                let yes = b.constant(1);
+                b.set(result, yes);
+            });
+            b.get(result)
+        }
+    }
+}
+
+fn arena_admits<B: FrameBuilder>(b: &mut B, thread: B::Word, bytes: u32) -> B::Predicate {
+    let start = b.load_word(thread, THREAD_RECORD_ARENA_TOP_OFFSET);
+    let end = b.add_immediate(start, i64::from(bytes));
+    arena_end_fits(b, thread, end)
 }
 
 /// Immutable identities in a synchronous record. The pending invocation lends
@@ -186,11 +226,15 @@ fn checked_callable<B: FrameBuilder>(b: &mut B, function: B::Word, code_slot: B:
     code
 }
 
-fn require_arena_space<B: FrameBuilder>(b: &mut B, thread: B::Word, end: B::Word) {
+fn arena_end_fits<B: FrameBuilder>(b: &mut B, thread: B::Word, end: B::Word) -> B::Predicate {
     let limit = b.load_word(thread, THREAD_RECORD_ARENA_LIMIT_OFFSET);
     // end <= limit. A zero-initialized chunk cannot fit a nonempty reservation.
     let past_limit = b.add_immediate(limit, 1);
-    let fits = b.compare(WordComparison::UnsignedLessThan, end, past_limit);
+    b.compare(WordComparison::UnsignedLessThan, end, past_limit)
+}
+
+fn require_arena_space<B: FrameBuilder>(b: &mut B, thread: B::Word, end: B::Word) {
+    let fits = arena_end_fits(b, thread, end);
     b.require(fits);
 }
 
@@ -219,11 +263,14 @@ pub fn generate_frame_entry_admits<B: FrameBuilder>(
                     virtual_parents,
                 );
                 b.require(recursion);
-                let start = b.load_word(thread, THREAD_RECORD_ARENA_TOP_OFFSET);
-                let end = b.add_immediate(start, i64::from(reservation.arena_bytes));
-                require_arena_space(b, thread, end);
+                if reservation.arena_bytes != 0 {
+                    let fits = arena_admits(b, thread, reservation.arena_bytes);
+                    b.require(fits);
+                }
             }
-            checked_callable(b, function, code_slot);
+            if !reservation.callable_admitted {
+                checked_callable(b, function, code_slot);
+            }
             if reservation.virtual_exception_level {
                 let admitted = crate::thread_record::generate_virtual_exception_level_admits(
                     b,

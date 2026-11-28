@@ -59,9 +59,9 @@ mod tests {
             );
             let context = plan.archive.linkage.project_object_dependencies(&names);
             // Use the actual worker's enum. Its untagged source alternative must
-            // round trip compact typed function references on the JSON transport.
-            let bytes = serde_json::to_vec(&NativeBatchInput::Terminal { terminal }).unwrap();
-            let NativeBatchInput::Terminal { terminal } = serde_json::from_slice(&bytes).unwrap()
+            // round trip compact typed function references on the worker transport.
+            let bytes = rmp_serde::to_vec_named(&NativeBatchInput::Terminal { terminal }).unwrap();
+            let NativeBatchInput::Terminal { terminal } = rmp_serde::from_slice(&bytes).unwrap()
             else {
                 panic!("application source was re-lifted")
             };

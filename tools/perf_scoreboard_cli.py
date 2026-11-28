@@ -127,10 +127,12 @@ def _observe_cpython_runtime(cmd: tuple[str, ...]) -> dict[str, object]:
         "from molt.python_runtime_identity import capture_current_python_runtime; "
         "print(json.dumps(capture_current_python_runtime(), sort_keys=True))"
     )
+    from molt.python_interpreter import benchmark_python_environment
+
     result = harness_memory_guard.guarded_completed_process(
         [*cmd, "-c", probe],
         prefix="MOLT_BENCH",
-        env=_cpython_run_env(),
+        env=benchmark_python_environment(_cpython_run_env()),
         capture_output=True,
         text=True,
         timeout=180.0,
@@ -268,7 +270,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
     parser.add_argument(
         "--cpython",
         default=None,
-        help="CPython oracle binary (default: system python3, e.g. 3.14 — NOT the venv)",
+        help="Installed uv-managed CPython release, minor (uses its guest pin), or executable; default: canonical guest release",
     )
     parser.add_argument("--samples", type=int, default=api["DEFAULT_SAMPLES"])
     parser.add_argument("--warmup", type=int, default=api["DEFAULT_WARMUP"])
@@ -632,7 +634,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
             )
         return 0
     try:
-        cpython_oracle = api["_resolve_system_cpython"](ns.cpython)
+        cpython_oracle = api["_resolve_benchmark_cpython"](ns.cpython)
     except RuntimeError as exc:
         print(f"[scoreboard] {exc}", file=sys.stderr)
         return 2
@@ -649,6 +651,16 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
     cpython_version = cpython_oracle.version
     cpython_identity = cpython_oracle.host_metadata()
     cpython_identity["molt_target_python"] = target_python.short
+    cpython_identity["command_executable_identity"] = executable_content_identity(
+        Path(cpython_identity["executable"]), label="measured CPython command"
+    )
+    cpython_identity["base_executable_identity"] = (
+        executable_content_identity(
+            Path(cpython_oracle.base_executable), label="measured CPython base image"
+        )
+        if cpython_oracle.base_executable
+        else None
+    )
     from tools.bench_evidence import admit_benchmark_workload
 
     try:
@@ -669,6 +681,11 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         return 2
 
     def verify_workloads() -> None:
+        current_interpreter = executable_content_identity(
+            Path(cpython_identity["executable"]), label="measured CPython command"
+        )
+        if current_interpreter != cpython_identity["command_executable_identity"]:
+            raise ValueError("CPython executable changed after oracle admission")
         for workload in workloads.values():
             workload.verify()
 
@@ -846,17 +863,6 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         )
         return 1
 
-    cpython_identity["command_executable_identity"] = executable_content_identity(
-        Path(cpython_identity["executable"]), label="measured CPython command"
-    )
-    cpython_identity["base_executable_identity"] = (
-        executable_content_identity(
-            Path(cpython_oracle.base_executable), label="measured CPython base image"
-        )
-        if cpython_oracle.base_executable
-        else None
-    )
-
     try:
         cpython_identity["runtime_closure"] = _observe_cpython_runtime(
             cpython_oracle.cmd
@@ -864,6 +870,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         provenance["producer_invocations"][0]["runtime_closure"] = (
             capture_current_python_runtime()
         )
+        verify_workloads()
     except (RuntimeError, ValueError, OSError) as exc:
         print(
             f"[scoreboard] refusing incomplete Python runtime identity: {exc}",
@@ -1104,7 +1111,9 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
         baseline_doc = None
         if ns.baseline is not None:
             bpath = (
-                api["_latest_baseline"](exclude=out_path)
+                api["_latest_baseline"](
+                    exclude=out_path, cpython_identity=cpython_identity
+                )
                 if ns.baseline == "__latest__"
                 else Path(ns.baseline)
             )
@@ -1114,7 +1123,10 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     baseline_doc = None
         api["apply_classification"](
-            cells, quiescent=bool(quiescence["quiet"]), baseline_doc=baseline_doc
+            cells,
+            quiescent=bool(quiescence["quiet"]),
+            baseline_doc=baseline_doc,
+            cpython_identity=cpython_identity,
         )
 
     doc = api["build_scoreboard_doc"](
@@ -1176,15 +1188,25 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
 
     if ns.baseline is not None:
         baseline_path = (
-            api["_latest_baseline"](exclude=out_path)
+            api["_latest_baseline"](exclude=out_path, cpython_identity=cpython_identity)
             if ns.baseline == "__latest__"
             else Path(ns.baseline)
         )
         if baseline_path is None or not baseline_path.exists():
-            print("[baseline] no prior scoreboard to diff against.", file=sys.stderr)
+            print(
+                "[baseline] no comparable prior scoreboard to diff against.",
+                file=sys.stderr,
+            )
         else:
             newly_red, regressed = api["diff_against_baseline"](doc, baseline_path)
             print(f"\n[baseline diff vs {baseline_path.name}]")
+            if newly_red and all(m.startswith("baseline refused:") for m in newly_red):
+                for message in newly_red:
+                    print(f"  {message}")
+                newly_red = []
+                continue_comparison = False
+            else:
+                continue_comparison = True
             if newly_red:
                 print("  NEWLY GATING:")
                 for m in newly_red:
@@ -1193,7 +1215,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
                 print("  REGRESSED (still passing):")
                 for m in regressed:
                     print(f"    {m}")
-            if not newly_red and not regressed:
+            if continue_comparison and not newly_red and not regressed:
                 print("  no new reds, no regressions.")
 
     return api["_gate_exit_code"](

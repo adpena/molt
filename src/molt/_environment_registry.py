@@ -5628,7 +5628,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_STARTUP_PYTHON",
       "output_neutral": false,
       "owner": "tools/startup_bench.py",
-      "summary": "Path of the development baseline CPython interpreter that tools/startup_bench.py measures against; unset uses the running interpreter. The selected interpreter is verified before measurement; an invalid explicit path fails without substitution. This does not select an interpreter for compiled Molt programs.",
+      "summary": "Path to the uv-managed CPython executable used for startup measurements. Unset uses the pinned CPython release for the default Molt target. An explicit path requires the exact managed executable and selects the same Python minor for the standalone Molt builds.",
       "values": []
     },
     {

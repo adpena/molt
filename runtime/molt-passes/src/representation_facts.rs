@@ -741,8 +741,12 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         // or publishing any operand.
         OpCode::TryBuffer2dLoadI64
         | OpCode::TryBuffer2dStoreI64
+        | OpCode::TryAcquirePackedBuffer2d
+        | OpCode::LoadPackedBuffer2d
+        | OpCode::StorePackedBuffer2d
         | OpCode::ProbeInlineField
-        | OpCode::FrameEntryAdmits => (IntegerOperandObservation::Never, false),
+        | OpCode::FrameEntryAdmits
+        | OpCode::FrameArenaAdmits => (IntegerOperandObservation::Never, false),
         OpCode::CheckedAdd | OpCode::CheckedMul => (binary, true),
         OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
             (binary, false)
@@ -752,15 +756,16 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         OpCode::IntToFloat => (unary, false),
         OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => (binary_result, true),
         OpCode::Pos | OpCode::BitNot => (unary_result, true),
-        // Late-TIR primitives read their operands as boxed words. UnboxInlineInt
-        // produces a raw word by construction, independent of operand carriers.
+        // Word predicates and guarded decodes consume the held carrier. The
+        // shared lowering checks a raw integer's range or uses its payload
+        // directly. None of these operations observes a binding's identity.
         OpCode::IsInlineInt
         | OpCode::UnboxInlineInt
         | OpCode::IsBoolWord
         | OpCode::IsFloatWord
         | OpCode::UnboxFloatWord
-        | OpCode::UnboxBoolWord
-        | OpCode::BoxInlineInt
+        | OpCode::UnboxBoolWord => (IntegerOperandObservation::Never, false),
+        OpCode::BoxInlineInt
         | OpCode::CodeIs
         | OpCode::DirectCall
         | OpCode::FunctionClosure
@@ -1508,4 +1513,48 @@ fn raw_carrier_worklist_requires_support_and_seed_reachability() {
         ),
         HashSet::from_iter([value(0), value(2), value(3), value(7)]),
     );
+}
+
+#[cfg(test)]
+#[test]
+fn word_predicate_keeps_full_width_frame_view_raw_until_object_use() {
+    for observes_object in [false, true] {
+        let mut func = TirFunction::new(
+            "word_predicate".into(),
+            vec![TirType::I64],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let input = func.blocks[&func.entry_block].args[0].id;
+        let view = func.fresh_value();
+        let flag = func.fresh_value();
+        let object = func.fresh_value();
+        let mut store = TirOp::new(OpCode::Copy, vec![input], vec![view]);
+        store.origin = Some(molt_ir::OpKind::FrameHomeStore);
+        store.attrs.insert("value".into(), AttrValue::Int(0));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops = vec![
+            store,
+            TirOp::new(OpCode::IsInlineInt, vec![view], vec![flag]),
+        ];
+        if observes_object {
+            entry
+                .ops
+                .push(TirOp::new(OpCode::BoxVal, vec![view], vec![object]));
+        }
+        let types = HashMap::from_iter([(input, TirType::I64), (view, TirType::I64)]);
+        let mut carriers = HashMap::from_iter([
+            (input, Repr::RawI64FullDeopt),
+            (view, Repr::RawI64FullDeopt),
+        ]);
+        constrain_boxed_binding_observations(&func, &mut carriers, &types);
+        assert_eq!(
+            carriers[&view],
+            if observes_object {
+                Repr::MaybeBigInt
+            } else {
+                Repr::RawI64FullDeopt
+            }
+        );
+    }
 }

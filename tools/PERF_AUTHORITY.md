@@ -79,8 +79,13 @@ seconds (`shard_partition.lpt_shards`), and runs 5 times per axis: primitives at
 N=0 (startup) and N=K (per-op slope `(I(K)-I(0))/ops`), benchmarks whole.
 Loop/control work stays in the slope; `reduce_ex` and `new_and_update` execute
 K/10 operations and recursion K/100 depth-100 traversals. CPython 3.12.16
-(`-I`) runs each workload once for output only; `compat.comparison.
-compare_outputs` (exact stdout, stderr and exit) decides `OUTPUT_DIFFERS`. The
+(`-I -S -B`) runs each external-reference workload once for output only;
+the channel-throughput and pointer-registry intrinsic workloads use their
+declared exact output oracle. `compat.comparison.
+compare_outputs` (exact stdout, stderr and exit) decides `OUTPUT_DIFFERS` after
+successful reference admission and execution. Reference or guard failure stops
+measurement before a compiler verdict; raw capture preserves line endings and
+invalid UTF-8 through lossless decoding. The
 measured program's exit, signal or timeout is rerun once and then
 `RUN_FAILED`. A compile error or compiler crash is `BUILD_FAILED`; a build the
 host stops (capacity refusal, timeout, memory limit, guard failure) and any
@@ -95,6 +100,15 @@ configuration and deployment-default authorities it uses), the native target tri
 the selected profiles and the tier; an axis compares only under one admitted
 workload identity (`bench_evidence`, `molt.benchmark-workload/2`). A second run
 for the same (commit, identity) answers from the stored record.
+
+The semantic reference uses the existing exact CPython instruction pin through
+managed-only admission and `-I -S -B`, independently of the tool harness and the
+wall-time suite's canonical guest default. Its launch and randomized-hash
+protocol joins the instrument identity. Current instruction records also retain
+the observed managed oracle; store writes, direct reads and identity listings
+recompute the digest and reject absent or inconsistent reference evidence.
+Historical records are not relabeled. Read-only status performs no interpreter
+discovery or installation.
 
 **Verdict.** The base is the nearest first-parent ancestor with a record of the
 same identity, within 500 commits. Per axis, on Molt's median count, RED needs
@@ -875,7 +889,7 @@ coordinates remain acceptance blockers. Keep the declared workload and target
 coverage intact; do not remove benchmarks, narrow the verified subset, or count
 skips as wins. Report runtime, build latency, startup, and memory separately.
 
-The semantic acceptance matrix retains CPython 3.12, 3.13, and 3.14 across the
+The semantic acceptance matrix retains CPython 3.12, 3.13, 3.14, and 3.15 across the
 declared verified subset. Asyncio, threading, multiprocessing, stdlib, and
 advertised third-party package coverage require coordinate-bound correctness
 evidence before their performance results can establish release acceptance.

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_metadata,
+    synthetic_workload,
+)
 import json
 from pathlib import Path
 
@@ -71,6 +74,13 @@ def test_ok_molt_rows_remain_comparable() -> None:
 
     assert len(rows) == 1
     assert rows[0].trend == "regressed"
+
+
+def test_retired_individual_speedup_cannot_bypass_reference_evidence() -> None:
+    old = _benchmarks({"molt_ok": True, "speedup": 10.0})
+    new = _benchmarks({"molt_ok": True, "speedup": 1.0})
+    assert "speedup" not in bench_diff._available_metrics(old, new)
+    assert bench_diff._compute_metric_diffs("speedup", old, new) == []
 
 
 def test_failed_wasm_ok_excludes_wasm_runtime_metrics() -> None:
@@ -235,11 +245,14 @@ def test_regression_gate_ignores_failed_gated_metrics(
 
 
 def test_diff_refuses_legacy_molt_timing_but_keeps_external_metrics() -> None:
+    oracle = benchmark_oracle_metadata()
     old = {
         "bench.py": {
             "workload": synthetic_workload("bench.py"),
             "molt_ok": True,
             "molt_time_s": 1.0,
+            "cpython_ok": True,
+            "cpython_oracle": oracle,
             "cpython_time_s": 2.0,
         }
     }
@@ -248,6 +261,8 @@ def test_diff_refuses_legacy_molt_timing_but_keeps_external_metrics() -> None:
             "workload": synthetic_workload("bench.py"),
             "molt_ok": True,
             "molt_time_s": 1.5,
+            "cpython_ok": True,
+            "cpython_oracle": oracle,
             "cpython_time_s": 3.0,
         }
     }
@@ -255,6 +270,20 @@ def test_diff_refuses_legacy_molt_timing_but_keeps_external_metrics() -> None:
         bench_diff._compute_metric_diffs("molt_time_s", old, new)
     external = bench_diff._compute_metric_diffs("cpython_time_s", old, new)
     assert len(external) == 1 and external[0].new == 3.0
+
+
+def test_explicit_cpython_diff_refuses_unbound_values_without_hiding_molt() -> None:
+    old = _benchmarks(
+        {"molt_ok": True, "molt_time_s": 1.0, "cpython_ok": True, "cpython_time_s": 2.0}
+    )
+    new = _benchmarks(
+        {"molt_ok": True, "molt_time_s": 1.5, "cpython_ok": True, "cpython_time_s": 3.0}
+    )
+
+    assert "cpython_time_s" not in bench_diff._available_metrics(old, new)
+    with pytest.raises(ValueError, match="cpython_oracle"):
+        bench_diff._compute_metric_diffs("cpython_time_s", old, new)
+    assert bench_diff._compute_metric_diffs("molt_time_s", old, new)[0].new == 1.5
 
 
 @pytest.mark.parametrize(

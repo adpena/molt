@@ -105,7 +105,9 @@ impl ApplicationPlanRecord {
         Ok(Some(NativeApplicationArtifactResult {
             function_count,
             batch_count: keys.len(),
-            workers: Some(origins),
+            codegen: crate::backend_process::origin::CodegenOrigin::NativeWorkers {
+                workers: origins,
+            },
             output,
         }))
     }

@@ -9,10 +9,13 @@ tool's ``--self-test`` (one real bench_fib build).
 from __future__ import annotations
 
 from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_interpreter,
+    benchmark_oracle_metadata,
     synthetic_workload,
     measure_admitted_cell,
 )
 
+from collections.abc import Mapping
 from dataclasses import asdict
 import hashlib
 import json
@@ -43,6 +46,7 @@ from tools import perf_schema as schema  # noqa: E402
 from tools import perf_scoreboard as ps  # noqa: E402
 from tools import perf_scoreboard_measure as measure  # noqa: E402
 from tools import perf_scoreboard_report as signal_report  # noqa: E402
+from molt.python_interpreter import BENCHMARK_PYTHON_ARGUMENTS  # noqa: E402
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 
 
@@ -517,6 +521,7 @@ def _board(
     *,
     planned_cells: tuple[schema.PlannedCell, ...] | None = None,
     run_state: Literal["partial", "complete"] = "complete",
+    cpython_identity: dict[str, object] | None = None,
 ) -> dict:
     full_provenance = {
         "origin_sha": "a" * 40,
@@ -530,6 +535,13 @@ def _board(
     }
     if provenance is not None:
         full_provenance.update(provenance)
+    if cpython_identity is None:
+        cpython_identity = {
+            **benchmark_oracle_metadata(version="3.14.0"),
+            "molt_target_python": "3.14",
+        }
+    version = cpython_identity["version"]
+    assert isinstance(version, str)
     return ps.build_scoreboard_doc(
         cells,
         planned_cells=(
@@ -543,21 +555,46 @@ def _board(
         run_state=run_state,
         benchmarks_run=[c.benchmark for c in cells],
         benchmarks_deferred=[],
-        cpython_version="3.14",
+        cpython_version=version,
         samples=5,
         warmup=2,
         provenance=full_provenance,
-        cpython_identity={
-            "cmd": ["test-python"],
-            "executable": "test-python",
-            "implementation": "CPython",
-            "version": "3.14",
-            "sys_platform": sys.platform,
-            "machine": ps.platform.machine(),
-            "arch": ps._host_arch(),
-            "pointer_bits": ps._host_pointer_bits(),
-        },
+        cpython_identity=cpython_identity,
     )
+
+
+def _oracle_with_observed_runtime(
+    *, executable: Path | None = None, runtime: Mapping[str, object] | None = None
+) -> dict[str, object]:
+    from molt.python_runtime_identity import runtime_explicit_file_content
+    from tests.tools.receipt_engine_fixtures import observed_runtime_closure
+
+    if runtime is None:
+        runtime = observed_runtime_closure()
+    if executable is None:
+        executable = Path(
+            getattr(sys, "_base_executable", None) or sys.executable
+        ).resolve()
+    base = runtime_explicit_file_content(runtime, "base-executable")
+    assert base is not None and isinstance(base["filename"], str)
+    filename = base["filename"]
+    if sys.platform == "win32":
+        filename = filename.casefold()
+    image = {
+        "entrypoint": filename,
+        "content_filename": filename,
+        "size": base["size"],
+        "sha256": base["sha256"],
+    }
+    version = runtime["version"]
+    assert isinstance(version, str)
+    return {
+        **benchmark_oracle_metadata(executable, version),
+        "molt_target_python": version.rsplit(".", 1)[0],
+        "command_executable_identity": image,
+        "base_executable_identity": dict(image),
+        "runtime_closure": runtime,
+    }
 
 
 def test_summary_names_process_scope_and_observational_delta(
@@ -1045,134 +1082,33 @@ def test_comparator_never_drops_failed_samples(monkeypatch, collector, failed_in
     )
 
 
-def _oracle_payload(
-    *,
-    implementation: str = "CPython",
-    version: str = "3.14.0",
-    executable: str = "candidate-real-python",
-    sys_platform: str | None = None,
-    machine: str | None = None,
-    pointer_bits: int | None = None,
-) -> str:
-    return json.dumps(
-        {
-            "implementation": implementation,
-            "version": version,
-            "executable": executable,
-            "sys_platform": sys_platform or sys.platform,
-            "machine": machine or ps.platform.machine(),
-            "pointer_bits": pointer_bits or ps._host_pointer_bits(),
-        }
-    )
-
-
-def test_cpython_oracle_resolver_requires_host_native_cpython(
+def test_scoreboard_adapts_the_managed_benchmark_interpreter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    wrong_machine = "arm64" if ps._host_arch() != "aarch64" else "x86_64"
-    candidates = [
-        ("store-python3",),
-        ("pypy",),
-        ("old-python",),
-        ("wrong-arch-python",),
-        ("good-python",),
-    ]
-    monkeypatch.setattr(ps, "_default_cpython_candidate_cmds", lambda: candidates)
-    monkeypatch.setattr(
-        ps.bench, "_canonical_interpreter", lambda executable: f"resolved:{executable}"
-    )
+    from molt.python_environment_identity import PythonIdentityVerifier
+    from molt.python_interpreter import PythonInterpreter, benchmark_python_metadata
 
-    def fake_metadata_probe(cmd, **kwargs):
-        name = str(cmd[0]).removeprefix("resolved:")
-        if name == "store-python3":
-            return SimpleNamespace(
-                returncode=9009,
-                stdout="",
-                stderr="Python was not found",
-            )
-        if name == "pypy":
-            return SimpleNamespace(
-                returncode=0,
-                stdout=_oracle_payload(implementation="PyPy", executable="pypy-real"),
-                stderr="",
-            )
-        if name == "old-python":
-            return SimpleNamespace(
-                returncode=0,
-                stdout=_oracle_payload(version="3.11.9", executable="old-real"),
-                stderr="",
-            )
-        if name == "wrong-arch-python":
-            return SimpleNamespace(
-                returncode=0,
-                stdout=_oracle_payload(
-                    executable="wrong-arch-real", machine=wrong_machine
-                ),
-                stderr="",
-            )
-        assert name == "good-python"
-        return SimpleNamespace(
-            returncode=0,
-            stdout=_oracle_payload(executable="good-real-python"),
-            stderr="",
-        )
+    selected = benchmark_oracle_interpreter(version="3.12.16")
 
-    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
+    def resolve(
+        *, override: str | None, cwd: Path, verifier: PythonIdentityVerifier
+    ) -> PythonInterpreter:
+        assert override == "3.12.16"
+        assert cwd == Path.cwd()
+        assert verifier.prefix.is_dir()
+        return selected
 
-    oracle = ps._resolve_system_cpython(None)
-
-    assert oracle.cmd == ("resolved:good-real-python",)
-    assert oracle.implementation == "CPython"
-    assert oracle.version == "3.14.0"
-    assert oracle.sys_platform == sys.platform
-    assert oracle.arch == ps._host_arch()
-    assert oracle.pointer_bits == ps._host_pointer_bits()
+    monkeypatch.setattr(ps, "resolve_benchmark_python", resolve)
+    oracle = ps._resolve_benchmark_cpython("3.12.16")
+    assert oracle.cmd == selected.command
+    assert oracle.version == selected.version
+    assert oracle.base_executable == selected.executable
+    assert oracle.host_metadata() == benchmark_python_metadata(selected)
 
 
-def test_cpython_oracle_windows_launcher_resolves_to_real_interpreter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        ps, "_default_cpython_candidate_cmds", lambda: [("py", "-3.14")]
-    )
-    monkeypatch.setattr(
-        ps.bench, "_canonical_interpreter", lambda executable: f"resolved:{executable}"
-    )
-
-    def fake_metadata_probe(cmd, **kwargs):
-        assert cmd[:2] == ["resolved:py", "-3.14"]
-        return SimpleNamespace(
-            returncode=0,
-            stdout=_oracle_payload(executable="C:/Python314/python.exe"),
-            stderr="",
-        )
-
-    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
-
-    oracle = ps._resolve_system_cpython(None)
-
-    assert oracle.cmd == ("resolved:C:/Python314/python.exe",)
-    assert oracle.executable == "resolved:C:/Python314/python.exe"
-
-
-def test_cpython_oracle_explicit_bad_baseline_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        ps.bench, "_canonical_interpreter", lambda executable: executable
-    )
-    monkeypatch.setattr(
-        ps,
-        "_metadata_probe",
-        lambda cmd, **kwargs: SimpleNamespace(
-            returncode=0,
-            stdout=_oracle_payload(implementation="PyPy", executable="pypy-real"),
-            stderr="",
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="explicit --cpython"):
-        ps._resolve_system_cpython("pypy")
+def test_cpython_oracle_explicit_bad_baseline_fails_closed(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="explicit --cpython.*unavailable"):
+        ps._resolve_benchmark_cpython(str(tmp_path / "missing-oracle"))
 
 
 def test_verdict_breakdown_routes_warm_vs_cold() -> None:
@@ -2182,15 +2118,9 @@ def test_main_refuses_nonauthoritative_before_batch_build(
     )
     monkeypatch.setattr(
         ps,
-        "_resolve_system_cpython",
-        lambda _explicit: SimpleNamespace(
-            version="3.12.13",
-            display="fake-cpython",
-            sys_platform="win32",
-            arch="x86_64",
-            pointer_bits=64,
-            cmd=(sys.executable,),
-            host_metadata=lambda: {"version": "3.12.13"},
+        "_resolve_benchmark_cpython",
+        lambda _explicit: ps.CpythonOracle(
+            benchmark_oracle_interpreter(sys.executable, "3.12.13")
         ),
     )
     monkeypatch.setattr(
@@ -2766,16 +2696,20 @@ def _shard_board(
 
 
 def test_merge_of_shard_boards_requires_every_shard(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     everything = ["tests/benchmarks/bench_a.py", "tests/benchmarks/bench_b.py"]
+    docs = [
+        _shard_board(benchmark, {**_shard_record(index, [benchmark], everything)})
+        for index, benchmark in enumerate(everything)
+    ]
     paths = []
-    for index, benchmark in enumerate(everything):
-        doc = _shard_board(benchmark, {**_shard_record(index, [benchmark], everything)})
+    for index, doc in enumerate(docs):
         assert ps.validate_board(doc) == []
         path = tmp_path / f"shard-{index}.json"
         path.write_text(json.dumps(doc), encoding="utf-8")
         paths.append(path)
+    monkeypatch.setattr(ps, "benchmark_python_host", _unexpected_projection_host)
 
     assert ps._merge_boards(paths[:1], tmp_path / "partial.json", no_gate=True) == 3
     assert "shards [1] of 2 are missing" in capsys.readouterr().err
@@ -2786,11 +2720,16 @@ def test_merge_of_shard_boards_requires_every_shard(
     merged = json.loads(merged_path.read_text(encoding="utf-8"))
     assert sorted(merged["benchmarks_run"]) == everything
     assert "shard" not in merged["provenance"]
+    assert merged["host"] == docs[0]["host"]
     assert ps.validate_board(merged) == []
 
 
+def _unexpected_projection_host() -> None:
+    pytest.fail("retained scoreboard projection inspected the current Python host")
+
+
 def test_rebuild_summary_preserves_selected_but_unrun_coordinates(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = schema.PlannedCell(
         "tests/benchmarks/bench_a.py", "native", "native", "release-fast"
@@ -2803,8 +2742,10 @@ def test_rebuild_summary_preserves_selected_but_unrun_coordinates(
     )
     path = tmp_path / "partial.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.setattr(ps, "benchmark_python_host", _unexpected_projection_host)
     assert ps._rebuild_summary(path, no_gate=True, allow_nonauthoritative=True) == 0
     rebuilt = json.loads(path.read_text(encoding="utf-8"))
+    assert rebuilt["host"] == doc["host"]
     assert rebuilt["planned_cells"] == [first.as_record(), missing.as_record()]
     assert rebuilt["coverage"]["selected"] == 2
     assert rebuilt["coverage"]["attempted"] == 1
@@ -2956,30 +2897,12 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     for script in scripts:
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text("print(1)\n", encoding="utf-8")
-    oracle_meta = {
-        "cmd": [sys.executable],
-        "executable": sys.executable,
-        "implementation": "CPython",
-        "version": "3.12.15",
-        "sys_platform": sys.platform,
-        "machine": ps.platform.machine(),
-        "arch": ps._host_arch(),
-        "pointer_bits": ps._host_pointer_bits(),
-    }
+    oracle = ps.CpythonOracle(benchmark_oracle_interpreter(sys.executable, "3.12.15"))
     api = dict(vars(ps))
     api.update(
         {
             "_resolve_benchmark_set": lambda *a, **kw: scripts,
-            "_resolve_system_cpython": lambda *a: SimpleNamespace(
-                version="3.12.15",
-                display="fixture-python",
-                sys_platform=sys.platform,
-                arch=ps._host_arch(),
-                pointer_bits=ps._host_pointer_bits(),
-                cmd=(sys.executable,),
-                base_executable=sys.executable,
-                host_metadata=lambda: dict(oracle_meta),
-            ),
+            "_resolve_benchmark_cpython": lambda *a: oracle,
             "wait_for_quiescence": lambda **kw: {
                 "quiet": True,
                 "loadavg_1m": 0,
@@ -3272,9 +3195,10 @@ def test_baseline_comparison_and_dimensional_win_bind_execution_engine(
     current.binary_size_kib = old.binary_size_kib / 2
     current.finalize(budget_ms=1000)
     _release_evidence(current)
-    prior = _board([old])
+    oracle = _oracle_with_observed_runtime()
+    prior = _board([old], cpython_identity=oracle)
     prior["host"]["execution_host"] = old.execution_host
-    candidate = _board([current])
+    candidate = _board([current], cpython_identity=oracle)
     candidate["host"]["execution_host"] = current.execution_host
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps(prior), encoding="utf-8")
@@ -3370,7 +3294,7 @@ def test_local_reference_runs_captured_src_import_without_site(tmp_path: Path) -
             row["path"] == "src/buffer_example.py" for row in admitted.record["sources"]
         )
         invocation = admitted.reference_invocation(
-            (sys.executable, "-I"),
+            (sys.executable, *BENCHMARK_PYTHON_ARGUMENTS),
             {"PYTHONPATH": "/unrelated/harness", **guard_custody_env()},
         )
         result = measure._run_measured_command(
@@ -3434,7 +3358,7 @@ def test_stock_reference_wheel_is_bound_to_only_its_cpython_command(
             SourcePackageInput(decoder, "src/msgpack/_cmsgpack.py", "source"),
         ],
     )
-    oracle = (sys.executable,)
+    oracle = (sys.executable, *BENCHMARK_PYTHON_ARGUMENTS)
     wheel = LockedReferenceWheel(
         "msgpack",
         "1.2.3",
@@ -3743,19 +3667,22 @@ def test_sealed_scoreboard_runs_admitted_inputs_and_rejects_wrong_reference(
     )
     actual_run = measure._run_measured_command
     labels = []
+    reference = (sys.executable, *BENCHMARK_PYTHON_ARGUMENTS)
 
     def observe(command, **kwargs):
         assert kwargs["cwd"] == workload.source_cwd
         assert command[-1] == "argument"
-        labels.append(kwargs["label"])
+        label = kwargs["label"]
+        labels.append(label)
+        if label.startswith("cpython-"):
+            assert tuple(command[:4]) == reference
+            if wrong_output:
+                # A real process that completes with wrong output exercises
+                # the sealed semantic comparison independently of admission.
+                command = [*reference, "-c", "print('wrong-but-successful')"]
         return actual_run(command, **kwargs)
 
     monkeypatch.setattr(measure, "_run_measured_command", observe)
-    # A successful independent process that prints a plausible wrong answer
-    # must fail even if the guest could produce the same wrong answer.
-    reference = (sys.executable,)
-    if wrong_output:
-        reference = (sys.executable, "-c", "print('wrong-but-successful')")
     kwargs = dict(
         script_path=workload.script,
         workload=workload,
@@ -4496,8 +4423,12 @@ def test_baseline_lifecycle_admission_checks_metadata_not_filename(
     old.repeat_stability = "STRADDLES"
     old.repeat_ci_lo, old.repeat_ci_hi = 0.95, 1.05
     old.binary_size_kib = 1000.0
+    oracle = _oracle_with_observed_runtime()
     baseline = _board(
-        [old], run_state=state, provenance={"authoritative": state == "complete"}
+        [old],
+        run_state=state,
+        provenance={"authoritative": state == "complete"},
+        cpython_identity=oracle,
     )
     assert schema.validate_board(baseline) == []
     ordinary_name = tmp_path / "cpython_zzzz.json"
@@ -4511,17 +4442,189 @@ def test_baseline_lifecycle_admission_checks_metadata_not_filename(
         ps.classify_cell(current, quiescent=True, baseline_cell=asdict(old))[0]
         == ps.CLASS_DIMENSIONAL_WIN
     )
-    ps.apply_classification([current], quiescent=True, baseline_doc=baseline)
+    ps.apply_classification(
+        [current], quiescent=True, baseline_doc=baseline, cpython_identity=oracle
+    )
     assert current.classification == (
         ps.CLASS_DIMENSIONAL_WIN if state == "complete" else ps.CLASS_TIE
     )
-    messages, regressed = ps.diff_against_baseline(_board([current]), ordinary_name)
+    messages, regressed = ps.diff_against_baseline(
+        _board([current], cpython_identity=oracle), ordinary_name
+    )
     if state == "partial":
         assert messages and "baseline run is not complete" in messages[0]
         assert not regressed
         assert "baseline run is not complete" in capsys.readouterr().err
     else:
         assert not messages and not regressed
+
+
+def _alternate_observed_oracle(
+    change: Literal["patch", "image", "closure"], root: Path
+) -> dict[str, object]:
+    from copy import deepcopy
+
+    from molt.exact_json import canonical_json_sha256
+    from molt.python_runtime_identity import (
+        runtime_explicit_file_content,
+        runtime_explicit_file_node,
+    )
+    from molt.toolchain_identity import executable_content_identity
+    from tests.tools.receipt_engine_fixtures import observed_runtime_closure
+
+    runtime = deepcopy(observed_runtime_closure())
+    executable = None
+    if change == "patch":
+        series, patch = str(runtime["version"]).rsplit(".", 1)
+        runtime["version"] = f"{series}.{int(patch) + 1}"
+    elif change == "image":
+        content = runtime_explicit_file_content(runtime, "base-executable")
+        assert content is not None and isinstance(content["filename"], str)
+        executable = root / content["filename"]
+        executable.write_bytes(b"replacement executable bytes\n")
+        image = executable_content_identity(executable, label="fixture executable")
+        node = runtime_explicit_file_node(runtime, "base-executable")
+        assert isinstance(node, dict)
+        node.update(size=image["size"], sha256=image["sha256"])
+    else:
+        runtime["cache_tag"] = f"{runtime['cache_tag']}-alternate"
+    del runtime["runtime_closure_sha256"]
+    runtime["runtime_closure_sha256"] = canonical_json_sha256(runtime)
+    return _oracle_with_observed_runtime(executable=executable, runtime=runtime)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "same",
+        "relocated",
+        "missing_image",
+        "missing_runtime",
+        "unbound_image",
+        "patch",
+        "image",
+        "closure",
+    ],
+)
+def test_regression_and_dimensional_classification_require_comparable_oracles(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    change: Literal[
+        "same",
+        "relocated",
+        "missing_image",
+        "missing_runtime",
+        "unbound_image",
+        "patch",
+        "image",
+        "closure",
+    ],
+) -> None:
+    from dataclasses import replace
+
+    prior_oracle = _oracle_with_observed_runtime()
+    candidate_oracle = dict(prior_oracle)
+    if change == "relocated":
+        candidate_oracle = _oracle_with_observed_runtime(
+            executable=tmp_path
+            / "elsewhere"
+            / Path(str(prior_oracle["executable"])).name
+        )
+    elif change == "missing_image":
+        candidate_oracle.pop("command_executable_identity")
+    elif change == "missing_runtime":
+        prior_oracle.pop("runtime_closure")
+    elif change == "unbound_image":
+        image = prior_oracle["command_executable_identity"]
+        assert isinstance(image, dict)
+        unbound = {**image, "sha256": "a" * 64}
+        for oracle in (prior_oracle, candidate_oracle):
+            oracle["command_executable_identity"] = unbound
+            oracle["base_executable_identity"] = unbound
+    elif change in {"patch", "image", "closure"}:
+        candidate_oracle = _alternate_observed_oracle(change, tmp_path)
+        old_key = schema.benchmark_oracle_comparison_key(prior_oracle)
+        new_key = schema.benchmark_oracle_comparison_key(candidate_oracle)
+        assert old_key is not None and new_key is not None and old_key != new_key
+
+    old_tie = _signal_cell(1.0)
+    old_tie.repeat_stability = "STRADDLES"
+    old_tie.repeat_ci_lo, old_tie.repeat_ci_hi = 0.95, 1.05
+    old_tie.classification = ps.CLASS_TIE
+    old_tie.binary_size_kib = 1000.0
+    new_tie = replace(old_tie, binary_size_kib=500.0)
+
+    def green(warm_molt_s: float) -> ps.Cell:
+        cell = _cell(
+            benchmark="tests/benchmarks/bench_sum.py",
+            warm_molt_s=warm_molt_s,
+            warm_cpython_s=0.23,
+            cold_molt_s=0.12,
+            cold_cpython_s=0.25,
+        )
+        cell.finalize(budget_ms=1000.0, authoritative=True)
+        _release_evidence(cell)
+        return cell
+
+    old_green, new_green = green(0.10), green(0.15)
+    baseline = _board([old_tie, old_green], cpython_identity=prior_oracle)
+    current = _board([new_tie, new_green], cpython_identity=candidate_oracle)
+    assert schema.validate_board(baseline) == []
+    assert schema.validate_board(current) == []
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    ps.apply_classification(
+        [new_tie],
+        quiescent=True,
+        baseline_doc=baseline,
+        cpython_identity=candidate_oracle,
+    )
+    newly_red, regressions = ps.diff_against_baseline(current, path)
+
+    if change in {"same", "relocated"}:
+        assert new_tie.classification == ps.CLASS_DIMENSIONAL_WIN
+        assert not newly_red
+        assert len(regressions) == 1 and "bench_sum.py" in regressions[0]
+    else:
+        assert new_tie.classification == ps.CLASS_TIE
+        assert not regressions
+        if change in {"missing_image", "unbound_image"}:
+            expected = (
+                "current CPython oracle lacks valid executable and runtime observations"
+            )
+        elif change == "missing_runtime":
+            expected = "baseline CPython oracle lacks valid executable and runtime observations"
+        else:
+            expected = "CPython oracle observations differ"
+        assert newly_red == [f"baseline refused: {expected}"]
+        assert expected in capsys.readouterr().err
+
+
+def test_latest_baseline_skips_newer_board_with_distinct_valid_oracle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current_oracle = _oracle_with_observed_runtime()
+    other_oracle = _alternate_observed_oracle("patch", tmp_path)
+    earlier = _board([_signal_cell()], cpython_identity=current_oracle)
+    later = _board([_signal_cell()], cpython_identity=other_oracle)
+    earlier["generated_at"] = "2026-11-25T12:00:00+00:00"
+    later["generated_at"] = "2026-11-26T12:00:00+00:00"
+    matching = tmp_path / "cpython_zzzz.json"
+    foreign = tmp_path / "cpython_aaaa.json"
+    for path, doc in ((matching, earlier), (foreign, later)):
+        assert schema.validate_board(doc) == []
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.setattr(signal_report, "SCOREBOARD_DIR", tmp_path)
+
+    assert signal_report._latest_baseline() == foreign
+    assert signal_report._latest_baseline(cpython_identity=current_oracle) == matching
+    assert (
+        signal_report._latest_baseline(
+            exclude=matching, cpython_identity=current_oracle
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("route", ["rebuild", "merge"])

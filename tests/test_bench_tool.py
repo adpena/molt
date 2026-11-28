@@ -21,11 +21,115 @@ import platform
 import molt.dx as molt_dx
 import pytest
 
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import install_module_view, run_guarded_test_process
+from tests.tools.perf_scoreboard_fixtures import (
+    benchmark_oracle_interpreter,
+    benchmark_oracle_metadata,
+)
 from tools import bench as bench_tool
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def unit_benchmark_reference(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These boundary tests mock sampling/building; live managed admission is
+    # exercised in test_python_interpreter rather than repeated per fixture.
+    monkeypatch.setattr(
+        bench_tool,
+        "_select_cpython_reference",
+        lambda: benchmark_oracle_interpreter(sys.executable),
+    )
+
+
+def test_isolated_reference_preserves_declared_imports_argv_data_and_cwd(
+    tmp_path: Path,
+) -> None:
+    from tools.bench_evidence import benchmark_reference_invocation
+
+    project = tmp_path / "project"
+    hostile = tmp_path / "hostile"
+    project.mkdir()
+    hostile.mkdir()
+    marker = tmp_path / "startup-ran"
+    (hostile / "sitecustomize.py").write_text(
+        f"from pathlib import Path; Path({str(marker)!r}).touch()\n", encoding="utf-8"
+    )
+    (project / "dependency.py").write_text("VALUE = 'declared'\n", encoding="utf-8")
+    (project / "input.txt").write_text("payload", encoding="utf-8")
+    script = project / "driver.py"
+    script.write_text(
+        "import json, sys\nfrom pathlib import Path\nfrom dependency import VALUE\n"
+        "print(json.dumps([VALUE, sys.argv[1], Path('input.txt').read_text(), "
+        "str(Path.cwd()), sys.flags.isolated, sys.flags.no_site, sys.dont_write_bytecode]))\n",
+        encoding="utf-8",
+    )
+    invocation = benchmark_reference_invocation(
+        (sys.executable,),
+        script,
+        {
+            **os.environ,
+            "PYTHONHOME": str(hostile),
+            "PYTHONPATH": str(hostile),
+            "PYTHONHASHSEED": "123",
+            "__PYVENV_LAUNCHER__": str(hostile / "python"),
+        },
+        run_args=("argument",),
+        import_roots=(project,),
+        cwd=project,
+    )
+    outputs = [
+        run_guarded_test_process(
+            invocation.command,
+            env=invocation.environment,
+            cwd=invocation.cwd,
+            timeout=20,
+            check=True,
+        )
+        for _ in range(2)
+    ]
+    assert outputs[0].stdout == outputs[1].stdout
+    assert json.loads(outputs[0].stdout) == [
+        "declared",
+        "argument",
+        "payload",
+        str(project),
+        1,
+        1,
+        True,
+    ]
+    assert not marker.exists()
+    assert not list(project.rglob("*.pyc"))
+    assert not any(name.startswith("PYTHON") for name in invocation.environment)
+    assert "__PYVENV_LAUNCHER__" not in invocation.environment
+
+
+def test_admitted_isolated_reference_imports_a_sibling_from_another_cwd(
+    tmp_path: Path,
+) -> None:
+    from tools.bench_evidence import admit_benchmark_workload
+
+    project = tmp_path / "project"
+    project.mkdir()
+    script = project / "driver.py"
+    script.write_text("from sibling import VALUE\nprint(VALUE)\n", encoding="utf-8")
+    (project / "sibling.py").write_text("VALUE = 42\n", encoding="utf-8")
+    with admit_benchmark_workload(
+        script,
+        project_root=project,
+        run_args=[],
+        molt_args=[],
+    ) as workload:
+        invocation = workload.reference_invocation((sys.executable,), os.environ)
+        result = run_guarded_test_process(
+            invocation.command,
+            env=invocation.environment,
+            cwd=tmp_path,
+            timeout=20,
+            check=True,
+        )
+    assert result.stdout == "42\n" and not result.stderr
 
 
 def _guarded_result(args, returncode, stdout, stderr):
@@ -1184,7 +1288,7 @@ def test_regular_benchmark_rejects_guest_warmup_output(
     assert result["molt_speedup"] is None
 
 
-@pytest.mark.parametrize("failure", ["exit", "timeout"])
+@pytest.mark.parametrize("failure", ["exit", "timeout", "oracle"])
 def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
     monkeypatch, tmp_path, failure
 ):
@@ -1207,6 +1311,7 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
             60.0,
         ),
         "timeout": ("import time\ntime.sleep(60)\n", 1.0),
+        "oracle": ("print('incorrect reference')", 60.0),
     }[failure]
     actual_guard = bench_tool.harness_memory_guard.guarded_completed_process
     observed = []
@@ -1231,12 +1336,12 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
         "measure_molt_run",
         lambda *args, **kwargs: pytest.fail("timed a guest without a reference"),
     )
-    with sealed_workload(tmp_path) as workload:
+    with sealed_workload(tmp_path, driver_source=program) as workload:
         result = bench_tool._bench_one(
             str(workload.script),
             1,
             1,
-            {"cpython": [sys.executable, "-c", program]},
+            {"cpython": [sys.executable, "-I", "-S", "-B"]},
             False,
             False,
             False,
@@ -1258,14 +1363,12 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
 
     # The failed warmup is the only launch: no retry, build or guest run.
     ((command, kwargs, guarded),) = observed
-    assert command == [
-        sys.executable,
-        "-c",
-        program,
-        "-P",
-        "-S",
-        "-B",
+    assert command[:4] == [sys.executable, "-I", "-S", "-B"]
+    assert command[4] == "-c"  # explicit sealed import-root bootstrap
+    assert command[-5:] == [
         str(execution_script),
+        "1",
+        str(source_cwd / "packages"),
         "data/input.txt",
         "7",
     ]
@@ -1289,6 +1392,14 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
         assert result["molt_failure_timed_out"] is False
         assert payload["stdout_tail"] == "partial reference\n"
         assert payload["stderr_tail"] == "independent reference failed\n"
+    elif failure == "oracle":
+        assert guarded.returncode == 0
+        assert guarded.timed_out is False
+        assert result["molt_failure_status"] == "output_mismatch"
+        assert result["molt_failure_returncode"] == 0
+        assert result["molt_failure_child_returncode"] == 0
+        assert payload["detail"] == "sealed_reference_oracle_mismatch"
+        assert payload["stdout_tail"] == "incorrect reference\n"
     else:
         assert guarded.timed_out is True
         assert result["molt_failure_status"] == "timeout"
@@ -1308,7 +1419,12 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
     assert result["cpython_time_s"] is None
     assert result["cpython_samples_s"] == []
     assert result["cpython_warmup_samples_s"] == []
-    assert result["molt_output_parity"]["reason"] == "reference_unavailable"
+    assert result["molt_output_parity"]["reason"] == (
+        "reference_oracle_mismatch" if failure == "oracle" else "reference_unavailable"
+    )
+    assert bench_tool._has_native_output_parity_failures(
+        {"benchmarks": {str(workload.script): result}}
+    ) is (failure == "oracle")
     assert result["molt_ok"] is False
     assert result["molt_time_s"] is None and result["molt_build_s"] is None
     assert result["molt_samples_s"] == []
@@ -3989,6 +4105,8 @@ def test_baseline_and_summary_consume_observation_without_profile_inference():
         "requested_profile": "release",
         "build_observation": observation,
         "molt_ok": True,
+        "cpython_ok": True,
+        "cpython_oracle": benchmark_oracle_metadata(),
         "molt_cpython_ratio": 1.0,
     }
     payload = {
