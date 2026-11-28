@@ -803,6 +803,67 @@ def test_jit_run_admits_the_profile_forwarded_to_its_build(
     assert entrypoint.main() == 0
 
 
+@pytest.mark.parametrize(
+    "flags,expected",
+    [
+        ([], "Oz"),
+        (["--wasm-opt-level=bounded"], "bounded"),
+        (["--wasm-opt-level=bounded", "--build-arg=--wasm-opt-level=O2"], "O2"),
+    ],
+)
+def test_release_wasm_run_resolves_post_link_optimization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    flags: list[str],
+    expected: str,
+) -> None:
+    from typing import cast
+
+    from molt.cli import entrypoint, script_commands
+
+    source = tmp_path / "main.py"
+    source.write_text("pass\n", encoding="utf-8")
+    seen = []
+
+    def run(*args: object, **kwargs: object) -> int:
+        request = selection.resolve_build_arguments(
+            cast("list[str]", args[11]),
+            file_path=str(source),
+            module=None,
+            project_root=tmp_path,
+            env={},
+        )
+        seen.append((request.profile, request.wasm_opt_level))
+        return 0
+
+    monkeypatch.setattr(script_commands, "_run_script_cross", run)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["molt", "run", "--target", "wasm", "--release", *flags, str(source)],
+    )
+    assert entrypoint.main() == 0
+    assert seen == [("release", expected)]
+
+
+def test_run_rejects_wasm_post_link_optimization_on_native(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from molt.cli import entrypoint, script_commands
+
+    source = tmp_path / "main.py"
+    source.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr(
+        script_commands,
+        "run_script",
+        lambda *_a, **_kw: pytest.fail("started native run"),
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["molt", "run", "--wasm-opt-level=bounded", str(source)]
+    )
+    assert entrypoint.main() != 0
+    assert "--wasm-opt-level requires a WASM run target" in capsys.readouterr().err
+
+
 def test_wasm_run_checks_effective_flags_not_superseded_occurrences():
     from molt.cli.script_commands import _wasm_run_build_args
 

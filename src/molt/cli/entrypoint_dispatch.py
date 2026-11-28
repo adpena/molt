@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import TargetKind, target_name
+from molt.compilation_target import TargetKind, is_wasm_target, target_name
 
 import argparse
 import contextlib
@@ -411,6 +411,9 @@ def _dispatch_entrypoint_command(
         run_script = present_build(_script_commands.run_script, **presentation)
         run_cross = present_build(_script_commands._run_script_cross, **presentation)
         build_args = _strip_leading_double_dash(args.build_arg)
+        if args.wasm_opt_level is not None:
+            # Explicit build arguments retain their usual precedence.
+            build_args[:0] = ("--wasm-opt-level", args.wasm_opt_level)
         if getattr(args, "quiet", False):
             build_args.append("--quiet")
         if getattr(args, "headless", False):
@@ -487,6 +490,8 @@ def _dispatch_entrypoint_command(
             )
             run_target = effective_build.target
             run_profile = effective_build.profile
+            if args.wasm_opt_level is not None and not is_wasm_target(run_target):
+                raise ValueError("--wasm-opt-level requires a WASM run target")
         except ValueError as exc:
             return _fail(str(exc), args.json, command="run")
         trusted = args.trusted

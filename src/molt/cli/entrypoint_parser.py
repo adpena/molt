@@ -66,6 +66,20 @@ def _add_build_presentation(command_parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_wasm_opt_level(command_parser: argparse.ArgumentParser) -> None:
+    command_parser.add_argument(
+        "--wasm-opt-level",
+        choices=WASM_OPT_LEVELS,
+        default=None,
+        help=(
+            "Post-link optimization for monolithic WASM. Use bounded for a "
+            "short pass sequence with a lower build cost. Dev builds run no "
+            "post-link optimizer unless a level is named; release builds default "
+            "to the selected deployment profile's shipping level."
+        ),
+    )
+
+
 def _add_build_parser(
     subparsers: argparse._SubParsersAction,
 ) -> argparse.ArgumentParser:
@@ -201,17 +215,7 @@ def _add_build_parser(
         default=None,
         help="Require linked wasm output for wasm targets (fails if linking is unavailable).",
     )
-    build_parser.add_argument(
-        "--wasm-opt-level",
-        choices=WASM_OPT_LEVELS,
-        default=None,
-        help=(
-            "Post-link optimization for monolithic WASM. Use bounded for a "
-            "short pass sequence with a lower build cost. Dev builds run no "
-            "post-link optimizer unless a level is named; release builds default "
-            "to the selected deployment profile's shipping level."
-        ),
-    )
+    _add_wasm_opt_level(build_parser)
     build_parser.add_argument(
         "--precompile",
         action="store_true",
@@ -1225,6 +1229,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "mlir (build + JIT via MLIR), or a target triple."
         ),
     )
+    _add_wasm_opt_level(run_parser)
     run_parser.add_argument(
         "--tier",
         choices=[tier.value for tier in RunTier],

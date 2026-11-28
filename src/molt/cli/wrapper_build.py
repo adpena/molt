@@ -654,10 +654,8 @@ def _run_wrapper_build(
                 command=command,
             ),
         )
-    wrapper_cache_enabled = resolved_build_entry is not None and request.cache
     cache_input = None
-    if wrapper_cache_enabled:
-        assert resolved_build_entry is not None
+    if resolved_build_entry is not None and request.cache:
         selected_entry, selection_error = _build_inputs._resolve_request_entry(
             request=request,
             project_root=project_root,
@@ -684,24 +682,28 @@ def _run_wrapper_build(
                     command=command,
                 ),
             )
-        try:
-            cache_input = _wrapper_build_cache_input(
-                resolved_build_entry=resolved_build_entry,
-                build_args=build_args,
-                request=request,
-                env=env,
-                project_root=project_root,
-            )
-        except (PythonSourceChangedError, CompilerIdentityError) as exc:
-            return None, 0.0, _fail(str(exc), json_output, command=command)
-        if cache_input is not None:
-            cached_contract = _read_wrapper_build_cache_contract(
-                resolved_build_entry=resolved_build_entry,
-                cache_input=cache_input,
-                tier=tier,
-            )
-            if cached_contract is not None:
-                return cached_contract, 0.0, None
+        # The wrapper cache can publish executables and JIT images. Cross
+        # artifacts use the child build's source and publication checks and
+        # its own cache. Keep the entry selection fence above for all targets.
+        if not is_wasm_target(request.target) and request.target is not TargetKind.MLIR:
+            try:
+                cache_input = _wrapper_build_cache_input(
+                    resolved_build_entry=resolved_build_entry,
+                    build_args=build_args,
+                    request=request,
+                    env=env,
+                    project_root=project_root,
+                )
+            except (PythonSourceChangedError, CompilerIdentityError) as exc:
+                return None, 0.0, _fail(str(exc), json_output, command=command)
+            if cache_input is not None:
+                cached_contract = _read_wrapper_build_cache_contract(
+                    resolved_build_entry=resolved_build_entry,
+                    cache_input=cache_input,
+                    tier=tier,
+                )
+                if cached_contract is not None:
+                    return cached_contract, 0.0, None
 
     # Show progress when building (no silent hangs).
     if not json_output and not verbose:

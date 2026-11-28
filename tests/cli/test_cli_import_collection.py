@@ -27782,6 +27782,11 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
+    monkeypatch.setattr(
+        cli_wrapper_build,
+        "_wrapper_build_cache_input",
+        lambda **kwargs: pytest.fail("WASM does not publish a wrapper cache entry"),
+    )
     _fix_wrapper_compiler_identity(monkeypatch)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
