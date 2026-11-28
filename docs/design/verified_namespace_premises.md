@@ -493,6 +493,15 @@ retaining syntax through the published index. A deferred fork shares its
 read-only admission. Nodes synthesized during transfer compute their
 coordinates from their own positions.
 
+Deferred jobs hold scope and history indices into the analyzer. Forks share
+immutable job descriptors and sealed lexical histories while retaining their
+own state, queue, and scope tables. A revisit replaces only the affected job
+and an initializer checkpoint snapshots only its open lexical history.
+In a Linux arm64 SQLGlot diagnostic over 1,200 binding projections, 3,031
+forks carrying 946,440 job references took 3.35 s before and 0.48 s after in
+process CPU time. The projected execution effects matched. This is partial
+frontend evidence for HF-938.
+
 Import metadata flow carries each disjunction as an immutable set of
 alternatives through expressions and completion edges. Each join applies the
 existing alternative limit before the flow continues. Unknown callback results
