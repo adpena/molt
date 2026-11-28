@@ -14,6 +14,7 @@ from bisect import bisect_left
 from dataclasses import dataclass, field, fields, replace
 from enum import Enum, IntFlag, StrEnum, auto
 from operator import attrgetter
+from threading import Lock
 from types import MappingProxyType
 from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Final, Literal, Mapping, NamedTuple, TypeAlias
@@ -1060,6 +1061,38 @@ class PythonOpaqueActivationReads:
         )
 
 
+@dataclass(slots=True, init=False)
+class _IndexedBindingRows[T]:
+    """One immutable lookup with lazily shared diagnostic projections."""
+
+    by_source: Mapping[PythonSourceKey, T]
+    _lock: Lock = field(compare=False, repr=False)
+    _values: tuple[T, ...] | None = field(compare=False, repr=False)
+    _items: tuple[tuple[PythonSourceKey, T], ...] | None = field(
+        compare=False, repr=False
+    )
+
+    def __init__(self, rows: dict[PythonSourceKey, T]) -> None:
+        self.by_source = MappingProxyType(rows)
+        self._lock = Lock()
+        self._values = None
+        self._items = None
+
+    def values_in_source_order(self) -> tuple[T, ...]:
+        with self._lock:
+            if self._values is None:
+                self._values = tuple(
+                    self.by_source[key] for key in sorted(self.by_source)
+                )
+            return self._values
+
+    def items_in_source_order(self) -> tuple[tuple[PythonSourceKey, T], ...]:
+        with self._lock:
+            if self._items is None:
+                self._items = tuple(sorted(self.by_source.items()))
+            return self._items
+
+
 @dataclass(frozen=True, slots=True, weakref_slot=True)
 class PythonBindingFacts:
     """Context-independent immutable facts and their shared query mappings."""
@@ -1067,10 +1100,6 @@ class PythonBindingFacts:
     source_digest: str
     target_python: tuple[int, int]
     target_sys_platform: str | None
-    expressions: tuple[PythonExpressionFact, ...]
-    statements: tuple[PythonStatementFact, ...]
-    iterations: tuple[tuple[PythonSourceKey, PythonIterationFact], ...]
-    calls: tuple[PythonCallSiteFact, ...]
     scopes: tuple[PythonScopeFact, ...]
     class_annotation_namespaces: frozenset[PythonSourceKey]
     state_count: int
@@ -1112,10 +1141,42 @@ class PythonBindingFacts:
     source_callables: tuple[tuple[PythonSourceKey, IdentityMask], ...]
     source_function_results: tuple[PythonFunctionResult, ...]
     source_activation_partitions: tuple[PythonActivationPartition, ...]
-    _expression_lookup: Mapping[PythonSourceKey, PythonExpressionFact]
-    _statement_lookup: Mapping[PythonSourceKey, PythonStatementFact]
-    _iteration_lookup: Mapping[PythonSourceKey, PythonIterationFact]
-    _call_lookup: Mapping[PythonSourceKey, PythonCallSiteFact]
+    _expressions: _IndexedBindingRows[PythonExpressionFact]
+    _statements: _IndexedBindingRows[PythonStatementFact]
+    _iterations: _IndexedBindingRows[PythonIterationFact]
+    _calls: _IndexedBindingRows[PythonCallSiteFact]
+
+    @property
+    def expressions(self) -> tuple[PythonExpressionFact, ...]:
+        return self._expressions.values_in_source_order()
+
+    @property
+    def statements(self) -> tuple[PythonStatementFact, ...]:
+        return self._statements.values_in_source_order()
+
+    @property
+    def iterations(self) -> tuple[tuple[PythonSourceKey, PythonIterationFact], ...]:
+        return self._iterations.items_in_source_order()
+
+    @property
+    def calls(self) -> tuple[PythonCallSiteFact, ...]:
+        return self._calls.values_in_source_order()
+
+    @property
+    def _expression_lookup(self) -> Mapping[PythonSourceKey, PythonExpressionFact]:
+        return self._expressions.by_source
+
+    @property
+    def _statement_lookup(self) -> Mapping[PythonSourceKey, PythonStatementFact]:
+        return self._statements.by_source
+
+    @property
+    def _iteration_lookup(self) -> Mapping[PythonSourceKey, PythonIterationFact]:
+        return self._iterations.by_source
+
+    @property
+    def _call_lookup(self) -> Mapping[PythonSourceKey, PythonCallSiteFact]:
+        return self._calls.by_source
 
     @classmethod
     def create(
@@ -1124,10 +1185,10 @@ class PythonBindingFacts:
         source_digest: str,
         target_python: tuple[int, int],
         target_sys_platform: str | None,
-        expressions: tuple[PythonExpressionFact, ...],
-        statements: tuple[PythonStatementFact, ...],
-        iterations: tuple[tuple[PythonSourceKey, PythonIterationFact], ...],
-        calls: tuple[PythonCallSiteFact, ...],
+        expressions: dict[PythonSourceKey, PythonExpressionFact],
+        statements: dict[PythonSourceKey, PythonStatementFact],
+        iterations: dict[PythonSourceKey, PythonIterationFact],
+        calls: dict[PythonSourceKey, PythonCallSiteFact],
         scopes: tuple[PythonScopeFact, ...],
         class_annotation_namespaces: frozenset[PythonSourceKey],
         state_count: int,
@@ -1165,14 +1226,11 @@ class PythonBindingFacts:
         source_function_results: tuple[PythonFunctionResult, ...] = (),
         source_activation_partitions: tuple[PythonActivationPartition, ...] = (),
     ) -> PythonBindingFacts:
+        """Publish fresh fact dictionaries. This takes their ownership."""
         return cls(
             source_digest=source_digest,
             target_python=target_python,
             target_sys_platform=target_sys_platform,
-            expressions=expressions,
-            statements=statements,
-            iterations=iterations,
-            calls=calls,
             scopes=scopes,
             class_annotation_namespaces=class_annotation_namespaces,
             state_count=state_count,
@@ -1197,14 +1255,10 @@ class PythonBindingFacts:
             source_callable_declarations=source_callable_declarations,
             source_function_results=source_function_results,
             source_activation_partitions=source_activation_partitions,
-            _expression_lookup=MappingProxyType(
-                {fact.node: fact for fact in expressions}
-            ),
-            _statement_lookup=MappingProxyType(
-                {fact.node: fact for fact in statements}
-            ),
-            _iteration_lookup=MappingProxyType(dict(iterations)),
-            _call_lookup=MappingProxyType({fact.node: fact for fact in calls}),
+            _expressions=_IndexedBindingRows(expressions),
+            _statements=_IndexedBindingRows(statements),
+            _iterations=_IndexedBindingRows(iterations),
+            _calls=_IndexedBindingRows(calls),
         )
 
     def expression_fact(self, node: ast.AST) -> PythonExpressionFact | None:
@@ -1339,7 +1393,7 @@ class PythonBindingIndex(PythonBindingFacts):
         module_import_flow: ModuleImportFlow,
     ) -> PythonBindingIndex:
         # Do not asdict/deepcopy or reconstruct lookups here. Every context
-        # shares the exact immutable tuples, payloads and mapping owners.
+        # shares the immutable payloads and the owners of their ordered views.
         return cls(
             **{
                 item.name: getattr(facts, item.name)
