@@ -273,16 +273,21 @@ fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
     };
     for (limit, expected) in [(9, 0), (10, 1)] {
         machine.write(RECURSION_LIMIT, 0, limit);
-        assert_eq!(
-            generate_frame_probe(
-                &mut machine,
-                THREAD,
-                function,
-                code_slot,
-                FrameProbe::Entry(admitted_arena),
-            ),
-            expected,
-        );
+        for callable_admitted in [false, true] {
+            assert_eq!(
+                generate_frame_probe(
+                    &mut machine,
+                    THREAD,
+                    function,
+                    code_slot + u64::from(callable_admitted),
+                    FrameProbe::Entry(FrameReservation {
+                        callable_admitted,
+                        ..admitted_arena
+                    }),
+                ),
+                expected,
+            );
+        }
     }
     let virtual_level = FrameReservation {
         virtual_exception_level: true,

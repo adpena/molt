@@ -53,6 +53,7 @@ struct Plan {
     blocks: Vec<BlockId>,
     bounds: BTreeMap<Source, [i64; 2]>,
     accesses: Vec<Access>,
+    callable_guards: Vec<BlockId>,
     checked_arithmetic: Vec<(BlockId, [bool; 2])>,
 }
 
@@ -441,6 +442,35 @@ fn select<T>(
             });
         }
         if !accesses.is_empty() {
+            let callable_guards = blocks
+                .iter()
+                .copied()
+                .filter(|block| {
+                    let block = &func.blocks[block];
+                    let [op] = block.ops.as_slice() else {
+                        return false;
+                    };
+                    let Terminator::CondBranch {
+                        cond, then_block, ..
+                    } = &block.terminator
+                    else {
+                        return false;
+                    };
+                    let [callable] = op.operands.as_slice() else {
+                        return false;
+                    };
+                    op.opcode == OpCode::FrameEntryAdmits
+                        && op.results.as_slice() == [*cond]
+                        && cyclic.contains(then_block)
+                        && matches!(op.attrs.get("s_value"), Some(AttrValue::Str(_)))
+                        && FramePrefix::reservation_from_attrs(&op.attrs).is_some()
+                        && !FramePrefix::region_callable_admitted(&op.attrs)
+                        && defs.get(callable).is_some_and(|(definition, _)| {
+                            !natural.contains(definition) && dom.dominates(*definition, preheader)
+                        })
+                        && live.is_live_out(preheader, *callable)
+                })
+                .collect();
             let checked_arithmetic = blocks
                 .iter()
                 .filter_map(|&block| {
@@ -476,6 +506,7 @@ fn select<T>(
                 blocks,
                 bounds,
                 accesses,
+                callable_guards,
                 checked_arithmetic,
             }) {
                 return Some(out);
@@ -700,6 +731,34 @@ fn guard_checked_arithmetic(
     [hit, range_check, accepted]
 }
 
+fn entry_guard(
+    func: &mut TirFunction,
+    mut op: TirOp,
+    success: (BlockId, Vec<ValueId>),
+    miss: BlockId,
+    miss_args: &[ValueId],
+) -> BlockId {
+    let id = func.fresh_block();
+    let ready = fresh(func, TirType::Bool);
+    op.results[0] = ready;
+    func.blocks.insert(
+        id,
+        TirBlock {
+            id,
+            args: vec![],
+            ops: vec![op],
+            terminator: Terminator::CondBranch {
+                cond: ready,
+                then_block: success.0,
+                then_args: success.1,
+                else_block: miss,
+                else_args: miss_args.to_vec(),
+            },
+        },
+    );
+    id
+}
+
 fn apply(func: &mut TirFunction, original: &TirFunction, plan: Plan) -> bool {
     let map = RegionClone::install(func, original, &plan.blocks);
     let Terminator::Branch { args, .. } = &original.blocks[&plan.preheader].terminator else {
@@ -707,6 +766,48 @@ fn apply(func: &mut TirFunction, original: &TirFunction, plan: Plan) -> bool {
     };
     let enter_args = args.clone();
     let mut success = (map.blocks[&plan.header], enter_args.clone());
+    // Check invariant callable identities after acquiring the views. Their
+    // successful edge excludes concurrent mutation in addition to the
+    // region's existing restriction on callbacks and effectful operations.
+    // A miss enters the original loop before any guest effects.
+    for block in plan.callable_guards {
+        let source = &original.blocks[&block].ops[0];
+        let mut entry = TirOp::new(
+            OpCode::FrameEntryAdmits,
+            source.operands.clone(),
+            vec![ValueId(0)],
+        );
+        entry
+            .attrs
+            .insert("s_value".into(), source.attrs["s_value"].clone());
+        let cloned = func.blocks.get_mut(&map.blocks[&block]).unwrap();
+        let op = &mut cloned.ops[0];
+        let prefix = FramePrefix::reservation_from_attrs(&op.attrs).unwrap();
+        if prefix.depth == 0 && !FramePrefix::requires_virtual_level(&op.attrs) {
+            let Terminator::CondBranch {
+                cond,
+                then_block,
+                then_args,
+                ..
+            } = &cloned.terminator
+            else {
+                unreachable!("selected conditional callable check")
+            };
+            let mut ready = TirOp::new(OpCode::ConstBool, vec![], vec![*cond]);
+            ready.attrs.insert("value".into(), AttrValue::Bool(true));
+            *op = ready;
+            cloned.terminator = Terminator::Branch {
+                target: *then_block,
+                args: then_args.clone(),
+            };
+        } else {
+            FramePrefix::admit_region_callable(&mut op.attrs);
+        }
+        success = (
+            entry_guard(func, entry, success, plan.header, &enter_args),
+            vec![],
+        );
+    }
     let mut views = BTreeMap::new();
     for (source, limits) in plan.bounds.into_iter().rev() {
         let mut ops = Vec::new();
@@ -766,8 +867,8 @@ fn apply(func: &mut TirFunction, original: &TirFunction, plan: Plan) -> bool {
         let block = func.blocks.get_mut(&id).unwrap();
         // Each path that can install a physical frame or call reentrant
         // Python leaves this region. The thread owns the arena, so one
-        // upper bound covers its virtual prefixes. Keep pending-exception,
-        // callable, and live recursion checks at their original sites.
+        // upper bound covers its virtual prefixes. Pending exceptions and
+        // the live recursion limit remain per-invocation observations.
         for op in &mut block.ops {
             if op.opcode == OpCode::FrameEntryAdmits
                 && let Some(prefix) = FramePrefix::reservation_from_attrs(&op.attrs)
@@ -817,26 +918,11 @@ fn apply(func: &mut TirFunction, original: &TirFunction, plan: Plan) -> bool {
         );
         check
     });
-    for mut check in literal_entries.into_values().chain(arena_guard) {
-        let id = func.fresh_block();
-        let ready = fresh(func, TirType::Bool);
-        check.results[0] = ready;
-        func.blocks.insert(
-            id,
-            TirBlock {
-                id,
-                args: vec![],
-                ops: vec![check],
-                terminator: Terminator::CondBranch {
-                    cond: ready,
-                    then_block: success.0,
-                    then_args: success.1,
-                    else_block: plan.header,
-                    else_args: enter_args.clone(),
-                },
-            },
+    for check in literal_entries.into_values().chain(arena_guard) {
+        success = (
+            entry_guard(func, check, success, plan.header, &enter_args),
+            vec![],
         );
-        success = (id, vec![]);
     }
     func.blocks.get_mut(&plan.preheader).unwrap().terminator = Terminator::Branch {
         target: success.0,
@@ -1235,6 +1321,88 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1]
         );
+    }
+
+    #[test]
+    fn invariant_callable_guard_moves_to_entry_without_moving_thread_checks() {
+        for depth in [0, 1] {
+            let (mut func, latch, miss) = guarded_loop(1);
+            let callable = func.blocks[&func.entry_block].args[0].id;
+            let Terminator::CondBranch {
+                else_block: header, ..
+            } = func.blocks[&latch].terminator
+            else {
+                panic!("guarded latch");
+            };
+            let guarded = func.fresh_block();
+            let admitted = fresh(&mut func, TirType::Bool);
+            let mut guard = TirOp::new(OpCode::FrameEntryAdmits, vec![callable], vec![admitted]);
+            guard
+                .attrs
+                .insert("s_value".into(), AttrValue::Str("expected_owner".into()));
+            guard.attrs.extend(
+                FramePrefix { homes: 0, depth }
+                    .reservation_attrs()
+                    .map(|(name, value)| (name.into(), value)),
+            );
+            func.blocks.insert(
+                guarded,
+                TirBlock {
+                    id: guarded,
+                    args: vec![],
+                    ops: vec![guard],
+                    terminator: Terminator::CondBranch {
+                        cond: admitted,
+                        then_block: header,
+                        then_args: vec![],
+                        else_block: miss,
+                        else_args: vec![],
+                    },
+                },
+            );
+            let Terminator::CondBranch { else_block, .. } =
+                &mut func.blocks.get_mut(&latch).unwrap().terminator
+            else {
+                unreachable!();
+            };
+            *else_block = guarded;
+            assert!(run(&mut func));
+            assert_eq!(
+                func.blocks[&guarded].ops[0].opcode,
+                OpCode::FrameEntryAdmits
+            );
+            let added: Vec<_> = func
+                .blocks
+                .iter()
+                .filter(|(id, _)| **id != guarded)
+                .flat_map(|(_, block)| block.ops.iter().map(move |op| (block, op)))
+                .filter(|(_, op)| op.opcode == OpCode::FrameEntryAdmits)
+                .collect();
+            assert_eq!(added.len(), 1 + depth as usize);
+            let (entry, probe) = added
+                .iter()
+                .find(|(_, op)| !FramePrefix::region_callable_admitted(&op.attrs))
+                .unwrap();
+            assert!(
+                matches!(entry.terminator, Terminator::CondBranch { else_block, .. } if else_block == header)
+            );
+            assert_eq!(
+                FramePrefix::reservation_from_attrs(&probe.attrs),
+                Some(FramePrefix::default())
+            );
+            if depth == 1 {
+                let (_, hot) = added
+                    .iter()
+                    .find(|(_, op)| FramePrefix::region_callable_admitted(&op.attrs))
+                    .unwrap();
+                assert_eq!(
+                    FramePrefix::reservation_from_attrs(&hot.attrs)
+                        .unwrap()
+                        .depth,
+                    1
+                );
+            }
+        }
     }
 
     #[test]

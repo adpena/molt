@@ -57,6 +57,7 @@ pub struct FrameReservation {
     pub arena_bytes: u32,
     pub recursion_depth: u32,
     pub virtual_exception_level: bool,
+    pub callable_admitted: bool,
 }
 
 impl FrameReservation {
@@ -68,6 +69,7 @@ impl FrameReservation {
             arena_bytes: u32::try_from(bytes).ok()?,
             recursion_depth: depth,
             virtual_exception_level: false,
+            callable_admitted: false,
         })
     }
 }
@@ -266,7 +268,9 @@ pub fn generate_frame_entry_admits<B: FrameBuilder>(
                     b.require(fits);
                 }
             }
-            checked_callable(b, function, code_slot);
+            if !reservation.callable_admitted {
+                checked_callable(b, function, code_slot);
+            }
             if reservation.virtual_exception_level {
                 let admitted = crate::thread_record::generate_virtual_exception_level_admits(
                     b,
