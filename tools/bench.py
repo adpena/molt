@@ -1786,7 +1786,9 @@ def _measure_runtime_command(
             ),
         )
         return failure
-    observed = observed_run_outcome(res, captured_stderr=res.child_stderr)
+    observed = observed_run_outcome(
+        res, captured_stderr=res.child_stderr, require_peak_rss=False
+    )
     if not observed.ok:
         failure = _classified_molt_failure(
             phase="run",
@@ -1815,7 +1817,7 @@ def _measure_runtime_command(
             failure = replace(
                 failure,
                 detail="measurement_evidence_missing",
-                message="missing direct-child execution clock, RSS or captured-output evidence",
+                message="missing direct-child execution clock or captured-output evidence",
             )
         _emit_molt_failure_summary(
             label or cmd[0], failure, prefix="Benchmark run failed"

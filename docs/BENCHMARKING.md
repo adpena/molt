@@ -259,7 +259,9 @@ Guest output cannot supply elapsed time, RSS, exit classification or closure
 metadata. The optional WASM capture binds the original regular file before
 truncation and after descendant closure, preserving exact guest bytes separately
 from retained Node diagnostics. The CLI diagnostic receipt is not measurement
-authority.
+authority. A timing and output-parity sample can complete without a peak RSS
+observation. The guard still enforces its limits, and resource qualification
+requires an attributable peak.
 To exercise single-module linking, add `--linked` (requires `wasm-ld` and
 `wasm-tools`).
 Use `tools/bench_individual.py` for focused native micro-benchmark slices. It

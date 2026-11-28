@@ -119,6 +119,24 @@ def test_observer_refuses_missing_captured_output(stream):
     assert getattr(outcome, stream) is None
 
 
+@pytest.mark.parametrize("require_peak_rss", [False, True])
+def test_observer_distinguishes_timing_from_peak_rss_evidence(
+    require_peak_rss: bool,
+) -> None:
+    # A short child can finish between samples, and inherited RSS cannot be
+    # attributed to its executable image.
+    completed = _completed(peak=None)
+    outcome = safe_run.observed_run_outcome(
+        completed,
+        captured_stderr=completed.child_stderr,
+        require_peak_rss=require_peak_rss,
+    )
+    assert outcome.ok is not require_peak_rss
+    assert outcome.status == ("error" if require_peak_rss else "ok")
+    assert outcome.elapsed_s == completed.child_elapsed_s
+    assert outcome.peak_rss_mib is None
+
+
 def test_observer_preserves_child_failure_before_missing_measurements():
     completed = _completed(
         returncode=7, child_returncode=7, child_elapsed_s=None, peak=None
