@@ -1163,7 +1163,7 @@ fn inlined_local_equal_to_a_caller_local_keeps_its_own_reference() {
     body(
         &mut caller,
         vec![
-            const_str(text),
+            owned_string(text),
             op(OpCode::Add, vec![text, text], vec![kept]),
             call(&callee, vec![text], vec![]),
             read(vec![text]),

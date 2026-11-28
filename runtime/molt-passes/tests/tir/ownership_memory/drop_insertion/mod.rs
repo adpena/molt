@@ -74,6 +74,10 @@ pub(super) fn finalizer_object(result: ValueId) -> TirOp {
 
 /// A direct external fixture call. Its target is separate from its arguments;
 /// naming it grants no purity, intrinsic identity, or primitive result fact.
+pub(super) fn owned_string(result: ValueId) -> TirOp {
+    named_call("fixture_new_string", vec![], vec![result])
+}
+
 pub(super) fn named_call(target: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     assert!(!target.is_empty(), "a direct fixture call needs a target");
     let mut call = op(OpCode::Call, operands, results);
@@ -240,22 +244,37 @@ enum Binding {
 #[derive(Default)]
 struct RcPath {
     bindings: molt_ir::deterministic_hash::HashMap<ValueId, Binding>,
-    counts: Vec<i64>,
+    counts: Vec<Option<i64>>,
     /// What each frame home holds, by code slot.
     homes: std::collections::BTreeMap<i64, Binding>,
 }
 
 impl RcPath {
     fn create(&mut self) -> usize {
-        self.counts.push(1);
+        self.counts.push(Some(1));
         self.counts.len() - 1
+    }
+
+    fn create_immortal(&mut self) -> usize {
+        self.counts.push(None);
+        self.counts.len() - 1
+    }
+
+    fn retain(&mut self, binding: Binding) {
+        if let Binding::Object(object) = binding
+            && let Some(count) = &mut self.counts[object]
+        {
+            *count += 1;
+        }
     }
 
     /// The binding of a defined value whose object is still referenced.
     fn read(&self, value: ValueId) -> Result<Binding, String> {
         match self.bindings.get(&value) {
             None => Err(format!("{value:?} is undefined on this path")),
-            Some(&Binding::Object(object)) if self.counts[object] <= 0 => {
+            Some(&Binding::Object(object))
+                if self.counts[object].is_some_and(|count| count <= 0) =>
+            {
                 Err(format!("{value:?} names released object {object}"))
             }
             Some(&binding) => Ok(binding),
@@ -264,9 +283,11 @@ impl RcPath {
 
     /// Releases one reference to what `binding` names; a raw carrier holds none.
     fn release(&mut self, binding: Binding, events: &mut Vec<Event>) {
-        if let Binding::Object(object) = binding {
-            self.counts[object] -= 1;
-            if self.counts[object] == 0 {
+        if let Binding::Object(object) = binding
+            && let Some(count) = &mut self.counts[object]
+        {
+            *count -= 1;
+            if *count == 0 {
                 events.push(Event::Freed(object));
             }
         }
@@ -367,7 +388,8 @@ fn home_access(op: &TirOp) -> Option<HomeAccess> {
 /// reference the function owns. Every other result names a new object holding
 /// one reference, except that a single-operand `Copy`
 /// names its operand's object (an owned alias with a reference of its own) and
-/// a `Bool` or `I64` result is a raw carrier. Getter results are independent
+/// a `Bool` or `I64` result is a raw carrier. Literal cells produce immortal
+/// values, which ignore reference operations. Getter results are independent
 /// owned references, as in the Python runtime ABI. RC operations, copies,
 /// branch arguments and exception payloads move bits. `IncRef`/`DecRef` adjust
 /// the object a value names. An op adopts the reference at each operand
@@ -437,16 +459,13 @@ pub(super) fn execute(
             }
             match op.opcode {
                 OpCode::IncRef | OpCode::DecRef => {
-                    let Binding::Object(object) = path.read(op.operands[0])? else {
+                    let binding @ Binding::Object(_) = path.read(op.operands[0])? else {
                         return Err(format!("{:?} of raw {:?}", op.opcode, op.operands[0]));
                     };
                     if op.opcode == OpCode::IncRef {
-                        path.counts[object] += 1;
+                        path.retain(binding);
                     } else {
-                        path.counts[object] -= 1;
-                        if path.counts[object] == 0 {
-                            events.push(Event::Freed(object));
-                        }
+                        path.release(binding, &mut events);
                     }
                 }
                 OpCode::TryStart => {}
@@ -471,11 +490,17 @@ pub(super) fn execute(
                         op.origin,
                         Some(kind) if copy_kind_mints_owned_alias_ref_table(kind)
                     );
-                    if owned_alias && let Binding::Object(object) = source {
-                        path.counts[object] += 1;
+                    if owned_alias {
+                        path.retain(source);
                     }
                     for &result in &op.results {
                         path.bindings.insert(result, source);
+                    }
+                }
+                OpCode::ConstStr | OpCode::ConstBytes | OpCode::ConstBigInt => {
+                    for &result in &op.results {
+                        let object = path.create_immortal();
+                        path.bindings.insert(result, Binding::Object(object));
                     }
                 }
                 _ => {
@@ -528,6 +553,7 @@ pub(super) fn execute(
                         }
                     }
                     for (object, &count) in path.counts.iter().enumerate() {
+                        let Some(count) = count else { continue };
                         let expected = parameters.iter().filter(|&&owner| owner == object).count()
                             + returned.iter().filter(|&&owner| owner == object).count();
                         let expected = i64::try_from(expected).unwrap();
@@ -586,12 +612,8 @@ fn adopt(path: &mut RcPath, events: &mut Vec<Event>, op: &TirOp) -> Result<(), S
         .zip(&adopted)
         .filter(|&(_, &adopts)| adopts)
     {
-        if let Binding::Object(object) = path.read(operand)? {
-            path.counts[object] -= 1;
-            if path.counts[object] == 0 {
-                events.push(Event::Freed(object));
-            }
-        }
+        let binding = path.read(operand)?;
+        path.release(binding, events);
     }
     for (&operand, _) in op
         .operands

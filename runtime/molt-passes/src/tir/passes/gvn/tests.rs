@@ -1002,7 +1002,7 @@ fn heap_literal(opcode: OpCode, result: ValueId, bound: bool) -> TirOp {
 }
 
 #[test]
-fn heap_literal_identity_preserves_independent_binding_lifetimes() {
+fn heap_literal_reuse_requires_no_reference_credit() {
     for opcode in [OpCode::ConstStr, OpCode::ConstBytes, OpCode::ConstBigInt] {
         for leader_bound in [false, true] {
             for replaced_bound in [false, true] {
@@ -1028,35 +1028,21 @@ fn heap_literal_identity_preserves_independent_binding_lifetimes() {
                 let replacement = &func.blocks[&func.entry_block].ops[1];
                 assert_eq!(replacement.opcode, OpCode::Copy);
                 assert_eq!(replacement.operands, [leader]);
-                assert_eq!(
-                    replacement.origin,
-                    (leader_bound || replaced_bound).then_some(molt_ir::OpKind::BindingAlias)
-                );
-                assert_eq!(
-                    matches!(
-                        replacement.attrs.get("bound_local"),
-                        Some(AttrValue::Bool(true))
-                    ),
-                    replaced_bound
-                );
-                // Exercise the real ownership consumer, not a mock of GVN's
-                // classification: one root for two temporary code literals,
-                // independent releases when either Python binding needs one.
+                assert_eq!(replacement.origin, None);
                 crate::tir::passes::copy_prop::run(&mut func);
                 crate::tir::passes::drop_insertion::run(
                     &mut func,
                     &mut crate::tir::analysis::AnalysisManager::new(),
                 );
                 crate::tir::verify::verify_function(&func).unwrap();
-                let releases = func
+                let reference_ops = func
                     .blocks
                     .values()
                     .flat_map(|b| &b.ops)
-                    .filter(|op| op.opcode == OpCode::DecRef)
+                    .filter(|op| matches!(op.opcode, OpCode::IncRef | OpCode::DecRef))
                     .count();
                 assert_eq!(
-                    releases,
-                    if leader_bound || replaced_bound { 2 } else { 1 },
+                    reference_ops, 0,
                     "{opcode:?}, leader_bound={leader_bound}, replaced_bound={replaced_bound}"
                 );
             }

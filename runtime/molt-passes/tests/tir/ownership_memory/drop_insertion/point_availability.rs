@@ -351,7 +351,7 @@ fn loop_with_body(
     let entry = func.entry_block;
     {
         let block = func.blocks.get_mut(&entry).unwrap();
-        block.ops = vec![const_str(iterator)];
+        block.ops = vec![named_call("fixture_new_iterator", vec![], vec![iterator])];
         block.terminator = Terminator::Branch {
             target: header,
             args: vec![],

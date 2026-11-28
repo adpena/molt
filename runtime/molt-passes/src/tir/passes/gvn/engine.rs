@@ -143,8 +143,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // Immediate constants keep backend-native representation and
                 // block-local numbering. Heap literals use the existing scoped
                 // table and strict/exception-aware dominance checks below.
-                // Their first constructor remains; Replacements owns whether
-                // a redundant materialization needs an independent binding ref.
+                // Their first constructor remains and owns the immortal cell.
                 let mut local_const_key_to_leader: HashMap<ValueKey, ValueId> = HashMap::default();
                 let mut local_value_number: HashMap<ValueId, ValueId> = HashMap::default();
 
@@ -293,7 +292,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     if replacements.is_empty() {
         return stats;
     }
-    let mut owners = Replacements::with_literal_reuse(func);
+    let mut owners = Replacements::new(func);
     for (bid, op_idx, leader) in &replacements {
         if let Some(block) = func.blocks.get_mut(bid)
             && *op_idx < block.ops.len()
@@ -312,7 +311,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 source_span: None,
             };
             replacement.inherit_source_from(&old);
-            owners.record_equivalent(&old, *leader);
+            owners.record(&old);
             block.ops[*op_idx] = replacement;
             stats.values_changed += 1;
         }

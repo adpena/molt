@@ -126,7 +126,9 @@ impl TransferPlan {
                     .filter(|&(_, transfer)| transfer != OperandTransfer::Borrowed)
                 {
                     let root = canon(operand);
-                    if eligibility.is_raw_scalar_root(root) {
+                    if eligibility.is_raw_scalar_root(root)
+                        || eligibility.is_immortal_literal_root(root)
+                    {
                         continue;
                     }
                     let movable = eligibility.is_droppable(root)
