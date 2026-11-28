@@ -22,7 +22,9 @@ import re
 import stat
 import threading
 import time
-from collections.abc import Callable
+from array import array
+from bisect import bisect_left
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, get_args
@@ -246,18 +248,18 @@ def _verified_index_snapshot(path: Path, budget: int) -> bytes | None:
     return data
 
 
-# After repeated exhausted searches in a fragmented store, remember which
-# 24-bit key prefixes occur in its immutable indices. A set bit still needs
-# the ordinary lookup (including its kind, priority and extent validation).
-_PREFIX_BYTES: Final = 1 << 21
-_PREFIX_AFTER_MISSES: Final = 16
-_PREFIX_INPUT_LIMIT: Final = 256 << 20
+# After repeated lookups in a fragmented store, route a digest prefix to
+# the immutable indices that contain it. Each word packs 32 bits of the
+# prefix and the index's ordinal in normal newest-first search order.
+_ROUTE_AFTER_LOOKUPS: Final = 16
+_ROUTE_INPUT_LIMIT: Final = 256 << 20
+_ROUTE_ORDINAL_MASK: Final = (1 << 32) - 1
 
 
-def _index_key_prefixes(indices: tuple[Path, ...]) -> bytearray | None:
-    prefixes = bytearray(_PREFIX_BYTES)
-    remaining = _PREFIX_INPUT_LIMIT
-    for path in indices:
+def _index_routes(indices: tuple[Path, ...]) -> array[int] | None:
+    entries: list[int] = []
+    remaining = _ROUTE_INPUT_LIMIT
+    for ordinal, path in enumerate(indices):
         try:
             with open(
                 path, "rb", opener=lambda name, _: os.open(name, _READ_FLAGS)
@@ -279,14 +281,15 @@ def _index_key_prefixes(indices: tuple[Path, ...]) -> bytearray | None:
                     kind_end = line.find(b" ")
                     if kind_end < 0:
                         return None
-                    prefix = int(line[kind_end + 1 : kind_end + 7], 16)
-                    prefixes[prefix >> 3] |= 1 << (prefix & 7)
+                    prefix = int(line[kind_end + 1 : kind_end + 9], 16)
+                    entries.append((prefix << 32) | ordinal)
                 # Only content-addressed, complete snapshots prove absence.
                 if size != info.st_size or digest.hexdigest() != path.stem:
                     return None
         except (OSError, ValueError):
             return None
-    return prefixes
+    entries.sort()
+    return array("Q", entries)
 
 
 def _read_indices(indices: tuple[Path, ...]) -> _RecordIndex:
@@ -321,8 +324,7 @@ class FrontendRecordFiles:
         self._index_generation: tuple[int, int, int] | None = None
         self._index_snapshots: dict[Path, bytes | None] = {}
         self._index_snapshot_budget = _RESIDENT_INDEX_BYTES
-        self._key_prefixes: bytearray | None = None
-        self._exhausted_searches = 0
+        self._routes: array[int] | None = None
         self._pending: _RecordIndex = {}
         self._payloads: dict[str, bytes] = {}
         self._payload_bytes = 0
@@ -393,25 +395,29 @@ class FrontendRecordFiles:
             self._lookups.clear()
             self._index_snapshots.clear()
             self._index_snapshot_budget = _RESIDENT_INDEX_BYTES
-            self._key_prefixes = None
-            self._exhausted_searches = 0
+            self._routes = None
             self._index_generation = generation
         if address in self._lookups:
             return self._lookups[address]
         if (
-            self._exhausted_searches == _PREFIX_AFTER_MISSES
+            self._routes is None
+            and len(self._lookups) == _ROUTE_AFTER_LOOKUPS
             and len(self._indices) > _MERGE_INDEX_FILES
         ):
-            self._exhausted_searches += 1
-            self._key_prefixes = _index_key_prefixes(self._indices)
+            self._routes = _index_routes(self._indices)
             if self._directory_generation() != generation:
                 # Publication or compaction raced the scan. Observe the new
-                # generation before using any negative result.
+                # generation before using any result from the old route.
                 return self._location(kind, key)
-        if self._key_prefixes is not None:
-            prefix_bits = int(key[:6], 16)
-            if not self._key_prefixes[prefix_bits >> 3] & (1 << (prefix_bits & 7)):
-                return None
+        candidates: Iterable[Path] = self._indices
+        if (routes := self._routes) is not None:
+            start = int(key[:8], 16) << 32
+            lower = bisect_left(routes, start)
+            upper = bisect_left(routes, start + (1 << 32), lo=lower)
+            ordinals = dict.fromkeys(
+                route & _ROUTE_ORDINAL_MASK for route in routes[lower:upper]
+            )
+            candidates = (self._indices[ordinal] for ordinal in ordinals)
         prefix = f"{kind} {key} ".encode("ascii")
         reader = (
             self._seek_resident_index
@@ -421,14 +427,12 @@ class FrontendRecordFiles:
         location = next(
             (
                 found
-                for index in self._indices
+                for index in candidates
                 if (found := reader(index, prefix)) is not None
             ),
             None,
         )
         self._lookups[address] = location
-        if location is None:
-            self._exhausted_searches += 1
         return location
 
     def _seek_resident_index(self, path: Path, prefix: bytes) -> _RecordLocation | None:
