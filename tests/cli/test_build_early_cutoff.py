@@ -1281,6 +1281,25 @@ def test_another_checkouts_store_renewal_leaves_the_record_current(
     assert len(calls) == 1, "a rival checkout's renewal is no input of this build"
 
 
+def test_build_control_claim_binds_an_explicit_root_before_writes(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.build_output_layout import _claim_checkout_state, build_scope
+
+    root = tmp_path / "explicit-control"
+    assert not root.exists()
+    with (
+        build_scope(),
+        build_record.recording(tmp_path / "records", capture_result=True) as ledger,
+    ):
+        _claim_checkout_state(root, cargo_target=tmp_path / "cargo-target")
+        (root / "state").write_text("created by the build", encoding="utf-8")
+
+    (claim,) = (item for item in ledger.claims if item.root == root)
+    claim.verify()
+    assert not ledger.refusals
+
+
 def test_checkout_claim_replays_absence_and_detects_materialization(
     tmp_path: Path,
 ) -> None:

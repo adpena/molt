@@ -201,6 +201,10 @@ def _claim_checkout_state(
     # A build writes into its selections, so its build control is created
     # and bound under the use's lock.
     locks = scope.stack.enter_context(checkout_state_use(((root, owner),), create=True))
+    if owner is not None and not locks:
+        # Explicit, unmanaged control roots have no checkout lease to
+        # materialize them. Bind the directory before recording its use.
+        root.mkdir(parents=True, exist_ok=True)
     scope.state_claimed.add(root)
     if input_report.result_active():
         from molt.build_record import BuildClaimKind, RecordedBuildClaim

@@ -817,7 +817,9 @@ def validation_specs(
     )
     monkeypatch.setattr(WASM_LINK_ARGS, "_build_state_root", lambda _root: state_root)
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC, "_build_state_root", lambda _root: state_root
+        RUNTIME_WASM_BUILD_SPEC,
+        "runtime_wasm_link_input_root",
+        lambda _root: state_root / "wasm_link_args",
     )
     monkeypatch.setattr(
         RUNTIME_WASM_PAIR, "_build_state_root", lambda _root: state_root

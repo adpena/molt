@@ -300,6 +300,10 @@ def backend_source_identity_cache_root(compiler_root: Path) -> Path:
     return compiler_tooling_cache_root(compiler_root) / "backend_source_identities"
 
 
+def runtime_wasm_link_input_root(compiler_root: Path) -> Path:
+    return compiler_tooling_cache_root(compiler_root) / "wasm_runtime_link_inputs"
+
+
 _CACHE_RETENTION = storage_rule("compile-cache").retention
 assert isinstance(_CACHE_RETENTION, Regenerable)
 assert _CACHE_RETENTION.max_bytes is not None

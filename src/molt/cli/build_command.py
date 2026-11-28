@@ -195,6 +195,7 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         compiler_tooling_cache_root,
         file_digest_cache_path,
         frontend_record_files_root,
+        runtime_wasm_link_input_root,
     )
     from molt.source_root import compiler_source_root
 
@@ -217,6 +218,7 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         # Compiler source authorities report their inputs separately from
         # memo files, including when the application has its own cache.
         backend_source_identity_cache_root(compiler_root),
+        runtime_wasm_link_input_root(compiler_root),
         python_source_closure_cache_path(
             compiler_root, cache_root=compiler_tooling_cache_root(compiler_root)
         ).parent,

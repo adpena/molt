@@ -32,9 +32,6 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_import_feature,
     wasm_runtime_shared_export_link_args,
 )
-from molt.cli.artifact_state import (
-    _build_state_root,
-)
 from molt.cli.cargo_execution import (
     _cargo_build_env,
 )
@@ -87,6 +84,7 @@ from molt.cli.runtime_wasm_build_support import (
 from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
 )
+from molt.default_paths import runtime_wasm_link_input_root
 from molt.cli.wasm_link_args import (
     wasm_link_args_from_rust_flag_tokens,
     write_wasm_link_args_response_file,
@@ -163,9 +161,7 @@ def _runtime_wasm_app_import_link_argument(root: Path) -> str:
     symbols = [
         compiled_execution_symbol(name) for name in WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
     ]
-    path = write_wasm_app_import_allowlist(
-        _build_state_root(root) / "wasm_link_args", symbols
-    )
+    path = write_wasm_app_import_allowlist(runtime_wasm_link_input_root(root), symbols)
     return f"--allow-undefined-file={path}"
 
 
@@ -212,7 +208,7 @@ def _resolve_runtime_wasm_cargo_specs(
     if link_args:
         assert shared is not None
         response = write_wasm_link_args_response_file(
-            _build_state_root(root) / "wasm_link_args",
+            runtime_wasm_link_input_root(root),
             label=f"runtime.{shared.cargo_profile}.combined",
             link_args=link_args,
         )
@@ -257,7 +253,7 @@ def _resolve_runtime_wasm_cargo_specs(
         ):
             shared_flags = (*shared_flags, "-C", "link-arg=--compress-relocations")
             compressed_response = write_wasm_link_args_response_file(
-                _build_state_root(root) / "wasm_link_args",
+                runtime_wasm_link_input_root(root),
                 label=f"runtime.{shared.cargo_profile}.combined",
                 link_args=wasm_link_args_from_rust_flag_tokens(shared_flags),
             )
