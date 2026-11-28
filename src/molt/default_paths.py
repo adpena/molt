@@ -288,6 +288,18 @@ def _default_molt_cache(
     return user_state_location("compile-cache", environ=environ, cwd=cwd).path
 
 
+def compiler_tooling_cache_root(compiler_root: Path) -> Path:
+    """Keep derived compiler inputs independent of the application cache."""
+    return _default_molt_cache(
+        cwd=compiler_root,
+        environ=ProcessEnvironment(os.environ).without(("MOLT_CACHE",)),
+    )
+
+
+def backend_source_identity_cache_root(compiler_root: Path) -> Path:
+    return compiler_tooling_cache_root(compiler_root) / "backend_source_identities"
+
+
 _CACHE_RETENTION = storage_rule("compile-cache").retention
 assert isinstance(_CACHE_RETENTION, Regenerable)
 assert _CACHE_RETENTION.max_bytes is not None

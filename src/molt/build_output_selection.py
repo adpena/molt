@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -81,6 +82,11 @@ class BuildOutputSelection:
             or Path(os.path.realpath(current)) != self.resolved_path
         ):
             raise ValueError(f"output selection changed: {self.path}")
+
+    def publication_path(self, products: Collection[Path]) -> Path:
+        # A publication can use the physical coordinate while the selector
+        # keeps the original spelling for retarget and directory checks.
+        return self.resolved_path if self.resolved_path in products else self.path
 
     def to_dict(self) -> dict[str, str | None]:
         return {

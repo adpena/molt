@@ -837,6 +837,9 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
         )
         module = layout.output_artifact
         linked = layout.linked_output_path
+        if request.json_output:
+            module = module.resolve()
+            linked = linked.resolve() if linked is not None else None
         module.write_text(f"module of {source}", encoding="utf-8")
         split = layout.split_runtime
         if not split and not request.json_output:
@@ -1148,6 +1151,7 @@ def test_split_cutoff_invalidates_the_full_publication(
 @pytest.mark.parametrize(
     ("split", "linked"), [(False, True), (True, False), (True, True)]
 )
+@pytest.mark.parametrize("aliased", [False, True])
 def test_structured_wasm_replays_the_verified_publication(
     project: Path,
     tmp_path: Path,
@@ -1155,6 +1159,7 @@ def test_structured_wasm_replays_the_verified_publication(
     monkeypatch: pytest.MonkeyPatch,
     split: bool,
     linked: bool,
+    aliased: bool,
 ) -> None:
     import json
 
@@ -1165,9 +1170,12 @@ def test_structured_wasm_replays_the_verified_publication(
         build_command._with_early_cutoff(_fake_wasm_build(calls))
     )
     out = tmp_path / "wasm"
+    anchor = tmp_path / "anchor"
+    anchor.mkdir()
+    selected_out = anchor / ".." / out.name if aliased else out
     request = _wasm_request(
         project,
-        out,
+        selected_out,
         json_output=True,
         linked=linked,
         require_linked=not split,

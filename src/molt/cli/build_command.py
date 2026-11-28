@@ -188,12 +188,11 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
     from molt.cli import runtime_paths
     from molt.cli.build_output_layout import _default_build_base, _resolve_cache_root
     from molt.cli.project_roots import _find_project_root
-    from molt.cli.python_source_closure import (
-        compiler_tool_source_cache_root,
-        python_source_closure_cache_path,
-    )
+    from molt.cli.python_source_closure import python_source_closure_cache_path
     from molt.default_paths import (
+        backend_source_identity_cache_root,
         cache_control_root,
+        compiler_tooling_cache_root,
         file_digest_cache_path,
         frontend_record_files_root,
     )
@@ -215,10 +214,11 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
     digests = file_digest_cache_path(cache)
     roots = [
         cache,
-        # Linker source analysis uses a compiler-owned derived record. Its
-        # source files are reported explicitly even with an application cache.
+        # Compiler source authorities report their inputs separately from
+        # memo files, including when the application has its own cache.
+        backend_source_identity_cache_root(compiler_root),
         python_source_closure_cache_path(
-            compiler_root, cache_root=compiler_tool_source_cache_root(compiler_root)
+            compiler_root, cache_root=compiler_tooling_cache_root(compiler_root)
         ).parent,
         frontend_record_files_root(cache.resolve()),
         cache_control_root(cache),

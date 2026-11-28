@@ -1395,6 +1395,8 @@ def write_record(
     if changed is not None:
         return f"input changed during the build: {changed}"
     linked_selection = ledger.output_selections.get(BuildOutputRole.LINKED_WASM)
+    product_paths = () if ledger.products is None else ledger.products.paths()
+    publication_path = output.publication_path(product_paths)
     try:
         import_topologies = [
             owner.record() for owner in ledger.import_topologies.values()
@@ -1402,9 +1404,7 @@ def write_record(
         output.verify()
         if linked_selection is not None:
             linked_selection.verify()
-            if ledger.products is None or (
-                linked_selection.path not in ledger.products.paths()
-            ):
+            if linked_selection.publication_path(product_paths) not in product_paths:
                 return "selected WASM link output is not a published product"
         if ledger.result is not None:
             ledger.result.verify()
@@ -1419,7 +1419,7 @@ def write_record(
                 if ledger.products is None or not ledger.products.publication_tokens:
                     return "Wasm JSON result lacks finalized publication tokens"
                 ledger.result.verify_publication(
-                    output.path,
+                    publication_path,
                     ledger.products.consumer,
                     dict(ledger.products.products),
                 )
@@ -1433,7 +1433,7 @@ def write_record(
     products: list[list[object]] = []
     consumer = output.path
     if ledger.products is not None:
-        if output.path not in ledger.products.paths():
+        if publication_path not in product_paths:
             return "selected output is not one of the published products"
         consumer = ledger.products.consumer
         published = dict(ledger.products.publication_tokens)
@@ -1553,7 +1553,7 @@ def check(
             linked_selection = BuildOutputSelection.from_dict(recorded_linked)
             if linked_selection.output != linked_output:
                 return "named WASM link output differs from the request"
-            if linked_selection.path not in product_paths:
+            if linked_selection.publication_path(product_paths) not in product_paths:
                 return "unreadable record: named WASM link output is not a product"
         elif recorded_linked is not None:
             return "unexpected named WASM link output"
@@ -1595,7 +1595,11 @@ def check(
                     if result.binary.path != selection.path or product_roles:
                         return "native JSON result differs from output selection"
                 else:
-                    result.verify_publication(selection.path, consumer, product_roles)
+                    result.verify_publication(
+                        selection.publication_path(product_paths),
+                        consumer,
+                        product_roles,
+                    )
                 for selection_claim in claims:
                     selection_claim.verify()
                 result.verify()

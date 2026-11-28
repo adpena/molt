@@ -15642,10 +15642,13 @@ def test_resolved_artifact_hash_key_is_cached(tmp_path: Path) -> None:
     assert info.currsize >= 1
 
 
-def test_backend_fingerprint_path_uses_cached_artifact_hash(
+def test_backend_source_memo_follows_compiler_across_application_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     artifact = tmp_path / "dist" / "backend"
+    monkeypatch.setenv("MOLT_EXT_ROOT", os.fspath(tmp_path / "shared"))
+    monkeypatch.setenv("MOLT_CACHE", os.fspath(tmp_path / "left" / "cache"))
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", os.fspath(tmp_path / "left" / "state"))
     ARTIFACT_STATE._resolved_artifact_hash_key.cache_clear()
 
     calls = 0
@@ -15664,6 +15667,8 @@ def test_backend_fingerprint_path_uses_cached_artifact_hash(
     )
 
     first = cli_backend_binary._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
+    monkeypatch.setenv("MOLT_CACHE", os.fspath(tmp_path / "right" / "cache"))
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", os.fspath(tmp_path / "right" / "state"))
     second = cli_backend_binary._backend_fingerprint_path(
         tmp_path, artifact, "dev-fast"
     )
@@ -15672,6 +15677,13 @@ def test_backend_fingerprint_path_uses_cached_artifact_hash(
     assert first == second
     assert calls == 1
     assert info.currsize >= 1
+    assert first.is_relative_to(tmp_path / "shared")
+    assert (
+        cli_backend_binary._backend_fingerprint_path(
+            tmp_path / "other-compiler", artifact, "dev-fast"
+        )
+        != first
+    )
 
 
 def test_artifact_state_path_is_cached(tmp_path: Path) -> None:

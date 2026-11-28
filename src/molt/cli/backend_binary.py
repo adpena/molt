@@ -14,7 +14,8 @@ from typing import Any, Mapping, cast
 
 from molt.cargo_execution_policy import source_build_disabled_reason
 from molt.cli import progress as _progress
-from molt.cli.artifact_state import _artifact_state_path
+from molt.cli.artifact_state import _artifact_state_path_for_build_state_root
+from molt.default_paths import backend_source_identity_cache_root
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.backend_generation import (
     is_backend_generation,
@@ -281,11 +282,12 @@ def _backend_fingerprint_path(
     it without hashing sources. Selection and bytes live in the product store,
     never here.
     """
-    return _artifact_state_path(
-        project_root,
+    namespace = hashlib.sha256(os.fsencode(project_root.resolve())).hexdigest()
+    return _artifact_state_path_for_build_state_root(
+        backend_source_identity_cache_root(project_root),
         artifact,
-        subdir="backend_fingerprints",
-        stem_suffix=f"{cargo_profile}",
+        subdir=namespace,
+        stem_suffix=cargo_profile,
         extension="fingerprint",
     )
 

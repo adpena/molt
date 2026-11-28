@@ -108,9 +108,9 @@ from molt.cli.output import (
     subprocess_output_text,
 )
 from molt.cli.python_source_closure import (
-    compiler_tool_source_cache_root,
     local_python_import_closure,
 )
+from molt.default_paths import compiler_tooling_cache_root
 from molt.cli.runtime_wasm_generation import RuntimeWasmGeneration, RuntimeWasmTrust
 from molt.cli.runtime_wasm_validation import (
     _validate_wasm_structural,
@@ -768,7 +768,7 @@ def _wasm_tool_source_identities(molt_root: Path, tool: Path) -> tuple[str, str]
         return admission.fingerprint, admission.fingerprint
     # These dependency analyses belong to the compiler's Python tools. An
     # application's cache selection must not evict unchanged link inputs.
-    graph_cache_root = compiler_tool_source_cache_root(molt_root)
+    graph_cache_root = compiler_tooling_cache_root(molt_root)
     link_sources = local_python_import_closure(
         molt_root, (tool,), cache_root=graph_cache_root, reuse_resolved_queries=True
     )
