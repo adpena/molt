@@ -81,11 +81,7 @@ def _runtime_fingerprint_payload_is_valid(payload: object) -> bool:
         return False
     if "build_identity" in payload or "build_identity_scope" in payload:
         scope = payload.get("build_identity_scope")
-        if not isinstance(scope, str) or scope not in {
-            "compile",
-            "member",
-            "member-output",
-        }:
+        if not isinstance(scope, str):
             return False
         try:
             identity = RuntimeBuildIdentity.from_dict(payload.get("build_identity"))

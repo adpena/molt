@@ -161,7 +161,7 @@ class _CombinedRuntimeWasmBuild:
         )
 
     def admitted_target_pair_inputs(self) -> CargoEnvironmentInputs | None:
-        if self.reloc_spec.staticlib_fingerprint is None:
+        if self.reloc_spec.cargo_output_fingerprint is None:
             return None
         plan = self.spec.cargo_plan
         if plan is None:
@@ -173,13 +173,13 @@ class _CombinedRuntimeWasmBuild:
             build_state_root=self.build_state_root,
             cargo_profile=self.spec.cargo_profile,
             target_label="wasm32-wasip1",
-            fingerprint=self.reloc_spec.staticlib_fingerprint,
+            fingerprint=self.reloc_spec.cargo_output_fingerprint,
             environment=plan.environment,
         )
         shared_spec = self.shared_spec
         if reloc is None or shared_spec is None:
             return None if reloc is None else reloc[2]
-        if shared_spec.fingerprint is None:
+        if shared_spec.cargo_output_fingerprint is None:
             return None
         shared = _current_runtime_target_artifact(
             _wasm_runtime_wasm_candidates(
@@ -188,7 +188,7 @@ class _CombinedRuntimeWasmBuild:
             build_state_root=self.build_state_root,
             cargo_profile=shared_spec.cargo_profile,
             target_label="wasm32-wasip1",
-            fingerprint=shared_spec.fingerprint,
+            fingerprint=shared_spec.cargo_output_fingerprint,
             environment=plan.environment,
         )
         if (
@@ -225,7 +225,7 @@ def _publish_combined_runtime_wasm_target(
             "both runtime crate-type artifacts (expected cdylib and staticlib).",
             build=build,
         )
-    targets = [(staticlib, ctx.reloc_spec.staticlib_fingerprint)]
+    targets = [(staticlib, ctx.reloc_spec.cargo_output_fingerprint)]
     if ctx.shared_spec is not None:
         cdylib = artifacts.get(RuntimeCrateType.CDYLIB, reported_artifact)
         if not cdylib.exists():
@@ -243,7 +243,7 @@ def _publish_combined_runtime_wasm_target(
                 + validation_error,
                 build=build,
             )
-        targets.insert(0, (cdylib, ctx.shared_spec.fingerprint))
+        targets.insert(0, (cdylib, ctx.shared_spec.cargo_output_fingerprint))
     elif RuntimeCrateType.CDYLIB in artifacts:
         return ctx.fail(
             "combined-artifact-selection",
@@ -318,10 +318,10 @@ def _prepopulate_combined_runtime_wasm_target(
         is None
     ):
         return None
-    if (
-        (shared_spec is not None and shared_spec.fingerprint is None)
-        or reloc_spec.fingerprint is None
-        or reloc_spec.staticlib_fingerprint is None
+    if any(
+        spec.fingerprint is None or spec.cargo_output_fingerprint is None
+        for spec in (shared_spec, reloc_spec)
+        if spec is not None
     ):
         record_runtime_wasm_failure(
             runtime_state,
@@ -428,18 +428,21 @@ def _bind_exact_family_fingerprints(
 ) -> None:
     """Use the generation authority for Cargo-target admission as well."""
 
-    compile_fingerprint = runtime_build_fingerprint(identity.reloc, scope="compile")
     if ctx.shared_spec is not None:
         assert identity.shared is not None
         ctx.shared_spec = ctx.shared_spec._replace(
             fingerprint=runtime_build_fingerprint(
                 identity.shared, scope="member-output"
             ),
-            staticlib_fingerprint=compile_fingerprint,
+            cargo_output_fingerprint=runtime_build_fingerprint(
+                identity.shared, scope="cargo-linked-output"
+            ),
         )
     ctx.reloc_spec = ctx.reloc_spec._replace(
         fingerprint=runtime_build_fingerprint(identity.reloc, scope="member-output"),
-        staticlib_fingerprint=compile_fingerprint,
+        cargo_output_fingerprint=runtime_build_fingerprint(
+            identity.reloc, scope="compile"
+        ),
     )
 
 
@@ -634,9 +637,11 @@ def resolve_runtime_wasm_pair_identity(
     selected_shared = (
         None
         if shared_spec is None
-        else shared_spec._replace(fingerprint=None, staticlib_fingerprint=None)
+        else shared_spec._replace(fingerprint=None, cargo_output_fingerprint=None)
     )
-    selected_reloc = reloc_spec._replace(fingerprint=None, staticlib_fingerprint=None)
+    selected_reloc = reloc_spec._replace(
+        fingerprint=None, cargo_output_fingerprint=None
+    )
     if (
         mode == "pre_build"
         and retained_inputs is not None

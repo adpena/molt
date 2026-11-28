@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
+    BinaryIO,
+    Callable,
     Collection,
     Iterable,
     Literal,
@@ -14,7 +16,10 @@ from typing import (
     Sequence,
     TypedDict,
     cast,
+    overload,
 )
+
+from molt.file_publication import PublicationDurability
 
 if TYPE_CHECKING:
     from molt.capability_manifest import ResolvedRuntimePolicy
@@ -166,7 +171,41 @@ WASM_EXTERN_KIND_MEMORY = 2
 WASM_EXTERN_KIND_GLOBAL = 3
 WASM_EXTERN_KIND_TAG = 4
 WASM_VALUE_TYPE_I32 = 0x7F
-WasmBuffer = bytes | mmap.mmap
+
+
+class _WasmFileBuffer:
+    """Bounded reads of sections from an already opened stable regular file."""
+
+    def __init__(self, stream: BinaryIO, size: int) -> None:
+        self._stream = stream
+        self._size = size
+
+    def __len__(self) -> int:
+        return self._size
+
+    @overload
+    def __getitem__(self, key: int) -> int: ...
+
+    @overload
+    def __getitem__(self, key: slice) -> bytes: ...
+
+    def __getitem__(self, key: int | slice) -> int | bytes:
+        if isinstance(key, int):
+            return self._read(key, 1)[0]
+        start, stop, step = key.indices(self._size)
+        if step != 1:
+            raise ValueError("WASM file reads require a contiguous slice")
+        return self._read(start, max(0, stop - start))
+
+    def _read(self, offset: int, size: int) -> bytes:
+        self._stream.seek(offset)
+        data = self._stream.read(size)
+        if len(data) != size:
+            raise ValueError("WASM file changed while reading its sections")
+        return data
+
+
+WasmBuffer = bytes | mmap.mmap | _WasmFileBuffer
 
 
 def wasm_runtime_manifest_path(artifact: Path) -> Path:
@@ -469,30 +508,6 @@ def is_wasm_final_artifact_forbidden_custom_section(name: str) -> bool:
     )
 
 
-def strip_wasm_publication_sections(
-    data: bytes,
-    *,
-    final_artifact: bool,
-    preserve_debug: bool,
-) -> bytes:
-    sections = parse_wasm_sections(data)
-    kept: list[tuple[int, bytes]] = []
-    changed = False
-    for section_id, payload in sections:
-        if section_id != 0:
-            kept.append((section_id, payload))
-            continue
-        name = _read_wasm_custom_section_name(payload)
-        should_strip = (
-            final_artifact and is_wasm_final_artifact_forbidden_custom_section(name)
-        ) or (not preserve_debug and is_wasm_debug_custom_section(name))
-        if should_strip:
-            changed = True
-            continue
-        kept.append((section_id, payload))
-    return _build_wasm_sections(kept) if changed else data
-
-
 def wasm_publication_policy_violations(
     data: bytes,
     *,
@@ -512,8 +527,9 @@ def parse_wasm_section_spans(
     data: WasmBuffer,
     *,
     allow_duplicate_standard_sections: bool = False,
+    strict_custom_names: bool = False,
 ) -> list[WasmSectionSpan]:
-    if len(data) < len(WASM_HEADER) or data[: len(WASM_HEADER)] != WASM_HEADER:
+    if len(data) < len(WASM_HEADER) or data[0 : len(WASM_HEADER)] != WASM_HEADER:
         raise ValueError("Invalid wasm binary")
     offset = len(WASM_HEADER)
     sections: list[WasmSectionSpan] = []
@@ -532,11 +548,12 @@ def parse_wasm_section_spans(
         section_end = offset + section_size
         if section_end > len(data):
             raise ValueError("Invalid wasm section length")
-        custom_name = (
-            _read_wasm_custom_section_name(data, offset, section_end)
-            if section_id == 0
-            else ""
-        )
+        custom_name = ""
+        if section_id == 0:
+            if strict_custom_names:
+                custom_name, _ = _read_wasm_string(data, offset, limit=section_end)
+            else:
+                custom_name = _read_wasm_custom_section_name(data, offset, section_end)
         sections.append(
             WasmSectionSpan(
                 id=section_id,
@@ -550,7 +567,14 @@ def parse_wasm_section_spans(
 
 
 def read_wasm_section_spans(path: Path) -> list[WasmSectionSpan]:
-    return parse_wasm_section_spans(path.read_bytes())
+    from molt.toolchain_identity import open_stable_regular_file
+
+    with open_stable_regular_file(
+        path.resolve(strict=True), label="WASM section directory"
+    ) as source:
+        return parse_wasm_section_spans(
+            _WasmFileBuffer(source.stream, source.stat.st_size)
+        )
 
 
 def _wasm_sections_from_spans(
@@ -1622,108 +1646,53 @@ def parse_wasm_relocatable_object_interface(
     )
 
 
-def rename_wasm_export_names(
-    data: bytes, rename_map: Mapping[str, str]
-) -> bytes | None:
-    if not rename_map:
-        return None
-    sections = parse_wasm_sections(data)
-    modified = False
-    rewritten_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id != 7:
-            rewritten_sections.append((section_id, payload))
-            continue
-        cursor = 0
-        count, cursor = _read_wasm_varuint(payload, cursor)
-        exports: list[WasmExport] = []
-        for _ in range(count):
-            name, cursor = _read_wasm_string(payload, cursor)
-            if cursor >= len(payload):
-                raise ValueError("Unexpected EOF while reading export")
-            kind = payload[cursor]
-            cursor += 1
-            index, cursor = _read_wasm_varuint(payload, cursor)
-            renamed = rename_map.get(name, name)
-            if renamed != name:
-                modified = True
-            exports.append(WasmExport(renamed, kind, index))
-        deduped: list[WasmExport] = []
-        seen_exports: dict[str, tuple[int, int]] = {}
-        for export in exports:
-            identity = (export.kind, export.index)
-            existing = seen_exports.get(export.name)
-            if existing is not None:
-                if existing != identity:
-                    raise ValueError(
-                        "WASM export rename collision for "
-                        f"{export.name!r}: {existing!r} vs {identity!r}"
-                    )
-                modified = True
-                continue
-            seen_exports[export.name] = identity
-            deduped.append(export)
-        rebuilt = bytearray(_write_wasm_varuint(len(deduped)))
-        for export in deduped:
-            rebuilt.extend(_write_wasm_string(export.name))
-            rebuilt.append(export.kind)
-            rebuilt.extend(_write_wasm_varuint(export.index))
-        rewritten_sections.append((section_id, bytes(rebuilt)))
-    if not modified:
-        return None
-    return _build_wasm_sections(rewritten_sections)
-
-
 def _renamed_wasm_export_payload(
-    payload: bytes | mmap.mmap,
-    offset: int,
-    end: int,
+    payload: bytes,
     rename_map: Mapping[str, str],
-) -> tuple[bytes | None, bool]:
-    cursor = offset
-    count, cursor = _read_wasm_varuint(payload, cursor)
-    exports: list[WasmExport] = []
+    *,
+    require_function_exports: bool,
+) -> bytes | None:
+    exports = parse_wasm_export_section(payload)
+    original_names = (
+        {export.name for export in exports} if require_function_exports else set()
+    )
+    renamed: set[str] = set()
     modified = False
-    for _ in range(count):
-        name_length, cursor = _read_wasm_varuint(payload, cursor)
-        name_end = cursor + name_length
-        if name_end > end:
-            raise ValueError("Unexpected EOF while reading export name")
-        name = bytes(payload[cursor:name_end]).decode("utf-8")
-        cursor = name_end
-        if cursor >= end:
-            raise ValueError("Unexpected EOF while reading export")
-        kind = payload[cursor]
-        cursor += 1
-        index, cursor = _read_wasm_varuint(payload, cursor)
-        renamed = rename_map.get(name, name)
-        modified |= renamed != name
-        exports.append(WasmExport(renamed, kind, index))
-    if cursor != end:
-        raise ValueError("Trailing wasm export bytes")
-    deduped: list[WasmExport] = []
+    rewritten: list[WasmExport] = []
     seen: dict[str, tuple[int, int]] = {}
     for export in exports:
+        name = export.name
+        if not require_function_exports or export.kind == WASM_EXTERN_KIND_FUNCTION:
+            name = rename_map.get(export.name, export.name)
+            if require_function_exports and export.name in rename_map:
+                if name in original_names:
+                    raise ValueError(
+                        f"app export {name!r} collides with an existing export"
+                    )
+                renamed.add(export.name)
+        modified |= name != export.name
         identity = (export.kind, export.index)
-        previous = seen.get(export.name)
-        if previous is not None:
-            if previous != identity:
+        if (previous := seen.get(name)) is not None:
+            if require_function_exports or previous != identity:
                 raise ValueError(
-                    f"WASM export rename collision for {export.name!r}: "
-                    f"{previous!r} vs {identity!r}"
+                    f"WASM export rename collision for {name!r}: {previous!r} vs {identity!r}"
                 )
             modified = True
             continue
-        seen[export.name] = identity
-        deduped.append(export)
+        seen[name] = identity
+        rewritten.append(WasmExport(name, export.kind, export.index))
+    if require_function_exports and (missing := rename_map.keys() - renamed):
+        raise ValueError(
+            "the link kept no export for app symbol(s): " + ", ".join(sorted(missing))
+        )
     if not modified:
-        return None, False
-    rebuilt = bytearray(_write_wasm_varuint(len(deduped)))
-    for export in deduped:
+        return None
+    rebuilt = bytearray(_write_wasm_varuint(len(rewritten)))
+    for export in rewritten:
         rebuilt.extend(_write_wasm_string(export.name))
         rebuilt.append(export.kind)
         rebuilt.extend(_write_wasm_varuint(export.index))
-    return bytes(rebuilt), True
+    return bytes(rebuilt)
 
 
 def transform_wasm_publication_file(
@@ -1732,44 +1701,32 @@ def transform_wasm_publication_file(
     rename_map: Mapping[str, str],
     final_artifact: bool,
     preserve_debug: bool,
+    require_function_exports: bool = False,
+    validate_imports: Callable[[Sequence[WasmImport]], None] | None = None,
+    durability: PublicationDurability = PublicationDurability.DURABLE,
 ) -> WasmPublicationTransformMetrics:
     """Rewrite exports/custom sections with bounded memory and one output pass."""
 
-    from molt.file_publication import durable_replace, staged_file_path
+    from molt.file_publication import atomic_replace, staged_file_path
+    from molt.toolchain_identity import open_stable_regular_file
 
     staged = staged_file_path(path, purpose="wasm-transform")
     owned_stage = False
     try:
-        with (
-            path.open("rb") as source,
-            mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as mapped,
-        ):
-            before = os.fstat(source.fileno())
-            if (
-                len(mapped) < len(WASM_HEADER)
-                or mapped[: len(WASM_HEADER)] != WASM_HEADER
-            ):
-                raise ValueError("Invalid wasm binary")
+        with open_stable_regular_file(path, label="WASM publication input") as source:
+            before = source.stat
+            reader = _WasmFileBuffer(source.stream, before.st_size)
             actions: list[tuple[int, int, bytes | None, bool]] = []
             changed = False
             max_buffer = 0
-            cursor = len(WASM_HEADER)
-            while cursor < len(mapped):
-                section_start = cursor
-                section_id = mapped[cursor]
-                cursor += 1
-                section_size, payload_start = _read_wasm_varuint(mapped, cursor)
-                payload_end = payload_start + section_size
-                if payload_end > len(mapped):
-                    raise ValueError("Invalid wasm section length")
+            section_start = len(WASM_HEADER)
+            has_export_section = False
+            for span in parse_wasm_section_spans(reader, strict_custom_names=True):
+                payload_end = span.offset + span.size
                 replacement: bytes | None = None
                 keep = True
-                if section_id == 0:
-                    name_size, name_start = _read_wasm_varuint(mapped, payload_start)
-                    name_end = name_start + name_size
-                    if name_end > payload_end:
-                        raise ValueError("Invalid wasm custom section name")
-                    name = bytes(mapped[name_start:name_end]).decode("utf-8")
+                if span.id == 0:
+                    name = span.custom_name
                     keep = not (
                         (
                             final_artifact
@@ -1778,23 +1735,30 @@ def transform_wasm_publication_file(
                         or (not preserve_debug and is_wasm_debug_custom_section(name))
                     )
                     changed |= not keep
-                elif section_id == 7 and rename_map:
-                    replacement, renamed = _renamed_wasm_export_payload(
-                        mapped, payload_start, payload_end, rename_map
+                elif span.id == 2 and validate_imports is not None:
+                    validate_imports(
+                        parse_wasm_import_section(reader[span.offset : payload_end])
                     )
-                    changed |= renamed
+                    max_buffer = max(max_buffer, span.size)
+                elif span.id == 7 and rename_map:
+                    has_export_section = True
+                    max_buffer = max(max_buffer, span.size)
+                    replacement = _renamed_wasm_export_payload(
+                        reader[span.offset : payload_end],
+                        rename_map,
+                        require_function_exports=require_function_exports,
+                    )
                     if replacement is not None:
+                        changed = True
                         max_buffer = max(max_buffer, len(replacement))
                 actions.append((section_start, payload_end, replacement, keep))
-                cursor = payload_end
+                section_start = payload_end
+            if rename_map and require_function_exports and not has_export_section:
+                raise ValueError(
+                    "the link kept no export for app symbol(s): "
+                    + ", ".join(sorted(rename_map))
+                )
             if not changed:
-                after = os.fstat(source.fileno())
-                if (
-                    before.st_size != after.st_size
-                    or before.st_mtime_ns != after.st_mtime_ns
-                    or before.st_ctime_ns != after.st_ctime_ns
-                ):
-                    raise ValueError("runtime wasm mutated during publication scan")
                 return WasmPublicationTransformMetrics(
                     changed=False,
                     input_bytes=before.st_size,
@@ -1805,7 +1769,10 @@ def transform_wasm_publication_file(
                 )
 
             output_size = len(WASM_HEADER)
-            with staged.open("xb") as output:
+            with (
+                mmap.mmap(source.stream.fileno(), 0, access=mmap.ACCESS_READ) as mapped,
+                staged.open("xb") as output,
+            ):
                 owned_stage = True
                 output.write(WASM_HEADER)
                 for section_start, section_end, replacement, keep in actions:
@@ -1830,15 +1797,10 @@ def transform_wasm_publication_file(
                         output_size += chunk_end - start
                 output.flush()
                 staged_stat = os.fstat(output.fileno())
-            after = os.fstat(source.fileno())
-            if (
-                before.st_size != after.st_size
-                or before.st_mtime_ns != after.st_mtime_ns
-                or before.st_ctime_ns != after.st_ctime_ns
-                or staged_stat.st_size != output_size
-            ):
-                raise ValueError("runtime wasm mutated during publication transform")
-        durable_replace(staged, path)
+            if staged_stat.st_size != output_size:
+                raise ValueError("incomplete WASM publication transform")
+            staged.chmod(before.st_mode & 0o777)
+        atomic_replace(staged, path, durability=durability)
         return WasmPublicationTransformMetrics(
             changed=True,
             input_bytes=before.st_size,

@@ -116,7 +116,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     fingerprint_features: tuple[str, ...]
     target_root: Path
     fingerprint: dict[str, Any] | None
-    staticlib_fingerprint: dict[str, Any] | None
+    cargo_output_fingerprint: dict[str, Any] | None
     cargo_plan: RuntimeCargoPlan | None = None
 
     def with_cargo_plan(self, plan: RuntimeCargoPlan) -> _RuntimeWasmBuildSpec:
@@ -569,5 +569,5 @@ def _compute_runtime_wasm_build_spec(
         fingerprint_features=tuple(fingerprint_features),
         target_root=target_root,
         fingerprint=None,
-        staticlib_fingerprint=None,
+        cargo_output_fingerprint=None,
     )

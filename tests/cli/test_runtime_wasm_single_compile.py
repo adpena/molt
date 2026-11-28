@@ -1018,9 +1018,11 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         final_shared, final, root=root, family_seed="final", compile_seed="same-compile"
     )
     assert early.fingerprint is not None and final.fingerprint is not None
-    assert early.staticlib_fingerprint is not None
+    assert early.cargo_output_fingerprint is not None
     assert early.fingerprint["meta_digest"] != final.fingerprint["meta_digest"]
-    assert early.staticlib_fingerprint["hash"] == final.staticlib_fingerprint["hash"]
+    assert (
+        early.cargo_output_fingerprint["hash"] == final.cargo_output_fingerprint["hash"]
+    )
 
     final = final._replace(target_root=target_root)
     staticlib = runtime_wasm_build_support._wasm_runtime_staticlib_path(
@@ -1038,7 +1040,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
     staticlib_sidecar.parent.mkdir(parents=True, exist_ok=True)
     runtime_fingerprints._write_runtime_fingerprint(
         staticlib_sidecar,
-        early.staticlib_fingerprint,
+        early.cargo_output_fingerprint,
         artifact=staticlib,
         cargo_environment=runtime_cargo_environment_inputs(),
     )
@@ -1157,8 +1159,8 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
     assert early_shared.fingerprint["hash"] == final_shared.fingerprint["hash"]
     assert early_reloc.fingerprint != final_reloc.fingerprint
     assert (
-        early_reloc.staticlib_fingerprint["hash"]
-        == final_reloc.staticlib_fingerprint["hash"]
+        early_reloc.cargo_output_fingerprint["hash"]
+        == final_reloc.cargo_output_fingerprint["hash"]
     )
 
     profile_root = target_root / "wasm32-wasip1" / early_shared.profile_dir

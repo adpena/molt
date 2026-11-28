@@ -312,6 +312,7 @@ def _run_backend_pipeline(
                 cache=cache,
                 ir=ir,
                 function_digests=function_digests,
+                reference_index=prepared_backend_ir.reference_index,
                 entry_module=resolved_build_entry.entry_module,
                 module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
                 target_python=prepared_build_config.target_python,

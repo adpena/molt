@@ -892,42 +892,37 @@ def runtime_build_fingerprint(
     build_identity = RuntimeBuildIdentity.from_dict(build_identity)
     if scope == "member":
         content_digest = build_identity.digest
-        return {
-            "hash": content_digest,
-            "rustc": build_identity.compile_digest,
-            "inputs_digest": build_identity.compile_digest,
-            "meta_digest": build_identity.family_digest,
-            "build_identity": build_identity.to_dict(),
-            "build_identity_scope": scope,
-        }
-    elif scope == "member-output":
+        metadata_digest = build_identity.family_digest
+    elif scope in {"member-output", "cargo-linked-output"}:
         family = cast(Mapping[str, object], build_identity.payload["family"])
         member_kind = cast(str, build_identity.payload["member_kind"])
         members = cast(Mapping[str, object], family["members"])
-        output_payload = {
-            "schema": "molt.runtime-build-member-output.v1",
-            "compile_digest": build_identity.compile_digest,
-            "compile": family["compile"],
-            "member": members[member_kind],
-        }
-        content_digest = _digest(output_payload)
-        return {
-            "hash": content_digest,
-            "rustc": build_identity.compile_digest,
-            "inputs_digest": build_identity.compile_digest,
-            "meta_digest": content_digest,
-            "build_identity": build_identity.to_dict(),
-            "build_identity_scope": scope,
-        }
+        member = cast(Mapping[str, object], members[member_kind])
+        if scope == "cargo-linked-output":
+            if member_kind != "shared":
+                raise ValueError("Cargo-linked WASM output requires a shared member")
+            # Cargo links this module before any publication action runs.
+            member = {
+                key: value for key, value in member.items() if key != "publication"
+            }
+        content_digest = _digest(
+            {
+                "schema": f"molt.runtime-build-{scope}.v1",
+                "compile_digest": build_identity.compile_digest,
+                "compile": family["compile"],
+                "member": member,
+            }
+        )
+        metadata_digest = content_digest
     elif scope == "compile":
-        content_digest = build_identity.compile_digest
+        content_digest = metadata_digest = build_identity.compile_digest
     else:
         raise ValueError(f"unknown runtime build fingerprint scope: {scope}")
     return {
         "hash": content_digest,
         "rustc": build_identity.compile_digest,
         "inputs_digest": build_identity.compile_digest,
-        "meta_digest": build_identity.compile_digest,
+        "meta_digest": metadata_digest,
         "build_identity": build_identity.to_dict(),
         "build_identity_scope": scope,
     }

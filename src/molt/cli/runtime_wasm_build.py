@@ -124,9 +124,7 @@ class _RuntimeWasmMemberFinalizer:
 
 def _reuse_target_runtime_wasm(ctx: _RuntimeWasmMemberFinalizer) -> bool | None:
     output_fingerprint = ctx.spec.fingerprint
-    target_fingerprint = (
-        ctx.spec.staticlib_fingerprint if ctx.reloc else output_fingerprint
-    )
+    target_fingerprint = ctx.spec.cargo_output_fingerprint
     if output_fingerprint is None or target_fingerprint is None:
         raise ValueError(
             "runtime WASM target admission requires its captured fingerprints"
@@ -251,7 +249,7 @@ def _materialize_runtime_wasm_member_from_target(
         spec=spec,
         cargo_environment=cargo_environment,
     )
-    if spec.fingerprint is None or spec.staticlib_fingerprint is None:
+    if spec.fingerprint is None or spec.cargo_output_fingerprint is None:
         raise ValueError(
             "runtime WASM member publication requires its captured fingerprints"
         )

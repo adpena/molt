@@ -11,7 +11,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Collection, Mapping, Sequence, cast, TYPE_CHECKING
+from typing import Any, Callable, Collection, Mapping, Sequence, TYPE_CHECKING
 
 from molt.frontend._types import ClassId, SimpleIROp
 from molt.frontend.class_model import ClassModel
@@ -85,7 +85,7 @@ from molt.cli.module_registry import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.module_resolution import STDLIB_SUBMODULE_ALIASES
 from molt.cli import required_features as _required_features
-from molt.cli.function_references import reached_intrinsic_symbols
+from molt.cli.function_references import FunctionReferenceIndex
 from molt.cli import runtime_features as _runtime_features
 from molt.target_python import TargetPythonVersion
 
@@ -109,6 +109,7 @@ class _PreparedBackendIR:
     ir: dict[str, Any]
     function_metadata: dict[str, FunctionAssemblyMetadata]
     function_digest_seeds: tuple[FunctionDigestSeed, ...] = ()
+    reference_index: FunctionReferenceIndex | None = None
     required_link_features: frozenset[str] = frozenset()
     # Import bedrock registry (molt.cli.module_registry.ModuleRegistry) on the
     # native lane; None on lanes that keep the legacy isolate dispatch.
@@ -2077,53 +2078,6 @@ def _bind_declaration_only_entries(
         )
 
 
-def _static_backend_ir_compiled_call_closure_issue(
-    ir: Mapping[str, Any],
-) -> str | None:
-    """Fail early when backend IR directly calls compiled code it lacks.
-
-    A ``call`` names either a runtime symbol or compiled code. A compiled
-    target with no body in the program (a module outside the graph, say)
-    would otherwise surface only as an undefined symbol at link time.
-    """
-    functions = ir.get("functions")
-    if not isinstance(functions, list):
-        return None
-    defined = {
-        name
-        for func in functions
-        if isinstance(func, Mapping) and isinstance((name := func.get("name")), str)
-    }
-    missing: list[str] = []
-    seen: set[str] = set()
-    for func in functions:
-        if not isinstance(func, Mapping):
-            continue
-        func_name = func.get("name")
-        ops = func.get("ops")
-        if not isinstance(ops, list):
-            continue
-        for index, op in enumerate(ops):
-            if not isinstance(op, Mapping) or op.get("kind") != "call":
-                continue
-            target = op.get("s_value")
-            if (
-                isinstance(target, str)
-                and target not in defined
-                and target not in seen
-                and compiled_symbols.is_compiled_symbol(target)
-            ):
-                seen.add(target)
-                missing.append(f"{target} at {func_name}[{index}]")
-    if not missing:
-        return None
-    suffix = "" if len(missing) <= 8 else ", ..."
-    return (
-        "backend IR contains direct calls to compiled functions with no body "
-        f"in the program: {', '.join(missing[:8])}{suffix}"
-    )
-
-
 def _reachability_feature_refusal(
     reached_symbols: frozenset[str],
     *,
@@ -2850,15 +2804,10 @@ def _prepare_backend_ir(
     # ceiling omits one. This is the only requirement fact; stdlib source scans
     # are classifiers/audits, never link-feature authority. The closure runs
     # once; the refusal and the link features both read its symbols.
-    functions_for_features = ir.get("functions")
-    reached_symbols = (
-        reached_intrinsic_symbols(
-            cast(Sequence[Mapping[str, object]], functions_for_features),
-            extra_roots=runtime_feature_roots,
-        )
-        if isinstance(functions_for_features, list)
-        else frozenset()
-    )
+    reference_index = FunctionReferenceIndex.from_ir(ir)
+    reached_symbols = reference_index.closure(
+        extra_roots=runtime_feature_roots
+    ).runtime_symbols
     feature_refusal = _reachability_feature_refusal(
         reached_symbols,
         stdlib_profile=stdlib_profile,
@@ -2866,7 +2815,7 @@ def _prepare_backend_ir(
     )
     if feature_refusal is not None:
         return None, fail(feature_refusal, json_output, command="build")
-    module_call_issue = _static_backend_ir_compiled_call_closure_issue(ir)
+    module_call_issue = reference_index.compiled_call_closure_issue()
     if module_call_issue is not None:
         return None, fail(module_call_issue, json_output, command="build")
     required_link_features = _required_features.required_link_features(reached_symbols)
@@ -2892,6 +2841,7 @@ def _prepare_backend_ir(
             declaration_only=declaration_only,
         ),
         function_digest_seeds=surviving_seeds,
+        reference_index=reference_index,
         module_lowering_inputs=dict(integration_state.module_lowering_inputs),
         function_metadata={
             symbol: {"app_callable_bindings": row["app_callable_bindings"]}
