@@ -8,6 +8,7 @@ import os
 import time
 from _thread import LockType
 from concurrent.futures import Future
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Lock
@@ -594,6 +595,7 @@ def _prepare_build_callbacks(
     entry_module: str,
     entry_path: Path,
     module_graph_import_queries: Mapping[str, Mapping[str, object]] | None = None,
+    module_graph_stage_sec: Mapping[str, float] | None = None,
 ) -> _PreparedBuildCallbacks:
     binary_image_closure_payload: Mapping[str, Any] | None = None
     binary_image_analysis_payload: dict[str, Any] = {"schema_version": 1}
@@ -654,6 +656,7 @@ def _prepare_build_callbacks(
                 module_graph=module_graph,
                 module_graph_operation_counts=module_graph_operation_counts,
                 module_graph_import_queries=module_graph_import_queries,
+                module_graph_stage_sec=module_graph_stage_sec,
                 module_reasons=module_reasons,
                 frontend_module_timings=frontend_module_timings,
                 allocation_diagnostics_enabled=allocation_diagnostics_enabled,
@@ -793,43 +796,48 @@ def _prepare_frontend_stage_state(
             }
         )
     else:
-        prepared_module_graph, prepared_module_graph_error = (
-            _prepare_entry_module_graph(
-                source_path=source_path,
-                entry_module=entry_module,
-                module_roots=module_roots,
-                stdlib_root=stdlib_root,
-                project_root=project_root,
-                entry_tree=entry_tree,
-                entry_snapshot=resolved_build_entry.entry_snapshot,
-                import_topology=resolved_build_entry.import_topology,
-                module_root_aliases=resolved_build_entry.module_root_aliases,
-                module_reasons=module_reasons,
-                diagnostics_enabled=diagnostics_enabled,
-                json_output=json_output,
-                target=target,
-                import_admission_policy=import_admission_policy,
-                target_python=prepared_build_config.target_python,
-                target_sys_platform=prepared_build_config.target_sys_platform,
-                image_scope=resolved_build_entry.image_scope,
-                stdlib_profile=stdlib_profile,
-                runtime_import_machinery=RuntimeImportMachinery.for_build(
-                    target, prepared_build_config.codegen.wasm_profile
-                ),
-                include_modules=include_modules,
-                normal_none_intrinsics=(
-                    None
-                    if graph_context is None
-                    else graph_context.normal_none_intrinsics
-                ),
-                scan_diagnostics=scan_diagnostics,
-                stdlib_allowlist=(
-                    None
-                    if graph_context is None
-                    else set(graph_context.stdlib_allowlist)
-                ),
+        with (
+            nullcontext()
+            if scan_diagnostics is None
+            else scan_diagnostics.graph_stage("discovery")
+        ):
+            prepared_module_graph, prepared_module_graph_error = (
+                _prepare_entry_module_graph(
+                    source_path=source_path,
+                    entry_module=entry_module,
+                    module_roots=module_roots,
+                    stdlib_root=stdlib_root,
+                    project_root=project_root,
+                    entry_tree=entry_tree,
+                    entry_snapshot=resolved_build_entry.entry_snapshot,
+                    import_topology=resolved_build_entry.import_topology,
+                    module_root_aliases=resolved_build_entry.module_root_aliases,
+                    module_reasons=module_reasons,
+                    diagnostics_enabled=diagnostics_enabled,
+                    json_output=json_output,
+                    target=target,
+                    import_admission_policy=import_admission_policy,
+                    target_python=prepared_build_config.target_python,
+                    target_sys_platform=prepared_build_config.target_sys_platform,
+                    image_scope=resolved_build_entry.image_scope,
+                    stdlib_profile=stdlib_profile,
+                    runtime_import_machinery=RuntimeImportMachinery.for_build(
+                        target, prepared_build_config.codegen.wasm_profile
+                    ),
+                    include_modules=include_modules,
+                    normal_none_intrinsics=(
+                        None
+                        if graph_context is None
+                        else graph_context.normal_none_intrinsics
+                    ),
+                    scan_diagnostics=scan_diagnostics,
+                    stdlib_allowlist=(
+                        None
+                        if graph_context is None
+                        else set(graph_context.stdlib_allowlist)
+                    ),
+                )
             )
-        )
         if prepared_module_graph_error is not None:
             return None, prepared_module_graph_error
         assert prepared_module_graph is not None
@@ -933,6 +941,9 @@ def _prepare_frontend_stage_state(
             None
             if scan_diagnostics is None
             else scan_diagnostics.payload(import_plan.import_query_closure)
+        ),
+        module_graph_stage_sec=(
+            None if scan_diagnostics is None else scan_diagnostics.graph_stage_sec
         ),
         module_reasons=module_reasons,
         allocation_diagnostics_enabled=allocation_diagnostics_enabled,

@@ -1,8 +1,9 @@
-"""Release-built namespace syntax and initializer requests for stdlib sources."""
+"""Release-built source identities, namespace syntax and stdlib initializer requests."""
 
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from functools import cached_property
 import io
 from pathlib import Path
@@ -30,7 +31,11 @@ from molt.compiler_analysis.python_namespace_graph import (
     python_namespace_name_universe,
 )
 from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
-from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+from molt.compiler_analysis.python_source_keys import (
+    PythonAstLineIdentity,
+    _PythonAstDigestAdmission,
+    python_ast_line_identity,
+)
 from molt.compiler_distribution import InstalledCompiler, installed_compiler
 from molt.exact_json import canonical_json_bytes, encode_frontend_payload, loads_exact
 from molt.source_root import compiler_source_root, installed_distribution_root
@@ -40,7 +45,7 @@ from molt.target_python import (
     _SUPPORTED_TARGET_PYTHON_VERSIONS,
 )
 
-_SCHEMA = "molt.stdlib-namespace-syntax.v1"
+_SCHEMA = "molt.stdlib-namespace-syntax.v2"
 NAMESPACE_SYNTAX_MEMBER = "namespace-syntax.json"
 _INITIALIZERS = "initializers/"
 _INITIALIZER_MEMBER = re.compile(r"initializers/[0-9a-f]{24}")
@@ -116,7 +121,8 @@ def encode_stdlib_source_summaries(stdlib_root: Path) -> bytes:
     from molt.cli.python_import_resolution import python_package_child_names
     from molt.cli.python_import_topology import PythonImportTopology
 
-    records: dict[_Key, tuple[str, dict[str, object]]] = {}
+    records: dict[_Key, tuple[str, dict[str, object], int]] = {}
+    line_identities: dict[PythonAstLineIdentity, int] = {}
     archive_bytes = io.BytesIO()
     topology = PythonImportTopology()
     with ZipFile(archive_bytes, "w") as archive:
@@ -143,10 +149,16 @@ def encode_stdlib_source_summaries(stdlib_root: Path) -> bytes:
             for target in _SUPPORTED_TARGET_PYTHON_VERSIONS:
                 try:
                     tree = _parse_source_for_target(
-                        captured.content, filename=str(path), target_python=target
+                        captured.text, filename=str(path), target_python=target
                     )
                 except SyntaxError:
                     continue
+                # Syntax admission canonicalizes the shared tree in place.
+                # Relocation proves the parsed source before those rewrites.
+                parsed_identity = python_ast_line_identity(tree)
+                identity_id = line_identities.setdefault(
+                    parsed_identity, len(line_identities)
+                )
                 admission = _PythonAstDigestAdmission(tree)
                 summary = python_namespace_summary(
                     tree,
@@ -157,6 +169,7 @@ def encode_stdlib_source_summaries(stdlib_root: Path) -> bytes:
                 records[target.tag, captured.sha256, package] = (
                     admission.digest,
                     _encode_namespace_summary(summary),
+                    identity_id,
                 )
                 if module:
                     context = _InitializerContext(
@@ -177,6 +190,8 @@ def encode_stdlib_source_summaries(stdlib_root: Path) -> bytes:
         document = {
             "schema": _SCHEMA,
             "producer": _import_scan_tooling_fingerprint(),
+            "parser": sys.version,
+            "lines": [identity.record() for identity in line_identities],
             "rows": [[*key, *record] for key, record in sorted(records.items())],
         }
         archive.writestr(
@@ -185,6 +200,19 @@ def encode_stdlib_source_summaries(stdlib_root: Path) -> bytes:
             compress_type=ZIP_DEFLATED,
         )
     return archive_bytes.getvalue()
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceSyntax:
+    ast_digest: str
+    namespace_summary: object
+    line_identity: PythonAstLineIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class _NamespaceSyntax:
+    parser: str
+    records: dict[_Key, _SourceSyntax]
 
 
 class InstalledStdlibSourceSummaries:
@@ -209,24 +237,31 @@ class InstalledStdlibSourceSummaries:
             raise ValueError("Invalid installed stdlib summary archive") from exc
 
     @cached_property
-    def records(self) -> dict[_Key, tuple[str, object]]:
+    def _syntax(self) -> _NamespaceSyntax:
         document = loads_exact(self._read(NAMESPACE_SYNTAX_MEMBER).decode("utf-8"))
         if (
             not isinstance(document, dict)
-            or set(document) != {"schema", "producer", "rows"}
+            or set(document) != {"schema", "producer", "parser", "lines", "rows"}
             or document["schema"] != _SCHEMA
             or document["producer"] != _import_scan_tooling_fingerprint()
+            or not isinstance(document["parser"], str)
+            or not document["parser"]
+            or not isinstance(document["lines"], list)
             or not isinstance(document["rows"], list)
         ):
             raise ValueError(
                 "Invalid installed stdlib namespace syntax schema or producer"
             )
-        records: dict[_Key, tuple[str, object]] = {}
+        identities = tuple(
+            PythonAstLineIdentity.from_record(value) for value in document["lines"]
+        )
+        referenced: set[int] = set()
+        records: dict[_Key, _SourceSyntax] = {}
         previous: _Key | None = None
         for row in document["rows"]:
-            if not isinstance(row, list) or len(row) != 5:
+            if not isinstance(row, list) or len(row) != 6:
                 raise ValueError("Invalid installed stdlib namespace syntax row")
-            target, source, package, ast_digest, summary = row
+            target, source, package, ast_digest, summary, identity_id = row
             if (
                 not isinstance(target, str)
                 or target not in _TARGET_TAGS
@@ -235,6 +270,8 @@ class InstalledStdlibSourceSummaries:
                 or not isinstance(package, str)
                 or not isinstance(ast_digest, str)
                 or _SHA256.fullmatch(ast_digest) is None
+                or type(identity_id) is not int
+                or not 0 <= identity_id < len(identities)
                 or not isinstance(summary, dict)
             ):
                 raise ValueError("Invalid installed stdlib namespace syntax identity")
@@ -242,8 +279,11 @@ class InstalledStdlibSourceSummaries:
             if previous is not None and key <= previous:
                 raise ValueError("Installed stdlib namespace syntax rows are unordered")
             previous = key
-            records[key] = (ast_digest, summary)
-        return records
+            records[key] = _SourceSyntax(ast_digest, summary, identities[identity_id])
+            referenced.add(identity_id)
+        if len(referenced) != len(identities):
+            raise ValueError("Installed stdlib syntax has unreferenced line identities")
+        return _NamespaceSyntax(document["parser"], records)
 
     @classmethod
     def selected(cls) -> InstalledStdlibSourceSummaries | None:
@@ -270,6 +310,20 @@ class InstalledStdlibSourceSummaries:
         except KeyError:
             return None
 
+    def line_identity(
+        self,
+        snapshot: PythonSourceSnapshot,
+        *,
+        package: str,
+        target: TargetPythonVersion,
+    ) -> PythonAstLineIdentity | None:
+        """Reuse a source's parser-bound identity before any user-side parse."""
+        syntax = self._syntax
+        if syntax.parser != sys.version:
+            return None
+        row = syntax.records.get((target.tag, snapshot.sha256, package))
+        return None if row is None else row.line_identity
+
     def seed(
         self,
         snapshot: PythonSourceSnapshot,
@@ -281,6 +335,8 @@ class InstalledStdlibSourceSummaries:
         context = (target.feature_version, package)
         if context in admission.namespace_summaries:
             return
-        row = self.records.get((target.tag, snapshot.sha256, package))
-        if row is not None and row[0] == admission.digest:
-            admission.namespace_summaries[context] = _decode_namespace_summary(row[1])
+        row = self._syntax.records.get((target.tag, snapshot.sha256, package))
+        if row is not None and row.ast_digest == admission.digest:
+            admission.namespace_summaries[context] = _decode_namespace_summary(
+                row.namespace_summary
+            )

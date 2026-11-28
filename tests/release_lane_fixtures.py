@@ -2,6 +2,8 @@
 
 import hashlib
 import io
+import json
+import sys
 from pathlib import Path
 import tomllib
 from zipfile import ZipFile, ZipInfo
@@ -70,7 +72,15 @@ def stage_stdlib_source_summaries_fixture(
         with ZipFile(buffer, "w") as archive:
             archive.writestr(
                 ZipInfo("namespace-syntax.json"),
-                b'{"producer":"fixture","rows":[],"schema":"molt.stdlib-namespace-syntax.v1"}',
+                json.dumps(
+                    {
+                        "schema": "molt.stdlib-namespace-syntax.v2",
+                        "producer": "fixture",
+                        "parser": sys.version,
+                        "lines": [],
+                        "rows": [],
+                    }
+                ),
             )
         data = buffer.getvalue()
     path = root / STDLIB_SOURCE_SUMMARIES_PATH

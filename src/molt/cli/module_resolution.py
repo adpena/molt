@@ -4,13 +4,15 @@ from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import ast
 from collections import Counter
-from collections.abc import Callable, Sequence, Set as AbstractSet
+from collections.abc import Callable, Generator, Sequence, Set as AbstractSet
+from contextlib import contextmanager
 import functools
 import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from time import perf_counter
+from typing import Literal, TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from molt.cli.python_import_resolution import LocalPythonModuleResolver
@@ -382,16 +384,20 @@ _MODULE_AST_DIGEST_LIMIT = 4096
 class _ImportScanWork:
     loads: Counter[ImportScanAdmission] = field(default_factory=Counter)
     source_parses: int = 0
-    elapsed_ns: int = 0
+    elapsed_ns: Counter[ImportScanAdmission] = field(default_factory=Counter)
 
 
 class _ImportScanDiagnosticRow(TypedDict):
     loads: dict[ImportScanAdmission, int]
     load_seconds: float
+    load_seconds_by_admission: dict[ImportScanAdmission, float]
     source_parses: int
     observations: int
     syntax_scopes: int
     premise_reuse_observations: int
+
+
+type _ImportGraphStage = Literal["replay", "discovery", "publication"]
 
 
 class _ImportScanDiagnostics:
@@ -399,6 +405,25 @@ class _ImportScanDiagnostics:
 
     def __init__(self) -> None:
         self._modules: dict[str, _ImportScanWork] = {}
+        self.graph_stage_sec: dict[str, float] = {}
+
+    @contextmanager
+    def graph_stage(self, stage: _ImportGraphStage) -> Generator[None]:
+        began = perf_counter()
+        published_before = self.graph_stage_sec.get("publication", 0.0)
+        try:
+            yield
+        finally:
+            elapsed = perf_counter() - began
+            if stage == "replay":
+                # An accepted edit may republish while replay still owns the
+                # verified graph. Charge those seconds only to publication.
+                elapsed -= (
+                    self.graph_stage_sec.get("publication", 0.0) - published_before
+                )
+            self.graph_stage_sec[stage] = self.graph_stage_sec.get(stage, 0.0) + max(
+                0.0, elapsed
+            )
 
     def record(
         self,
@@ -413,7 +438,7 @@ class _ImportScanDiagnostics:
             work = self._modules[module] = _ImportScanWork()
         work.loads[admission] += 1
         work.source_parses += int(source_parsed)
-        work.elapsed_ns += elapsed_ns
+        work.elapsed_ns[admission] += elapsed_ns
 
     def payload(
         self, closure: ImportQueryClosure
@@ -445,7 +470,13 @@ class _ImportScanDiagnostics:
                 "loads": {} if work is None else dict(sorted(work.loads.items())),
                 "load_seconds": 0.0
                 if work is None
-                else work.elapsed_ns / 1_000_000_000,
+                else sum(work.elapsed_ns.values()) / 1_000_000_000,
+                "load_seconds_by_admission": {}
+                if work is None
+                else {
+                    admission: elapsed / 1_000_000_000
+                    for admission, elapsed in sorted(work.elapsed_ns.items())
+                },
                 "source_parses": 0 if work is None else work.source_parses,
                 "observations": observations[module],
                 "syntax_scopes": len(scopes.get(module, ())),

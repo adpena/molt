@@ -83,7 +83,7 @@ schema = "molt-perf-methodology-v1"
 # v162: exact managed isolated CPython, shared workload custody and parity,
 # complete baseline samples, and matching observed oracle identities for comparisons.
 version = 164
-content_sha256 = "36a89180658f811bf82bcc96dd137c38c83af5183c91e49d02fb2727c0075b4d"
+content_sha256 = "c229e1412f049206815bc784552da68340441aee53506ccaafd4e355ca779f13"
 
 [[methodology]]
 path = "tools/safe_run.py"

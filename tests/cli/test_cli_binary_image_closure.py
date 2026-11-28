@@ -298,9 +298,15 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         replace(context, scan_diagnostics=edit_work)
     )
     assert replayed is not None
+    assert edit_work.graph_stage_sec.keys() == {"replay", "publication"}
+    assert all(seconds > 0 for seconds in edit_work.graph_stage_sec.values())
     peer_work = edit_work.payload(replayed.import_query_closure)["peer"]
     assert peer_work["loads"]
     assert peer_work["load_seconds"] > 0
+    assert peer_work["load_seconds_by_admission"].keys() == peer_work["loads"].keys()
+    assert sum(peer_work["load_seconds_by_admission"].values()) == pytest.approx(
+        peer_work["load_seconds"]
+    )
     fresh = _materialize_plan(tmp_path, entry, "app", image_scope=resolved.image_scope)
     assert replayed.closure_payload() == fresh.closure_payload()
     assert replayed.scan_authority == fresh.scan_authority

@@ -937,6 +937,7 @@ class _BuildDiagnosticsContext:
     entry_module: str
     entry_path: Path
     module_graph_import_queries: Mapping[str, Mapping[str, object]] | None = None
+    module_graph_stage_sec: Mapping[str, float] | None = None
 
 
 @dataclass(frozen=True)

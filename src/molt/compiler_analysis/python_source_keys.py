@@ -260,6 +260,30 @@ class PythonAstLineIdentity:
     digest: str
     lines: tuple[int, ...]
 
+    def record(self) -> tuple[str, tuple[int, ...]]:
+        return self.digest, self.lines
+
+    @classmethod
+    def from_record(cls, raw: object) -> PythonAstLineIdentity:
+        if not isinstance(raw, list) or len(raw) != 2:
+            raise ValueError("invalid AST line identity")
+        digest, lines = raw
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or not isinstance(lines, list)
+        ):
+            raise ValueError("invalid AST line identity")
+        previous = 0
+        ordered: list[int] = []
+        for line in lines:
+            if type(line) is not int or line <= previous:
+                raise ValueError("AST line identity is not in source order")
+            ordered.append(line)
+            previous = line
+        return cls(digest, tuple(ordered))
+
     def locations(self) -> PythonSourceLocations:
         return PythonSourceLocations(
             {line: slot for slot, line in enumerate(self.lines, start=1)}
