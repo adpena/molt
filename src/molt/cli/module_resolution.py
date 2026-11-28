@@ -38,7 +38,10 @@ from molt.cli.models import (
 )
 from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
-from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonModulePublications,
+    PythonNamespacePremise,
+)
 from molt.compiler_analysis.python_identity_catalog_generated import (
     CANONICAL_IMPORT_IDENTITIES,
 )
@@ -497,12 +500,33 @@ class _ModuleResolutionCache:
     import_scan_queries: dict[ImportScanQuery, ImportScanEvidence] = field(
         default_factory=dict, init=False, repr=False
     )
+    # Complete publication inputs and the union of named namespace writes
+    # seen before narrowing scan premises to the source's lexical names.
+    import_publications: dict[tuple[Path, str], PythonModulePublications] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    import_foreign_writes: dict[str, set[str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    coalesced_import_arguments: set[tuple[Path, str]] = field(
+        default_factory=set, init=False, repr=False
+    )
     _import_query_allowlists: dict[frozenset[str], frozenset[str]] = field(
         default_factory=dict, init=False, repr=False
     )
     _import_query_source_leases: dict[
         tuple[Path, str], _module_source._ModuleSourceLease
     ] = field(default_factory=dict, init=False, repr=False)
+
+    def observe_import_foreign_writes(
+        self, module: str, premise: PythonNamespacePremise
+    ) -> None:
+        # An open writer set is never narrowed and needs no hidden-name guard.
+        if premise.foreign_writes is not None:
+            assert premise.foreign_universe is None
+            self.import_foreign_writes.setdefault(module, set()).update(
+                premise.foreign_writes
+            )
 
     def import_query_source_lease(
         self, snapshot: _module_source.PythonSourceSnapshot

@@ -45,7 +45,7 @@ from molt.target_python import (
     _SUPPORTED_TARGET_PYTHON_VERSIONS,
 )
 
-_SCHEMA = "molt.stdlib-namespace-syntax.v2"
+_SCHEMA = "molt.stdlib-namespace-syntax.v3"
 NAMESPACE_SYNTAX_MEMBER = "namespace-syntax.json"
 _INITIALIZERS = "initializers/"
 _INITIALIZER_MEMBER = re.compile(r"initializers/[0-9a-f]{24}")
@@ -252,9 +252,7 @@ class InstalledStdlibSourceSummaries:
             raise ValueError(
                 "Invalid installed stdlib namespace syntax schema or producer"
             )
-        identities = tuple(
-            PythonAstLineIdentity.from_record(value) for value in document["lines"]
-        )
+        identities = tuple(PythonAstLineIdentity.read_records(document["lines"]))
         referenced: set[int] = set()
         records: dict[_Key, _SourceSyntax] = {}
         previous: _Key | None = None
@@ -272,6 +270,7 @@ class InstalledStdlibSourceSummaries:
                 or _SHA256.fullmatch(ast_digest) is None
                 or type(identity_id) is not int
                 or not 0 <= identity_id < len(identities)
+                or identities[identity_id] is None
                 or not isinstance(summary, dict)
             ):
                 raise ValueError("Invalid installed stdlib namespace syntax identity")
@@ -279,7 +278,9 @@ class InstalledStdlibSourceSummaries:
             if previous is not None and key <= previous:
                 raise ValueError("Installed stdlib namespace syntax rows are unordered")
             previous = key
-            records[key] = _SourceSyntax(ast_digest, summary, identities[identity_id])
+            line_identity = identities[identity_id]
+            assert line_identity is not None
+            records[key] = _SourceSyntax(ast_digest, summary, line_identity)
             referenced.add(identity_id)
         if len(referenced) != len(identities):
             raise ValueError("Installed stdlib syntax has unreferenced line identities")

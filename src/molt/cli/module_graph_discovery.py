@@ -1236,6 +1236,7 @@ def _discovery_pass(
         for origin, names, projection in recent:
             if origin is premise and names is universe:
                 return projection
+        resolution_cache.observe_import_foreign_writes(module, premise)
         projection = premise.scan_view(universe)
         scan_views[module] = ((premise, universe, projection), *recent[:1])
         return projection
@@ -1621,7 +1622,9 @@ def _discovery_pass(
         ):
             return None
         if module not in source_publications:
-            source_publications[module] = python_module_publications(snapshot.tree)
+            facts = python_module_publications(snapshot.tree)
+            source_publications[module] = facts
+            resolution_cache.import_publications[snapshot.path, snapshot.sha256] = facts
         return source_publications[module], authority
 
     @typed_cache(maxsize=None)
@@ -1810,9 +1813,12 @@ def _discovery_pass(
             known = by_owner[job.source] = revised
         if known.classes is None:
             return job
-        return job._replace(
-            arguments=representative_arguments(job.arguments, known.classes)
-        )
+        arguments = representative_arguments(job.arguments, known.classes)
+        if arguments != job.arguments:
+            resolution_cache.coalesced_import_arguments.add(
+                (snapshot.path, snapshot.sha256)
+            )
+        return job._replace(arguments=arguments)
 
     while True:
         if not queue and not scan_revisions and not deferred_bodies:
@@ -2392,6 +2398,8 @@ def _load_module_import_scan(
     """Admit source-only requests, then resolve filesystem edges in this operation."""
     scan_diagnostics = resolution_cache.import_scan_diagnostics
     started_ns = perf_counter_ns() if scan_diagnostics is not None else 0
+    if namespace_premise is not None:
+        resolution_cache.observe_import_foreign_writes(module_name, namespace_premise)
     if type(purpose) is not _source_import_scan.SourceImportPurpose:
         raise TypeError("source import scan requires a typed purpose")
     if native_support_function_roots:

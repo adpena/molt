@@ -50,7 +50,9 @@ from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
 from molt.compiler_analysis.python_imports import ImportScanMode, _ImportScanRequests
 from molt.compiler_analysis.python_namespace_graph import (
+    PythonModulePublications,
     PythonNamespacePremise,
+    python_module_publications,
     python_namespace_name_universe,
 )
 from molt.compiler_analysis.python_source_keys import (
@@ -74,7 +76,7 @@ from molt.compiler_analysis.python_string_facts import (
 from molt.target_python import TargetPythonVersion, _parse_source_for_target
 
 _MAX_BYTES = 16 * 1024 * 1024
-_SCHEMA = 9
+_SCHEMA = 10
 _KIND = "import-graph"
 _T = TypeVar("_T")
 
@@ -122,6 +124,26 @@ def _table_row(rows: Sequence[_T], index: object) -> _T:
 
 def _bytes(value: object) -> bytes:
     return encode_frontend_payload(value, sort_keys=True, allow_nan=False)
+
+
+def _publication_digest(
+    facts: PythonModulePublications, locations: PythonSourceLocations
+) -> str:
+    # Qualified argument transfer reads these projections independently of the
+    # source scan. Both the caller and provider can change the answer.
+    return hashlib.sha256(
+        _bytes(
+            (
+                dict(facts.leading_imports),
+                {name: locations.key(key) for name, key in facts.functions.items()},
+                [
+                    (locations.key(key), pair)
+                    for key, pair in sorted(facts.qualified_calls.items())
+                ],
+                facts.module_getattr,
+            )
+        )
+    ).hexdigest()
 
 
 def _source_line_identity(
@@ -532,6 +554,8 @@ def _publish_import_graph(
     plan: _ImportPlan,
     context: ImportGraphContext,
     source_lines: dict[str, PythonAstLineIdentity | None] | None = None,
+    *,
+    retained_publications: Sequence[list[str]] = (),
 ) -> None:
     if plan.native_artifact_plan.artifacts:
         return
@@ -652,6 +676,15 @@ def _publish_import_graph(
             )
         )
     authority = graph.scan_authority.payload()
+    older_foreign_writes: dict[str, list[str]] = {}
+    for module, names in resolver.import_foreign_writes.items():
+        settled = graph.scan_authority.by_module.get(module)
+        basis = settled.namespace_premise if settled is not None else None
+        settled_writes = basis.foreign_writes if basis is not None else None
+        if settled_writes is None:
+            older_foreign_writes[module] = sorted(names)
+        elif extra := names.difference(settled_writes):
+            older_foreign_writes[module] = sorted(extra)
     for row, source in zip(
         authority,
         sorted(graph.scan_authority.sources, key=lambda item: item.module_name),
@@ -660,11 +693,18 @@ def _publish_import_graph(
     # A program can carry the same escape-writer relation in every module
     # and in many of the narrower premises under which queries were observed.
     escape_writes = _RecordingTable[tuple[tuple[str, str], ...]]()
+    lexical_universes = _RecordingTable[frozenset[str] | None]()
     premise_rows = []
     for premise in premises.rows:
-        row = codec._namespace_premise_cache_identity(premise)
-        if premise is not None and row is not None:
-            row["escape_writes"] = escape_writes.index(premise.escape_writes)
+        if premise is None:
+            premise_rows.append(None)
+            continue
+        row = codec._namespace_premise_cache_identity(
+            replace(premise, foreign_universe=None)
+        )
+        assert row is not None
+        row["escape_writes"] = escape_writes.index(premise.escape_writes)
+        row["foreign_universe"] = lexical_universes.index(premise.foreign_universe)
         premise_rows.append(row)
     coordinate = context.payload()
     payload = {
@@ -675,6 +715,19 @@ def _publish_import_graph(
         "premises": premise_rows,
         "escape_writes": escape_writes.rows,
         "result_digests": result_digests.rows,
+        "lexical_universes": [
+            None if names is None else sorted(names) for names in lexical_universes.rows
+        ],
+        "older_foreign_writes": older_foreign_writes,
+        "coalesced_arguments": [
+            [str(path), sha]
+            for path, sha in sorted(resolver.coalesced_import_arguments)
+        ],
+        "publications": [
+            [str(path), sha, _publication_digest(facts, result_locations[sha])]
+            for (path, sha), facts in sorted(resolver.import_publications.items())
+        ]
+        + list(retained_publications),
         "query_sources": [source.record() for source in sources.rows],
         "source_lines": recorded_lines,
         "queries": rows,
@@ -751,6 +804,10 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         "premises",
         "escape_writes",
         "result_digests",
+        "lexical_universes",
+        "older_foreign_writes",
+        "coalesced_arguments",
+        "publications",
         "query_sources",
         "source_lines",
         "queries",
@@ -805,16 +862,21 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
     query_sources = tuple(
         _RecordedQuerySource.decode(raw) for raw in _list(value["query_sources"])
     )
-    source_lines = {
-        sha: None if raw is None else PythonAstLineIdentity.from_record(raw)
-        for sha, raw in _map(value["source_lines"]).items()
-    }
+    recorded_lines = _map(value["source_lines"])
+    source_lines = dict(
+        zip(
+            recorded_lines,
+            PythonAstLineIdentity.read_records(recorded_lines.values()),
+            strict=True,
+        )
+    )
     if source_lines.keys() != {source.sha256 for source in query_sources}:
         return None
     snapshots: dict[Path, PythonSourceSnapshot] = {}
     source_changed = False
     locations = _ReplayLocations()
     relocated: set[tuple[str, Path]] = set()
+    corresponding: set[tuple[str, Path]] = set()
     for source in query_sources:
         snapshot = snapshots.get(source.path)
         if snapshot is None:
@@ -830,18 +892,28 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
             lines = _source_line_identity(snapshot, context.target_python)
             source_lines[snapshot.sha256] = lines
         new = source_lines[snapshot.sha256]
-        if old is not None and new is not None and old.digest == new.digest:
-            mapping = dict(zip(old.lines, new.lines, strict=True))
-            translation = PythonSourceLocations(mapping)
-            if (
-                locations.by_module.setdefault(source.module, translation).slots
-                != mapping
-            ):
-                return None
-            relocated.add((source.module, source.path))
+        if old is None or new is None:
+            continue
+        same_ast = old.digest == new.digest
+        if not same_ast and old.lines != new.lines:
+            continue
+        translation = old.relocation_to(new)
+        if translation is None:
+            continue
+        prior = locations.by_module.setdefault(source.module, translation)
+        if (
+            prior.slots != translation.slots
+            or prior.columns != translation.columns
+            or prior.target_columns != translation.target_columns
+        ):
+            return None
+        owner = (source.module, source.path)
+        corresponding.add(owner)
+        if same_ast:
+            relocated.add(owner)
     if any(
         source.module in locations.by_module
-        and (source.module, source.path) not in relocated
+        and (source.module, source.path) not in corresponding
         for source in query_sources
     ):
         return None
@@ -853,6 +925,40 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         sha: PythonSourceLocations() if lines is None else lines.locations()
         for sha, lines in source_lines.items()
     }
+    for raw in _list(value["coalesced_arguments"]):
+        path_text, source_sha = _texts(raw)
+        path = Path(path_text)
+        snapshot = snapshots.get(path)
+        if snapshot is None or source_sha not in source_lines:
+            return None
+        if snapshot.sha256 != source_sha:
+            old, current = source_lines[source_sha], source_lines[snapshot.sha256]
+            # A representative query cannot reprove its collapsed arguments
+            # after a semantic change to the classification's source.
+            if old is None or current is None or old.digest != current.digest:
+                return None
+        resolver.coalesced_import_arguments.add((path, snapshot.sha256))
+    retained_publications: list[list[str]] = []
+    for raw in _list(value["publications"]):
+        path_text, source_sha, digest = _texts(raw)
+        path = Path(path_text)
+        snapshot = snapshots.get(path)
+        if (
+            snapshot is None
+            or source_sha not in source_lines
+            or not is_record_digest(digest)
+        ):
+            return None
+        if snapshot.sha256 == source_sha:
+            retained_publications.append([path_text, source_sha, digest])
+            continue
+        facts = python_module_publications(snapshot.tree)
+        if _publication_digest(facts, result_locations[snapshot.sha256]) != digest:
+            return None
+        resolver.import_publications[path, snapshot.sha256] = facts
+    for module, raw in _map(value["older_foreign_writes"]).items():
+        resolver.import_foreign_writes[module] = set(_texts(raw))
+
     relocated_roots: dict[tuple[str, Path], set[tuple[str, ...]]] = {}
     for source in query_sources:
         owner = (source.module, source.path)
@@ -899,6 +1005,7 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
             ]
             for rows in escape_writes
         ]
+    lexical_universes = _list(value["lexical_universes"])
     premises: list[PythonNamespacePremise | None] = []
     for raw in _list(value["premises"]):
         if raw is None:
@@ -915,6 +1022,9 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
                 {
                     **premise,
                     **writer_sites,
+                    "foreign_universe": _table_row(
+                        lexical_universes, premise["foreign_universe"]
+                    ),
                     "escape_writes": _table_row(
                         escape_writes, premise["escape_writes"]
                     ),
@@ -925,6 +1035,16 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
     if not all(map(is_record_digest, result_digests)):
         return None
     name_universes: dict[Path, frozenset[str] | None] = {}
+    checked_writes: set[tuple[Path, str, frozenset[str]]] = set()
+    authority_rows = tuple(map(_map, _list(value["authority"])))
+    if source_changed:
+        authority_writers = {
+            _text(row["module"]): _table_row(premises, row["namespace_premise"])
+            for row in authority_rows
+        }
+    else:
+        authority_writers = {}
+    writer_names: dict[str, set[str]] = {}
     premise_views: dict[tuple[str, int], PythonNamespacePremise | None] = {}
 
     def premise_for(module: str, row: object) -> PythonNamespacePremise | None:
@@ -952,11 +1072,31 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         premise = premise_for(source.module, premise_id)
         lease = source_leases[path]
         changed = lease.source_sha256 != source.sha256
-        if changed and premise is not None and premise.foreign_universe is not None:
-            if path not in name_universes:
-                name_universes[path] = python_namespace_name_universe(snapshot.text)
-            if name_universes[path] != premise.foreign_universe:
-                return None
+        if (
+            changed
+            and (source.module, path) not in relocated
+            and premise is not None
+            and premise.foreign_universe is not None
+        ):
+            writer_view = (path, source.module, premise.foreign_universe)
+            if writer_view not in checked_writes:
+                if path not in name_universes:
+                    name_universes[path] = python_namespace_name_universe(snapshot.text)
+                names = name_universes[path]
+                module = source.module
+                if module not in writer_names:
+                    prior = resolver.import_foreign_writes.get(module)
+                    settled = authority_writers.get(module)
+                    final = settled.foreign_writes if settled is not None else None
+                    if prior is None and final is None:
+                        return None
+                    writer_names[module] = set(final or ()) | (prior or set())
+                if names is None or any(
+                    name not in premise.foreign_universe
+                    for name in writer_names[module] & names
+                ):
+                    return None
+                checked_writes.add(writer_view)
         owner = (
             None
             if raw_owner is None
@@ -1011,11 +1151,15 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
                 else replace(premise, foreign_universe=None),
                 native_support_function_roots=source.selection.roots,
             )
-            # Compare in the stored layout. New source positions must match
-            # previous positions on a semantic edit; only AST equivalence can
-            # authorize a relocation of the settled graph.
+            # A correspondence translates coordinates only. The fresh scan
+            # still has to reproduce every graph-facing result in that space.
+            layout = (
+                snapshot.sha256
+                if (source.module, path) in corresponding
+                else source.sha256
+            )
             if (
-                digests.digest(query, loaded.scan, result_locations[source.sha256])
+                digests.digest(query, loaded.scan, result_locations[layout])
                 != result_digest
             ):
                 return None
@@ -1024,8 +1168,7 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
                 query, result_digest, result_locations[snapshot.sha256]
             )
     sources: list[_ModuleSourceScanAuthority] = []
-    for raw in _list(value["authority"]):
-        row = _map(raw)
+    for row in authority_rows:
         name = _text(row["module"])
         path = Path(_text(row["path"]))
         snapshot = snapshots.get(path)
@@ -1124,7 +1267,12 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
             # Republish from the verified query closure so result digests,
             # scoped premises and source generations advance together.
             with context.measure("publication"):
-                _publish_import_graph(plan, context, source_lines)
+                _publish_import_graph(
+                    plan,
+                    context,
+                    source_lines,
+                    retained_publications=retained_publications,
+                )
         except OSError:
             # The admitted plan remains usable when a cache write fails.
             pass

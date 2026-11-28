@@ -194,13 +194,16 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
     from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
     entry = tmp_path / "app.py"
-    entry.write_text("import peer\nprint(peer.compute())\n", encoding="utf-8")
+    entry.write_text(
+        "import peer\nprint(peer.compute())\npeer.late_label = 11\n",
+        encoding="utf-8",
+    )
     peer = tmp_path / "peer.py"
     peer_source = (
         "import sys\n"
         "def compute():\n"
         "    sys.modules['relocated_victim'] = sys\n"
-        "    return {}\n"
+        "    return {{'old_label': {} }}\n"
     )
     peer.write_text(peer_source.format(5), encoding="utf-8")
     resolved, error = _resolve_entry(tmp_path, file_path=str(entry))
@@ -370,13 +373,28 @@ def test_persisted_import_graph_replays_body_edit_and_refuses_new_demand(
         )
     )
     # A value edit can still compare freshly scanned results in that layout.
-    peer.write_text(moved_source.format(9), encoding="utf-8")
+    # A new spelling with no foreign writer can shift the source columns
+    # without changing any graph-facing result.
+    peer.write_text(
+        moved_source.format(123456).replace("old_label", "longer_result_label"),
+        encoding="utf-8",
+    )
     edited_after_move = import_graph_record.replay_import_graph(context)
     assert edited_after_move is not None
     fresh_edited = _materialize_plan(
         tmp_path, entry, "app", image_scope=resolved.image_scope
     )
     assert edited_after_move.scan_authority == fresh_edited.scan_authority
+
+    assert (
+        "late_label"
+        in fresh_edited.module_resolution_cache.import_foreign_writes["peer"]
+    )
+    peer.write_text(
+        moved_source.format(123456).replace("old_label", "late_label"),
+        encoding="utf-8",
+    )
+    assert import_graph_record.replay_import_graph(context) is None
 
     peer.write_text(
         "\ndef compute():\n    import new_demand\n    return 7\n", encoding="utf-8"

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import ast
+import base64
+import json
+import zlib
+from bisect import bisect_left
 from molt.python_private_names import python_source_fields
 import hashlib
 import struct
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from threading import Lock
@@ -30,9 +34,11 @@ PythonSourceKey: TypeAlias = tuple[int, int, int, int, str]
 
 @dataclass(frozen=True, eq=False, slots=True)
 class PythonSourceLocations:
-    """Project source positions to their ordered AST line slots."""
+    """Project source positions to the ordered coordinates of an admitted AST."""
 
     slots: Mapping[int, int] | None = None
+    columns: Mapping[int, tuple[int, ...]] | None = None
+    target_columns: Mapping[int, tuple[int, ...]] | None = None
 
     def line(self, line: int) -> int:
         if self.slots is None or line == 0:
@@ -46,7 +52,26 @@ class PythonSourceLocations:
         if self.slots is None:
             return source
         line, column, end_line, end_column, kind = source
-        return self.line(line), column, self.line(end_line), end_column, kind
+        return (
+            self.line(line),
+            self.column(line, column),
+            self.line(end_line),
+            self.column(end_line, end_column),
+            kind,
+        )
+
+    def column(self, line: int, column: int) -> int:
+        if self.columns is None or line == 0:
+            return column
+        points = self.columns[line]
+        index = bisect_left(points, column)
+        if index == len(points) or points[index] != column:
+            raise ValueError(
+                f"source position outside the recorded AST: {line}:{column}"
+            )
+        return (
+            index if self.target_columns is None else self.target_columns[line][index]
+        )
 
     def optional(self, source: PythonSourceKey | None) -> PythonSourceKey | None:
         return None if source is None else self.key(source)
@@ -261,53 +286,126 @@ class PythonAstLineIdentity:
 
     digest: str
     lines: tuple[int, ...]
+    columns: tuple[tuple[int, ...], ...]
+    position_shape: str
 
-    def record(self) -> tuple[str, tuple[int, ...]]:
-        return self.digest, self.lines
+    def record(self) -> tuple[str, str, str]:
+        # Location tables are source-local and mostly repeated indentation and
+        # offsets. Keep the larger syntax closure within its existing size cap.
+        encoded = json.dumps((self.lines, self.columns), separators=(",", ":")).encode()
+        return (
+            self.digest,
+            self.position_shape,
+            base64.b64encode(zlib.compress(encoded, level=1)).decode("ascii"),
+        )
 
     @classmethod
     def from_record(cls, raw: object) -> PythonAstLineIdentity:
-        if not isinstance(raw, list) or len(raw) != 2:
+        if not isinstance(raw, list) or len(raw) != 3:
             raise ValueError("invalid AST line identity")
-        digest, lines = raw
+        digest, position_shape, packed = raw
+        if any(
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+            for value in (digest, position_shape)
+        ) or not isinstance(packed, str):
+            raise ValueError("invalid AST line identity")
+        try:
+            decoder = zlib.decompressobj()
+            data = decoder.decompress(
+                base64.b64decode(packed, validate=True), 8 * 1024 * 1024
+            )
+            if not decoder.eof or decoder.unused_data:
+                raise ValueError("invalid AST location data")
+            lines, columns = json.loads(data)
+        except (zlib.error, TypeError, ValueError) as error:
+            raise ValueError("invalid AST location data") from error
         if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-            or not isinstance(lines, list)
+            not isinstance(lines, list)
+            or not isinstance(columns, list)
+            or len(lines) != len(columns)
         ):
             raise ValueError("invalid AST line identity")
         previous = 0
-        ordered: list[int] = []
         for line in lines:
             if type(line) is not int or line <= previous:
                 raise ValueError("AST line identity is not in source order")
-            ordered.append(line)
             previous = line
-        return cls(digest, tuple(ordered))
+        for points in columns:
+            if not isinstance(points, list):
+                raise ValueError("invalid AST column table")
+            previous = -1
+            for point in points:
+                if type(point) is not int or point <= previous:
+                    raise ValueError("AST columns are not in source order")
+                previous = point
+        return cls(
+            digest, tuple(lines), tuple(tuple(row) for row in columns), position_shape
+        )
+
+    @classmethod
+    def read_records(
+        cls, records: Iterable[object]
+    ) -> Iterator[PythonAstLineIdentity | None]:
+        remaining = 4 * 1024 * 1024
+        for raw in records:
+            if raw is None:
+                yield None
+                continue
+            identity = cls.from_record(raw)
+            remaining -= len(identity.lines) + sum(map(len, identity.columns))
+            if remaining < 0:
+                raise ValueError("AST location inventory exceeds its position limit")
+            yield identity
 
     def locations(self) -> PythonSourceLocations:
         return PythonSourceLocations(
-            {line: slot for slot, line in enumerate(self.lines, start=1)}
+            {line: slot for slot, line in enumerate(self.lines, start=1)},
+            dict(zip(self.lines, self.columns, strict=True)),
+        )
+
+    def relocation_to(
+        self, target: PythonAstLineIdentity
+    ) -> PythonSourceLocations | None:
+        # For a semantic edit this is only a coordinate correspondence. Every
+        # consumed result still needs the new scan to establish equivalence.
+        if self.position_shape != target.position_shape:
+            return None
+        return PythonSourceLocations(
+            dict(zip(self.lines, target.lines, strict=True)),
+            dict(zip(self.lines, self.columns, strict=True)),
+            dict(zip(self.lines, target.columns, strict=True)),
         )
 
 
 def python_ast_line_identity(tree: ast.AST) -> PythonAstLineIdentity:
-    # Keep columns, line sharing, ordering, and every value-bearing AST field.
-    # In particular a moved expression can share a slot only if every node's
-    # start/end line again refers to that same relative slot.
-    lines = tuple(
-        sorted(
-            {
-                line
-                for node in ast.walk(tree)
-                for field in _AST_LINE_FIELDS
-                if type(line := getattr(node, field, None)) is int and line > 0
-            }
-        )
-    )
+    # The exact digest still retains columns and every AST value. Position
+    # slots let a separately verified result survive shifts in token width.
+    points: dict[int, set[int]] = {}
+    spans: list[PythonSourceKey] = []
+    for node in ast.walk(tree):
+        if hasattr(node, "lineno"):
+            span = python_node_source_key(node)
+            spans.append(span)
+            line, column, end_line, end_column, _ = span
+            if line > 0:
+                points.setdefault(line, set()).add(column)
+            if end_line > 0:
+                points.setdefault(end_line, set()).add(end_column)
+    lines = tuple(sorted(points))
     slots = {line: index for index, line in enumerate(lines, start=1)}
-    return PythonAstLineIdentity(python_ast_digest(tree, line_slots=slots), lines)
+    columns = {line: tuple(sorted(points[line])) for line in lines}
+    locations = PythonSourceLocations(slots, columns)
+    shape = hashlib.sha256()
+    for span in spans:
+        shape.update(repr(locations.key(span)).encode("ascii"))
+    return PythonAstLineIdentity(
+        python_ast_digest(tree, line_slots=slots),
+        lines,
+        tuple(columns.values()),
+        shape.hexdigest(),
+    )
 
 
 def python_ast_digest(

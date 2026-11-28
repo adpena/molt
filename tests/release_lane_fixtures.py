@@ -74,7 +74,7 @@ def stage_stdlib_source_summaries_fixture(
                 ZipInfo("namespace-syntax.json"),
                 json.dumps(
                     {
-                        "schema": "molt.stdlib-namespace-syntax.v2",
+                        "schema": "molt.stdlib-namespace-syntax.v3",
                         "producer": "fixture",
                         "parser": sys.version,
                         "lines": [],
