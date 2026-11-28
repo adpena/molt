@@ -582,15 +582,18 @@ def executable_content_identity(
     """Project an executable's identity, capturing it when no admission was supplied."""
     if observed is None:
         entrypoint, identity, _ = _capture_executable_content(path, label=label)
-    else:
-        with stable_executable_probe(path, label=label, identity=observed.identity) as (
-            entrypoint,
-            identity,
-        ):
-            observed.verify(label=label)
-    return ExecutableIdentity(
-        entrypoint, identity.path, identity.size, identity.sha256, ""
-    ).content_record()
+        return ExecutableIdentity(
+            entrypoint, identity.path, identity.size, identity.sha256, ""
+        ).content_record()
+    with stable_executable_probe(path, label=label, identity=observed.identity) as (
+        entrypoint,
+        identity,
+    ):
+        record = ExecutableIdentity(
+            entrypoint, identity.path, identity.size, identity.sha256, ""
+        ).content_record()
+        observed.verify(label=label)
+        return record
 
 
 def stable_file_content_identity(path: Path, *, label: str) -> dict[str, str | int]:
