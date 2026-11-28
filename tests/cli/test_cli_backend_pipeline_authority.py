@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import molt.cli as cli
+from molt import file_publication
 from molt.cli import backend_pipeline as cli_backend_pipeline
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli.build_output_layout import _BuildOutputLayout
@@ -26,12 +27,13 @@ def test_backend_pipeline_authority_lives_in_backend_pipeline_module() -> None:
         assert not hasattr(cli, name)
 
 
-@pytest.mark.parametrize("kind", ["native-object", "wasm"])
+@pytest.mark.parametrize("kind", ["native-object", "wasm", "wasm-archive"])
 def test_backend_requested_artifact_is_private_until_publication(tmp_path: Path, kind):
-    output = tmp_path / "program.out"
+    is_wasm = kind != "native-object"
+    output = tmp_path / ("program.wasm" if is_wasm else "program.out")
     output.write_bytes(b"previous artifact")
     layout = _BuildOutputLayout(
-        is_wasm=kind == "wasm",
+        is_wasm=is_wasm,
         is_wasm_freestanding=False,
         is_mlir_emit=False,
         split_runtime=False,
@@ -44,12 +46,18 @@ def test_backend_requested_artifact_is_private_until_publication(tmp_path: Path,
         emit_ir_path=None,
         facts_target=_target(None),
     )
-    with cli_backend_pipeline._staged_backend_output(layout, project_root=tmp_path) as (
+    with cli_backend_pipeline._staged_backend_output(
+        layout, project_root=tmp_path, wasm_application_archive=kind == "wasm-archive"
+    ) as (
         staged,
         destination,
     ):
         assert destination == output
         assert staged.output_artifact != output
+        suffix = ".a" if kind == "wasm-archive" else output.suffix
+        assert file_publication.is_owned_staged_file_path(
+            staged.output_artifact, output, purpose="backend-output", suffix=suffix
+        )
         staged.output_artifact.write_bytes(b"new backend output")
         assert output.read_bytes() == b"previous artifact"
         candidate = staged.output_artifact

@@ -29323,7 +29323,7 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
     if emit_mode == "obj" and shared_stdlib:
         assert request_bytes is None
         assert error == (
-            "Shared stdlib extraction requires native archive or wasm32 object output"
+            "Shared stdlib extraction requires native archive or wasm32 application output"
         )
         return
 

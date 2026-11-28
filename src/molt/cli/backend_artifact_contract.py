@@ -132,6 +132,8 @@ class BackendArtifactContract:
         """The transport kind a native compile job writes, if one does."""
         if self.kind is BackendArtifactKind.WASM_OBJECT:
             return NativeArtifactKind.OBJECT
+        if self.kind is BackendArtifactKind.WASM_ARCHIVE:
+            return NativeArtifactKind.ARCHIVE
         return self.native_kind
 
     @property
@@ -184,10 +186,10 @@ class BackendArtifactContract:
         if enabled and self.kind not in {
             BackendArtifactKind.NATIVE_ARCHIVE,
             BackendArtifactKind.WASM_OBJECT,
+            BackendArtifactKind.WASM_ARCHIVE,
         }:
             raise ValueError(
-                "Shared stdlib extraction requires native archive or wasm32 "
-                "object output"
+                "Shared stdlib extraction requires native archive or wasm32 application output"
             )
 
     def validate_archive_shape(
@@ -389,7 +391,7 @@ def stdlib_archive_contract(target_triple: str | None) -> BackendArtifactContrac
 
 
 def resolve_backend_artifact_contract(
-    *, target: Target, emit_mode: str
+    *, target: Target, emit_mode: str, wasm_application_archive: bool = False
 ) -> BackendArtifactContract:
     """Project admitted compilation intent into the emitted-byte contract."""
     match target:
@@ -407,7 +409,12 @@ def resolve_backend_artifact_contract(
         if emit_mode != "wasm":
             raise ValueError(f"WASM output does not support emit mode {emit_mode!r}")
         triple = project_target_triple(target)
-        return BackendArtifactContract(BackendArtifactKind.WASM_OBJECT, triple)
+        kind = (
+            BackendArtifactKind.WASM_ARCHIVE
+            if wasm_application_archive
+            else BackendArtifactKind.WASM_OBJECT
+        )
+        return BackendArtifactContract(kind, triple)
     spec = native_target_spec(target)
     native_kind = NativeArtifactKind.for_emit_mode(emit_mode)
     return BackendArtifactContract(

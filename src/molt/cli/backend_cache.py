@@ -47,7 +47,6 @@ from molt.cli.atomic_io import (
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
     BackendArtifactValidation,
-    BackendArtifactKind,
     BackendArtifactValidationError,
     stdlib_archive_contract,
 )
@@ -1897,7 +1896,7 @@ def _native_stdlib_object_split_enabled(
     # An explicit object is one complete relocatable compilation unit, not
     # an archive disguised as an object after merging a cached stdlib. A
     # wasm32 application object always links with its shared stdlib archive.
-    if artifact_contract.kind is BackendArtifactKind.WASM_OBJECT:
+    if artifact_contract.is_wasm:
         return True
     return target is TargetKind.NATIVE and emit_mode != "obj"
 

@@ -290,10 +290,13 @@ def _prepare_backend_setup(
     stage_timings_ms: dict[str, float] | None = None,
     restore_application_artifact: bool = True,
     wasm_validator: ToolDiscovery | None = None,
+    wasm_application_archive: bool = False,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     try:
         artifact_contract = resolve_backend_artifact_contract(
-            target=target, emit_mode=emit_mode
+            target=target,
+            emit_mode=emit_mode,
+            wasm_application_archive=wasm_application_archive,
         )
     except ValueError as exc:
         return None, _fail(str(exc), json_output, command="build")

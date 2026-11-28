@@ -14,6 +14,8 @@ from molt import file_publication
 from molt.cli.jit_runtime_image import ensure_jit_runtime_image, jit_runtime_image_store
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
+from molt.cli import wasm_toolchain
+from molt.cli.backend_artifact_contract import BackendArtifactKind
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest
 from molt.cli.build_diagnostics import (
     _emit_build_diagnostics_for_result,
@@ -144,6 +146,10 @@ def _emit_backend_pipeline_outputs(
         )
 
     if output_layout.is_wasm:
+        wasm_linker = None
+        validation = prepared_backend_compile.output_validation
+        contract = prepared_backend_setup.cache_setup.artifact_contract
+        archive = contract.kind is BackendArtifactKind.WASM_ARCHIVE
         try:
             if (
                 backend_output_destination is None
@@ -151,10 +157,36 @@ def _emit_backend_pipeline_outputs(
                     output_layout.output_artifact,
                     backend_output_destination,
                     purpose="backend-output",
-                    suffix=backend_output_destination.suffix or ".o",
+                    suffix=(
+                        contract.suffix
+                        if archive
+                        else (backend_output_destination.suffix or ".o")
+                    ),
                 )
             ):
                 raise ValueError("backend output has no publication stage")
+            if archive:
+                if (
+                    validation is None
+                    or validation.contract.kind is not BackendArtifactKind.WASM_ARCHIVE
+                ):
+                    raise ValueError(
+                        "WASM application archive has no backend validation"
+                    )
+                wasm_linker = wasm_toolchain.observe_wasm_linker(
+                    prepared_build_roots.molt_root
+                )
+                merge_start = time.perf_counter()
+                validation = _non_native_output._merge_wasm_application_archive(
+                    output_layout.output_artifact,
+                    public_name=backend_output_destination.name,
+                    validation=validation,
+                    linker=wasm_linker,
+                )
+                if pipeline_stage_ms is not None:
+                    pipeline_stage_ms["wasm_application_archive_merge"] = (
+                        time.perf_counter() - merge_start
+                    ) * 1000.0
             validate_inputs()
             file_publication.durable_replace(
                 output_layout.output_artifact, backend_output_destination
@@ -198,7 +230,8 @@ def _emit_backend_pipeline_outputs(
                 require_linked=require_linked,
                 capture_link_inputs=capture_link_inputs,
                 emission_origin=prepared_backend_compile.backend_emission_origin,
-                output_validation=prepared_backend_compile.output_validation,
+                output_validation=validation,
+                wasm_linker=wasm_linker,
                 compiler_cache_path=cache_path if cache else None,
                 linked_output_path=output_layout.linked_output_path,
                 output_artifact=output_layout.output_artifact,

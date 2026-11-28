@@ -124,7 +124,7 @@ def test_artifact_projection_has_no_second_target_selector():
 
 
 @pytest.mark.parametrize("kind", list(contracts.BackendArtifactKind))
-def test_only_archive_or_wasm_object_output_has_shared_stdlib(
+def test_only_archive_or_wasm_application_output_has_shared_stdlib(
     kind: contracts.BackendArtifactKind,
 ) -> None:
     contract = contracts.BackendArtifactContract(kind)
@@ -132,11 +132,25 @@ def test_only_archive_or_wasm_object_output_has_shared_stdlib(
     if kind in {
         contracts.BackendArtifactKind.NATIVE_ARCHIVE,
         contracts.BackendArtifactKind.WASM_OBJECT,
+        contracts.BackendArtifactKind.WASM_ARCHIVE,
     }:
         contract.validate_shared_stdlib(enabled=True)
     else:
         with pytest.raises(ValueError, match="Shared stdlib extraction"):
             contract.validate_shared_stdlib(enabled=True)
+
+
+def test_linked_wasm_archive_uses_its_own_backend_job_and_cache_key() -> None:
+    target = admit_target("wasm")
+    raw = contracts.resolve_backend_artifact_contract(target=target, emit_mode="wasm")
+    archive = contracts.resolve_backend_artifact_contract(
+        target=target, emit_mode="wasm", wasm_application_archive=True
+    )
+    assert raw.native_job_kind is NativeArtifactKind.OBJECT
+    assert archive.native_job_kind is NativeArtifactKind.ARCHIVE
+    assert archive.suffix == ".a"
+    assert raw.target_triple == archive.target_triple
+    assert raw.cache_identity != archive.cache_identity
 
 
 @pytest.mark.parametrize(

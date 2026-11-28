@@ -51,7 +51,10 @@ from molt.cli.output import (
 
 @contextlib.contextmanager
 def _staged_backend_output(
-    output_layout: _BuildOutputLayout, *, project_root: Path
+    output_layout: _BuildOutputLayout,
+    *,
+    project_root: Path,
+    wasm_application_archive: bool = False,
 ) -> Generator[tuple[_BuildOutputLayout, Path | None]]:
     """Keep requested backend artifacts private through source admission."""
     if not (output_layout.emit_mode == "obj" or output_layout.is_wasm):
@@ -61,7 +64,9 @@ def _staged_backend_output(
         output_layout.output_artifact, create_parent=True, role="backend output"
     )
     candidate = file_publication.staged_file_path(
-        destination, purpose="backend-output", suffix=destination.suffix or ".o"
+        destination,
+        purpose="backend-output",
+        suffix=".a" if wasm_application_archive else (destination.suffix or ".o"),
     )
     sync_state = _artifact_sync_state_path(project_root, candidate)
     try:
@@ -254,6 +259,16 @@ def _run_backend_pipeline(
                 "pipeline_stage_ms", {}
             )
         )
+    # The required monolithic link already admits a linker. Release and
+    # optional-link builds keep their existing application codegen scope.
+    wasm_application_archive = (
+        output_layout.is_wasm
+        and output_layout.linked
+        and require_linked
+        and not output_layout.split_runtime
+        and not output_layout.is_wasm_freestanding
+        and wasm_opt_level == "bounded"
+    )
     with contextlib.ExitStack() as output_scope:
 
         def finish_inputs() -> None:
@@ -262,7 +277,9 @@ def _run_backend_pipeline(
         try:
             output_layout, backend_output_destination = output_scope.enter_context(
                 _staged_backend_output(
-                    output_layout, project_root=prepared_build_roots.project_root
+                    output_layout,
+                    project_root=prepared_build_roots.project_root,
+                    wasm_application_archive=wasm_application_archive,
                 )
             )
         except (OSError, ValueError) as exc:
@@ -307,6 +324,7 @@ def _run_backend_pipeline(
                 rust_cpu=prepared_build_preamble.rust_cpu,
                 stage_timings_ms=pipeline_stage_ms,
                 wasm_validator=prepared_build_roots.wasm_validator,
+                wasm_application_archive=wasm_application_archive,
             )
         )
         if pipeline_stage_ms is not None:

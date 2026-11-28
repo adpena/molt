@@ -14,7 +14,10 @@ import tomllib
 
 from molt.cli import wasm_link_inputs
 from molt.cli.command_runtime import _run_completed_command
-from molt.toolchain_identity import stable_executable_probe
+from molt.toolchain_identity import (
+    StableRegularFileObservation,
+    stable_executable_probe,
+)
 
 
 _REQUIRED_WASM_RUST_TARGETS = ("wasm32-wasip1",)
@@ -253,3 +256,15 @@ def resolve_wasm_linker(
             f"WASM linker reports {version}, but selected SDK requires LLVM {expected}"
         )
     return WasmLinkerIdentity(linker, version, expected, sha256)
+
+
+def observe_wasm_linker(
+    compiler_root: Path,
+) -> tuple[WasmLinkerIdentity, StableRegularFileObservation]:
+    linker = resolve_wasm_linker(compiler_root)
+    observation = StableRegularFileObservation.capture(
+        linker.path.resolve(strict=True), label="WASM linker"
+    )
+    if observation.identity.sha256 != linker.sha256:
+        raise WasmLinkerContractError("WASM linker differs from its admitted toolchain")
+    return linker, observation

@@ -85,8 +85,10 @@ from molt.cli.browser_target_features import (
     browser_target_feature_metadata,
 )
 from molt.cli.backend_artifact_contract import (
+    BackendArtifactContract,
     BackendArtifactKind,
     BackendArtifactValidation,
+    wasm_relocatable_object_error,
 )
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.external_native import (
@@ -133,6 +135,7 @@ from molt.native_callable_abi import (
     native_callable_browser_signature,
 )
 from molt.toolchain_identity import (
+    stable_executable_probe,
     StableRegularFileObservation,
     capture_stable_regular_file,
     stable_regular_file_identity,
@@ -783,6 +786,62 @@ def _wasm_tool_source_identities(molt_root: Path, tool: Path) -> tuple[str, str]
     return link_sources.content_digest, deployment_sources.content_digest
 
 
+def _merge_wasm_application_archive(
+    path: Path,
+    *,
+    public_name: str,
+    validation: BackendArtifactValidation,
+    linker: tuple[wasm_toolchain.WasmLinkerIdentity, StableRegularFileObservation],
+) -> BackendArtifactValidation:
+    """Project an admitted private archive into the public relocatable module."""
+    from molt.file_publication import durable_replace
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    before = StableRegularFileObservation.capture(
+        path, label="WASM application archive"
+    )
+    if not validation.admits(before.identity):
+        raise ValueError("application archive differs from validated backend output")
+    selection, observed = linker
+    with OwnedTemporaryDirectory(prefix=".molt-wasm-merge-", dir=path.parent) as temp:
+        merged = Path(temp) / public_name
+        with stable_executable_probe(
+            selection.path, label="WASM partial linker", identity=observed.identity
+        ) as (entrypoint, _):
+            result = _run_completed_command(
+                [
+                    str(entrypoint),
+                    "-r",
+                    "--whole-archive",
+                    str(path),
+                    "--no-whole-archive",
+                    "-o",
+                    str(merged),
+                ],
+                cwd=path.parent,
+                env=None,
+                capture_output=True,
+                memory_guard_prefix="MOLT_WASM_LINK",
+            )
+        if result.returncode != 0:
+            raise ValueError(
+                result.stderr.strip() or "WASM application archive merge failed"
+            )
+        before.verify(label="WASM application archive")
+        merged_observation = StableRegularFileObservation.capture(
+            merged, label="merged WASM application"
+        )
+        contract = BackendArtifactContract(
+            BackendArtifactKind.WASM_OBJECT, validation.contract.target_triple
+        )
+        contract.validate(merged)
+        if error := wasm_relocatable_object_error(merged.read_bytes()):
+            raise ValueError(error)
+        merged_observation.verify(label="merged WASM application")
+        durable_replace(merged, path)
+    return BackendArtifactValidation(contract, merged_observation.identity)
+
+
 def _prepare_non_native_build_result(
     *,
     is_wasm: bool,
@@ -793,6 +852,8 @@ def _prepare_non_native_build_result(
     capture_link_inputs: bool = False,
     emission_origin: BackendEmissionOrigin | None = None,
     output_validation: BackendArtifactValidation | None = None,
+    wasm_linker: tuple[wasm_toolchain.WasmLinkerIdentity, StableRegularFileObservation]
+    | None = None,
     compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
@@ -829,6 +890,7 @@ def _prepare_non_native_build_result(
             capture_link_inputs=capture_link_inputs,
             emission_origin=emission_origin,
             output_validation=output_validation,
+            wasm_linker=wasm_linker,
             compiler_cache_path=compiler_cache_path,
             linked_output_path=linked_output_path,
             output_artifact=output_artifact,
@@ -865,6 +927,8 @@ def _prepare_non_native_build_result_in_generation(
     capture_link_inputs: bool = False,
     emission_origin: BackendEmissionOrigin | None = None,
     output_validation: BackendArtifactValidation | None = None,
+    wasm_linker: tuple[wasm_toolchain.WasmLinkerIdentity, StableRegularFileObservation]
+    | None = None,
     compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
@@ -1223,13 +1287,11 @@ def _prepare_non_native_build_result_in_generation(
                 link_args.append("--preserve-debug-sections")
             link_project_root = project_root or molt_root
             try:
-                linker = wasm_toolchain.resolve_wasm_linker(molt_root)
-                linker_observation = StableRegularFileObservation.capture(
-                    linker.path.resolve(strict=True), label="WASM linker"
+                linker, linker_observation = (
+                    wasm_linker or wasm_toolchain.observe_wasm_linker(molt_root)
                 )
+                linker_observation.verify(label="WASM linker")
                 link_executable = linker_observation.identity
-                if link_executable.sha256 != linker.sha256:
-                    raise ValueError("WASM linker differs from its admitted toolchain")
                 # Transport the role entrypoint and exact content coordinate.
                 # The content is already in the link inputs and both cache keys.
                 runtime_admission_args.extend(
