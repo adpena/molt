@@ -24,11 +24,17 @@ impl NativeApplicationBatchPlan {
         let mut archive = backend
             .prepare_terminal_archive(ir, linkage)
             .map_err(std::io::Error::other)?;
-        let batches = stable_native_batches(
-            std::mem::take(&mut archive.definitions),
-            batch_size,
-            batch_ops_budget,
-        );
+        let literal_cell_partitions = archive.take_literal_cell_partitions();
+        let mut batches = if archive.definitions.is_empty() && !literal_cell_partitions.is_empty() {
+            Vec::new()
+        } else {
+            stable_native_batches(
+                std::mem::take(&mut archive.definitions),
+                batch_size,
+                batch_ops_budget,
+            )
+        };
+        batches.extend(literal_cell_partitions);
         Ok(Self { archive, batches })
     }
     pub(super) fn total_batches(&self) -> usize {
