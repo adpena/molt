@@ -52,7 +52,7 @@ from tests.wasm_runtime_heavy_witnesses import (  # noqa: E402
     HeavyWasmWitness,
     syntax_error_target_arguments,
 )
-from molt.cli.script_commands import _wasm_run_build_args  # noqa: E402
+from molt.cli.script_commands import _wasm_run_build_plan  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
@@ -100,7 +100,7 @@ def wasm_build_command(
         case "run":
             # Keep the CLI run wrapper's guest default and linked requirement.
             # The shared target/version arguments are also used by its oracle.
-            arguments = _wasm_run_build_args(syntax_error_target_arguments("wasm"))
+            plan = _wasm_run_build_plan(syntax_error_target_arguments("wasm"))
             cwd, environment = run_build_environment(source, {}, compiler_root=root)
             return WasmTestBuildCommand(
                 (
@@ -109,7 +109,7 @@ def wasm_build_command(
                     "molt.cli",
                     "build",
                     "--json",
-                    *arguments,
+                    *plan.args,
                     "--out-dir",
                     str(output),
                     str(source),
