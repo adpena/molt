@@ -474,9 +474,12 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
         let mut callable = empty;
         let mut code = empty;
         let probe = plan.and_then(|mut reservation| {
-            if op.opcode == OpCode::FrameArenaAdmits {
-                return (reservation.arena_bytes > 0)
-                    .then_some(FrameProbe::Arena(reservation.arena_bytes));
+            if op.opcode == OpCode::FrameRegionAdmits {
+                return Some(FrameProbe::Region {
+                    arena_bytes: reservation.arena_bytes,
+                    recursion_depth: reservation.recursion_depth,
+                    virtual_exception_level: FramePrefix::requires_virtual_level(&op.attrs),
+                });
             }
             assert_eq!(op.opcode, OpCode::FrameEntryAdmits);
             let (Some(AttrValue::Str(owner)), [function]) =
@@ -489,9 +492,6 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
             }
             reservation.virtual_exception_level = FramePrefix::requires_virtual_level(&op.attrs);
             reservation.callable_admitted = FramePrefix::region_callable_admitted(&op.attrs);
-            if FramePrefix::region_arena_admitted(&op.attrs) {
-                reservation.arena_bytes = 0;
-            }
             callable = operands.resolve(b, *function);
             let slot = b.program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner);
             code = b.word_value(slot);

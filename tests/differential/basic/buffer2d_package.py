@@ -120,6 +120,35 @@ try:
 except RuntimeError as error:
     print("matmul-exception", error is cell_failure, str(error), lookup_events)
 
+# A miss before the next cell must preserve all committed stores. The
+# callback's exception sees the store at its own call site as well.
+class PackedLoopStop(Exception):
+    pass
+
+
+def write_before_callback(dst, src, callback):
+    i = 0
+    while i < 4:
+        put(dst, 0, i, buffers.get(src, 0, i) + 1)
+        if i == 2:
+            callback(dst)
+        i += 1
+
+
+def stop_after_store(dst):
+    raise PackedLoopStop(tuple(snapshot(dst)[0]))
+
+
+for cells in (2, 4):
+    committed = make(1, 4, -1)
+    try:
+        write_before_callback(committed, make(1, cells, 6), stop_after_store)
+    except IndexError:
+        print("packed-loop-bound", snapshot(committed))
+    except PackedLoopStop as error:
+        print("packed-loop-callback", error.args, snapshot(committed))
+
+
 # Exact Python integers at both storage and arithmetic boundaries.
 large = 1 << 90
 print("large-set", buffers.set(a, 0, 0, large) is a)

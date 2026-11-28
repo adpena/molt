@@ -107,19 +107,15 @@ impl FramePrefix {
         )
     }
 
-    const REGION_ARENA_ATTR: &str = "frame_region_arena_admitted";
-
-    /// A region-entry check covers this reservation until an exit that can
-    /// change the thread's arena. Used only by the quiescent-region rewrite.
-    pub fn admit_region_arena(attrs: &mut AttrDict) {
-        attrs.insert(Self::REGION_ARENA_ATTR.into(), AttrValue::Bool(true));
-    }
-
-    pub fn region_arena_admitted(attrs: &AttrDict) -> bool {
-        matches!(
-            attrs.get(Self::REGION_ARENA_ATTR),
-            Some(AttrValue::Bool(true))
-        )
+    /// Consume the requirements that a quiescent region will check at its entry.
+    /// Keep the original probe untouched on every path outside that region.
+    pub fn take_thread_requirements(attrs: &mut AttrDict) -> Option<(Self, bool)> {
+        let prefix = Self::reservation_from_attrs(attrs)?;
+        let virtual_level = Self::requires_virtual_level(attrs);
+        attrs.remove(Self::HOMES_ATTR);
+        attrs.remove(Self::DEPTH_ATTR);
+        attrs.remove(Self::VIRTUAL_LEVEL_ATTR);
+        Some((prefix, virtual_level))
     }
 
     const REGION_CALLABLE_ATTR: &str = "frame_region_callable_admitted";

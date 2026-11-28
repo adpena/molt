@@ -325,7 +325,7 @@ pub fn opcode_name(op: &OpCode, spelling: OpcodeSpelling) -> &'static str {
         OpCode::StorePackedBuffer2d => "store_packed_buffer2d",
         OpCode::ProbeInlineField => "probe_inline_field",
         OpCode::FrameEntryAdmits => "frame_entry_admits",
-        OpCode::FrameArenaAdmits => "frame_arena_admits",
+        OpCode::FrameRegionAdmits => "frame_region_admits",
         OpCode::StringLiteralCellReady => "string_literal_cell_ready",
         OpCode::IsInlineInt => "is_inline_int",
         OpCode::UnboxInlineInt => "unbox_inline_int",

@@ -358,7 +358,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         | OpCode::StorePackedBuffer2d
         | OpCode::ProbeInlineField
         | OpCode::FrameEntryAdmits
-        | OpCode::FrameArenaAdmits
+        | OpCode::FrameRegionAdmits
         | OpCode::StringLiteralCellReady
         | OpCode::IsInlineInt
         | OpCode::UnboxInlineInt

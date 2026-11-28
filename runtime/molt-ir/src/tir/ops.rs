@@ -461,8 +461,8 @@ pub enum OpCode {
     ProbeInlineField,
     /// A captured function and synchronous frame shape can use the current arena.
     FrameEntryAdmits,
-    /// The current thread's frame arena has room for a whole region.
-    FrameArenaAdmits,
+    /// The active thread admits a quiescent region's frame and exception requirements.
+    FrameRegionAdmits,
     /// An owned literal's cell in this output object has already been filled.
     StringLiteralCellReady,
 }
