@@ -1520,6 +1520,41 @@ def _run_llvm_config(
     return result.stdout.strip()
 
 
+@dataclass(frozen=True, slots=True)
+class _LlvmConfigLayout:
+    version: str
+    host_target: str
+    targets: tuple[str, ...]
+    libdir: str
+    includedir: str
+
+    @classmethod
+    def read(
+        cls,
+        executable: Path,
+        *,
+        probe_timeout: Callable[[float], float] | None,
+    ) -> _LlvmConfigLayout:
+        # These scalar options print one line each, in argument order.
+        facts = _run_llvm_config(
+            executable,
+            "--version",
+            "--host-target",
+            "--targets-built",
+            "--libdir",
+            "--includedir",
+            probe_timeout=probe_timeout,
+        ).splitlines()
+        if len(facts) != 5 or not all(facts):
+            raise LlvmToolchainConfigError(
+                f"llvm-config returned an incomplete layout: {executable}"
+            )
+        version, host_target, targets, libdir, includedir = facts
+        return cls(
+            version, host_target, tuple(sorted(targets.split())), libdir, includedir
+        )
+
+
 def _required_tool(prefix: Path, *names: str) -> Path:
     for name in names:
         candidate = prefix / "bin" / name
@@ -1578,6 +1613,8 @@ def _llvm_link_closure(
     prefix: Path,
     llvm_config: Path,
     probe_timeout: Callable[[float], float] | None = None,
+    *,
+    layout: _LlvmConfigLayout,
 ) -> tuple[tuple[str, ...], tuple[Path, ...]]:
     local_output = _run_llvm_config(
         llvm_config, "--libnames", "--link-static", probe_timeout=probe_timeout
@@ -1588,11 +1625,10 @@ def _llvm_link_closure(
     lib_dir = prefix / "lib"
     # llvm-sys consumes these exact roots. A coincidental same-name archive or
     # header in prefix/lib or prefix/include is not proof of that selection.
-    for option, expected in (
-        ("--libdir", lib_dir),
-        ("--includedir", prefix / "include"),
+    for option, expected, selected in (
+        ("--libdir", lib_dir, layout.libdir),
+        ("--includedir", prefix / "include", layout.includedir),
     ):
-        selected = _run_llvm_config(llvm_config, option, probe_timeout=probe_timeout)
         if (
             not selected
             or "\n" in selected
@@ -1836,9 +1872,19 @@ def _content_manifest(
     hash_contents: bool,
 ) -> tuple[tuple[LlvmContentFact, ...], str | None]:
     metadata: list[tuple[Path, os.stat_result, str, int | None]] = []
+    base = prefix.parts
+    nbase = len(base)
     for path in paths:
         stat = path.stat()
-        relative = str(path.relative_to(prefix)).replace("\\", "/")
+        parts = path.parts
+        # The inventory is already rooted at this exact lexical prefix.
+        # Format the suffix directly, preserving pathlib's nonmatching
+        # prefix handling for callers with an independently supplied path.
+        relative = (
+            "/".join(parts[nbase:]) or "."
+            if parts[:nbase] == base
+            else str(path.relative_to(prefix))
+        ).replace("\\", "/")
         change_ns = content_change_time_ns(path, stat)
         metadata.append((path, stat, relative, change_ns))
 
@@ -1941,19 +1987,25 @@ def _tool_version_fact_and_identity(
             f"{'exactly ' + expected_version if exact_version else expected_version + '.x'}: "
             f"{path}"
         )
+    return (
+        _llvm_version_fact(prefix, role, path, version, executable_identity),
+        executable_identity,
+    )
+
+
+def _llvm_version_fact(
+    prefix: Path,
+    role: str,
+    path: Path,
+    version: str,
+    executable: StableRegularFileIdentity,
+) -> LlvmToolVersionFact:
     try:
         identity = str(path.relative_to(prefix)).replace("\\", "/")
     except ValueError:
         identity = f"external:{path}"
-    return (
-        LlvmToolVersionFact(
-            role=role,
-            path=identity,
-            version=version,
-            size=executable_identity.size,
-            sha256=executable_identity.sha256,
-        ),
-        executable_identity,
+    return LlvmToolVersionFact(
+        role, identity, version, executable.size, executable.sha256
     )
 
 
@@ -2113,9 +2165,8 @@ def verify_llvm_toolchain_prefix(
             )
             == "canonical-managed-release"
         )
-        actual_version = _run_llvm_config(
-            llvm_config, "--version", probe_timeout=probe_timeout
-        )
+        layout = _LlvmConfigLayout.read(llvm_config, probe_timeout=probe_timeout)
+        actual_version = layout.version
         if canonical_contract and release is None:
             raise LlvmToolchainConfigError(
                 f"canonical LLVM/MLIR prefix requires a pinned release: {expected_version}"
@@ -2125,9 +2176,7 @@ def verify_llvm_toolchain_prefix(
                 "LLVM/MLIR toolchain version does not match the manifest authority: "
                 f"expected exactly {expected_version}, found {actual_version} at {llvm_config}"
             )
-        host_target = _run_llvm_config(
-            llvm_config, "--host-target", probe_timeout=probe_timeout
-        )
+        host_target = layout.host_target
         if (
             re.fullmatch(r"[A-Za-z0-9_+.-]+", host_target) is None
             or "-" not in host_target
@@ -2135,13 +2184,7 @@ def verify_llvm_toolchain_prefix(
             raise LlvmToolchainConfigError(
                 f"invalid LLVM SDK host target: {host_target!r}"
             )
-        built_targets = tuple(
-            sorted(
-                _run_llvm_config(
-                    llvm_config, "--targets-built", probe_timeout=probe_timeout
-                ).split()
-            )
-        )
+        built_targets = layout.targets
         required_targets = set(expected_targets or contract.required_targets)
         missing_targets = sorted(required_targets.difference(built_targets))
         if missing_targets:
@@ -2166,7 +2209,7 @@ def verify_llvm_toolchain_prefix(
             _clang_resource_header(resolved, int(expected_version.split(".")[0])),
         )
         link_closure, link_libraries = _llvm_link_closure(
-            resolved, llvm_config, probe_timeout=probe_timeout
+            resolved, llvm_config, probe_timeout=probe_timeout, layout=layout
         )
         host_linker_path = tools[3][1]
         link_probe = _link_probe_identity(resolved, host_linker_path, link_closure)
@@ -2229,6 +2272,13 @@ def verify_llvm_toolchain_prefix(
             item: tuple[str, Path],
         ) -> tuple[LlvmToolVersionFact, StableRegularFileIdentity]:
             role, path = item
+            if role == "llvm-config":
+                return (
+                    _llvm_version_fact(
+                        resolved, role, path, actual_version, config_identity
+                    ),
+                    config_identity,
+                )
             return _tool_version_fact_and_identity(
                 resolved,
                 role,
@@ -2375,14 +2425,6 @@ def verify_llvm_toolchain_prefix(
         verify_stable_regular_file_identity(
             config_identity, label="LLVM configuration authority"
         )
-        config_fact = next(fact for fact in tool_versions if fact.role == "llvm-config")
-        if (config_fact.sha256, config_fact.size) != (
-            config_identity.sha256,
-            config_identity.size,
-        ):
-            raise LlvmToolchainConfigError(
-                "llvm-config changed during SDK verification"
-            )
         if require_attestation:
             from molt.checkout_state import record_toolchain_use
 

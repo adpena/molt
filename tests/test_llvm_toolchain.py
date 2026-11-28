@@ -617,6 +617,15 @@ def _mock_llvm_config(
     targets: str = "X86 WebAssembly",
 ) -> None:
     def run(_executable: Path, *arguments: str, probe_timeout=None) -> str:
+        layout_options = (
+            "--version",
+            "--host-target",
+            "--targets-built",
+            "--libdir",
+            "--includedir",
+        )
+        if arguments == layout_options:
+            return "\n".join(run(_executable, option) for option in layout_options)
         if arguments == ("--version",):
             return version
         if arguments == ("--host-target",):
@@ -1967,29 +1976,15 @@ def test_complete_prefix_verifier_rejects_missing_mlir_c_sdk_header(
         )
 
 
-def test_complete_prefix_verifier_rejects_mismatched_tool_version(
+def test_prefix_verification_rejects_mismatched_config_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prefix = tmp_path / "llvm"
     _write_complete_llvm_prefix(prefix)
-    _mock_llvm_config(prefix, monkeypatch)
-    install_module_view(
-        monkeypatch,
-        "subprocess",
-        subprocess,
-        llvm_toolchain,
-        run=lambda command, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout=(
-                "21.1.7\n"
-                if Path(command[0]).name.lower().startswith("llvm-config")
-                else "clang version 22.1.8\n"
-            ),
-            stderr="",
-        ),
-    )
+    _mock_llvm_config(prefix, monkeypatch, version="21.1.7")
+    _mock_tool_process_versions(monkeypatch)
 
-    with pytest.raises(LlvmToolchainConfigError, match="reports 21.1.7"):
+    with pytest.raises(LlvmToolchainConfigError, match="found 21.1.7"):
         verify_llvm_toolchain_prefix(
             ROOT,
             prefix,
@@ -2075,6 +2070,18 @@ def test_compile_link_probe_uses_verified_host_linker_by_absolute_path(
     assert (env.get("SDKROOT") == "/pinned-sdk") == (sys.platform == "darwin")
 
 
+def _link_test_layout(
+    prefix: Path, *, libdir: Path | None = None, includedir: Path | None = None
+) -> llvm_toolchain._LlvmConfigLayout:
+    return llvm_toolchain._LlvmConfigLayout(
+        "22.1.8",
+        "x86_64-test",
+        ("X86", "WebAssembly"),
+        str(libdir or prefix / "lib"),
+        str(includedir or prefix / "include"),
+    )
+
+
 def test_windows_style_llvm_config_link_closure_resolves_dot_lib(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2083,10 +2090,6 @@ def test_windows_style_llvm_config_link_closure_resolves_dot_lib(
     _write(library, "library")
 
     def run(_executable: Path, *arguments: str, probe_timeout=None) -> str:
-        if arguments == ("--libdir",):
-            return str(prefix / "lib")
-        if arguments == ("--includedir",):
-            return str(prefix / "include")
         if arguments == ("--libnames", "--link-static"):
             return "LLVMCore.lib"
         if arguments == ("--system-libs", "--link-static"):
@@ -2095,7 +2098,7 @@ def test_windows_style_llvm_config_link_closure_resolves_dot_lib(
 
     monkeypatch.setattr("molt.llvm_toolchain._run_llvm_config", run)
     rendered, paths = llvm_toolchain._llvm_link_closure(
-        prefix, prefix / "bin" / "llvm-config"
+        prefix, prefix / "bin" / "llvm-config", layout=_link_test_layout(prefix)
     )
     assert rendered == ("lib/LLVMCore.lib",)
     assert paths == (library.resolve(),)
@@ -2110,10 +2113,6 @@ def test_windows_llvm_config_link_closure_preserves_quoted_absolute_paths(
     _write(library, "library")
 
     def run(_executable: Path, *arguments: str, probe_timeout=None) -> str:
-        if arguments == ("--libdir",):
-            return str(prefix / "lib")
-        if arguments == ("--includedir",):
-            return str(prefix / "include")
         if arguments == ("--libnames", "--link-static"):
             return f'"{library}"'
         if arguments == ("--system-libs", "--link-static"):
@@ -2122,7 +2121,7 @@ def test_windows_llvm_config_link_closure_preserves_quoted_absolute_paths(
 
     monkeypatch.setattr("molt.llvm_toolchain._run_llvm_config", run)
     rendered, paths = llvm_toolchain._llvm_link_closure(
-        prefix, prefix / "bin" / "llvm-config.exe"
+        prefix, prefix / "bin" / "llvm-config.exe", layout=_link_test_layout(prefix)
     )
     assert rendered == (
         "lib/LLVMCore.lib",
@@ -2707,10 +2706,6 @@ def test_sdk_link_closure_captures_codegen_archives_and_static_system_flags(
 
     def query(_executable, *arguments, probe_timeout=None):
         calls.append(arguments)
-        if arguments == ("--libdir",):
-            return str(prefix / "lib")
-        if arguments == ("--includedir",):
-            return str(prefix / "include")
         if arguments == ("--libnames", "--link-static"):
             return " ".join(libraries)
         if arguments == ("--system-libs", "--link-static"):
@@ -2719,7 +2714,7 @@ def test_sdk_link_closure_captures_codegen_archives_and_static_system_flags(
 
     monkeypatch.setattr(llvm_toolchain, "_run_llvm_config", query)
     rendered, paths = llvm_toolchain._llvm_link_closure(
-        prefix, prefix / "bin/llvm-config"
+        prefix, prefix / "bin/llvm-config", layout=_link_test_layout(prefix)
     )
     assert rendered == (
         "lib/libLLVMCore.a",
@@ -2732,8 +2727,6 @@ def test_sdk_link_closure_captures_codegen_archives_and_static_system_flags(
     assert calls == [
         ("--libnames", "--link-static"),
         ("--system-libs", "--link-static"),
-        ("--libdir",),
-        ("--includedir",),
     ]
 
 
@@ -2750,15 +2743,13 @@ def test_sdk_static_admission_never_substitutes_shared_library(
     def query(_path, *args, probe_timeout=None):
         if args == ("--libnames", "--link-static"):
             return library
-        if args == ("--libdir",):
-            return str(prefix / "lib")
-        if args == ("--includedir",):
-            return str(prefix / "include")
         return ""
 
     monkeypatch.setattr(llvm_toolchain, "_run_llvm_config", query)
     with pytest.raises(LlvmToolchainConfigError, match="non-archive|missing library"):
-        llvm_toolchain._llvm_link_closure(prefix, prefix / "bin/llvm-config")
+        llvm_toolchain._llvm_link_closure(
+            prefix, prefix / "bin/llvm-config", layout=_link_test_layout(prefix)
+        )
 
 
 def test_sdk_verification_keeps_one_config_image_across_all_answers(
@@ -2772,7 +2763,7 @@ def test_sdk_verification_keeps_one_config_image_across_all_answers(
 
     def replace_after_version(path, *args, probe_timeout=None):
         result = original(path, *args, probe_timeout=probe_timeout)
-        if args == ("--version",):
+        if args[0] == "--version":
             path.write_bytes(b"different executable with same reported version")
         return result
 
@@ -2791,20 +2782,24 @@ def test_sdk_config_must_select_the_captured_library_and_header_roots(
     _write(prefix / "lib/libLLVMCore.a", "archive")
 
     def query(_path, *args, probe_timeout=None):
-        if args == (option,):
-            return str(tmp_path / "uncaptured")
         return {
             ("--libnames", "--link-static"): "libLLVMCore.a",
             ("--system-libs", "--link-static"): "",
-            ("--libdir",): str(prefix / "lib"),
-            ("--includedir",): str(prefix / "include"),
         }[args]
 
     monkeypatch.setattr(llvm_toolchain, "_run_llvm_config", query)
+    uncaptured = tmp_path / "uncaptured"
+    layout = _link_test_layout(
+        prefix,
+        libdir=uncaptured if option == "--libdir" else None,
+        includedir=uncaptured if option == "--includedir" else None,
+    )
     with pytest.raises(
         LlvmToolchainConfigError, match="escapes the admitted SDK layout"
     ):
-        llvm_toolchain._llvm_link_closure(prefix, prefix / "bin/llvm-config")
+        llvm_toolchain._llvm_link_closure(
+            prefix, prefix / "bin/llvm-config", layout=layout
+        )
 
 
 @pytest.mark.parametrize("installed", [False, True])
