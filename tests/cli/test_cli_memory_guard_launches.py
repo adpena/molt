@@ -4,7 +4,7 @@ import importlib
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 import pytest
 
@@ -19,6 +19,62 @@ LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 MLIR_BACKEND = importlib.import_module("molt.cli.mlir_backend")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
+
+
+@pytest.mark.parametrize("object_only", [False, True])
+def test_cross_build_checks_required_rust_target_before_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    object_only: bool,
+) -> None:
+    from molt.cli import build_inputs
+    from molt.cli.build_command import build
+    from molt.cli.build_request import BuildRequest
+    from molt.compilation_target import admit_target
+
+    triple = "aarch64-unknown-linux-gnu"
+    libdir = tmp_path / "empty-target-lib"
+    libdir.mkdir()
+
+    class EntryReached(Exception):
+        pass
+
+    def record_entry(**_kwargs: object) -> Never:
+        raise EntryReached
+
+    probed: list[tuple[str, Path]] = []
+
+    def target_libdir(target: str, *, root: Path) -> Path:
+        probed.append((target, root))
+        return libdir
+
+    monkeypatch.setattr(build_inputs, "compiler_source_root", lambda: tmp_path)
+    monkeypatch.setattr(build_inputs, "_require_molt_root", lambda *args: None)
+    monkeypatch.setattr(build_inputs, "_check_lockfiles", lambda *args: None)
+    monkeypatch.setattr(build_inputs, "_resolve_build_entry", record_entry)
+    monkeypatch.setattr(
+        WASM_TOOLCHAIN.wasm_link_inputs, "rust_target_libdir", target_libdir
+    )
+    monkeypatch.setattr(
+        WASM_TOOLCHAIN,
+        "rustup_target_add_cmd",
+        lambda target, _root: ("rustup", "target", "add", target),
+    )
+    request = BuildRequest(
+        file_path=str(tmp_path / "entry.py"),
+        target=admit_target(triple),
+        emit="obj" if object_only else "bin",
+        cache=False,
+    )
+    if object_only:
+        with pytest.raises(EntryReached):
+            build(request)
+        assert probed == []
+    else:
+        assert build(request) == 2
+        assert probed == [(triple, tmp_path)]
+        assert f"Compilation requires Rust target {triple}" in capsys.readouterr().err
 
 
 def test_uv_lock_check_uses_build_memory_guard(

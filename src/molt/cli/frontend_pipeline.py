@@ -903,28 +903,6 @@ def _prepare_frontend_stage_state(
         from molt.cli.import_graph_record import publish_import_graph
 
         publish_import_graph(prepared_build_outputs.import_plan, graph_context)
-    output_layout = prepared_build_outputs.output_layout
-    target_triple = output_layout.target_triple
-    # Object-only cross compilation does not build or link the Rust runtime.
-    # Installed Molt links shipped runtime cells: cell selection owns target
-    # support and no Rust target library is consulted.
-    if target_triple and output_layout.emit_mode == "bin":
-        from molt.cli.installed_runtime import installed_runtime_active
-        from molt.cli.wasm_toolchain import rust_target_readiness_error
-
-        try:
-            installed = installed_runtime_active(prepared_build_roots.molt_root)
-        except ValueError as exc:
-            return None, _fail(str(exc), json_output, command="build")
-        readiness_error = (
-            None
-            if installed
-            else rust_target_readiness_error(
-                target_triple, root=prepared_build_roots.molt_root
-            )
-        )
-        if readiness_error is not None:
-            return None, _fail(readiness_error, json_output, command="build")
     import_plan = prepared_build_outputs.import_plan
     native_callable_conflicts = (
         import_plan.native_artifact_plan.native_callable_contract_conflicts()
