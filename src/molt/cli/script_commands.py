@@ -17,7 +17,7 @@ import shutil
 import sys
 import tempfile
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, cast
@@ -103,8 +103,14 @@ from molt.cli.process_execution import (
 )
 
 
-def _wasm_run_build_args(build_args: list[str]) -> list[str]:
-    """Require the effective linked artifact, using the public build grammar."""
+@dataclass(frozen=True, slots=True)
+class _WasmRunBuildPlan:
+    args: list[str]
+    split_runtime: bool
+
+
+def _wasm_run_build_plan(build_args: list[str]) -> _WasmRunBuildPlan:
+    """Choose the runtime product family using the public build grammar."""
     from molt.cli.build_request_resolution import (
         parse_build_arguments,
         resolve_build_request,
@@ -112,11 +118,6 @@ def _wasm_run_build_args(build_args: list[str]) -> list[str]:
 
     args = parse_build_arguments(build_args)
     request = resolve_build_request(args, build_cfg={}, cfg_capabilities=None, env={})
-    if args.linked is False or args.require_linked is False or request.split_runtime:
-        raise ValueError(
-            "molt run --target wasm requires a linked WASM artifact; "
-            "--no-linked, --no-require-linked, and --split-runtime are incompatible"
-        )
     if args.target is not None and request.target not in {
         TargetKind.WASM,
         TargetKind.WASI,
@@ -126,7 +127,23 @@ def _wasm_run_build_args(build_args: list[str]) -> list[str]:
             + target_name(request.target)
         )
     target_args = ["--target", "wasm"] if args.target is None else []
-    return [*target_args, *build_args, "--linked", "--require-linked"]
+    if request.split_runtime:
+        if args.linked is True or args.require_linked is True:
+            raise ValueError(
+                "molt run --target wasm cannot require a monolithic link with --split-runtime"
+            )
+        return _WasmRunBuildPlan(
+            [*target_args, *build_args, "--no-linked", "--no-require-linked"],
+            split_runtime=True,
+        )
+    if args.linked is False or args.require_linked is False:
+        raise ValueError(
+            "molt run --target wasm needs linked or explicit split-runtime output"
+        )
+    return _WasmRunBuildPlan(
+        [*target_args, *build_args, "--linked", "--require-linked"],
+        split_runtime=False,
+    )
 
 
 def _wasm_node_runner(molt_root: Path) -> Path:
@@ -235,9 +252,11 @@ def _run_script_cross(
         else _find_project_root(Path.cwd())
     )
     build_args = list(build_args or [])
+    wasm_plan: _WasmRunBuildPlan | None = None
     if target in {TargetKind.WASM, TargetKind.WASI}:
         try:
-            build_args = _wasm_run_build_args(build_args)
+            wasm_plan = _wasm_run_build_plan(build_args)
+            build_args = wasm_plan.args
         except ValueError as exc:
             return _fail(str(exc), json_output, command="run")
     molt_root = compiler_source_root()
@@ -336,20 +355,25 @@ def _run_script_cross(
         return build_error
     assert build_contract is not None
 
-    if target in {TargetKind.WASM, TargetKind.WASI}:
-        linked_wasm = build_contract.artifacts.get("linked_wasm")
+    if wasm_plan is not None:
+        roles = (
+            ("app_wasm", "runtime_wasm")
+            if wasm_plan.split_runtime
+            else ("linked_wasm",)
+        )
+        application, *runtime = [build_contract.artifacts.get(role) for role in roles]
         manifest = build_contract.artifacts.get("manifest")
         if (
-            linked_wasm is None
+            application is None
             or manifest is None
-            or not linked_wasm.is_file()
+            or not application.is_file()
             or not manifest.is_file()
-            or build_contract.consumer_output.resolve() != linked_wasm.resolve()
+            or any(path is None or not path.is_file() for path in runtime)
+            or build_contract.consumer_output.resolve() != application.resolve()
         ):
             return _fail(
-                "WASM run requires a linked artifact and manifest from the "
-                "same build; try `molt build --target wasm --linked "
-                "--require-linked --verbose`.",
+                "WASM run requires the selected deployment artifacts and manifest "
+                "from the same build.",
                 json_output,
                 command="run",
             )

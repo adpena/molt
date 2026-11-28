@@ -27715,9 +27715,11 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     assert len(seen_cmds) == 1
 
 
-def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
+@pytest.mark.parametrize("split_runtime", [False, True])
+def test_run_script_cross_wasm_honors_build_json_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    split_runtime: bool,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -27729,21 +27731,32 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     output_wasm = out_dir / "output.wasm"
-    linked_wasm = out_dir / "output_linked.wasm"
+    application = out_dir / ("app.wasm" if split_runtime else "output_linked.wasm")
+    runtime = out_dir / "molt_runtime.wasm"
     manifest = out_dir / "manifest.json"
-    linked_bytes = _wasm_exporting_i64_unary_symbol("molt_main")
-    linked_wasm.write_bytes(linked_bytes)
+    wasm_bytes = _wasm_exporting_i64_unary_symbol("molt_main")
+
+    def module_descriptor(path: Path) -> dict[str, object]:
+        path.write_bytes(wasm_bytes)
+        return {
+            "path": path.name,
+            "size": len(wasm_bytes),
+            "sha256": hashlib.sha256(wasm_bytes).hexdigest(),
+        }
+
+    module = "app" if split_runtime else "linked"
+    modules = {module: module_descriptor(application)}
+    artifacts = {"wasm": str(output_wasm), "manifest": str(manifest)}
+    if split_runtime:
+        modules["runtime"] = module_descriptor(runtime)
+        artifacts.update(app_wasm=str(application), runtime_wasm=str(runtime))
+    else:
+        artifacts["linked_wasm"] = str(application)
     manifest_payload = {
         "version": WASM_EXECUTION_MANIFEST_VERSION,
         "launch": wasm_execution_launch(),
-        "mode": "linked",
-        "modules": {
-            "linked": {
-                "path": linked_wasm.name,
-                "size": len(linked_bytes),
-                "sha256": hashlib.sha256(linked_bytes).hexdigest(),
-            }
-        },
+        "mode": "split-runtime" if split_runtime else "linked",
+        "modules": modules,
     }
     manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
     payload = cli_output.json_payload(
@@ -27751,13 +27764,8 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
         "ok",
         data={
             "output": str(output_wasm),
-            "consumer_output": str(linked_wasm),
-            "linked_output": str(linked_wasm),
-            "artifacts": {
-                "wasm": str(output_wasm),
-                "linked_wasm": str(linked_wasm),
-                "manifest": str(manifest),
-            },
+            "consumer_output": str(application),
+            "artifacts": artifacts,
         },
     )
     seen_cmds: list[list[str]] = []
@@ -27774,10 +27782,10 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
         assert Path(cmd[2]) == manifest
         selected = json.loads(Path(cmd[2]).read_text(encoding="utf-8"))
         assert selected == manifest_payload
-        linked = selected["modules"]["linked"]
-        content = (manifest.parent / linked["path"]).read_bytes()
-        assert len(content) == linked["size"]
-        assert hashlib.sha256(content).hexdigest() == linked["sha256"]
+        for member in selected["modules"].values():
+            content = (manifest.parent / member["path"]).read_bytes()
+            assert len(content) == member["size"]
+            assert hashlib.sha256(content).hexdigest() == member["sha256"]
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
@@ -27801,16 +27809,22 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
         lambda **kwargs: NodeRuntime(node_path, "24.0.0", 24),
     )
 
+    selection = ["--split-runtime"] if split_runtime else []
     rc = cli_commands._run_script_cross(
         admit_target("wasm"),
         str(entry),
         None,
         ["--sample", "value"],
-        build_args=["--out-dir", str(out_dir)],
+        build_args=["--out-dir", str(out_dir), *selection],
         json_output=False,
     )
 
     assert rc == 0
+    link_flags = (
+        ["--no-linked", "--no-require-linked"]
+        if split_runtime
+        else ["--linked", "--require-linked"]
+    )
     assert seen_cmds[0] == [
         sys.executable,
         "-m",
@@ -27821,8 +27835,8 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
         "wasm",
         "--out-dir",
         str(out_dir),
-        "--linked",
-        "--require-linked",
+        *selection,
+        *link_flags,
         str(entry),
     ]
     assert seen_cmds[1] == [
@@ -27839,14 +27853,14 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     [
         ["--no-linked"],
         ["--no-require-linked"],
-        ["--split-runtime"],
+        ["--split-runtime", "--require-linked"],
         ["--target", "native"],
         ["--target=wasm-freestanding"],
     ],
 )
 def test_wasm_run_rejects_incompatible_build_flags(build_args: list[str]) -> None:
     with pytest.raises(ValueError, match="molt run --target wasm"):
-        cli_commands._wasm_run_build_args(build_args)
+        cli_commands._wasm_run_build_plan(build_args)
 
 
 def test_wasm_run_rejects_unavailable_node_before_build(

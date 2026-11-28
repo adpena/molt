@@ -259,13 +259,11 @@ def _run_backend_pipeline(
                 "pipeline_stage_ms", {}
             )
         )
-    # The required monolithic link already admits a linker. Release and
-    # optional-link builds keep their existing application codegen scope.
+    # Bounded builds with a required deployment link can reuse application
+    # constituents. The selected deployment keeps its existing final outputs.
     wasm_application_archive = (
         output_layout.is_wasm
-        and output_layout.linked
-        and require_linked
-        and not output_layout.split_runtime
+        and ((output_layout.linked and require_linked) or output_layout.split_runtime)
         and not output_layout.is_wasm_freestanding
         and wasm_opt_level == "bounded"
     )

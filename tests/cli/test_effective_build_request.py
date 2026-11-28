@@ -865,9 +865,9 @@ def test_run_rejects_wasm_post_link_optimization_on_native(
 
 
 def test_wasm_run_checks_effective_flags_not_superseded_occurrences():
-    from molt.cli.script_commands import _wasm_run_build_args
+    from molt.cli.script_commands import _wasm_run_build_plan
 
-    flags = _wasm_run_build_args(
+    plan = _wasm_run_build_plan(
         [
             "--target=native",
             "--target",
@@ -878,10 +878,15 @@ def test_wasm_run_checks_effective_flags_not_superseded_occurrences():
             "--require-linked",
         ]
     )
-    parsed = selection.parse_build_arguments(flags)
+    parsed = selection.parse_build_arguments(plan.args)
     assert parsed.target == "wasm" and parsed.linked and parsed.require_linked
+    assert plan.split_runtime is False
+    split = _wasm_run_build_plan(["--split-runtime"])
+    parsed = selection.parse_build_arguments(split.args)
+    assert parsed.split_runtime and not parsed.linked and not parsed.require_linked
+    assert split.split_runtime is True
     with pytest.raises(ValueError, match="molt run --target wasm"):
-        _wasm_run_build_args(["--target=wasm", "--target=native"])
+        _wasm_run_build_plan(["--target=wasm", "--target=native"])
 
 
 def test_reused_parser_does_not_retain_append_values(tmp_path):

@@ -151,6 +151,11 @@ target, `backend` as the effective native backend fact lane, and
 
 #### `molt run`
 
+For repeated Wasm edits, pass `--wasm-opt-level bounded --build-arg=--split-runtime`
+to reuse application objects and execute the app against a separate runtime.
+The resulting deployment includes both Wasm modules. The default release run
+builds a linked artifact with the release optimizer policy.
+
 Build and execute a Python program. Supports native, WASM (via the canonical Node host shim), and MLIR targets.
 
 `molt run` defaults to the fast `dev` profile while `molt build` defaults to the optimized `release` profile — the same convention as `cargo run` / `cargo build --release`. The verb does not lock the profile: pass `--profile dev|release` (or `--release`) to either command to override.
