@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import AbstractSet, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 
+from molt import compiled_symbols
 from molt._intrinsic_symbols import INTRINSIC_SIGNATURES, intrinsic_runtime_symbol_name
 from molt._wasm_abi_generated import COMPILED_EXECUTION_ENTRIES
 from molt.frontend.lowering.op_kinds_generated import (
@@ -34,58 +36,120 @@ def is_protected_runtime_entrypoint(name: str) -> bool:
     return name in PROTECTED_RUNTIME_ENTRYPOINTS
 
 
-def function_references(
-    func: Mapping[str, object],
-    defined: frozenset[str],
-    *,
-    runtime_symbols: set[str] | None = None,
-    compiled: AbstractSet[str] = frozenset(),
-) -> set[str]:
-    from molt.frontend.lowering.gpu_kernel_descriptor import (
-        DESCRIPTOR_PUBLICATION_SYMBOL,
-        descriptor_body_symbols,
-    )
+@dataclass(frozen=True, slots=True)
+class FunctionReferenceClosure:
+    functions: frozenset[str]
+    runtime_symbols: frozenset[str]
 
-    refs: set[str] = set()
-    ops = func.get("ops")
-    if not isinstance(ops, list):
-        return refs
-    publishes_descriptor = False
-    for op in ops:
-        if not isinstance(op, Mapping):
-            continue
-        kind = op.get("kind")
-        if not isinstance(kind, str):
-            continue
-        name = op.get("s_value")
-        if kind == "call" and name == DESCRIPTOR_PUBLICATION_SYMBOL:
-            publishes_descriptor = True
-        if (
-            kind in SIMPLEIR_FUNCTION_REFERENCE_KINDS
-            and isinstance(name, str)
-            and name in defined
-        ):
-            refs.add(name)
-        if runtime_symbols is None:
-            continue
-        # An explicit runtime callable marker is independent of the spelled
-        # target and survives compiled shadowing.
-        carried = op.get("runtime_symbol")
-        if isinstance(carried, str) and carried in _INTRINSIC_SYMBOL_NAMES:
-            runtime_symbols.add(carried)
-        if not isinstance(name, str):
-            continue
-        if kind not in _UNSHADOWED_RUNTIME_REFERENCE_KINDS and (
-            kind not in _SHADOWABLE_RUNTIME_REFERENCE_KINDS or name in compiled
-        ):
-            continue
-        canonical = intrinsic_runtime_symbol_name(name)
-        if canonical in _INTRINSIC_SYMBOL_NAMES:
-            runtime_symbols.add(canonical)
-    # A descriptor's body symbols are references too; most functions publish none.
-    if publishes_descriptor and defined:
-        refs.update(descriptor_body_symbols(ops) & defined)
-    return refs
+
+class FunctionReferenceIndex:
+    """Exact reference facts over one finalized program's function bodies."""
+
+    def __init__(self, functions: Sequence[object]) -> None:
+        from molt.frontend.lowering.gpu_kernel_descriptor import (
+            DESCRIPTOR_PUBLICATION_SYMBOL,
+            descriptor_body_symbols,
+        )
+
+        defined: set[str] = set()
+        compiled: set[str] = set()
+        for function in functions:
+            if isinstance(function, Mapping) and isinstance(
+                name := function.get("name"), str
+            ):
+                defined.add(name)
+                if not function.get("is_extern", False):
+                    compiled.add(name)
+        self._targets: dict[str, set[str]] = {}
+        self._runtime_symbols: dict[str, set[str]] = {}
+        missing: dict[str, str] = {}
+        for function in functions:
+            if not isinstance(function, Mapping):
+                continue
+            name = function.get("name")
+            ops = function.get("ops")
+            targets: set[str] = set()
+            symbols: set[str] = set()
+            publishes_descriptor = False
+            if isinstance(ops, list):
+                for index, op in enumerate(ops):
+                    if not isinstance(op, dict) and not isinstance(op, Mapping):
+                        continue
+                    kind = op.get("kind")
+                    if not isinstance(kind, str):
+                        continue
+                    # Explicit runtime markers survive compiled shadowing.
+                    carried = op.get("runtime_symbol")
+                    if isinstance(carried, str) and carried in _INTRINSIC_SYMBOL_NAMES:
+                        symbols.add(carried)
+                    target = op.get("s_value")
+                    if not isinstance(target, str):
+                        continue
+                    if kind == "call":
+                        if target == DESCRIPTOR_PUBLICATION_SYMBOL:
+                            publishes_descriptor = True
+                        if (
+                            target not in defined
+                            and target not in missing
+                            and compiled_symbols.is_compiled_symbol(target)
+                        ):
+                            missing[target] = f"{target} at {name}[{index}]"
+                    if kind in SIMPLEIR_FUNCTION_REFERENCE_KINDS and target in defined:
+                        targets.add(target)
+                    if kind in _UNSHADOWED_RUNTIME_REFERENCE_KINDS or (
+                        kind in _SHADOWABLE_RUNTIME_REFERENCE_KINDS
+                        and target not in compiled
+                    ):
+                        canonical = intrinsic_runtime_symbol_name(target)
+                        if canonical in _INTRINSIC_SYMBOL_NAMES:
+                            symbols.add(canonical)
+                if publishes_descriptor and defined:
+                    targets.update(descriptor_body_symbols(ops) & defined)
+            if isinstance(name, str):
+                # The last row owns graph edges. A reached name also consumes
+                # runtime references carried by its preceding declarations.
+                self._targets[name] = targets
+                if symbols:
+                    self._runtime_symbols.setdefault(name, set()).update(symbols)
+        first = functions[0] if functions else None
+        first_name = first.get("name") if isinstance(first, Mapping) else None
+        self._roots = frozenset(
+            name
+            for name in defined
+            if name == first_name or is_protected_runtime_entrypoint(name)
+        )
+        self._missing_compiled_calls = tuple(missing.values())
+
+    @classmethod
+    def from_ir(cls, ir: Mapping[str, object]) -> FunctionReferenceIndex:
+        functions = ir.get("functions")
+        return cls(functions if isinstance(functions, list) else ())
+
+    def compiled_call_closure_issue(self) -> str | None:
+        missing = self._missing_compiled_calls
+        if not missing:
+            return None
+        suffix = "" if len(missing) <= 8 else ", ..."
+        return (
+            "backend IR contains direct calls to compiled functions with no body "
+            f"in the program: {', '.join(missing[:8])}{suffix}"
+        )
+
+    def closure(self, *, extra_roots: Iterable[str] = ()) -> FunctionReferenceClosure:
+        reached = set(self._roots)
+        reached.update(name for name in extra_roots if name in self._targets)
+        queue = deque(reached)
+        symbols: set[str] = set()
+        while queue:
+            current = queue.popleft()
+            runtime = self._runtime_symbols.get(current)
+            if runtime:
+                symbols.update(runtime)
+            for target in self._targets[current]:
+                if target not in reached:
+                    reached.add(target)
+                    queue.append(target)
+        return FunctionReferenceClosure(frozenset(reached), frozenset(symbols))
 
 
 def reachable_function_names(
@@ -93,7 +157,7 @@ def reachable_function_names(
     *,
     extra_roots: Iterable[str] = (),
 ) -> frozenset[str]:
-    return _walk_function_references(functions, extra_roots=extra_roots)
+    return FunctionReferenceIndex(functions).closure(extra_roots=extra_roots).functions
 
 
 def reached_intrinsic_symbols(
@@ -101,72 +165,8 @@ def reached_intrinsic_symbols(
     *,
     extra_roots: Iterable[str] = (),
 ) -> frozenset[str]:
-    """Collect runtime references while traversing reached compiled functions."""
-    symbols: set[str] = set()
-    _walk_function_references(
-        functions, extra_roots=extra_roots, runtime_symbols=symbols
+    return (
+        FunctionReferenceIndex(functions)
+        .closure(extra_roots=extra_roots)
+        .runtime_symbols
     )
-    return frozenset(symbols)
-
-
-def _walk_function_references(
-    functions: Sequence[Mapping[str, object]],
-    *,
-    extra_roots: Iterable[str],
-    runtime_symbols: set[str] | None = None,
-) -> frozenset[str]:
-    if not functions:
-        return frozenset()
-    by_name: dict[str, Mapping[str, object]] = {}
-    compiled: set[str] = set()
-    redeclarations: dict[str, list[Mapping[str, object]]] = {}
-    for func in functions:
-        name = func.get("name")
-        if isinstance(name, str):
-            if runtime_symbols is not None:
-                if name in by_name:
-                    redeclarations.setdefault(name, []).append(by_name[name])
-                if not func.get("is_extern", False):
-                    compiled.add(name)
-            by_name[name] = func
-    defined = frozenset(by_name)
-
-    reachable: set[str] = set()
-    queue: deque[str] = deque()
-
-    def seed(name: str) -> None:
-        if name in by_name and name not in reachable:
-            reachable.add(name)
-            queue.append(name)
-
-    first_name = functions[0].get("name")
-    if isinstance(first_name, str):
-        seed(first_name)
-    for name in by_name:
-        if is_protected_runtime_entrypoint(name):
-            seed(name)
-    for name in extra_roots:
-        seed(name)
-
-    while queue:
-        current = queue.popleft()
-        for target in function_references(
-            by_name[current],
-            defined,
-            runtime_symbols=runtime_symbols,
-            compiled=compiled,
-        ):
-            if target not in reachable:
-                reachable.add(target)
-                queue.append(target)
-        # Repeated declarations do not own graph edges. A retained name still
-        # contributes runtime references from every row bearing that name.
-        if earlier_rows := redeclarations.get(current):
-            for declaration in earlier_rows:
-                function_references(
-                    declaration,
-                    frozenset(),
-                    runtime_symbols=runtime_symbols,
-                    compiled=compiled,
-                )
-    return frozenset(reachable)

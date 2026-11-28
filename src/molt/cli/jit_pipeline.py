@@ -164,6 +164,7 @@ def _run_jit_pipeline(
         restore_application_artifact=False,
         ir=ir,
         function_digests=function_digests,
+        reference_index=prepared_backend_ir.reference_index,
         entry_module=resolved_build_entry.entry_module,
         module_graph_metadata=graph_metadata,
         target_python=prepared_build_config.target_python,

@@ -30,7 +30,7 @@ from molt.default_paths import (
 
 from molt.backend_protocol import BackendEmissionOrigin, BackendStdlibOrigin
 from molt.backend_environment import compilation_diagnostics_requested
-from molt.cli.function_references import reachable_function_names
+from molt.cli.function_references import FunctionReferenceIndex
 from molt.cli import native_symbol_inspection as _native_symbols
 from molt.cli.artifact_sync import (
     _artifact_sync_emission_origin,
@@ -1953,31 +1953,13 @@ def _module_symbol_set(module_symbols: Collection[str]) -> frozenset[str]:
     )
 
 
-def _reachable_function_names_for_stdlib_cache(
-    ir: Mapping[str, Any],
-    *,
-    stdlib_modules: Collection[str],
-) -> frozenset[str]:
-    functions = ir.get("functions")
-    if not isinstance(functions, list):
-        return frozenset()
-    # The common walk already owns the entry, protected roots, and membership
-    # checks. Only the stdlib partition's additional roots belong here.
-    return reachable_function_names(
-        [func for func in functions if isinstance(func, Mapping)],
-        extra_roots=(
-            "molt_main",
-            *(compiled_symbols.module_init_symbol(module) for module in stdlib_modules),
-        ),
-    )
-
-
 def _shared_stdlib_cache_payload_ir(
     ir: Mapping[str, Any],
     *,
     entry_module: str,
     stdlib_modules: Collection[str],
     fingerprints: ObjectCacheFingerprints,
+    reference_index: FunctionReferenceIndex | None = None,
 ) -> dict[str, Any]:
     """Build a cache payload for the stdlib shared object.
 
@@ -1989,10 +1971,13 @@ def _shared_stdlib_cache_payload_ir(
     functions = ir.get("functions")
     stdlib_functions: list[dict[str, Any]] = []
     stdlib_modules = _module_symbol_set(stdlib_modules)
-    reachable = _reachable_function_names_for_stdlib_cache(
-        ir,
-        stdlib_modules=stdlib_modules,
-    )
+    references = reference_index or FunctionReferenceIndex.from_ir(ir)
+    reachable = references.closure(
+        extra_roots=(
+            "molt_main",
+            *(compiled_symbols.module_init_symbol(module) for module in stdlib_modules),
+        ),
+    ).functions
     if isinstance(functions, list):
         for func in functions:
             if not isinstance(func, dict):
@@ -2033,12 +2018,14 @@ def _shared_stdlib_cache_key(
     cache_variant: str,
     fingerprints: ObjectCacheFingerprints,
     function_digests: FunctionDigests | None = None,
+    reference_index: FunctionReferenceIndex | None = None,
 ) -> str:
     payload_ir = _shared_stdlib_cache_payload_ir(
         ir,
         entry_module=entry_module,
         stdlib_modules=stdlib_modules,
         fingerprints=fingerprints,
+        reference_index=reference_index,
     )
     return _cache_key(
         cast(dict[str, Any], ir),

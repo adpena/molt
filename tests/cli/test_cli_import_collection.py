@@ -4859,14 +4859,17 @@ def test_static_backend_ir_compiled_call_closure_accepts_defined_bodies() -> Non
     call = {"kind": "call", "s_value": "py.copy.copy", "args": ["v0"], "out": "v1"}
     runtime = {"kind": "call", "s_value": "molt_copy_helper", "args": [], "out": "v2"}
     ir = _closure_ir("pyinit.demo", [call, runtime], "py.copy.copy")
-    assert BACKEND_IR._static_backend_ir_compiled_call_closure_issue(ir) is None
+    assert (
+        BACKEND_IR.FunctionReferenceIndex.from_ir(ir).compiled_call_closure_issue()
+        is None
+    )
 
 
 def test_static_backend_ir_compiled_call_closure_reports_missing_body() -> None:
     call = {"kind": "call", "s_value": "py.copy.copy", "args": ["v0"], "out": "v1"}
     ir = _closure_ir("pyinit.collections", [call])
 
-    issue = BACKEND_IR._static_backend_ir_compiled_call_closure_issue(ir)
+    issue = BACKEND_IR.FunctionReferenceIndex.from_ir(ir).compiled_call_closure_issue()
 
     assert issue is not None
     assert "py.copy.copy at pyinit.collections[0]" in issue
@@ -4884,7 +4887,10 @@ def test_static_backend_ir_compiled_call_closure_allows_lazy_missing_import() ->
         },
     ]
     ir = _closure_ir("py.zipfile.ZipFile_read", ops)
-    assert BACKEND_IR._static_backend_ir_compiled_call_closure_issue(ir) is None
+    assert (
+        BACKEND_IR.FunctionReferenceIndex.from_ir(ir).compiled_call_closure_issue()
+        is None
+    )
 
 
 @_source_tree_fingerprint_transaction()

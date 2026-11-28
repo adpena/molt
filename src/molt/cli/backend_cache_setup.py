@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 from molt.backend_environment import CodegenSelection, compilation_diagnostics_requested
+from molt.cli.function_references import FunctionReferenceIndex
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cache_eviction import refresh_cache_entry_recency
 from molt.cli.backend_cache import (
@@ -142,6 +143,7 @@ def _cached_stdlib_cache_key_material(
     stdlib_object_variant: str,
     fingerprints: ObjectCacheFingerprints,
     function_digests: FunctionDigests,
+    reference_index: FunctionReferenceIndex | None = None,
 ) -> _StdlibCacheKeyMaterial:
     authority_hash = _stdlib_cache_key_material_authority_hash(
         module_cache_payload_digest=module_cache_payload_digest,
@@ -173,6 +175,7 @@ def _cached_stdlib_cache_key_material(
             cache_variant=cache_variant,
             fingerprints=fingerprints,
             function_digests=function_digests,
+            reference_index=reference_index,
         )
         try:
             _write_cached_json_object(
@@ -323,6 +326,7 @@ def _prepare_backend_cache_setup(
     cache_enabled: bool,
     ir: Mapping[str, Any],
     function_digests: FunctionDigests,
+    reference_index: FunctionReferenceIndex | None = None,
     target: Target,
     artifact_contract: BackendArtifactContract,
     profile: str,
@@ -538,6 +542,7 @@ def _prepare_backend_cache_setup(
                 stdlib_object_variant=stdlib_object_variant,
                 fingerprints=fingerprints,
                 function_digests=function_digests,
+                reference_index=reference_index,
             )
             _nocache_stdlib_key = stdlib_key_material.cache_key
             _nocache_stdlib_manifest = stdlib_key_material.manifest
@@ -654,6 +659,7 @@ def _prepare_backend_cache_setup(
             stdlib_object_variant=stdlib_object_variant,
             fingerprints=fingerprints,
             function_digests=function_digests,
+            reference_index=reference_index,
         )
         stdlib_object_cache_key = stdlib_key_material.cache_key
         stdlib_object_manifest = stdlib_key_material.manifest

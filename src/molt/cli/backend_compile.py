@@ -26,6 +26,7 @@ from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
+from molt.cli.function_references import FunctionReferenceIndex
 from molt.cli.backend_artifact_contract import (
     resolve_backend_artifact_contract,
 )
@@ -278,6 +279,7 @@ def _prepare_backend_setup(
     cache: bool,
     ir: Mapping[str, Any],
     function_digests: FunctionDigests,
+    reference_index: FunctionReferenceIndex | None = None,
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
@@ -504,6 +506,7 @@ def _prepare_backend_setup(
             cache_enabled=cache,
             ir=ir,
             function_digests=function_digests,
+            reference_index=reference_index,
             target=target,
             artifact_contract=artifact_contract,
             profile=profile,

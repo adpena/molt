@@ -116,13 +116,15 @@ def test_relocation_table_root_contributes_its_runtime_feature() -> None:
             "ops": [_builtin_func("v1", "molt_re_compile")],
         },
     ]
-    assert (
-        RF.required_link_features(FR.reached_intrinsic_symbols(functions))
-        == frozenset()
+    references = FR.FunctionReferenceIndex(functions)
+    entry = references.closure()
+    assert entry.functions == frozenset({"molt_main"})
+    assert RF.required_link_features(entry.runtime_symbols) == frozenset()
+    relocation = references.closure(extra_roots={"pyinit.re"})
+    assert relocation.functions == frozenset({"molt_main", "pyinit.re"})
+    assert RF.required_link_features(relocation.runtime_symbols) == frozenset(
+        {"stdlib_regex"}
     )
-    assert RF.required_link_features(
-        FR.reached_intrinsic_symbols(functions, extra_roots={"pyinit.re"})
-    ) == frozenset({"stdlib_regex"})
 
 
 def test_protected_isolate_entrypoint_is_a_root() -> None:
@@ -202,13 +204,6 @@ def test_generated_reference_kinds_retain_only_exact_defined_target(kind: str) -
         {"name": "target_poll", "ops": []},
     ]
     assert FR.reachable_function_names(functions) == frozenset({"molt_main", "target"})
-    assert (
-        FR.function_references(
-            {"ops": [{"kind": kind, "s_value": "undefined"}]},
-            frozenset({"target"}),
-        )
-        == frozenset()
-    )
 
 
 @pytest.mark.parametrize("kind", ["generator_create", "coro_create", "const_str"])
@@ -725,12 +720,10 @@ def test_a_published_gpu_descriptor_body_is_a_reference() -> None:
         "s_value": "molt_gpu_kernel_descriptor_set",
         "args": ["kernel", "descriptor"],
     }
-    defined = frozenset({"kernel_body"})
-    assert FR.function_references(
-        {"name": "kernel", "ops": [constant, publication]}, defined
-    ) == {"kernel_body"}
-    # The same constant without its publication call names no body.
-    assert FR.function_references({"name": "kernel", "ops": [constant]}, defined) == (
-        frozenset()
+    references = FR.FunctionReferenceIndex(
+        [{"name": "kernel", "ops": [constant, publication]}, body]
     )
-    assert body["name"] in defined
+    assert references.closure().functions == frozenset({"kernel", "kernel_body"})
+    # The same constant without its publication call names no body.
+    unlinked = FR.FunctionReferenceIndex([{"name": "kernel", "ops": [constant]}, body])
+    assert unlinked.closure().functions == frozenset({"kernel"})

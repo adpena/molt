@@ -1018,9 +1018,13 @@ def make(argument):
     assert ops.index(argument) < ops.index(call)
     assert call["class_definition"] == "class:generated:Record"
     assert functions[call["s_value"]]["params"] == ["self", "value"]
-    from molt.cli.function_references import function_references
+    from molt.cli.function_references import FunctionReferenceIndex
 
-    assert call["s_value"] in function_references({"ops": [call]}, frozenset(functions))
+    target = call["s_value"]
+    references = FunctionReferenceIndex(
+        [{"name": "candidate", "ops": [call]}, functions[target]]
+    )
+    assert target in references.closure().functions
     assert call["argument_custody"] == ["transferred", "transferred"]
     assert not call.get("proven_target")
 

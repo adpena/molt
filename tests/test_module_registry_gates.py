@@ -30,7 +30,7 @@ import json
 import re
 import struct
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -958,23 +958,24 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
 def test_table_only_init_root_closes_required_runtime_features(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import backend_ir
+    from molt.cli.function_references import (
+        FunctionReferenceClosure,
+        FunctionReferenceIndex,
+    )
 
     symbol_sets: list[frozenset[str]] = []
-    reached_intrinsic_symbols = backend_ir.reached_intrinsic_symbols
+    closure = FunctionReferenceIndex.closure
 
-    def counting_reached_symbols(
-        functions: Sequence[Mapping[str, object]],
+    def counting_closure(
+        self: FunctionReferenceIndex,
         *,
         extra_roots: Iterable[str] = (),
-    ) -> frozenset[str]:
-        symbols = reached_intrinsic_symbols(functions, extra_roots=extra_roots)
-        symbol_sets.append(symbols)
-        return symbols
+    ) -> FunctionReferenceClosure:
+        facts = closure(self, extra_roots=extra_roots)
+        symbol_sets.append(facts.runtime_symbols)
+        return facts
 
-    monkeypatch.setattr(
-        backend_ir, "reached_intrinsic_symbols", counting_reached_symbols
-    )
+    monkeypatch.setattr(FunctionReferenceIndex, "closure", counting_closure)
     prepared = _prepare_binary_ir(
         tmp_path,
         gc_ops=[
