@@ -10161,18 +10161,29 @@ class _Analyzer:
                         queued.add(target)
                         pending.append(target)
         module_import_flow_required = self._module_import_flow_required
+        # Fact rows share dependency sets across expressions, statements and
+        # iterations. Resolve each set once against this solved effect graph.
+        # A new projection gets its own table because the effects can change.
+        projected: dict[frozenset[DeferredExecution], EffectMask] = {
+            frozenset(): NO_EFFECTS
+        }
 
         def seal[
             Fact: PythonExpressionFact | PythonIterationFact | PythonStatementFact
         ](fact: Fact) -> Fact:
             nonlocal module_import_flow_required
-            resolved = fact.module_metadata_effects
-            for ref in fact.deferred_execution:
-                targets = indices(ref)
-                if not targets:
-                    resolved |= WRITES_MODULE_METADATA
-                for target in targets:
-                    resolved |= effects[target]
+            dependencies = fact.deferred_execution
+            deferred_effects = projected.get(dependencies)
+            if deferred_effects is None:
+                deferred_effects = NO_EFFECTS
+                for ref in dependencies:
+                    targets = indices(ref)
+                    if not targets:
+                        deferred_effects |= WRITES_MODULE_METADATA
+                    for target in targets:
+                        deferred_effects |= effects[target]
+                projected[dependencies] = deferred_effects
+            resolved = fact.module_metadata_effects | deferred_effects
             module_import_flow_required |= bool(resolved)
             if resolved != fact.module_metadata_effects:
                 return replace(fact, module_metadata_effects=resolved)
