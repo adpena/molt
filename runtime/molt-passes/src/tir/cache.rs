@@ -23,7 +23,7 @@
 //! miss. Opening a cache performs no I/O.
 
 use std::ffi::OsStr;
-use std::fs::File;
+use std::fs::{File, Metadata};
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -299,19 +299,19 @@ impl CompilationCache {
         let tag_path = self.cache_dir.join(CACHEDIR_TAG_FILE);
         let lock_path = self.cache_dir.join(CACHE_TRIM_LOCK_FILE);
         require_direct_directory(&self.functions_dir)?;
-        let lock = open_regular_member(&lock_path, MemberAccess::Update)?;
+        let (lock, _) = open_regular_member(&lock_path, MemberAccess::Update)?;
         lock.try_lock_shared().map_err(std::io::Error::from)?;
-        let mut tag = open_regular_member(&tag_path, MemberAccess::Update)?;
+        let (mut tag, tag_metadata) = open_regular_member(&tag_path, MemberAccess::Update)?;
         let expected = MANAGED_LAYOUT.tag.as_bytes();
         let mut bytes = vec![0; expected.len()];
-        if tag.metadata()?.len() != expected.len() as u64
+        if tag_metadata.len() != expected.len() as u64
             || tag.read_exact(&mut bytes).is_err()
             || bytes != expected
         {
             return Err(std::io::Error::other("unowned backend cache namespace"));
         }
         let now = SystemTime::now();
-        if !matches!(now.duration_since(tag.metadata()?.modified()?), Ok(age) if age < CACHE_RECENCY_INTERVAL)
+        if !matches!(now.duration_since(tag_metadata.modified()?), Ok(age) if age < CACHE_RECENCY_INTERVAL)
         {
             tag.set_modified(now)?;
         }
@@ -437,9 +437,9 @@ impl CompilationCache {
         if !matches!(quarantine_probe(&poison_path), Ok(false)) {
             return DiskLookup::Miss;
         }
-        match decode_artifact_envelope(content_hash, &envelope) {
+        match decode_artifact_envelope(content_hash, &envelope.bytes) {
             Ok(payload) => {
-                refresh_recency(&artifact_path, SystemTime::now());
+                refresh_recency(&artifact_path, envelope.modified, SystemTime::now());
                 DiskLookup::Hit(project(payload))
             }
             Err(error) => DiskLookup::Corrupt {
@@ -590,10 +590,10 @@ impl CompilationCache {
                 // Retired by a concurrent reader or trim: link again.
                 continue;
             };
-            match decode_artifact_envelope(content_hash, &incumbent) {
+            match decode_artifact_envelope(content_hash, &incumbent.bytes) {
                 Ok(existing) if existing == artifact => {
                     self.telemetry.reuses = self.telemetry.reuses.saturating_add(1);
-                    refresh_recency(artifact_path, SystemTime::now());
+                    refresh_recency(artifact_path, incumbent.modified, SystemTime::now());
                     return Ok(());
                 }
                 Ok(existing) => {
@@ -686,7 +686,7 @@ impl CompilationCache {
         // A trim can create the namespace before any write does.
         self.tag_once();
         let lock_path = self.cache_dir.join(CACHE_TRIM_LOCK_FILE);
-        let lock = open_regular_member(&lock_path, MemberAccess::Create)
+        let (lock, _) = open_regular_member(&lock_path, MemberAccess::Create)
             .map_err(|error| format!("cannot open {}: {error}", lock_path.display()))?;
         // One trimmer at a time; a busy lock means another process trims now.
         // Concurrent trims would only repeat work, so a platform without file
@@ -704,8 +704,8 @@ impl CompilationCache {
         self.telemetry.trims = self.telemetry.trims.saturating_add(1);
         self.trim_functions(now)?;
         open_regular_member(&stamp_path, MemberAccess::Create)
-            .and_then(|stamp| {
-                if stamp.metadata()?.len() != 0 {
+            .and_then(|(stamp, metadata)| {
+                if metadata.len() != 0 {
                     return Err(std::io::Error::other("unexpected trim stamp contents"));
                 }
                 stamp.set_modified(now)
@@ -765,14 +765,14 @@ impl CompilationCache {
             let Some(key) = name.to_str().and_then(|name| name.strip_suffix(".bin")) else {
                 return false;
             };
-            let Ok(mut file) =
+            let Ok((mut file, metadata)) =
                 open_regular_member(&self.functions_dir.join(name), MemberAccess::Read)
             else {
                 return false;
             };
-            file.metadata().is_ok_and(|metadata| {
-                metadata.len() == *size && metadata.modified().ok() == Some(*used)
-            }) && file.read_exact(&mut header).is_ok()
+            metadata.len() == *size
+                && metadata.modified().ok() == Some(*used)
+                && file.read_exact(&mut header).is_ok()
                 && matches!(
                     decode_cache_header(key, &header, *size),
                     Ok((CacheEnvelopeKind::Artifact, _))
@@ -906,21 +906,13 @@ fn age(now: SystemTime, then: SystemTime) -> Duration {
     now.duration_since(then).unwrap_or_default()
 }
 
-fn modified(path: &Path) -> Option<SystemTime> {
-    let metadata = std::fs::symlink_metadata(path).ok()?;
-    if !metadata.is_file() || is_reparse_point(&metadata) {
-        return None;
-    }
-    metadata.modified().ok()
-}
-
-/// Trimming evicts by modification time. Refresh it at most once per recency
-/// interval, so hits rarely write (Go's build cache `markUsed`).
-fn refresh_recency(path: &Path, now: SystemTime) {
-    if modified(path).is_some_and(|then| age(now, then) < CACHE_RECENCY_INTERVAL) {
+/// Trimming evicts by modification time. Reuse the opened file's metadata on
+/// a fresh hit. Only an old member needs to open the leaf for a recency write.
+fn refresh_recency(path: &Path, modified: Option<SystemTime>, now: SystemTime) {
+    if modified.is_some_and(|then| age(now, then) < CACHE_RECENCY_INTERVAL) {
         return;
     }
-    if let Ok(file) = open_regular_member(path, MemberAccess::Update) {
+    if let Ok((file, _)) = open_regular_member(path, MemberAccess::Update) {
         let _ = file.set_modified(now);
     }
 }
@@ -1020,7 +1012,7 @@ enum MemberAccess {
     Create,
 }
 
-fn open_regular_member(path: &Path, access: MemberAccess) -> std::io::Result<File> {
+fn open_regular_member(path: &Path, access: MemberAccess) -> std::io::Result<(File, Metadata)> {
     let mut options = std::fs::OpenOptions::new();
     options
         .read(true)
@@ -1042,7 +1034,7 @@ fn open_regular_member(path: &Path, access: MemberAccess) -> std::io::Result<Fil
     if !metadata.is_file() || is_reparse_point(&metadata) {
         return Err(std::io::Error::other("replaced cache member"));
     }
-    Ok(file)
+    Ok((file, metadata))
 }
 
 /// Write `directory`'s `CACHEDIR.TAG` unless it has one.
@@ -1212,9 +1204,14 @@ fn poison_envelope_for_limit(
     encode_cache_envelope(content_hash, CacheEnvelopeKind::Poison, &[])
 }
 
-fn read_file_bounded(path: &std::path::Path, max_bytes: u64) -> Result<Option<Vec<u8>>, String> {
-    let file = match open_regular_member(path, MemberAccess::Read) {
-        Ok(file) => file,
+struct BoundedCacheFile {
+    bytes: Vec<u8>,
+    modified: Option<SystemTime>,
+}
+
+fn read_file_bounded(path: &Path, max_bytes: u64) -> Result<Option<BoundedCacheFile>, String> {
+    let (file, metadata) = match open_regular_member(path, MemberAccess::Read) {
+        Ok(opened) => opened,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(format!(
@@ -1223,10 +1220,7 @@ fn read_file_bounded(path: &std::path::Path, max_bytes: u64) -> Result<Option<Ve
             ));
         }
     };
-    let initial_len = file
-        .metadata()
-        .map_err(|error| format!("cannot stat bounded cache file {}: {error}", path.display()))?
-        .len();
+    let initial_len = metadata.len();
     if initial_len > max_bytes {
         return Err(format!(
             "cache file {} is {initial_len} bytes, exceeding configured read bound {max_bytes}",
@@ -1245,7 +1239,10 @@ fn read_file_bounded(path: &std::path::Path, max_bytes: u64) -> Result<Option<Ve
             path.display()
         ));
     }
-    Ok(Some(bytes))
+    Ok(Some(BoundedCacheFile {
+        bytes,
+        modified: metadata.modified().ok(),
+    }))
 }
 
 fn read_poison_sidecar(
@@ -1263,7 +1260,7 @@ fn read_poison_sidecar(
             return Err(error);
         }
     };
-    let (kind, payload) = decode_cache_envelope(content_hash, &envelope)?;
+    let (kind, payload) = decode_cache_envelope(content_hash, &envelope.bytes)?;
     if kind != CacheEnvelopeKind::Poison {
         return Err("poison sidecar contains an ordinary artifact envelope".to_string());
     }
