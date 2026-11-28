@@ -172,10 +172,17 @@ def _pair_ctx(
 
 
 @pytest.fixture(autouse=True)
-def admitted_validator_for_pair_controls(monkeypatch, tmp_path):
+def pair_fixture_authorities(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from molt.cli import runtime_wasm_validation
     from tests.runtime_build_identity_helper import wasm_validator_discovery
 
+    # Some pair tests intentionally mutate linker inputs. The compiler's
+    # shared input catalog belongs to live builds, not these fixtures.
+    monkeypatch.setattr(
+        runtime_wasm_build_spec,
+        "runtime_wasm_link_input_root",
+        lambda _root: tmp_path / "link-inputs",
+    )
     # Pair layout, cache and publication tests do not own tool provisioning.
     discovery = wasm_validator_discovery(tmp_path)
     monkeypatch.setattr(
