@@ -74,10 +74,10 @@ fn pending_clear_successor(block: &TirBlock) -> Option<BlockId> {
     if then_block == else_block || op.results.as_slice() != [cond] {
         return None;
     }
-    match op.opcode {
-        OpCode::FrameRegionAdmits => Some(then_block),
-        OpCode::ExceptionPending => Some(else_block),
-        _ => None,
+    if op.opcode == OpCode::FrameRegionAdmits {
+        Some(then_block)
+    } else {
+        (op.opcode == OpCode::ExceptionPending).then_some(else_block)
     }
 }
 
