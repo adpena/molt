@@ -1307,7 +1307,12 @@ fail closed; the inventory itself makes no claim about current file bytes.
   `molt build`'s phase seconds (`phase_sec`, `ranked_phases`) and its entry as
   JSON. A value ending in `/` names a directory that receives one file per build;
   `python3 tools/build_phase_report.py <dir>` then ranks phases and the slowest
-  builds across a whole differential run.
+  builds across a whole differential run. Within the module-graph phase,
+  `module_graph_stage_sec` reports time spent checking the saved graph, discovering
+  from source and publishing a graph. Replay excludes publication time. A stage
+  the build skipped is absent. The phase report totals these stages separately
+  from the top-level phases. In `module_graph_import_queries`, each module's
+  `load_seconds_by_admission` distinguishes source recomputation from reuse.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
 - `TIR_OPT_STATS=1` prints each two-target loop the `pair_unpack` pass fused

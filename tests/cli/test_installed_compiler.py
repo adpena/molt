@@ -345,7 +345,7 @@ def test_fresh_stdlib_summary_reuses_its_consumed_admission(
 def test_installed_stdlib_summary_binds_source_package_and_target(
     installation: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import stdlib_source_summaries
+    from molt.cli import import_graph_record, stdlib_source_summaries
     from molt.cli.module_graph_discovery import _load_module_import_scan
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_source import PythonSourceSnapshot
@@ -368,7 +368,9 @@ def test_installed_stdlib_summary_binds_source_package_and_target(
     module.parent.mkdir(parents=True)
     module.write_text(
         "from . import receiver\nreceiver.inserted = 'value'\n"
-        "def writer():\n    globals()['local'] = 1\n",
+        "def writer():\n"
+        "    value: int = 1\n"
+        "    globals()['local'] = value\n",
         "utf-8",
     )
     platform_probe = module.with_name("platform_probe.py")
@@ -394,6 +396,14 @@ def test_installed_stdlib_summary_binds_source_package_and_target(
     target = _DEFAULT_TARGET_PYTHON_VERSION
     tree = _parse_source_for_target(snapshot.content, target_python=target)
     admission = _PythonAstDigestAdmission(tree)
+
+    identity = syntax.line_identity(snapshot, package="parent", target=target)
+    assert identity is not None
+    assert identity == import_graph_record._source_line_identity(snapshot, target)
+    assert syntax.line_identity(snapshot, package="unrelated", target=target) is None
+    with monkeypatch.context() as parser_change:
+        parser_change.setattr(sys, "version", sys.version + " (different parser)")
+        assert syntax.line_identity(snapshot, package="parent", target=target) is None
 
     syntax.seed(snapshot, package="unrelated", target=target, admission=admission)
     assert not admission.namespace_summaries
@@ -450,6 +460,7 @@ def test_installed_stdlib_summary_binds_source_package_and_target(
     admission = _PythonAstDigestAdmission(
         _parse_source_for_target(edited.content, target_python=target)
     )
+    assert syntax.line_identity(edited, package="parent", target=target) is None
     syntax.seed(edited, package="parent", target=target, admission=admission)
     assert not admission.namespace_summaries
 

@@ -547,6 +547,10 @@ def _build_build_diagnostics_payload(
         ),
         "module_reasons": module_reason_map,
     }
+    if diagnostics_context.module_graph_stage_sec is not None:
+        payload["module_graph_stage_sec"] = dict(
+            diagnostics_context.module_graph_stage_sec
+        )
     if diagnostics_context.module_graph_import_queries is not None:
         payload["module_graph_import_queries"] = (
             diagnostics_context.module_graph_import_queries
