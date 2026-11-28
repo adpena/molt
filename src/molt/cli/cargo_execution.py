@@ -5,7 +5,6 @@ from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuild
 import contextlib
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import partial
 import os
 from pathlib import Path
 import re
@@ -548,22 +547,21 @@ def _run_resolved_cargo_plan(
     )
     with _progress.subprocess_status(status, announce=True) as keepalive_label:
         plan.verify()
-        run_attempt = partial(
-            _run_cargo_attempt,
-            list(plan.command),
-            cwd=plan.project_root,
-            env=plan.environment,
-            timeout=timeout,
-            tempfile_runner=tempfile_runner,
-            progress_label=keepalive_label,
-            resolved_environment=True,
-        )
 
         def run_timed_attempt(
             cancellation_requested: Callable[[], bool] | None = None,
         ) -> tuple[subprocess.CompletedProcess[Any], float]:
             started = time.perf_counter()
-            build = run_attempt(cancellation_requested=cancellation_requested)
+            build = _run_cargo_attempt(
+                list(plan.command),
+                cwd=plan.project_root,
+                env=plan.environment,
+                timeout=timeout,
+                tempfile_runner=tempfile_runner,
+                progress_label=keepalive_label,
+                resolved_environment=True,
+                cancellation_requested=cancellation_requested,
+            )
             return build, time.perf_counter() - started
 
         if preparation is None or not _cargo_plans_can_overlap(plan, preparation.plan):
