@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.backend_protocol import BackendEmissionOrigin
+from molt.build_record import WasmApplicationMerge
 from molt._wasm_runtime_exports import (
     wasm_runtime_lifetime_export_names,
     wasm_output_runtime_export_names,
@@ -792,8 +793,9 @@ def _merge_wasm_application_archive(
     *,
     public_name: str,
     validation: BackendArtifactValidation,
+    emission_origin: BackendEmissionOrigin | None,
     linker: tuple[wasm_toolchain.WasmLinkerIdentity, StableRegularFileObservation],
-) -> BackendArtifactValidation:
+) -> tuple[BackendArtifactValidation, WasmApplicationMerge | None]:
     """Project an admitted private archive into the public relocatable module."""
     from molt.file_publication import durable_replace
     from molt.temporary_artifacts import OwnedTemporaryDirectory
@@ -803,6 +805,12 @@ def _merge_wasm_application_archive(
     )
     if not validation.admits(before.identity):
         raise ValueError("application archive differs from validated backend output")
+    archive_content = (before.identity.sha256, before.identity.size)
+    if emission_origin is not None and archive_content != (
+        emission_origin.output_sha256,
+        emission_origin.output_size,
+    ):
+        raise ValueError("Wasm application archive differs from original emission")
     selection, observed = linker
     with OwnedTemporaryDirectory.for_publication(path, purpose="wasm-merge") as temp:
         merged = Path(temp) / public_name
@@ -840,7 +848,15 @@ def _merge_wasm_application_archive(
             raise ValueError(error)
         merged_observation.verify(label="merged WASM application")
         durable_replace(merged, path)
-    return BackendArtifactValidation(contract, merged_observation.identity)
+    merged_identity = merged_observation.identity
+    merge = (
+        WasmApplicationMerge(
+            archive_content, (merged_identity.sha256, merged_identity.size)
+        )
+        if emission_origin is not None
+        else None
+    )
+    return BackendArtifactValidation(contract, merged_identity), merge
 
 
 def _prepare_non_native_build_result(

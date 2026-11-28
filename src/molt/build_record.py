@@ -573,6 +573,40 @@ class NativeBuildResult:
 
 
 @dataclass(frozen=True, slots=True)
+class WasmApplicationMerge:
+    """Content observed before and after the guarded application archive merge."""
+
+    archive: tuple[str, int]
+    module: tuple[str, int]
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "archive": {"sha256": self.archive[0], "size": self.archive[1]},
+            "module": {"sha256": self.module[0], "size": self.module[1]},
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> WasmApplicationMerge:
+        def content(raw: object) -> tuple[str, int]:
+            if (
+                not isinstance(raw, dict)
+                or set(raw) != {"sha256", "size"}
+                or type(raw["size"]) is not int
+                or not 0 < raw["size"] < 1 << 64
+            ):
+                raise ValueError("invalid WASM application merge content")
+            return _record_digest(raw["sha256"]), raw["size"]
+
+        if not isinstance(value, dict) or set(value) != {"archive", "module"}:
+            raise ValueError("invalid WASM application merge record")
+        return cls(content(value["archive"]), content(value["module"]))
+
+    def verify_origin(self, origin: BackendEmissionOrigin) -> None:
+        if self.archive != (origin.output_sha256, origin.output_size):
+            raise ValueError("Wasm application archive differs from original emission")
+
+
+@dataclass(frozen=True, slots=True)
 class WasmBuildResult:
     """Structured view of a linked or split final-link publication."""
 
@@ -585,6 +619,7 @@ class WasmBuildResult:
     emission_origin: BackendEmissionOrigin | None
     messages: tuple[str, ...]
     notices: tuple[LockCheckNotice, ...]
+    application_merge: WasmApplicationMerge | None = None
 
     @property
     def primary(self) -> RecordedArtifact:
@@ -601,9 +636,18 @@ class WasmBuildResult:
 
     def verify(self) -> None:
         _verify_result_artifacts(self._artifacts())
-        if self.emission_origin is not None and (
-            self.emission_origin.output_size != self.module.token.size
-            or self.emission_origin.output_sha256 != self.module.sha256
+        actual = (self.module.sha256, self.module.token.size)
+        origin = self.emission_origin
+        merge = self.application_merge
+        if merge is not None:
+            if origin is None:
+                raise ValueError("Wasm application merge requires an emission origin")
+            merge.verify_origin(origin)
+            if merge.module != actual:
+                raise ValueError("Wasm module differs from application archive merge")
+        elif origin is not None and actual != (
+            origin.output_sha256,
+            origin.output_size,
         ):
             raise ValueError("Wasm module differs from original emission")
 
@@ -655,6 +699,11 @@ class WasmBuildResult:
             "emission_origin": None
             if self.emission_origin is None
             else self.emission_origin.payload(),
+            **(
+                {"application_merge": self.application_merge.payload()}
+                if self.application_merge is not None
+                else {}
+            ),
             "messages": list(self.messages),
             "notices": list(self.notices),
         }
@@ -666,7 +715,7 @@ class WasmBuildResult:
         if (
             not isinstance(value, dict)
             or value.get("kind") != cls.kind
-            or set(value)
+            or set(value) - {"application_merge"}
             != {
                 "kind",
                 "facts",
@@ -701,6 +750,11 @@ class WasmBuildResult:
             else BackendEmissionOrigin.from_payload(origin),
             messages=tuple(messages),
             notices=_result_notices(value["notices"]),
+            application_merge=WasmApplicationMerge.from_payload(
+                value["application_merge"]
+            )
+            if "application_merge" in value
+            else None,
         )
 
 

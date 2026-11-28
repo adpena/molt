@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         NativeBuildResult,
         NativeResultInputs,
         RecordedArtifact,
+        WasmApplicationMerge,
         WasmBuildResult,
     )
 
@@ -1114,6 +1115,7 @@ def _record_wasm_build_result(
     products: Mapping[str, Path],
     warnings: Sequence[str],
     backend_binary_observation: StableRegularFileObservation | None = None,
+    application_merge: WasmApplicationMerge | None = None,
 ) -> None:
     from dataclasses import fields
     from molt import input_report
@@ -1199,6 +1201,11 @@ def _record_wasm_build_result(
                 "compiler": compiler.payload(),
                 "selected_profiles": observed["selected_profiles"],
                 "emission_origin": observed.get("emission_origin"),
+                **(
+                    {"application_merge": application_merge.payload()}
+                    if application_merge is not None
+                    else {}
+                ),
                 "messages": data["messages"],
                 "notices": list(notices),
             }
@@ -1290,6 +1297,7 @@ def _emit_non_native_build_result(
     artifacts: Mapping[str, Any] | None = None,
     published_products: Mapping[str, Path] | None = None,
     publication_tokens: Mapping[Path, StatToken] | None = None,
+    application_merge: WasmApplicationMerge | None = None,
     backend_binary_observation: StableRegularFileObservation | None = None,
     extra_fields: Mapping[str, Any] | None = None,
     success_messages: Sequence[str] = (),
@@ -1371,7 +1379,11 @@ def _emit_non_native_build_result(
             and input_report.result_active()
         ):
             _record_wasm_build_result(
-                data, published_products, warnings, backend_binary_observation
+                data,
+                published_products,
+                warnings,
+                backend_binary_observation,
+                application_merge,
             )
         return _emit_build_result_json(
             data=data,

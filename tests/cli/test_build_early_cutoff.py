@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from molt.process_environment import ProcessEnvironment
 
+from collections.abc import Callable
+
 import os
 import stat
 import sys
@@ -795,7 +797,9 @@ def test_json_cutoff_emits_a_current_result_without_running_compiler(
     assert payload["data"]["cache"]["hit_tier"] == "build-record"
 
 
-def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
+def _fake_wasm_build(
+    calls: list[str], *, report_products: bool = True, merge_archive: bool = False
+) -> Callable[[BuildRequest], int]:
     """Publish the linked WASM family through the real layout and result owner."""
 
     def build(request: BuildRequest) -> int:
@@ -920,6 +924,29 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
         primary = linked if request.require_linked and linked is not None else module
         tokens = {path: input_report.stat_token(path) for path in products.values()}
         assert all(token is not None for token in tokens.values())
+        origin = merge = None
+        if merge_archive:
+            from hashlib import sha256
+            from molt.backend_protocol import (
+                BackendAddressedProgramInput,
+                BackendCodegenOrigin,
+                BackendEmissionOrigin,
+                BackendEmissionProducer,
+            )
+
+            archive = source.encode()
+            merged = module.read_bytes()
+            origin = BackendEmissionOrigin(
+                BackendEmissionProducer("daemon", 1, None),
+                BackendAddressedProgramInput("a" * 64, 1, ""),
+                sha256(archive).hexdigest(),
+                len(archive),
+                BackendCodegenOrigin(1, ()),
+            )
+            merge = build_record.WasmApplicationMerge(
+                (origin.output_sha256, origin.output_size),
+                (sha256(merged).hexdigest(), len(merged)),
+            )
         return build_results._emit_non_native_build_result(
             output=primary,
             consumer_output=consumer,
@@ -959,6 +986,7 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
                 path: token for path, token in tokens.items() if token is not None
             },
             success_messages=(f"Successfully built {primary}",),
+            application_merge=merge,
             extra_fields={
                 "linked": layout.linked,
                 "require_linked": request.require_linked,
@@ -968,6 +996,7 @@ def _fake_wasm_build(calls: list[str], *, report_products: bool = True):
                     runtime_lib=None,
                     output=primary,
                     selected_profiles={},
+                    emission_origin=origin,
                 ),
             },
         )
@@ -1220,6 +1249,47 @@ def test_structured_wasm_replays_the_verified_publication(
     build_record._BUILDS_ENTERED = 0
     assert build(request) != 0
     assert "Missing lockfiles" in capsys.readouterr().out
+
+
+def test_wasm_archive_origin_survives_the_published_object(
+    project: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    (project / "uv.lock").touch()
+    monkeypatch.setenv("UV_NO_SYNC", "1")
+    calls: list[str] = []
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_wasm_build(calls, merge_archive=True))
+    )
+    request = _wasm_request(
+        project, tmp_path / "wasm", json_output=True, split_runtime=True, linked=False
+    )
+    _run_wasm(build, request)
+    original = json.loads(capsys.readouterr().out)["data"]
+    _run_wasm(build, request)
+    replay = json.loads(capsys.readouterr().out)["data"]
+    assert len(calls) == 1
+    assert replay.pop("cache")["hit_tier"] == "build-record"
+    original.pop("cache")
+    assert replay == original
+
+    cutoff = build_command._early_cutoff_request(request)
+    assert cutoff is not None
+    _, record = cutoff
+    intact = json.loads(record.read_bytes())
+    for member in ("archive", "module"):
+        tampered = json.loads(json.dumps(intact))
+        tampered["result"]["application_merge"][member]["sha256"] = "c" * 64
+        record.write_bytes(json.dumps(tampered).encode())
+        _run_wasm(build, request)
+        assert json.loads(capsys.readouterr().out)["data"]["cache"].get("hit_tier") != (
+            "build-record"
+        )
+    assert len(calls) == 3
 
 
 def test_precompiled_wasm_never_cuts_off(project: Path, tmp_path: Path) -> None:

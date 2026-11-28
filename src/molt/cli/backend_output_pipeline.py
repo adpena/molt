@@ -150,6 +150,7 @@ def _emit_backend_pipeline_outputs(
 
     if output_layout.is_wasm:
         wasm_linker = None
+        application_merge = None
         validation = prepared_backend_compile.output_validation
         contract = prepared_backend_setup.cache_setup.artifact_contract
         archive = contract.kind is BackendArtifactKind.WASM_ARCHIVE
@@ -180,11 +181,14 @@ def _emit_backend_pipeline_outputs(
                     prepared_build_roots.molt_root
                 )
                 merge_start = time.perf_counter()
-                validation = _non_native_output._merge_wasm_application_archive(
-                    output_layout.output_artifact,
-                    public_name=backend_output_destination.name,
-                    validation=validation,
-                    linker=wasm_linker,
+                validation, application_merge = (
+                    _non_native_output._merge_wasm_application_archive(
+                        output_layout.output_artifact,
+                        public_name=backend_output_destination.name,
+                        validation=validation,
+                        emission_origin=prepared_backend_compile.backend_emission_origin,
+                        linker=wasm_linker,
+                    )
                 )
                 if pipeline_stage_ms is not None:
                     pipeline_stage_ms["wasm_application_archive_merge"] = (
@@ -341,6 +345,7 @@ def _emit_backend_pipeline_outputs(
             artifacts=prepared_non_native_result.artifacts,
             published_products=prepared_non_native_result.published_products,
             publication_tokens=prepared_non_native_result.publication_tokens,
+            application_merge=application_merge,
             backend_binary_observation=backend_observation,
             success_messages=prepared_non_native_result.success_messages,
             finalize_inputs=validate_inputs,
