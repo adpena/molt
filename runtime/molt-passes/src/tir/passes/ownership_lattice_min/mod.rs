@@ -39,7 +39,7 @@ use crate::tir::op_kinds_generated::{
     kind_result_absorbs_operand_ownership_table, kind_result_finalizer_source_operand_table,
     opcode_container_absorbed_operand, opcode_explicit_release_operands_table,
     opcode_is_ownership_held_view_table, opcode_operand_ownership_table,
-    opcode_result_absorbs_operand_ownership_table,
+    opcode_owned_literal_payload_kind_table, opcode_result_absorbs_operand_ownership_table,
     opcode_result_is_conditionally_valid_only_on_edge, terminator_operand_is_transferred,
 };
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
@@ -588,6 +588,7 @@ pub(crate) struct OwnershipRootFacts {
     binding_view_roots: HashSet<ValueId>,
     /// Views of objects another owner holds (`is_held_view_root`).
     held_view_roots: HashSet<ValueId>,
+    immortal_literal_roots: HashSet<ValueId>,
 }
 
 impl OwnershipRootFacts {
@@ -603,6 +604,14 @@ impl OwnershipRootFacts {
             non_owning_copy_result_roots: non_owning_copy_result_roots(func, aliases),
             binding_view_roots: binding_view_roots(func, aliases),
             held_view_roots: held_view_roots(func, aliases),
+            immortal_literal_roots: func
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| opcode_owned_literal_payload_kind_table(op.opcode).is_some())
+                .flat_map(|op| op.results.iter().copied())
+                .filter(|&result| aliases.root(result) == result)
+                .collect(),
         }
     }
 
@@ -669,11 +678,18 @@ impl OwnershipRootFacts {
         self.held_view_roots.contains(&root)
     }
 
+    /// Heap literals lower to a program-owned cell. The cell returns the
+    /// immortal value on success and the None singleton on failure.
+    fn is_immortal_literal_root(&self, root: ValueId) -> bool {
+        self.immortal_literal_roots.contains(&root)
+    }
+
     pub(crate) fn is_drop_owned_root_candidate(&self, root: ValueId) -> bool {
         !self.is_borrowed_parameter_root(root)
             && !self.is_non_owning_copy_result_root(root)
             && !self.is_binding_view_root(root)
             && !self.is_held_view_root(root)
+            && !self.is_immortal_literal_root(root)
     }
 
     /// Whether `result`, a result of `op`, holds a reference of its own: it is
@@ -692,6 +708,7 @@ impl OwnershipRootFacts {
         aliases.root(result) == result
             && !copy_results_hold_no_reference(op)
             && !opcode_is_ownership_held_view_table(op.opcode)
+            && opcode_owned_literal_payload_kind_table(op.opcode).is_none()
     }
 }
 
@@ -729,6 +746,10 @@ impl<'a> DropEligibility<'a> {
 
     pub(crate) fn is_raw_scalar_root(&self, root: ValueId) -> bool {
         self.raw_scalar_roots.contains(&root)
+    }
+
+    pub(super) fn is_immortal_literal_root(&self, root: ValueId) -> bool {
+        self.root_facts.is_immortal_literal_root(root)
     }
 
     pub(crate) fn is_conditionally_valid_result_root(&self, value: ValueId) -> bool {

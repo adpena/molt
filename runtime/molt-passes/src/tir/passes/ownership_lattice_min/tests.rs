@@ -1174,10 +1174,12 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
         f.fresh_value(),
         f.fresh_value(),
     );
-    let mut string = op(OpCode::ConstStr, vec![], vec![text]);
-    string
-        .attrs
-        .insert("s_value".into(), AttrValue::Str("x".into()));
+    let mut string = op(OpCode::Call, vec![], vec![text]);
+    string.attrs.insert(
+        "s_value".into(),
+        AttrValue::Str("replacement_fixture_string".into()),
+    );
+    f.value_types.insert(text, TirType::Str);
     let guard = op(OpCode::Copy, vec![text], vec![guarded]);
     let mut borrowed_view =
         original_kind_copy(molt_ir::OpKind::FrameHomeLoad, vec![], vec![borrowed]);
@@ -1270,6 +1272,112 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
             .iter()
             .any(|operation| operation.opcode == OpCode::IncRef),
         "a transparent copy needs no retain"
+    );
+}
+
+/// A literal cell supplies the same borrowed immortal word to an ordinary
+/// use and a cleanup edge. A mixed join still owns its mortal input.
+#[test]
+fn immortal_literals_keep_the_mortal_release_at_a_mixed_join() {
+    use crate::tir::blocks::TirBlock;
+    use crate::tir::values::TirValue;
+
+    let mut f = TirFunction::new(
+        "literal_or_owned".into(),
+        vec![TirType::Bool],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let branch = f.blocks[&f.entry_block].args[0].id;
+    let join = f.fresh_block();
+    let [text, bytes, big, owned, joined, equals_literal] =
+        std::array::from_fn(|_| f.fresh_value());
+    for (id, ty) in [
+        (text, TirType::Str),
+        (bytes, TirType::Bytes),
+        (big, TirType::BigInt),
+        (owned, TirType::DynBox),
+        (joined, TirType::DynBox),
+        (equals_literal, TirType::Bool),
+    ] {
+        f.value_types.insert(id, ty);
+    }
+    let literal = |opcode, value, key: &str, payload| {
+        let mut operation = op(opcode, vec![], vec![value]);
+        operation.attrs.insert(key.into(), payload);
+        operation
+    };
+    let mut allocator = op(OpCode::Call, vec![], vec![owned]);
+    allocator
+        .attrs
+        .insert("s_value".into(), AttrValue::Str("fixture_mortal".into()));
+    let mut check = op(OpCode::CheckException, vec![text], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(17));
+    f.label_id_map.insert(join.0, 17);
+    f.has_exception_handling = true;
+
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry.ops = vec![
+        literal(
+            OpCode::ConstStr,
+            text,
+            "s_value",
+            AttrValue::Str("text".into()),
+        ),
+        literal(
+            OpCode::ConstBytes,
+            bytes,
+            "bytes",
+            AttrValue::Bytes(b"bytes".to_vec()),
+        ),
+        literal(
+            OpCode::ConstBigInt,
+            big,
+            "bytes",
+            AttrValue::Bytes(vec![0, 0x80, 0, 0, 0, 0, 0, 0, 0]),
+        ),
+        allocator,
+        check,
+        op(OpCode::WarnStderr, vec![bytes], vec![]),
+        op(OpCode::WarnStderr, vec![big], vec![]),
+    ];
+    entry.terminator = Terminator::CondBranch {
+        cond: branch,
+        then_block: join,
+        then_args: vec![owned],
+        else_block: join,
+        else_args: vec![text],
+    };
+    f.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![TirValue {
+                id: joined,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![op(OpCode::Is, vec![joined, text], vec![equals_literal])],
+            terminator: Terminator::Return {
+                values: vec![equals_literal],
+            },
+        },
+    );
+
+    crate::tir::passes::drop_insertion::run(
+        &mut f,
+        &mut crate::tir::analysis::AnalysisManager::new(),
+    );
+    assert!(!f.blocks.values().flat_map(|block| &block.ops).any(|op| {
+        matches!(op.opcode, OpCode::IncRef | OpCode::DecRef)
+            && op.operands.iter().any(|id| [text, bytes, big].contains(id))
+    }));
+    assert_eq!(
+        f.blocks[&join]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef && op.operands == [joined])
+            .count(),
+        1
     );
 }
 

@@ -103,6 +103,9 @@ pub(super) fn definition_available_on_edge(
 /// What one control arc does with the owner behind a target block argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PhiPayload {
+    /// This arc supplies an immortal value to a slot that can also hold an
+    /// ordinary owned reference. No retain or move from its source is needed.
+    Immortal,
     /// No release obligation: a raw carrier, an argument that owns nothing, or
     /// a conditional result the arc does not initialize.
     Unowned,
@@ -206,7 +209,9 @@ impl PhiTransport {
                                 .or_default()
                                 .push((arc.target, argument.id));
                         }
-                        Some(PhiPayload::Transfer(_) | PhiPayload::Retain(_)) => {}
+                        Some(
+                            PhiPayload::Transfer(_) | PhiPayload::Retain(_) | PhiPayload::Immortal,
+                        ) => {}
                         Some(PhiPayload::Unowned) | None => {
                             transport.unowned_bindings.insert((arc.target, position));
                         }
@@ -499,7 +504,7 @@ impl<'a> PointAvailability<'a> {
             .iter()
             .filter_map(|payload| match *payload {
                 PhiPayload::Retain(value) => Some(value),
-                PhiPayload::Unowned | PhiPayload::Transfer(_) => None,
+                PhiPayload::Unowned | PhiPayload::Transfer(_) | PhiPayload::Immortal => None,
             })
             .collect()
     }
@@ -617,6 +622,8 @@ impl<'a> PointAvailability<'a> {
                     || !initialized
                 {
                     PhiPayload::Unowned
+                } else if eligibility.is_immortal_literal_root(root) {
+                    PhiPayload::Immortal
                 } else if eligibility.is_droppable(root)
                     && !body_live.contains(&root)
                     && moved.insert(root)

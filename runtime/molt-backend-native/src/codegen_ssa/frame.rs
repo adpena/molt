@@ -9,7 +9,8 @@ use molt_ir::deterministic_hash::{HashMap, HashSet};
 use molt_ir::frame_entry::{FrameEntryKind, FramePrefix, FrameShape};
 use molt_ir::{ExecutionContextPolicy, OpKind};
 
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::representation_plan::ProducerCarrierPlan;
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 
@@ -39,7 +40,7 @@ impl<S: Copy> ActiveFrame<S> {
     }
 }
 
-pub(crate) type HomeInitializations = HashSet<(BlockId, usize)>;
+pub(crate) type UnownedHomeReleases = HashSet<(BlockId, usize)>;
 
 fn frame_dispatch_kind(op: &TirOp) -> Option<OpKind> {
     if op.opcode == OpCode::FrameSetLocation {
@@ -131,91 +132,26 @@ impl FrameLayout {
         Ok(Self { entry, homes })
     }
 
-    /// The first publications into a synchronous record's zeroed homes.
-    /// Follow the entry's unique normal continuation through bookkeeping and
-    /// first stores. Stop at a callback, a service poll, a rebind or a join:
-    /// beyond that point the home may already own a value.
-    pub(crate) fn initial_home_stores(
+    pub(crate) fn unowned_home_releases(
         &self,
         func: &TirFunction,
         reachable: &[BlockId],
         labels: &HashMap<i64, BlockId>,
-    ) -> HomeInitializations {
-        let mut initial = HomeInitializations::default();
+        carriers: &ProducerCarrierPlan,
+    ) -> UnownedHomeReleases {
         if !matches!(
             self.entry,
             FrameEntry::Inline(FrameEntryKind::Synchronous(_))
         ) || !self.homes.is_some_and(|homes| homes != 0)
-            || func.execution_context != ExecutionContextPolicy::Local
-            || func.frame_locals_exposed()
         {
-            return initial;
+            return UnownedHomeReleases::default();
         }
-
-        // The normal edge must be the only route in. A labeled block can
-        // also be the target of a check before a store in its predecessor.
-        let mut predecessors = HashMap::default();
-        for &id in reachable {
-            let block = &func.blocks[&id];
-            block.terminator.for_each_edge(|target, _| {
-                let incoming = predecessors.entry(target).or_insert(Some(id));
-                if *incoming != Some(id) {
-                    *incoming = None;
-                }
-            });
-        }
-        for &target in labels.values() {
-            predecessors.insert(target, None);
-        }
-        let mut id = func.entry_block;
-        if predecessors.contains_key(&id) {
-            return initial;
-        }
-        let mut ops = func.blocks[&id].ops.iter();
-        if ops.next().and_then(frame_dispatch_kind) != Some(OpKind::TraceEnterSlot) {
-            return initial;
-        }
-        // A failed push may link a record without usable homes. The ordinary
-        // continuation of its entry check has the fully initialized record.
-        if !ops
-            .next()
-            .is_some_and(|op| op.opcode == OpCode::CheckException && !op.is_async_work_poll())
-        {
-            return initial;
-        }
-        let mut skip = 2;
-        let mut written = HashSet::default();
-        loop {
-            let block = &func.blocks[&id];
-            for (index, op) in block.ops.iter().enumerate().skip(skip) {
-                match frame_dispatch_kind(op) {
-                    Some(OpKind::FrameSetLocation | OpKind::Line) => {}
-                    Some(OpKind::FrameHomeStore) => {
-                        let Some(AttrValue::Int(slot)) = op.attrs.get("value") else {
-                            return initial;
-                        };
-                        if !written.insert(*slot) {
-                            return initial;
-                        }
-                        initial.insert((id, index));
-                        if !op.has_nothrow_proof() {
-                            return initial;
-                        }
-                    }
-                    None if op.opcode == OpCode::CheckException && !op.is_async_work_poll() => {}
-                    _ => return initial,
-                }
-            }
-            let Terminator::Branch { target, ref args } = block.terminator else {
-                return initial;
-            };
-            // A carrier coercion on an argument edge can invoke the runtime.
-            if !args.is_empty() || predecessors.get(&target) != Some(&Some(id)) {
-                return initial;
-            }
-            id = target;
-            skip = 0;
-        }
+        crate::tir::passes::frame_location_placement::unowned_home_releases(
+            func,
+            labels,
+            reachable,
+            |value| carriers.boxed_refcount_is_noop(value),
+        )
     }
 }
 
@@ -392,7 +328,7 @@ pub(crate) trait RecordPlacement: super::task::TaskPlacement {
 }
 
 enum PreviousHome {
-    Unbound,
+    Unowned,
     Unknown,
 }
 
@@ -410,7 +346,7 @@ fn write_home<B: super::CodegenBuilder>(
     use molt_codegen_abi as abi;
     let addr = b.word_to_address(home);
     let previous = match previous {
-        PreviousHome::Unbound => None,
+        PreviousHome::Unowned => None,
         PreviousHome::Unknown => Some((
             b.load_word(addr, abi::FRAME_HOME_KIND_OFFSET),
             b.load_word(addr, abi::FRAME_HOME_BITS_OFFSET),
@@ -516,7 +452,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
         op: &TirOp,
         frame: ActiveFrame<B::Slot>,
         poll_frame: Option<B::Word>,
-        initializes_home: bool,
+        previous_unowned: bool,
     ) -> bool {
         use super::value_table::HeldCarrier;
         use molt_codegen_abi as abi;
@@ -576,6 +512,11 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
         };
         let base = b.load_slot(slot);
         let home = b.add_immediate(base, offset);
+        let previous = if previous_unowned {
+            PreviousHome::Unowned
+        } else {
+            PreviousHome::Unknown
+        };
         match kind {
             OpKind::FrameHomeLoad => {
                 let address = b.word_to_address(home);
@@ -600,14 +541,7 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
             }
             OpKind::FrameHomeClear => {
                 let zero = b.constant(0);
-                write_home(
-                    b,
-                    home,
-                    abi::FRAME_HOME_UNBOUND,
-                    zero,
-                    false,
-                    PreviousHome::Unknown,
-                );
+                write_home(b, home, abi::FRAME_HOME_UNBOUND, zero, false, previous);
             }
             _ => {
                 let Some(&input) = op.operands.first() else {
@@ -634,11 +568,6 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
                         .results
                         .first()
                         .is_some_and(|&out| !self.plan.is_raw_int_carrier(out));
-                let previous = if initializes_home {
-                    PreviousHome::Unbound
-                } else {
-                    PreviousHome::Unknown
-                };
                 let view = write_home(b, home, tag, bits, boxed, previous);
                 if let Some(&out) = op.results.first() {
                     if boxed {
@@ -650,59 +579,5 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
             }
         }
         true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tir::dominators::{exception_label_to_block, executable_reverse_postorder};
-
-    #[test]
-    fn fresh_frame_home_writes_end_at_a_rebind_or_exceptional_entry() {
-        let ir: molt_ir::ir::FunctionIR = serde_json::from_value(serde_json::json!({
-            "name": "f",
-            "execution_context": "local",
-            "return_abi": "void",
-            "params": ["p", "q"],
-            "ops": [
-                {"kind": "trace_enter_slot", "s_value": "f", "value": 3},
-                {"kind": "check_exception", "exception_edge": "origin", "value": 9},
-                {"kind": "frame_home_store", "args": ["p"], "out": "x", "value": 0},
-                {"kind": "check_exception", "exception_edge": "origin", "value": 9},
-                {"kind": "frame_home_store", "args": ["q"], "out": "y", "value": 1},
-                {"kind": "frame_home_store", "args": ["q"], "out": "z", "value": 0},
-                {"kind": "frame_home_store", "args": ["p"], "out": "w", "value": 2},
-                {"kind": "trace_exit"},
-                {"kind": "ret_void"},
-                {"kind": "label", "value": 9},
-                {"kind": "trace_exit"},
-                {"kind": "ret_void"}
-            ]
-        }))
-        .unwrap();
-        let mut func = crate::tir::lower_from_simple::lower_to_tir(&ir);
-        for block in func.blocks.values_mut() {
-            for op in &mut block.ops {
-                if op.origin == Some(OpKind::FrameHomeStore) {
-                    op.mark_nothrow_proof();
-                }
-            }
-        }
-        let layout = FrameLayout::for_function(&func).unwrap();
-        let rpo = executable_reverse_postorder(&func);
-        let mut labels = exception_label_to_block(&func);
-        let initial = layout.initial_home_stores(&func, &rpo, &labels);
-        let &(second, _) = initial
-            .iter()
-            .find(|&&(block, index)| {
-                func.blocks[&block].ops[index].attrs.get("value") == Some(&AttrValue::Int(1))
-            })
-            .expect("the second argument is also in the entry prefix");
-        assert_eq!(initial.len(), 2);
-
-        labels.insert(10, second);
-        let initial = layout.initial_home_stores(&func, &rpo, &labels);
-        assert_eq!(initial.len(), 1);
     }
 }

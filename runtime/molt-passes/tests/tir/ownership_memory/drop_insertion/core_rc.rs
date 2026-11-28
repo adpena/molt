@@ -770,7 +770,7 @@ fn mutually_exclusive_loop_iterators_drop_on_their_own_exit_edges() {
         TirBlock {
             id: left_preheader,
             args: vec![],
-            ops: vec![const_str(left_iter)],
+            ops: vec![named_call("fixture_new_iterator", vec![], vec![left_iter])],
             terminator: Terminator::Branch {
                 target: left_header,
                 args: vec![],
@@ -813,7 +813,7 @@ fn mutually_exclusive_loop_iterators_drop_on_their_own_exit_edges() {
         TirBlock {
             id: right_preheader,
             args: vec![],
-            ops: vec![const_str(right_iter)],
+            ops: vec![named_call("fixture_new_iterator", vec![], vec![right_iter])],
             terminator: Terminator::Branch {
                 target: right_header,
                 args: vec![],
@@ -928,7 +928,7 @@ fn straight_line_temp_dropped_once() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(const_str(a));
+        b.ops.push(owned_string(a));
         b.ops
             .push(named_call("fixture_external_call", vec![a], vec![v1]));
         b.ops
@@ -1299,7 +1299,7 @@ fn state_machine_function_releases_invocation_local_temporary() {
         // A state-machine dispatch op marks this as a lowered `_poll` body.
         b.ops.push(op(OpCode::StateSwitch, vec![], vec![]));
         // This heap temporary is created in, and confined to, this invocation.
-        b.ops.push(const_str(v));
+        b.ops.push(owned_string(v));
         b.ops
             .push(named_call("fixture_external_call", vec![v], vec![]));
         b.terminator = Terminator::Return { values: vec![] };
@@ -1869,7 +1869,7 @@ fn borrow_into_call_dropped_after() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(const_str(x));
+        b.ops.push(owned_string(x));
         b.ops
             .push(named_call("fixture_external_call", vec![x], vec![res]));
         b.ops
@@ -2051,8 +2051,8 @@ fn explicit_del_boundary_root_not_edge_dropped_at_loop_exit() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(const_str(stale_release_root));
-        b.ops.push(const_str(current_seed));
+        b.ops.push(owned_string(stale_release_root));
+        b.ops.push(owned_string(current_seed));
         b.terminator = Terminator::Branch {
             target: header,
             args: vec![current_seed],
@@ -2087,7 +2087,7 @@ fn explicit_del_boundary_root_not_edge_dropped_at_loop_exit() {
             args: vec![],
             ops: vec![
                 body_boundary,
-                const_str(next_value),
+                owned_string(next_value),
                 original_copy_with_operands(
                     molt_ir::OpKind::StoreVar,
                     vec![next_value],
@@ -3036,7 +3036,7 @@ fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
     let entry = func.entry_block;
     {
         let block = func.blocks.get_mut(&entry).unwrap();
-        block.ops.push(const_str(r));
+        block.ops.push(owned_string(r));
         block
             .ops
             .push(op(OpCode::Copy, vec![choose_p1_input], vec![choose_p1]));
@@ -3066,7 +3066,7 @@ fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
             id: p2,
             args: vec![],
             ops: vec![
-                const_str(q),
+                owned_string(q),
                 op(OpCode::Copy, vec![choose_join_input], vec![choose_join]),
             ],
             terminator: Terminator::CondBranch {
