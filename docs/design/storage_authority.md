@@ -454,9 +454,13 @@ result hash and its extent. An HF-926 alias points to the same extent. Readers
 continue to admit the original standalone `.idx` rows. A reader orders files
 by publication time and seeks for the requested key, reading at most two rows
 per step. It checks the requested extent against its result hash, then checks
-the exact input identity. On a miss it refreshes the index inventory when the
-directory generation changes. The existing retention sweep compacts more than
-64 index files. An admitted result renews its blob's mtime at most hourly.
+the exact input identity. An unresolved lookup refreshes the index inventory
+when the directory generation changes. Repeated lookups in a fragmented
+generation build one bounded sorted route from a 32-bit key prefix to its
+candidate index ordinals. Only fully verified immutable indices can establish
+this route. A collision keeps the ordinary exact-key seek and extent
+verification. The existing retention sweep compacts more than 64 index files.
+An admitted result renews its blob's mtime at most hourly.
 This retains the other members of that bounded blob during the same window.
 Eviction lists each blob and index under the compile-cache budget and sweeps
 at background disk priority (`setiopolicy_np` throttle, `ioprio_set` idle class,
