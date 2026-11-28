@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from _thread import LockType
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from threading import Lock
 import time
 from typing import Any, BinaryIO
 
@@ -924,6 +926,17 @@ class FileDigestCache:
         # (6,301 closes at about 11 ms on 2026-11-20).
         self._reader: sqlite3.Connection | None = None
         self._reader_pid = 0
+        self._process_locks = {os.getpid(): Lock()}
+
+    def _process_lock(self) -> LockType:
+        # A child must never wait for a lock inherited from another thread.
+        pid = os.getpid()
+        existing = self._process_locks.get(pid)
+        return (
+            existing
+            if existing is not None
+            else self._process_locks.setdefault(pid, Lock())
+        )
 
     def _read_connection(self) -> sqlite3.Connection:
         # A forked child gets its own connection; SQLite handles do not cross
@@ -956,7 +969,7 @@ class FileDigestCache:
 
     def _connect(self) -> sqlite3.Connection:
         self.store.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.store, timeout=60)
+        connection = sqlite3.connect(self.store, timeout=60, check_same_thread=False)
         columns = [row[1] for row in connection.execute("PRAGMA table_info(digests)")]
         if "dev" in columns or "volume" in columns:
             connection.close()
@@ -1052,17 +1065,18 @@ class FileDigestCache:
         token = StatToken(
             *_stat_identity(expected_path_stat)[1:],
         )
-        recorded = self._row(key)
-        if recorded is not None and recorded[0] == token:
+        with self._process_lock():
+            recorded = self._row(key)
+            if recorded is None or recorded[0] != token:
+                return None
             if recorded[2] < self._started_ns - self._max_age_ns // 2:
                 self._pending[key] = (token, recorded[1])
-            return _regular_file_identity(
-                path,
-                expected_path_stat,
-                expected_path_stat.st_ctime_ns,
-                recorded[1],
-            )
-        return None
+        return _regular_file_identity(
+            path,
+            expected_path_stat,
+            expected_path_stat.st_ctime_ns,
+            recorded[1],
+        )
 
     def remember(self, identity: StableRegularFileIdentity) -> None:
         """Stage one completed capture under the existing racy-window policy."""
@@ -1070,36 +1084,40 @@ class FileDigestCache:
             max(identity._stat_identity[4], identity._stat_identity[5])
             < self._started_ns - DIGEST_RACY_WINDOW_NS
         ):
-            self._pending[os.fspath(identity.path)] = (
-                identity.stat_token(),
-                identity.sha256,
-            )
+            with self._process_lock():
+                self._pending[os.fspath(identity.path)] = (
+                    identity.stat_token(),
+                    identity.sha256,
+                )
 
     def flush(self) -> None:
         """Record this process's new digests and drop rows past the age budget."""
-        if not self._pending:
+        if os.name == "nt":
             return
-        rows = [
-            (path, str(token.inode), *token.payload()[1:], sha256, self._started_ns)
-            for path, (token, sha256) in self._pending.items()
-        ]
-        if not self._unavailable:
-            try:
-                with closing(self._connect()) as connection, connection:
-                    connection.executemany(
-                        "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        rows,
-                    )
-                    connection.execute(
-                        "DELETE FROM digests WHERE recorded_ns < ?",
-                        (self._started_ns - self._max_age_ns,),
-                    )
-                self._store_exists = True
-            except sqlite3.OperationalError as error:
-                self._contended(error)
-        for path, (token, sha256) in self._pending.items():
-            self._recorded[path] = (token, sha256, self._started_ns)
-        self._pending.clear()
+        with self._process_lock():
+            if not self._pending:
+                return
+            rows = [
+                (path, str(token.inode), *token.payload()[1:], sha256, self._started_ns)
+                for path, (token, sha256) in self._pending.items()
+            ]
+            if not self._unavailable:
+                try:
+                    with closing(self._connect()) as connection, connection:
+                        connection.executemany(
+                            "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            rows,
+                        )
+                        connection.execute(
+                            "DELETE FROM digests WHERE recorded_ns < ?",
+                            (self._started_ns - self._max_age_ns,),
+                        )
+                    self._store_exists = True
+                except sqlite3.OperationalError as error:
+                    self._contended(error)
+            for path, (token, sha256) in self._pending.items():
+                self._recorded[path] = (token, sha256, self._started_ns)
+            self._pending.clear()
 
 
 _FILE_DIGEST_CACHES: dict[Path, FileDigestCache] = {}
@@ -1109,8 +1127,8 @@ def file_digest_cache(store: Path, *, max_age_ns: int) -> FileDigestCache:
     """This process's digest cache over one store."""
     cache = _FILE_DIGEST_CACHES.get(store)
     if cache is None:
-        cache = _FILE_DIGEST_CACHES[store] = FileDigestCache(
-            store, max_age_ns=max_age_ns
+        cache = _FILE_DIGEST_CACHES.setdefault(
+            store, FileDigestCache(store, max_age_ns=max_age_ns)
         )
     return cache
 

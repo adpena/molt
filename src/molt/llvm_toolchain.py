@@ -1902,8 +1902,7 @@ def _tool_version_fact_and_identity(
     timeout = 30 if probe_timeout is None else probe_timeout(30)
     try:
         label = f"LLVM tool {role}"
-        # Prefix verification runs its version probes on separate workers.
-        tool = capture_probe_tool(path, label=label, operation_local=True)
+        tool = capture_probe_tool(path, label=label)
         executable_identity = tool.identity
         with tool.fenced(label=label) as entrypoint:
             result = subprocess.run(

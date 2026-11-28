@@ -188,7 +188,7 @@ class ProbeTool:
 
 
 def host_file_digest_cache(*, operation_local: bool = False) -> FileDigestCache:
-    """Use the host digest store, with a private reader for threaded operations."""
+    """Use the host digest store, optionally with an isolated capture memo."""
     _max_gb, max_age_days = resolve_budget(None, None, os.environ)
     store = file_digest_cache_path(_default_molt_cache())
     max_age_ns = max_age_days * 86_400 * 1_000_000_000
@@ -197,17 +197,14 @@ def host_file_digest_cache(*, operation_local: bool = False) -> FileDigestCache:
     return file_digest_cache(store, max_age_ns=max_age_ns)
 
 
-def capture_probe_tool(
-    path: Path, *, label: str, operation_local: bool = False
-) -> ProbeTool:
+def capture_probe_tool(path: Path, *, label: str) -> ProbeTool:
     """Identify an executable through the host digest cache.
 
     On POSIX an unchanged stat token answers from the cache without reading
     the file; a new generation is hashed once and recorded.
-    Parallel probes use operation-local readers of the same host store.
     """
     entrypoint, content = _executable_paths(path, label=label)
-    digests = host_file_digest_cache(operation_local=operation_local)
+    digests = host_file_digest_cache()
     identity = digests.identity(content, label=label)
     digests.flush()
     return ProbeTool.from_identity(entrypoint, identity)

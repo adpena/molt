@@ -1524,6 +1524,31 @@ def test_digest_cache_reuses_a_recorded_digest_across_processes(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_reuses_a_reader_across_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    earlier = _settled_file(tmp_path / "a.h", b"earlier")
+    later = _settled_file(tmp_path / "z.h", b"later")
+    store = tmp_path / "digests.sqlite"
+    first = identity.FileDigestCache(store, max_age_ns=10**18)
+    expected = first.identity(earlier, label="earlier")
+    first.identity(later, label="later")
+    first.flush()
+
+    cache = identity.file_digest_cache(store, max_age_ns=10**18)
+    _no_rehash(monkeypatch)
+    # The main thread opens the reader. Its forward page cannot contain a.h.
+    cache.identity(later, label="later")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(cache.identity, earlier, label="earlier").result()
+
+    assert result == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
 def test_digest_lookup_work_is_bounded_by_requested_files(tmp_path, monkeypatch):
     import sqlite3
 
