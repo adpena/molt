@@ -533,7 +533,7 @@ def test_wasm_member_lock_boundary_distinguishes_acquisition_from_work(
         fingerprint_features=(),
         target_root=tmp_path / "target",
         fingerprint={"hash": "a" * 64},
-        staticlib_fingerprint={"hash": "b" * 64},
+        cargo_output_fingerprint={"hash": "b" * 64},
     )
     phases = []
     monkeypatch.setattr(

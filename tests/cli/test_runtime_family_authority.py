@@ -389,7 +389,7 @@ def test_resealed_toolchain_and_config_drift_is_rejected(mutation: str) -> None:
         RuntimeBuildIdentity.from_dict(value)
 
 
-def test_publication_action_change_reuses_only_compile() -> None:
+def test_publication_action_change_reuses_cargo_outputs() -> None:
     before = runtime_build_identity(
         "shared", "old-publication", compile_seed="same-compile"
     )
@@ -402,13 +402,24 @@ def test_publication_action_change_reuses_only_compile() -> None:
         runtime_build_fingerprint(before)["hash"]
         != runtime_build_fingerprint(after)["hash"]
     )
-    for scope in ("compile", "member-output"):
+    for scope in ("compile", "cargo-linked-output", "member-output"):
         first = runtime_build_fingerprint(before, scope=scope)
         second = runtime_build_fingerprint(after, scope=scope)
-        assert (first["hash"] == second["hash"]) is (scope == "compile")
+        assert (first["hash"] == second["hash"]) is (scope != "member-output")
         assert fingerprints._runtime_fingerprint_payload_is_valid(
             {"version": 5, **first}
         )
+
+    changed = before.to_dict()
+    shared = changed["payload"]["family"]["members"]["shared"]
+    shared["link_args"].append("link-arg=-zstack-size=8388608")
+    _reseal(changed)
+    linked = RuntimeBuildIdentity.from_dict(changed)
+    assert linked.compile_digest == before.compile_digest
+    assert (
+        runtime_build_fingerprint(linked, scope="cargo-linked-output")["hash"]
+        != runtime_build_fingerprint(before, scope="cargo-linked-output")["hash"]
+    )
 
 
 @pytest.mark.parametrize("scope", ["compile", "member", "member-output"])
@@ -3170,7 +3181,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         fingerprint_features=(),
         target_root=plan_root / "target",
         fingerprint=None,
-        staticlib_fingerprint=None,
+        cargo_output_fingerprint=None,
     )
     reloc = shared._replace(artifact_selection=specs.RUNTIME_STATICLIB_ARTIFACTS)
     with _source_tree_fingerprint_transaction():

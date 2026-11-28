@@ -1247,8 +1247,8 @@ def test_target_pair_rejects_newer_but_semantically_incompatible_artifacts(
     runtime.write_bytes(_valid_wasm_bytes(b"owned-memory-not-shared-import-abi"))
     archive.write_bytes(b"!<arch>\n")
     for path, fingerprint in (
-        (runtime, old_shared.fingerprint),
-        (archive, old_reloc.staticlib_fingerprint),
+        (runtime, old_shared.cargo_output_fingerprint),
+        (archive, old_reloc.cargo_output_fingerprint),
     ):
         receipt = ARTIFACT_STATE._runtime_target_fingerprint_path(
             state_root,

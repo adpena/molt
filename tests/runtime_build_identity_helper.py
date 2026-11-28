@@ -687,19 +687,22 @@ def bind_runtime_wasm_specs(
         member_link_args=member_link_args,
         member_publications=member_publications,
     )
-    compile_fingerprint = runtime_build_fingerprint(shared_identity, scope="compile")
     return (
         shared._replace(
             fingerprint=runtime_build_fingerprint(
                 shared_identity, scope="member-output"
             ),
-            staticlib_fingerprint=compile_fingerprint,
+            cargo_output_fingerprint=runtime_build_fingerprint(
+                shared_identity, scope="cargo-linked-output"
+            ),
         ),
         reloc._replace(
             fingerprint=runtime_build_fingerprint(
                 reloc_identity, scope="member-output"
             ),
-            staticlib_fingerprint=compile_fingerprint,
+            cargo_output_fingerprint=runtime_build_fingerprint(
+                reloc_identity, scope="compile"
+            ),
         ),
     )
 

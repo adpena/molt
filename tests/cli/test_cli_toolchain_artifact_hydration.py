@@ -1163,7 +1163,7 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         static_archive_bytes(b"selected") if reloc else _valid_wasm_bytes(b"selected")
     )
     selected.write_bytes(new_bytes)
-    fingerprint = spec.staticlib_fingerprint if reloc else spec.fingerprint
+    fingerprint = spec.cargo_output_fingerprint
     assert fingerprint is not None
     selected_fp = cli_artifact_state._runtime_target_fingerprint_path(
         state, selected, cargo_profile=spec.cargo_profile, target_label="wasm32-wasip1"
