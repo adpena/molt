@@ -10055,9 +10055,9 @@ class _Analyzer:
     def _seal_deferred_execution(
         self,
     ) -> tuple[
-        tuple[PythonExpressionFact, ...],
-        tuple[PythonStatementFact, ...],
-        tuple[tuple[PythonSourceKey, PythonIterationFact], ...],
+        dict[PythonSourceKey, PythonExpressionFact],
+        dict[PythonSourceKey, PythonStatementFact],
+        dict[PythonSourceKey, PythonIterationFact],
         bool,
     ]:
         # Two finite summaries per existing lexical scope: direct execution,
@@ -10191,24 +10191,14 @@ class _Analyzer:
 
         # Transfer facts and scope effects remain available for another
         # projection after a deferred input changes.
-        expressions = tuple(
-            sorted(
-                (seal(fact) for fact in self._project_builtin_guard_bits()),
-                key=lambda fact: fact.node,
-            )
-        )
-        statements = tuple(
-            sorted(
-                map(project_statement, self.transfer.statements.values()),
-                key=lambda fact: fact.node,
-            )
-        )
-        return (
-            expressions,
-            statements,
-            tuple(sorted(iterations.items())),
-            module_import_flow_required,
-        )
+        expressions = {
+            fact.node: seal(fact) for fact in self._project_builtin_guard_bits()
+        }
+        statements = {
+            key: project_statement(fact)
+            for key, fact in self.transfer.statements.items()
+        }
+        return expressions, statements, iterations, module_import_flow_required
 
     def _overlay_future_states(
         self,
@@ -10599,9 +10589,7 @@ class _Analyzer:
             expressions=expressions,
             statements=statements,
             iterations=iterations,
-            calls=tuple(
-                sorted(self.transfer.calls.values(), key=lambda fact: fact.node)
-            ),
+            calls=self.transfer.calls.copy(),
             scopes=scope_facts,
             class_annotation_namespaces=frozenset(
                 source_key
