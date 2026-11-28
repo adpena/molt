@@ -6,6 +6,7 @@ import hashlib
 import os
 import sys
 from collections.abc import Hashable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -38,7 +39,11 @@ from molt.cli.models import (
     _RuntimeImportSupportPolicy,
     _SettledImportGraph,
 )
-from molt.cli.module_resolution import _ImportScanDiagnostics, _ModuleResolutionCache
+from molt.cli.module_resolution import (
+    _ImportGraphStage,
+    _ImportScanDiagnostics,
+    _ModuleResolutionCache,
+)
 from molt.cli.module_source import PythonSourceSnapshot, PythonSourceChangedError
 from molt.cli.python_import_topology import PythonImportTopology
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
@@ -55,6 +60,7 @@ from molt.compiler_analysis.python_source_keys import (
     decode_python_source_key,
     python_ast_line_identity,
 )
+from molt.compiler_analysis.python_namespace_writes import python_package_name
 from molt.compiler_analysis.python_import_redirects import (
     ImportRedirects,
     ImportWriter,
@@ -128,19 +134,6 @@ def _source_line_identity(
         return python_ast_line_identity(tree)
     except (SyntaxError, ValueError, RecursionError):
         return None
-
-
-def _decode_line_identity(raw: object) -> PythonAstLineIdentity | None:
-    if raw is None:
-        return None
-    raw_digest, raw_lines = _list(raw)
-    digest = _text(raw_digest)
-    lines = tuple(_int(line) for line in _list(raw_lines))
-    if not is_record_digest(digest) or (lines and lines[0] < 1):
-        raise ValueError("invalid source line identity")
-    if any(left >= right for left, right in zip(lines, lines[1:])):
-        raise ValueError("source line identity is not in source order")
-    return PythonAstLineIdentity(digest, lines)
 
 
 class _ReplayLocations:
@@ -367,6 +360,10 @@ class ImportGraphContext:
         default=None, compare=False, repr=False
     )
 
+    def measure(self, stage: _ImportGraphStage) -> AbstractContextManager[None]:
+        diagnostics = self.scan_diagnostics
+        return nullcontext() if diagnostics is None else diagnostics.graph_stage(stage)
+
     def payload(self) -> dict[str, object]:
         assert self.entry.image_scope is not None
         cpython_suite = os.environ.get("MOLT_REGRTEST_CPYTHON_DIR")
@@ -521,7 +518,8 @@ def _complete_observers(
 def publish_import_graph(plan: _ImportPlan, context: ImportGraphContext) -> None:
     """Cache publication failure never changes a successfully compiled program."""
     try:
-        _publish_import_graph(plan, context)
+        with context.measure("publication"):
+            _publish_import_graph(plan, context)
     except PythonSourceChangedError:
         raise
     except (OSError, ValueError, TypeError, RecursionError):
@@ -536,6 +534,7 @@ def _publish_import_graph(
     if plan.native_artifact_plan.artifacts:
         return
     graph = plan.settled_graph
+    resolver = plan.module_resolution_cache
     if not _complete_observers(
         graph.scan_authority, plan.import_query_closure.observations
     ):
@@ -610,13 +609,24 @@ def _publish_import_graph(
                     raise PythonSourceChangedError(
                         f"source changed before graph publication: {source.path}"
                     )
-                source_lines[source.sha256] = _source_line_identity(
+                lines = None
+                if (
+                    resolver.is_stdlib_path(snapshot.path, context.stdlib_root)
+                    and (summary := resolver.installed_stdlib_source_summaries)
+                    is not None
+                ):
+                    lines = summary.line_identity(
+                        snapshot,
+                        package=python_package_name(
+                            source.module, is_package=source.package
+                        ),
+                        target=context.target_python,
+                    )
+                source_lines[source.sha256] = lines or _source_line_identity(
                     snapshot, context.target_python
                 )
             lines = source_lines[source.sha256]
-            recorded_lines[source.sha256] = (
-                None if lines is None else (lines.digest, lines.lines)
-            )
+            recorded_lines[source.sha256] = None if lines is None else lines.record()
             result_locations[source.sha256] = (
                 PythonSourceLocations() if lines is None else lines.locations()
             )
@@ -692,7 +702,8 @@ def _publish_import_graph(
 
 def replay_import_graph(context: ImportGraphContext) -> _ImportPlan | None:
     try:
-        return _replay(context)
+        with context.measure("replay"):
+            return _replay(context)
     except (
         OSError,
         ValueError,
@@ -789,7 +800,7 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         _RecordedQuerySource.decode(raw) for raw in _list(value["query_sources"])
     )
     source_lines = {
-        sha: _decode_line_identity(raw)
+        sha: None if raw is None else PythonAstLineIdentity.from_record(raw)
         for sha, raw in _map(value["source_lines"]).items()
     }
     if source_lines.keys() != {source.sha256 for source in query_sources}:
@@ -1101,7 +1112,8 @@ def _replay(context: ImportGraphContext) -> _ImportPlan | None:
         try:
             # Republish from the verified query closure so result digests,
             # scoped premises and source generations advance together.
-            _publish_import_graph(plan, context, source_lines)
+            with context.measure("publication"):
+                _publish_import_graph(plan, context, source_lines)
         except OSError:
             # The admitted plan remains usable when a cache write fails.
             pass

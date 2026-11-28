@@ -261,9 +261,19 @@ fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
             "slot={slot}, reservation={reservation:?}"
         );
     }
-    for (bytes, expected) in [(exact.arena_bytes, 1), (oversized.arena_bytes, 0)] {
+    for (reservation, expected) in [(exact, 1), (oversized, 0), (two, 1), (three, 0)] {
         assert_eq!(
-            generate_frame_probe(&mut machine, THREAD, 0, 0, FrameProbe::Arena(bytes)),
+            generate_frame_probe(
+                &mut machine,
+                THREAD,
+                0,
+                0,
+                FrameProbe::Region {
+                    arena_bytes: reservation.arena_bytes,
+                    recursion_depth: reservation.recursion_depth,
+                    virtual_exception_level: false,
+                },
+            ),
             expected,
         );
     }
@@ -273,16 +283,21 @@ fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
     };
     for (limit, expected) in [(9, 0), (10, 1)] {
         machine.write(RECURSION_LIMIT, 0, limit);
-        assert_eq!(
-            generate_frame_probe(
-                &mut machine,
-                THREAD,
-                function,
-                code_slot,
-                FrameProbe::Entry(admitted_arena),
-            ),
-            expected,
-        );
+        for callable_admitted in [false, true] {
+            assert_eq!(
+                generate_frame_probe(
+                    &mut machine,
+                    THREAD,
+                    function,
+                    code_slot + u64::from(callable_admitted),
+                    FrameProbe::Entry(FrameReservation {
+                        callable_admitted,
+                        ..admitted_arena
+                    }),
+                ),
+                expected,
+            );
+        }
     }
     let virtual_level = FrameReservation {
         virtual_exception_level: true,
@@ -316,11 +331,39 @@ fn a_frame_probe_checks_admission_without_reserving_or_retaining() {
             expected,
             "depth={depth}, baseline={baseline}, virtual_depth={virtual_depth}"
         );
+        assert_eq!(
+            generate_frame_probe(
+                &mut machine,
+                THREAD,
+                0,
+                0,
+                FrameProbe::Region {
+                    arena_bytes: two.arena_bytes,
+                    recursion_depth: two.recursion_depth,
+                    virtual_exception_level: true,
+                },
+            ),
+            expected,
+        );
     }
     machine.write(THREAD, crate::THREAD_RECORD_EXCEPTION_PENDING_OFFSET, 1);
     assert_eq!(
         generate_frame_entry_admits(&mut machine, THREAD, function, code_slot, two),
         0
+    );
+    assert_eq!(
+        generate_frame_probe(
+            &mut machine,
+            THREAD,
+            0,
+            0,
+            FrameProbe::Region {
+                arena_bytes: 0,
+                recursion_depth: 0,
+                virtual_exception_level: false
+            },
+        ),
+        0,
     );
     assert_eq!(
         machine.read(THREAD, THREAD_RECORD_ARENA_TOP_OFFSET),

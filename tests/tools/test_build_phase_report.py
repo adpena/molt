@@ -9,7 +9,11 @@ from tools import build_phase_report
 
 
 def _diagnostics(
-    directory: Path, name: str, entry: str, phases: dict[str, float]
+    directory: Path,
+    name: str,
+    entry: str,
+    phases: dict[str, float],
+    graph: dict[str, float] | None = None,
 ) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -17,6 +21,8 @@ def _diagnostics(
         "total_sec": sum(phases.values()),
         "phase_sec": phases,
     }
+    if graph is not None:
+        payload["module_graph_stage_sec"] = graph
     (directory / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -46,16 +52,32 @@ def test_report_totals_phases_and_ranks_the_slowest_builds(tmp_path: Path) -> No
 def test_report_cli_emits_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _diagnostics(tmp_path, "1", "a.py", {"runtime_setup": 3.0})
+    _diagnostics(
+        tmp_path,
+        "1",
+        "a.py",
+        {"module_graph": 3.0},
+        {"discovery": 2.0, "publication": 0.5, "replay": 0.25},
+    )
+    _diagnostics(tmp_path, "2", "b.py", {"module_graph": 1.0})
 
     assert build_phase_report.main([str(tmp_path), "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["builds"] == 1
+    assert payload["builds"] == 2
+    assert payload["total_s"] == 4.0
+    assert payload["phases"] == [
+        {"phase": "module_graph", "total_s": 4.0, "share": 1.0}
+    ]
+    assert payload["module_graph_stages"] == [
+        {"phase": "discovery", "total_s": 2.0, "share": round(2.0 / 3, 4)},
+        {"phase": "publication", "total_s": 0.5, "share": round(0.5 / 3, 4)},
+        {"phase": "replay", "total_s": 0.25, "share": round(0.25 / 3, 4)},
+    ]
     assert payload["slowest"][0] == {
         "entry": "a.py",
         "total_s": 3.0,
-        "top_phase": "runtime_setup",
+        "top_phase": "module_graph",
         "top_phase_s": 3.0,
     }
 

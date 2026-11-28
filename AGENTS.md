@@ -138,7 +138,8 @@ from development load. Add process only for a measured bottleneck.
   a fast path needs a general replacement. Recover speed
   through proven/guarded bindings and inlining, never name matching. Use typed platform/architecture
   capability plans, never retry/fallback feature detection.
-- Instrument only to shorten decisions or remove measured recurring bottlenecks. Build profiling:
+- Instrument only to shorten decisions or remove measured recurring bottlenecks. Fold repeatable
+  probes into the tool that owns the measurement, then retire the scratch copy. Build profiling:
   `docs/OPERATIONS.md`, “Build time” (`MOLT_BUILD_DIAGNOSTICS`,
   `MOLT_BUILD_DIAGNOSTICS_FILE`, `MOLT_CLI_PROFILE`). Development apparatus is frozen: add no runner,
   receipt, ledger, scanner, dashboard or generated projection without a measured defect it would

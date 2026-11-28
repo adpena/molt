@@ -84,7 +84,15 @@ def test_bump_and_relock_rewrite_only_the_lock(tmp_path: Path) -> None:
     authority = tmp_path / "perf_methodology.toml"
     shutil.copyfile(pm.AUTHORITY, authority)
     before = pm.load(authority)
-    pm._rewrite_lock(authority, version=before.version + 1, digest="e" * 64)
+    original = authority.read_text(encoding="utf-8")
+    digest = "e" * 64
+    pm.publish_lock(authority, original, version=before.version + 1, digest=digest)
+    assert authority.read_text(encoding="utf-8") == original.replace(
+        f"\nversion = {before.version}\n", f"\nversion = {before.version + 1}\n"
+    ).replace(
+        f'content_sha256 = "{before.locked_sha256}"',
+        f'content_sha256 = "{digest}"',
+    )
     after = pm.load(authority)
     assert (after.version, after.locked_sha256) == (before.version + 1, "e" * 64)
     assert (after.paths, dict(after.mechanics)) == (

@@ -27,6 +27,7 @@ from io import StringIO
 from pathlib import Path
 
 from molt.exact_json import loads_exact
+from molt.toolchain_identity import StableRegularFileObservation
 from tools.libtest_results import (
     isolated_test_rows,
     listed_test_identities,
@@ -514,19 +515,17 @@ def _file_identity(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
-def retain_file(source: Path, root: Path) -> dict[str, object]:
+def retain_file(
+    source: Path, root: Path, *, observed: StableRegularFileObservation | None = None
+) -> dict[str, object]:
     """Retain observed bytes as evidence, never as an execution-path substitute."""
     source = source.resolve(strict=True)
-    expected = _file_identity(source)
-    reference = custody_cas.put_file(
-        root / "custody-cas", source, logical_name="evidence"
+    observation = observed or StableRegularFileObservation.capture(
+        source, label="runtime proof input"
     )
-    if (
-        _file_identity(source) != expected
-        or (reference.size_bytes, reference.sha256) != expected
-    ):
-        raise DescendantEvidenceError("file changed during evidence retention")
-    return reference.as_dict()
+    return custody_cas.put_file(
+        root / "custody-cas", source, logical_name="evidence", observed=observation
+    ).as_dict()
 
 
 def retained_file(reference: object, *, root: Path) -> Path:
@@ -556,8 +555,11 @@ def retain_receipt_files(receipt: dict, *, root: Path) -> None:
     if root == Path(root.anchor) or not custody.is_relative_to(root):
         raise DescendantEvidenceError("retained root escaped run custody")
     image = _canonical(receipt["executable_resolved"])
-    expected = (receipt["executable_size"], receipt["executable_sha256"])
-    if _file_identity(image) != expected:
+    observed = StableRegularFileObservation.capture(image, label="executed image")
+    if (observed.identity.size, observed.identity.sha256) != (
+        receipt["executable_size"],
+        receipt["executable_sha256"],
+    ):
         raise DescendantEvidenceError("executed image changed before retention")
     sources = {image}
     if _engaged(receipt):
@@ -570,15 +572,13 @@ def retain_receipt_files(receipt: dict, *, root: Path) -> None:
                     _descendant_stream(value, image=image, name=name)
                     path = _canonical(value["path"])
                     sources.update((path, path.parent / "artifact-label.txt"))
-    receipt["retained_root"] = str(root)
-    receipt["retained_files"] = {
-        str(path): retain_file(path, root) for path in sorted(sources)
+    retained = {
+        str(path): retain_file(path, root, observed=observed if path == image else None)
+        for path in sorted(sources)
     }
-    if (
-        _file_identity(image) != expected
-        or _file_identity(receipt_file(receipt, image)) != expected
-    ):
-        raise DescendantEvidenceError("executed image retention differs from admission")
+    observed.verify(label="executed image")
+    receipt["retained_root"] = str(root)
+    receipt["retained_files"] = retained
 
 
 def _exact(value: object, expected: object) -> bool:
